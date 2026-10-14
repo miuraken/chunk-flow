@@ -588,6 +588,64 @@ object ChunkFlowIcons {
         }
     }
 
+    /** ブックマーク済み（塗りつぶし）アイコン（F8.1）。 */
+    val Bookmark: ImageVector by lazy {
+        materialIcon(name = "Bookmark") {
+            moveTo(17f, 3f)
+            lineTo(7f, 3f)
+            curveToRelative(-1.1f, 0f, -1.99f, 0.9f, -1.99f, 2f)
+            lineTo(5f, 21f)
+            lineToRelative(7f, -3f)
+            lineToRelative(7f, 3f)
+            lineTo(19f, 5f)
+            curveToRelative(0f, -1.1f, -0.9f, -2f, -2f, -2f)
+            close()
+        }
+    }
+
+    /** ブックマーク未設定（枠線）アイコン（F8.1）。 */
+    val BookmarkBorder: ImageVector by lazy {
+        materialIcon(name = "BookmarkBorder") {
+            moveTo(17f, 3f)
+            lineTo(7f, 3f)
+            curveToRelative(-1.1f, 0f, -1.99f, 0.9f, -1.99f, 2f)
+            lineTo(5f, 21f)
+            lineToRelative(7f, -3f)
+            lineToRelative(7f, 3f)
+            lineTo(19f, 5f)
+            curveToRelative(0f, -1.1f, -0.9f, -2f, -2f, -2f)
+            close()
+            moveTo(17f, 18f)
+            lineToRelative(-5f, -2.18f)
+            lineTo(7f, 18f)
+            lineTo(7f, 5f)
+            horizontalLineToRelative(10f)
+            verticalLineToRelative(13f)
+            close()
+        }
+    }
+
+    /** ファイル書き出し・ダウンロードアイコン（F7.5）。 */
+    val Download: ImageVector by lazy {
+        materialIcon(name = "Download") {
+            moveTo(19f, 9f)
+            horizontalLineToRelative(-4f)
+            lineTo(15f, 3f)
+            lineTo(9f, 3f)
+            verticalLineToRelative(6f)
+            lineTo(5f, 9f)
+            lineToRelative(7f, 7f)
+            lineToRelative(7f, -7f)
+            close()
+            moveTo(5f, 18f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(14f)
+            verticalLineToRelative(-2f)
+            lineTo(5f, 18f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

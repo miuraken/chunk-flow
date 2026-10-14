@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
@@ -35,6 +36,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,14 +48,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.text.intl.LocaleList
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
@@ -65,18 +72,92 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
+import com.miuraken.chunkflow.core.model.WordTiming
+import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
 import java.util.Locale as JavaLocale
 import kotlin.math.max
 import kotlin.math.min
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /** 手動スクロール後に自動追従を再開するまでの待機時間（5 秒、§7.5.5）。 */
 private const val AUTO_FOLLOW_RESUME_DELAY_MS: Long = 5_000L
 
 /**
- * 再生位置に同期したチャンク / スクリプト一覧（F7.1、F7.2、F7.3、F1.4、F6.1、§7.5.5）。
+ * 単語タイムスタンプに対応する表示テキスト内の文字オフセット範囲（F7.7、§7.5.5）。
+ *
+ * @property startCharIndex `displayText` 内の開始インデックス（0 始まり、含む）。
+ * @property endCharIndex `displayText` 内の終了インデックス（含まない）。
+ * @property startMs 単語の開始時刻（ミリ秒）。
+ * @property endMs 単語の終了時刻（ミリ秒）。
+ */
+internal data class WordCharRange(
+    val startCharIndex: Int,
+    val endCharIndex: Int,
+    val startMs: Long,
+    val endMs: Long,
+)
+
+/**
+ * [WordTiming] のリストを [displayText] の文字オフセット範囲へ対応付ける（F7.7、§7.5.5）。
+ *
+ * - まず [displayText] に対して各単語を先頭から順に対応付ける。
+ * - スクリプト切替（簡体字 / 繁体字など）で [displayText] と [rawText] の文字数が一致する場合は、
+ *   [rawText] で対応付けた文字オフセットを [displayText] にそのまま適用する。
+ * - ピンイン等で文字数が異なり、[displayText] とも一致しない場合は `null` を返し、行単位ハイライトにフォールバックする。
+ */
+internal fun mapWordsToCharRanges(
+    displayText: String,
+    rawText: String?,
+    words: List<WordTiming>,
+): List<WordCharRange>? {
+    if (displayText.isEmpty() || words.isEmpty()) return null
+    matchWordsSequentially(displayText, words)?.let { return it }
+    if (rawText != null && rawText.length == displayText.length) {
+        return matchWordsSequentially(rawText, words)
+    }
+    return null
+}
+
+private fun matchWordsSequentially(
+    targetText: String,
+    words: List<WordTiming>,
+): List<WordCharRange>? {
+    if (targetText.isEmpty() || words.isEmpty()) return null
+    val ranges = ArrayList<WordCharRange>(words.size)
+    var cursor = 0
+    for (word in words) {
+        val token = word.text.trim()
+        if (token.isEmpty()) continue
+        val foundIdx = targetText.indexOf(token, startIndex = cursor)
+        if (foundIdx < 0) return null
+        val endIdx = foundIdx + token.length
+        if (endIdx > targetText.length) return null
+        ranges.add(
+            WordCharRange(
+                startCharIndex = foundIdx,
+                endCharIndex = endIdx,
+                startMs = word.startMs,
+                endMs = word.endMs,
+            ),
+        )
+        cursor = endIdx
+    }
+    return ranges.takeIf { it.isNotEmpty() }
+}
+
+/**
+ * 再生位置 [positionMs] において発話中の単語の文字範囲を返す（F7.7）。
+ */
+internal fun findActiveWordRange(
+    ranges: List<WordCharRange>,
+    positionMs: Long,
+): WordCharRange? = ranges.firstOrNull { positionMs >= it.startMs && positionMs < it.endMs }
+
+/**
+ * 再生位置に同期したチャンク / スクリプト一覧（F5.3、F7.1〜F7.7、F8.1、§7.5.5）。
  *
  * - `LazyColumn` の `key` にチャンク ID を指定し、現在のチャンク（[activeChunkIndex]）を背景色と左端バーで強調する。
  * - 現在のチャンクが変わったら自動スクロールで追従し、手動スクロール後 5 秒間は追従を止めて「現在位置へ戻る」ボタンを表示する。
@@ -84,6 +165,8 @@ private const val AUTO_FOLLOW_RESUME_DELAY_MS: Long = 5_000L
  * - ブラインドモード（[blindMode]）では対象行をマスクし、タップで一時表示できる。
  * - 言語バッジのタップまたは長押しメニューからチャンクの言語ラベル（学習言語 / 母語 / 未判定 `?`）を手動修正できる（F7.3）。
  * - 未判定言語のチャンクがある場合は一括で学習言語に設定するチップを表示する（F1.4）。
+ * - 現在のチャンクに単語タイムスタンプ（`words`）がある場合、アクティブ行の内部でのみ [positionProvider] を監視して発話中の単語をカラオケ強調する（F7.7）。
+ * - ブックマーク（F8.1）、テキスト手動編集（F7.4）、チャンク分割・結合・境界微調整（F5.3）を提供する。
  */
 @Composable
 fun TranscriptList(
@@ -102,9 +185,17 @@ fun TranscriptList(
     onPickTranscriptJson: () -> Unit,
     onDismissTranscriptBanner: () -> Unit,
     modifier: Modifier = Modifier,
+    positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
     localTranscriptExported: Boolean = false,
+    transcriptExportBanner: TranscriptExportBannerState? = null,
+    onDismissExportBanner: () -> Unit = {},
+    onToggleBookmark: (ChunkId) -> Unit = {},
     onUpdateChunkLanguage: (ChunkId, LanguageTag?) -> Unit = { _, _ -> },
+    onUpdateChunkText: (ChunkId, String) -> Unit = { _, _ -> },
+    onSplitChunk: (ChunkId, Long) -> Unit = { _, _ -> },
+    onMergeWithNextChunk: (ChunkId) -> Unit = {},
+    onMoveChunkBoundary: (ChunkId, Long, Long) -> Unit = { _, _, _ -> },
     onBulkSetUnknownLanguage: (LanguageTag) -> Unit = {},
     onSetLookaheadEnabled: (Boolean) -> Unit = {},
     onExportLocalTranscriptJson: () -> Unit = {},
@@ -117,6 +208,7 @@ fun TranscriptList(
     var isAutoFollowPaused by remember { mutableStateOf(false) }
     var manualScrollTick by remember { mutableLongStateOf(0L) }
     var rangeSelectionStartChunkId by remember { mutableStateOf<ChunkId?>(null) }
+    var editingTextChunk by remember { mutableStateOf<Pair<Int, ChunkUi>?>(null) }
 
     // ユーザーによる手動スクロールの検出
     LaunchedEffect(listState.isScrollInProgress) {
@@ -166,6 +258,14 @@ fun TranscriptList(
                 TranscriptImportStatusBanner(
                     banner = banner,
                     onDismiss = onDismissTranscriptBanner,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+
+            transcriptExportBanner?.let { exportBanner ->
+                TranscriptExportStatusBanner(
+                    banner = exportBanner,
+                    onDismiss = onDismissExportBanner,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
@@ -242,12 +342,14 @@ fun TranscriptList(
                     TranscriptChunkRow(
                         index = index,
                         chunk = chunk,
+                        hasNextChunk = index < chunks.lastIndex,
                         isActive = isActive,
                         isInLoopRange = isInLoopRange,
                         isMasked = isMasked,
                         languagePair = languagePair,
                         chineseScript = chineseScript,
                         cantoneseScript = cantoneseScript,
+                        positionProvider = positionProvider,
                         onRowClick = {
                             val startId = rangeSelectionStartChunkId
                             if (startId != null) {
@@ -271,6 +373,9 @@ fun TranscriptList(
                         onTimestampClick = {
                             onSeekToChunk(chunk.id)
                         },
+                        onToggleBookmark = {
+                            onToggleBookmark(chunk.id)
+                        },
                         onRepeatSingle3 = {
                             onSeekToChunk(chunk.id)
                             onSetLoopMode(LoopMode.SingleChunk(chunk.id, times = 3))
@@ -284,6 +389,26 @@ fun TranscriptList(
                         },
                         onUpdateLanguage = { newLang ->
                             onUpdateChunkLanguage(chunk.id, newLang)
+                        },
+                        onRequestEditText = {
+                            editingTextChunk = index to chunk
+                        },
+                        onSplitChunk = {
+                            val nowMs = positionProvider.currentPositionMs()
+                            val splitMs = if (nowMs > chunk.startMs + 50L && nowMs < chunk.endMs - 50L) {
+                                nowMs
+                            } else {
+                                (chunk.startMs + chunk.endMs) / 2L
+                            }
+                            if (splitMs > chunk.startMs && splitMs < chunk.endMs) {
+                                onSplitChunk(chunk.id, splitMs)
+                            }
+                        },
+                        onMergeWithNextChunk = {
+                            onMergeWithNextChunk(chunk.id)
+                        },
+                        onMoveChunkBoundary = { newStartMs, newEndMs ->
+                            onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
                         },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
@@ -324,6 +449,53 @@ fun TranscriptList(
             )
         }
     }
+
+    editingTextChunk?.let { (chunkIndex, targetChunk) ->
+        EditChunkTextDialog(
+            chunkNumber = chunkIndex + 1,
+            initialText = targetChunk.text.orEmpty(),
+            onConfirm = { newText ->
+                editingTextChunk = null
+                onUpdateChunkText(targetChunk.id, newText)
+            },
+            onDismiss = { editingTextChunk = null },
+        )
+    }
+}
+
+@Composable
+private fun EditChunkTextDialog(
+    chunkNumber: Int,
+    initialText: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var textValue by remember(chunkNumber, initialText) { mutableStateOf(initialText) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResource(R.string.player_chunk_edit_text_dialog_title, chunkNumber))
+        },
+        text = {
+            OutlinedTextField(
+                value = textValue,
+                onValueChange = { textValue = it },
+                label = { Text(text = stringResource(R.string.player_chunk_edit_text_label)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(textValue) }) {
+                Text(text = stringResource(R.string.player_chunk_edit_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.player_chunk_edit_cancel))
+            }
+        },
+    )
 }
 
 @Composable
@@ -446,18 +618,25 @@ private fun orderChunkRange(
 private fun TranscriptChunkRow(
     index: Int,
     chunk: ChunkUi,
+    hasNextChunk: Boolean,
     isActive: Boolean,
     isInLoopRange: Boolean,
     isMasked: Boolean,
     languagePair: LanguagePair?,
     chineseScript: ChineseScript,
     cantoneseScript: ChineseScript,
+    positionProvider: PositionProvider,
     onRowClick: () -> Unit,
     onTimestampClick: () -> Unit,
+    onToggleBookmark: () -> Unit,
     onRepeatSingle3: () -> Unit,
     onRepeatSingleInfinite: () -> Unit,
     onStartRangeSelection: () -> Unit,
     onUpdateLanguage: (LanguageTag?) -> Unit,
+    onRequestEditText: () -> Unit,
+    onSplitChunk: () -> Unit,
+    onMergeWithNextChunk: () -> Unit,
+    onMoveChunkBoundary: (Long, Long) -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     var badgeMenuExpanded by remember { mutableStateOf(false) }
@@ -490,6 +669,45 @@ private fun TranscriptChunkRow(
         }
     }
 
+    // 単語レベルのカラオケ強調（F7.7、§7.5.5: アクティブ行の内部でのみ PositionProvider を監視）
+    val wordRanges = remember(displayText, chunk.text, chunk.words) {
+        if (displayText != null && chunk.words.isNotEmpty()) {
+            mapWordsToCharRanges(
+                displayText = displayText,
+                rawText = chunk.text,
+                words = chunk.words,
+            )
+        } else {
+            null
+        }
+    }
+    var activeWordRange by remember(isActive, isMasked, wordRanges, positionProvider) {
+        val initialRange = if (isActive && !isMasked && wordRanges != null) {
+            findActiveWordRange(wordRanges, positionProvider.currentPositionMs())
+        } else {
+            null
+        }
+        mutableStateOf(initialRange)
+    }
+    if (!LocalInspectionMode.current && isActive && !isMasked && wordRanges != null) {
+        LaunchedEffect(isActive, isMasked, wordRanges, positionProvider) {
+            while (isActive) {
+                withFrameNanos {
+                    val currentRange = findActiveWordRange(wordRanges, positionProvider.currentPositionMs())
+                    if (currentRange != activeWordRange) {
+                        activeWordRange = currentRange
+                    }
+                }
+            }
+        }
+    }
+
+    val bookmarkCd = if (chunk.isBookmarked) {
+        stringResource(R.string.player_bookmark_toggle_remove)
+    } else {
+        stringResource(R.string.player_bookmark_toggle_add)
+    }
+
     Box(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -501,7 +719,7 @@ private fun TranscriptChunkRow(
                     onClick = onRowClick,
                     onLongClick = { menuExpanded = true },
                 )
-                .padding(end = 12.dp),
+                .padding(end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 左端のインジケーターバー（§7.5.5）
@@ -577,15 +795,44 @@ private fun TranscriptChunkRow(
                         }
                     }
                 } else {
-                    Text(
-                        text = displayText,
-                        style = localizedTextStyle,
-                        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                        color = colorScheme.onSurface,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(vertical = 8.dp),
-                    )
+                    val currentActiveWord = activeWordRange
+                    if (currentActiveWord != null &&
+                        currentActiveWord.startCharIndex in 0 until displayText.length &&
+                        currentActiveWord.endCharIndex in (currentActiveWord.startCharIndex + 1)..displayText.length
+                    ) {
+                        val highlightedText: AnnotatedString = buildAnnotatedString {
+                            append(displayText)
+                            addStyle(
+                                style = SpanStyle(
+                                    background = colorScheme.primaryContainer,
+                                    color = colorScheme.onPrimaryContainer,
+                                    fontWeight = FontWeight.Bold,
+                                    textDecoration = TextDecoration.Underline,
+                                ),
+                                start = currentActiveWord.startCharIndex,
+                                end = currentActiveWord.endCharIndex,
+                            )
+                        }
+                        Text(
+                            text = highlightedText,
+                            style = localizedTextStyle,
+                            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                            color = colorScheme.onSurface,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(vertical = 8.dp),
+                        )
+                    } else {
+                        Text(
+                            text = displayText,
+                            style = localizedTextStyle,
+                            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                            color = colorScheme.onSurface,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(vertical = 8.dp),
+                        )
+                    }
                 }
             } else {
                 // 文字起こしがないチャンク: チャンク番号と時刻範囲を表示（§7.5.5）
@@ -606,12 +853,47 @@ private fun TranscriptChunkRow(
                         .padding(vertical = 10.dp),
                 )
             }
+
+            IconButton(
+                onClick = onToggleBookmark,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = if (chunk.isBookmarked) {
+                        ChunkFlowIcons.Bookmark
+                    } else {
+                        ChunkFlowIcons.BookmarkBorder
+                    },
+                    contentDescription = bookmarkCd,
+                    tint = if (chunk.isBookmarked) {
+                        colorScheme.primary
+                    } else {
+                        colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                    },
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
 
         DropdownMenu(
             expanded = menuExpanded,
             onDismissRequest = { menuExpanded = false },
         ) {
+            DropdownMenuItem(
+                text = { Text(text = bookmarkCd) },
+                onClick = {
+                    menuExpanded = false
+                    onToggleBookmark()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_edit_text)) },
+                onClick = {
+                    menuExpanded = false
+                    onRequestEditText()
+                },
+            )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(text = stringResource(R.string.player_chunk_repeat_3)) },
                 onClick = {
@@ -631,6 +913,57 @@ private fun TranscriptChunkRow(
                 onClick = {
                     menuExpanded = false
                     onStartRangeSelection()
+                },
+            )
+            HorizontalDivider()
+            if (chunk.endMs - chunk.startMs >= 200L) {
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(R.string.player_chunk_split_here)) },
+                    onClick = {
+                        menuExpanded = false
+                        onSplitChunk()
+                    },
+                )
+            }
+            if (hasNextChunk) {
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(R.string.player_chunk_merge_next)) },
+                    onClick = {
+                        menuExpanded = false
+                        onMergeWithNextChunk()
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_boundary_start_minus)) },
+                onClick = {
+                    menuExpanded = false
+                    onMoveChunkBoundary((chunk.startMs - 100L).coerceAtLeast(0L), chunk.endMs)
+                },
+            )
+            if (chunk.startMs + 100L < chunk.endMs) {
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(R.string.player_chunk_boundary_start_plus)) },
+                    onClick = {
+                        menuExpanded = false
+                        onMoveChunkBoundary(chunk.startMs + 100L, chunk.endMs)
+                    },
+                )
+            }
+            if (chunk.endMs - 100L > chunk.startMs) {
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(R.string.player_chunk_boundary_end_minus)) },
+                    onClick = {
+                        menuExpanded = false
+                        onMoveChunkBoundary(chunk.startMs, chunk.endMs - 100L)
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_boundary_end_plus)) },
+                onClick = {
+                    menuExpanded = false
+                    onMoveChunkBoundary(chunk.startMs, chunk.endMs + 100L)
                 },
             )
             if (languagePair != null && displayText != null) {
@@ -884,6 +1217,62 @@ private fun TranscriptImportStatusBanner(
     }
 }
 
+@Composable
+private fun TranscriptExportStatusBanner(
+    banner: TranscriptExportBannerState,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val isError = banner is TranscriptExportBannerState.Failed
+    val containerColor = if (isError) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+    val contentColor = if (isError) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    val message = when (banner) {
+        is TranscriptExportBannerState.Exported ->
+            stringResource(
+                R.string.player_export_done,
+                banner.format.name,
+            )
+
+        TranscriptExportBannerState.Failed ->
+            stringResource(R.string.player_export_failed)
+    }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Close,
+                    contentDescription = stringResource(R.string.player_dismiss_banner),
+                )
+            }
+        }
+    }
+}
+
 @ChunkFlowPreviews
 @Composable
 private fun TranscriptListPreview() {
@@ -897,6 +1286,7 @@ private fun TranscriptListPreview() {
             text = transcript?.text,
             language = transcript?.language,
             textVariants = transcript?.textVariants.orEmpty(),
+            words = transcript?.words.orEmpty(),
         )
     }
     ChunkFlowTheme {

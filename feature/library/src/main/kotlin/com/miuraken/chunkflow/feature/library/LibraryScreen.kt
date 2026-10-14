@@ -889,6 +889,19 @@ private fun LibraryItemRow(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
+            if (itemModel.isAudioMissing) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.extraSmall,
+                ) {
+                    Text(
+                        text = stringResource(R.string.library_item_missing_audio),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
         }
         Spacer(modifier = Modifier.height(2.dp))
         Text(

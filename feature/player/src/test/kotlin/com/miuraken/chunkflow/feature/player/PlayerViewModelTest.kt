@@ -11,7 +11,9 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.UserSettings
+import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository
 import com.miuraken.chunkflow.core.testing.fake.FakeLibraryRepository
@@ -23,7 +25,9 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -335,5 +339,165 @@ class PlayerViewModelTest {
         val thirdChunkId = sample.chunks[2].id
         playback.statusState.value = playback.statusState.value.copy(currentChunkId = thirdChunkId)
         assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to thirdChunkId))
+    }
+
+    @Test
+    fun `M4_ブックマーク追加解除とブックマークのみ再生フィルタが機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val firstChunkId = sample.chunks[0].id
+        assertFalse(viewModel.uiState.value.chunks[0].isBookmarked)
+
+        viewModel.onEvent(PlayerEvent.ToggleBookmark(firstChunkId))
+        assertTrue(viewModel.uiState.value.chunks[0].isBookmarked)
+        assertEquals(1, viewModel.uiState.value.bookmarks.size)
+
+        viewModel.onEvent(PlayerEvent.ToggleBookmarksOnly)
+        assertTrue(viewModel.uiState.value.practice.bookmarksOnly)
+
+        viewModel.onEvent(PlayerEvent.ToggleBookmarksOnly)
+        assertFalse(viewModel.uiState.value.practice.bookmarksOnly)
+
+        viewModel.onEvent(PlayerEvent.ToggleBookmark(firstChunkId))
+        assertFalse(viewModel.uiState.value.chunks[0].isBookmarked)
+        assertTrue(viewModel.uiState.value.bookmarks.isEmpty())
+    }
+
+    @Test
+    fun `M4_チャンク本文の手動編集とローカルJSON書き戻しが機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val secondChunkId = sample.chunks[1].id
+        viewModel.onEvent(PlayerEvent.UpdateChunkText(secondChunkId, "修正後の韓国語テキスト"))
+        assertEquals("修正後の韓国語テキスト", viewModel.uiState.value.chunks[1].text)
+        assertTrue(viewModel.uiState.value.localTranscriptExported)
+        assertTrue(item.id in libraryRepo.exportedTranscriptIds)
+    }
+
+    @Test
+    fun `M4_チャンク分割と次チャンクとの結合と境界微調整が機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val initialCount = viewModel.uiState.value.chunks.size
+        val firstChunk = viewModel.uiState.value.chunks[0]
+        val midMs = (firstChunk.startMs + firstChunk.endMs) / 2L
+
+        // 分割でチャンク数が +1 になる
+        viewModel.onEvent(PlayerEvent.SplitChunk(firstChunk.id, midMs))
+        assertEquals(initialCount + 1, viewModel.uiState.value.chunks.size)
+        assertEquals(midMs, viewModel.uiState.value.chunks[0].endMs)
+        assertEquals(midMs, viewModel.uiState.value.chunks[1].startMs)
+
+        // 先頭チャンクを次チャンクと結合すると元のチャンク数に戻る
+        val splitFirstId = viewModel.uiState.value.chunks[0].id
+        viewModel.onEvent(PlayerEvent.MergeWithNextChunk(splitFirstId))
+        assertEquals(initialCount, viewModel.uiState.value.chunks.size)
+        assertEquals(firstChunk.endMs, viewModel.uiState.value.chunks[0].endMs)
+
+        // 境界微調整 (+100ms, -100ms)
+        val mergedFirst = viewModel.uiState.value.chunks[0]
+        viewModel.onEvent(
+            PlayerEvent.MoveChunkBoundary(
+                chunkId = mergedFirst.id,
+                newStartMs = mergedFirst.startMs + 100L,
+                newEndMs = mergedFirst.endMs - 100L,
+            ),
+        )
+        assertEquals(mergedFirst.startMs + 100L, viewModel.uiState.value.chunks[0].startMs)
+        assertEquals(mergedFirst.endMs - 100L, viewModel.uiState.value.chunks[0].endMs)
+    }
+
+    @Test
+    fun `M4_字幕エクスポート_SRT_LRC_TXT書き出しとバナー表示消去が機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val fakeUri = StubUri.create()
+        viewModel.onEvent(PlayerEvent.ExportTranscriptToUri(TranscriptExportFormat.SRT, fakeUri))
+        assertEquals(
+            TranscriptExportBannerState.Exported(TranscriptExportFormat.SRT),
+            viewModel.uiState.value.transcriptExportBanner,
+        )
+        assertEquals(1, libraryRepo.writtenTranscriptExports.size)
+        assertEquals(item.id, libraryRepo.writtenTranscriptExports.single().first)
+        assertEquals(TranscriptExportFormat.SRT, libraryRepo.writtenTranscriptExports.single().second)
+        assertSame(fakeUri, libraryRepo.writtenTranscriptExports.single().third)
+
+        viewModel.onEvent(PlayerEvent.DismissExportBanner)
+        assertNull(viewModel.uiState.value.transcriptExportBanner)
+    }
+
+    @Test
+    fun `M4_カラオケ単語ハイライト_原文と文字数一致スクリプト変形を対応付けピンイン等はnullにフォールバックする`() {
+        val words = listOf(
+            WordTiming(startMs = 1_000L, endMs = 1_500L, text = "今天", confidence = 0.9f),
+            WordTiming(startMs = 1_500L, endMs = 2_000L, text = "天气", confidence = 0.9f),
+            WordTiming(startMs = 2_000L, endMs = 2_600L, text = "很好", confidence = 0.9f),
+        )
+        val rawHans = "今天天气很好。"
+        val displayHant = "今天天氣很好。"
+        val displayPinyin = "jīntiān tiānqì hěn hǎo."
+
+        // 1. 原文と一致する場合
+        val hansRanges = mapWordsToCharRanges(
+            displayText = rawHans,
+            rawText = rawHans,
+            words = words,
+        )
+        assertNotNull(hansRanges)
+        assertEquals(3, hansRanges.size)
+        assertEquals("天气", rawHans.substring(hansRanges[1].startCharIndex, hansRanges[1].endCharIndex))
+
+        // 2. 簡体字 -> 繁体字など文字数が一致するスクリプト変形の場合、文字オフセットで対応付く
+        val hantRanges = mapWordsToCharRanges(
+            displayText = displayHant,
+            rawText = rawHans,
+            words = words,
+        )
+        assertNotNull(hantRanges)
+        assertEquals(3, hantRanges.size)
+        assertEquals("天氣", displayHant.substring(hantRanges[1].startCharIndex, hantRanges[1].endCharIndex))
+        val activeAt1700 = findActiveWordRange(hantRanges, 1_700L)
+        assertEquals(hantRanges[1], activeAt1700)
+        assertNull(findActiveWordRange(hantRanges, 900L))
+
+        // 3. ピンイン等で文字数が異なり単語テキストが含まれない場合は null を返して安全にフォールバックする
+        val pinyinRanges = mapWordsToCharRanges(
+            displayText = displayPinyin,
+            rawText = rawHans,
+            words = words,
+        )
+        assertNull(pinyinRanges)
     }
 }

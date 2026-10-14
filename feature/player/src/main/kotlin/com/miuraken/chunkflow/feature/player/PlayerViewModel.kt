@@ -11,6 +11,7 @@ import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
+import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
@@ -26,8 +27,10 @@ import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
+import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.playback.PlaybackController
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
@@ -95,15 +98,31 @@ sealed interface TranscriptImportBannerState {
 }
 
 /**
- * チャンク 1 件の UI 表示モデル（§6.2、§7.5.5）。
+ * プレイヤー画面での字幕・テキストファイル書き出し結果の通知状態（F7.5）。
+ */
+sealed interface TranscriptExportBannerState {
+    /**
+     * 指定形式でファイルを書き出した。
+     *
+     * @property format 書き出したフォーマット（SRT / LRC / TXT）。
+     */
+    data class Exported(val format: TranscriptExportFormat) : TranscriptExportBannerState
+
+    /** 書き出しに失敗した。 */
+    data object Failed : TranscriptExportBannerState
+}
+
+/**
+ * チャンク 1 件の UI 表示モデル（§6.2、§7.5.5、F7.7、F8.1）。
  *
  * @property id チャンク ID。
  * @property startMs 開始時刻（ミリ秒）。
  * @property endMs 終了時刻（ミリ秒）。
  * @property text 文字起こしテキスト（なければ `null`）。
  * @property language 言語タグ（未判定または信頼度が低い場合は `null`）。
- * @property isBookmarked ブックマーク済みかどうか。
+ * @property isBookmarked ブックマーク済みかどうか（F8.1）。
  * @property textVariants 別の字体のテキスト（キーは `"Hans"` / `"Hant"`）。
+ * @property words 単語ごとのタイムスタンプ（カラオケ強調用、F7.7）。
  * @property origin チャンクの出どころ。
  */
 data class ChunkUi(
@@ -114,6 +133,7 @@ data class ChunkUi(
     val language: LanguageTag?,
     val isBookmarked: Boolean = false,
     val textVariants: Map<String, String> = emptyMap(),
+    val words: List<WordTiming> = emptyList(),
     val origin: ChunkOrigin = ChunkOrigin.AUTO,
 ) {
     /**
@@ -151,7 +171,7 @@ data class ChunkUi(
 }
 
 /**
- * プレイヤー画面の UI 状態（§6.2、F3.1〜F7.6）。
+ * プレイヤー画面の UI 状態（§6.2、F3.1〜F8.1）。
  *
  * 高頻度で変わる再生位置はここには含めず、[PositionProvider] から描画・子 Composable で読む。
  */
@@ -169,6 +189,7 @@ data class PlayerUiState(
     val autoPauseEndsAtMs: Long? = null,
     val waveform: Waveform? = null,
     val chunks: List<ChunkUi> = emptyList(),
+    val bookmarks: List<Bookmark> = emptyList(),
     val activeChunkIndex: Int? = null,
     val analysis: Map<AnalysisStage, StageStatus> = emptyMap(),
     val error: PlaybackError? = null,
@@ -180,6 +201,7 @@ data class PlayerUiState(
     val availableChunkOrigins: Set<ChunkOrigin> = emptySet(),
     val segmentationParams: SegmentationParams = SegmentationParams(),
     val transcriptImportBanner: TranscriptImportBannerState? = null,
+    val transcriptExportBanner: TranscriptExportBannerState? = null,
     val transcriptOffsetMs: Int = 0,
     val lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
     val localTranscriptExported: Boolean = false,
@@ -251,6 +273,12 @@ sealed interface PlayerEvent {
     /** 言語フィルタ再生（すべて / 学習言語のみ / 母語のみ）を変更する（F6.4）。 */
     data class SetLanguageFilter(val filter: LanguageFilter) : PlayerEvent
 
+    /** ブックマークのみ再生フィルタ（`PracticeSettings.bookmarksOnly`）の ON / OFF を切り替える（F8.1）。 */
+    data object ToggleBookmarksOnly : PlayerEvent
+
+    /** 指定したチャンクのブックマークを追加または解除する（F8.1）。 */
+    data class ToggleBookmark(val chunkId: ChunkId) : PlayerEvent
+
     /** ブラインドモードを変更する（F7.2）。 */
     data class SetBlindMode(val blindMode: BlindMode) : PlayerEvent
 
@@ -265,6 +293,22 @@ sealed interface PlayerEvent {
 
     /** チャンク 1 件の言語ラベルを手動で更新する（F7.3）。 */
     data class UpdateChunkLanguage(val chunkId: ChunkId, val language: LanguageTag?) : PlayerEvent
+
+    /** チャンク 1 件の文字起こし本文を手動で更新する（F7.4）。 */
+    data class UpdateChunkText(val chunkId: ChunkId, val text: String) : PlayerEvent
+
+    /** 指定したチャンクを [splitPositionMs] で 2 つに分割する（F5.3）。 */
+    data class SplitChunk(val chunkId: ChunkId, val splitPositionMs: Long) : PlayerEvent
+
+    /** 指定したチャンクを直後のチャンクと結合する（F5.3）。 */
+    data class MergeWithNextChunk(val chunkId: ChunkId) : PlayerEvent
+
+    /** 指定したチャンクの開始・終了時刻を微調整する（F5.3）。 */
+    data class MoveChunkBoundary(
+        val chunkId: ChunkId,
+        val newStartMs: Long,
+        val newEndMs: Long,
+    ) : PlayerEvent
 
     /** 言語未設定（`null` / `und`）のチャンクを一括で指定言語に設定する（F1.4、F7.3）。 */
     data class BulkSetUnknownTranscriptLanguage(val language: LanguageTag) : PlayerEvent
@@ -287,6 +331,12 @@ sealed interface PlayerEvent {
     /** 文字起こしをローカル `.chunkflow.json` に書き出す（Drive 自動同期対象）。 */
     data object ExportLocalTranscriptJson : PlayerEvent
 
+    /** 文字起こし・字幕ファイルを指定フォーマットで SAF の [uri] へ書き出す（F7.5）。 */
+    data class ExportTranscriptToUri(val format: TranscriptExportFormat, val uri: Uri) : PlayerEvent
+
+    /** 字幕書き出し通知バナーを閉じる。 */
+    data object DismissExportBanner : PlayerEvent
+
     /** 文字起こし JSON / 字幕ファイルを取り込む（F1.3、F1.4、§7.5.5）。 */
     data class ImportTranscript(val uri: Uri) : PlayerEvent
 
@@ -299,6 +349,7 @@ private data class AnalysisSnapshot(
     val waveform: Waveform? = null,
     val chunks: List<Chunk> = emptyList(),
     val transcripts: Map<ChunkId, Transcript> = emptyMap(),
+    val bookmarks: List<Bookmark> = emptyList(),
     val availableOrigins: Set<ChunkOrigin> = emptySet(),
     val lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
 )
@@ -308,12 +359,13 @@ private data class LocalUiSnapshot(
     val revealedChunkIds: Set<ChunkId> = emptySet(),
     val customSegmentationParams: SegmentationParams? = null,
     val transcriptImportBanner: TranscriptImportBannerState? = null,
+    val transcriptExportBanner: TranscriptExportBannerState? = null,
     val transcriptOffsetMs: Int = 0,
     val localTranscriptExported: Boolean = false,
 )
 
 /**
- * プレイヤー画面の ViewModel（§6.2、F3.1〜F7.6）。
+ * プレイヤー画面の ViewModel（§6.2、F3.1〜F8.1）。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -360,18 +412,20 @@ class PlayerViewModel @Inject constructor(
                     analysisRepository.observeStatus(id),
                     analysisRepository.observeWaveform(id),
                     analysisRepository.observeChunks(id),
-                ) { status, waveform, chunks ->
-                    Triple(status, waveform, chunks)
+                    analysisRepository.observeBookmarks(id),
+                ) { status, waveform, chunks, bookmarks ->
+                    Quad(status, waveform, chunks, bookmarks)
                 },
                 analysisRepository.observeTranscripts(id),
                 analysisRepository.observeAvailableChunkOrigins(id),
                 analysisRepository.observeLookaheadStatus(id),
-            ) { (status, waveform, chunks), transcripts, origins, lookahead ->
+            ) { (status, waveform, chunks, bookmarks), transcripts, origins, lookahead ->
                 AnalysisSnapshot(
                     status = status,
                     waveform = waveform,
                     chunks = chunks,
                     transcripts = transcripts,
+                    bookmarks = bookmarks,
                     availableOrigins = origins,
                     lookaheadStatus = lookahead,
                 )
@@ -545,6 +599,19 @@ class PlayerViewModel @Inject constructor(
                 playbackController.updatePractice { it.copy(languageFilter = event.filter) }
             }
 
+            PlayerEvent.ToggleBookmarksOnly -> {
+                playbackController.updatePractice { current ->
+                    current.copy(bookmarksOnly = !current.bookmarksOnly)
+                }
+            }
+
+            is PlayerEvent.ToggleBookmark -> {
+                val id = resolveActiveMediaId() ?: return
+                viewModelScope.launch {
+                    analysisRepository.toggleChunkBookmark(id, event.chunkId)
+                }
+            }
+
             is PlayerEvent.SetBlindMode -> {
                 localUiState.update {
                     it.copy(
@@ -588,6 +655,43 @@ class PlayerViewModel @Inject constructor(
                     if (exported) {
                         localUiState.update { it.copy(localTranscriptExported = true) }
                     }
+                }
+            }
+
+            is PlayerEvent.UpdateChunkText -> {
+                val id = resolveActiveMediaId() ?: return
+                viewModelScope.launch {
+                    analysisRepository.updateChunkText(id, event.chunkId, event.text)
+                    val exported = libraryRepository.exportLocalTranscriptJson(id)
+                    if (exported) {
+                        localUiState.update { it.copy(localTranscriptExported = true) }
+                    }
+                }
+            }
+
+            is PlayerEvent.SplitChunk -> {
+                val id = resolveActiveMediaId() ?: return
+                viewModelScope.launch {
+                    analysisRepository.splitChunk(id, event.chunkId, event.splitPositionMs)
+                }
+            }
+
+            is PlayerEvent.MergeWithNextChunk -> {
+                val id = resolveActiveMediaId() ?: return
+                viewModelScope.launch {
+                    analysisRepository.mergeWithNextChunk(id, event.chunkId)
+                }
+            }
+
+            is PlayerEvent.MoveChunkBoundary -> {
+                val id = resolveActiveMediaId() ?: return
+                viewModelScope.launch {
+                    analysisRepository.moveChunkBoundary(
+                        id = id,
+                        chunkId = event.chunkId,
+                        newStartMs = event.newStartMs,
+                        newEndMs = event.newEndMs,
+                    )
                 }
             }
 
@@ -654,6 +758,27 @@ class PlayerViewModel @Inject constructor(
                     val exported = libraryRepository.exportLocalTranscriptJson(id)
                     localUiState.update { it.copy(localTranscriptExported = exported) }
                 }
+            }
+
+            is PlayerEvent.ExportTranscriptToUri -> {
+                val id = resolveActiveMediaId() ?: return
+                viewModelScope.launch {
+                    val success = libraryRepository.writeExportedTranscriptToUri(
+                        id = id,
+                        format = event.format,
+                        targetUri = event.uri,
+                    )
+                    val banner = if (success) {
+                        TranscriptExportBannerState.Exported(event.format)
+                    } else {
+                        TranscriptExportBannerState.Failed
+                    }
+                    localUiState.update { it.copy(transcriptExportBanner = banner) }
+                }
+            }
+
+            PlayerEvent.DismissExportBanner -> {
+                localUiState.update { it.copy(transcriptExportBanner = null) }
             }
 
             is PlayerEvent.ImportTranscript -> {
@@ -782,14 +907,19 @@ class PlayerViewModel @Inject constructor(
         }
         val chunkUis = analysis.chunks.map { chunk ->
             val transcript = analysis.transcripts[chunk.id]
+            val isBookmarked = analysis.bookmarks.any { bookmark ->
+                (bookmark.positionMs >= chunk.startMs && bookmark.positionMs < chunk.endMs) ||
+                    bookmark.positionMs == chunk.startMs
+            }
             ChunkUi(
                 id = chunk.id,
                 startMs = chunk.startMs,
                 endMs = chunk.endMs,
                 text = transcript?.text,
                 language = transcript?.language,
-                isBookmarked = false,
+                isBookmarked = isBookmarked,
                 textVariants = transcript?.textVariants.orEmpty(),
+                words = transcript?.words.orEmpty(),
                 origin = chunk.origin,
             )
         }
@@ -814,6 +944,7 @@ class PlayerViewModel @Inject constructor(
             autoPauseEndsAtMs = status.autoPauseEndsAtMs,
             waveform = analysis.waveform,
             chunks = chunkUis,
+            bookmarks = analysis.bookmarks,
             activeChunkIndex = activeIndex,
             analysis = analysis.status,
             error = status.error,
@@ -825,6 +956,7 @@ class PlayerViewModel @Inject constructor(
             availableChunkOrigins = analysis.availableOrigins,
             segmentationParams = local.customSegmentationParams ?: settings.defaultSegmentationParams,
             transcriptImportBanner = local.transcriptImportBanner,
+            transcriptExportBanner = local.transcriptExportBanner,
             transcriptOffsetMs = local.transcriptOffsetMs,
             lookaheadStatus = analysis.lookaheadStatus,
             localTranscriptExported = local.localTranscriptExported,

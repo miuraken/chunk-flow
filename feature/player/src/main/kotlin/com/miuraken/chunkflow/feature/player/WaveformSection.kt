@@ -103,6 +103,7 @@ fun WaveformSection(
     onNextChunk: () -> Unit,
     onSeekBack: () -> Unit,
     modifier: Modifier = Modifier,
+    seekBackSeconds: Int = 3,
 ) {
     if (waveform == null || waveform.peak.isEmpty()) {
         WaveformPlaceholderCard(
@@ -147,7 +148,7 @@ fun WaveformSection(
     val zoomedCd = stringResource(R.string.player_waveform_zoomed_cd)
     val prevChunkActionLabel = stringResource(R.string.player_prev_chunk_cd)
     val nextChunkActionLabel = stringResource(R.string.player_next_chunk_cd)
-    val seekBackActionLabel = stringResource(R.string.player_seek_back_cd, 3)
+    val seekBackActionLabel = stringResource(R.string.player_seek_back_cd, seekBackSeconds)
 
     val colorScheme = MaterialTheme.colorScheme
     val wavePeakColor = colorScheme.primary.copy(alpha = 0.55f)

@@ -300,4 +300,21 @@ class LibraryViewModelTest {
         assertEquals("中級韓国語講座", updated.course)
         assertEquals(expectedLanguages, updated.languagePair)
     }
+
+    @Test
+    fun `バックアップ復元後の未取り込み音声_missingAudioIdsをisAudioMissingに反映する`() = runTest {
+        val item1 = SampleMaterials.jaKo.item
+        val item2 = SampleMaterials.jaZh.item
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2))
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        assertFalse(viewModel.uiState.value.items[0].isAudioMissing)
+        assertFalse(viewModel.uiState.value.items[1].isAudioMissing)
+
+        repo.missingAudioIds.value = setOf(item2.id)
+        assertFalse(viewModel.uiState.value.items[0].isAudioMissing)
+        assertTrue(viewModel.uiState.value.items[1].isAudioMissing)
+    }
 }

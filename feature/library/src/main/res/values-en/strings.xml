@@ -60,4 +60,5 @@
     <string name="library_edit_base_lang_none">Single-lang (none)</string>
     <string name="library_edit_save">Save</string>
     <string name="library_edit_cancel">Cancel</string>
+    <string name="library_item_missing_audio">Missing audio (re-import needed)</string>
 </resources>
