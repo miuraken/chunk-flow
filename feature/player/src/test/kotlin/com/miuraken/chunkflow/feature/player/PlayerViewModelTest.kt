@@ -3,8 +3,12 @@ package com.miuraken.chunkflow.feature.player
 import android.net.StubUri
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguageFilter
+import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
@@ -18,6 +22,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
@@ -219,5 +224,116 @@ class PlayerViewModelTest {
         )
         viewModel.onEvent(PlayerEvent.DismissTranscriptBanner)
         assertNull(viewModel.uiState.value.transcriptImportBanner)
+    }
+
+    @Test
+    fun `M3_言語フィルタと瞬間作文モードを切り替えられる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 言語フィルタ切り替え (ALL -> TARGET_ONLY -> BASE_ONLY)
+        viewModel.onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
+        assertEquals(LanguageFilter.TARGET_ONLY, viewModel.uiState.value.practice.languageFilter)
+
+        viewModel.onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
+        assertEquals(LanguageFilter.BASE_ONLY, viewModel.uiState.value.practice.languageFilter)
+
+        // 自動ポーズが OFF の状態で瞬間作文モードを ON にすると、AFTER_BASE_LANGUAGE と Proportional(1.0f, 1000L) が有効になる
+        assertEquals(AutoPause.Off, viewModel.uiState.value.practice.autoPause)
+        viewModel.onEvent(PlayerEvent.ToggleInstantComposition)
+        assertEquals(
+            AutoPauseScope.AFTER_BASE_LANGUAGE,
+            viewModel.uiState.value.practice.autoPauseScope,
+        )
+        assertEquals(
+            AutoPause.Proportional(factor = 1.0f, minMs = 1_000L),
+            viewModel.uiState.value.practice.autoPause,
+        )
+
+        // もう一度トグルすると ALL_CHUNKS に戻る
+        viewModel.onEvent(PlayerEvent.ToggleInstantComposition)
+        assertEquals(AutoPauseScope.ALL_CHUNKS, viewModel.uiState.value.practice.autoPauseScope)
+    }
+
+    @Test
+    fun `M3_チャンク言語ラベルの手動修正と未判定言語の一括設定とローカルJSON書き出しが機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val targetChunkId = sample.chunks[0].id
+        // 言語を null（未判定 ?）に更新
+        viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(targetChunkId, null))
+        assertNull(viewModel.uiState.value.chunks[0].language)
+        assertTrue(viewModel.uiState.value.hasUnknownLanguageChunks)
+        assertTrue(viewModel.uiState.value.localTranscriptExported)
+        assertTrue(item.id in libraryRepo.exportedTranscriptIds)
+
+        // 未判定の言語をすべて学習言語 (ko) に一括設定
+        viewModel.onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(LanguageTag("ko")))
+        assertEquals(LanguageTag("ko"), viewModel.uiState.value.chunks[0].language)
+        assertFalse(viewModel.uiState.value.hasUnknownLanguageChunks)
+    }
+
+    @Test
+    fun `M3_文字起こしオフセット微調整と自動補正と先読み文字起こしが機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            autoAlignedOffsets[item.id] = -120
+            update(item.id) { entry ->
+                entry.copy(
+                    lookaheadStatus = LookaheadTranscriptionStatus(
+                        enabled = false,
+                        engineAvailable = true,
+                        completedCount = 2,
+                        totalTargetCount = 6,
+                    ),
+                )
+            }
+        }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 手動オフセット微調整 (-50ms, +10ms)
+        viewModel.onEvent(PlayerEvent.AdjustTranscriptOffset(-50))
+        assertEquals(-50, viewModel.uiState.value.transcriptOffsetMs)
+        assertEquals(-50, analysisRepo.transcriptOffsets[item.id])
+
+        viewModel.onEvent(PlayerEvent.AdjustTranscriptOffset(10))
+        assertEquals(-40, viewModel.uiState.value.transcriptOffsetMs)
+        assertEquals(-40, analysisRepo.transcriptOffsets[item.id])
+
+        // 音声の立ち上がりに自動補正
+        viewModel.onEvent(PlayerEvent.AutoAlignTranscriptOffset)
+        assertEquals(-120, viewModel.uiState.value.transcriptOffsetMs)
+        assertEquals(-120, analysisRepo.transcriptOffsets[item.id])
+
+        // 先読み文字起こしの有効化と現在チャンク変更時のトリガー
+        assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+
+        val thirdChunkId = sample.chunks[2].id
+        playback.statusState.value = playback.statusState.value.copy(currentChunkId = thirdChunkId)
+        assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to thirdChunkId))
     }
 }

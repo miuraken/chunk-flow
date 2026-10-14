@@ -78,4 +78,21 @@
     <string name="player_resegment_threshold">Silence threshold ratio: %1$s</string>
     <string name="player_resegment_apply">Resegment now</string>
     <string name="player_sheet_close">Close</string>
+    <!-- M3: Language filter, instant composition, language edit, timing offset, lookahead STT -->
+    <string name="player_chip_lang_filter_all">Lang: All</string>
+    <string name="player_chip_lang_filter_target">Target only</string>
+    <string name="player_chip_lang_filter_base">Base only</string>
+    <string name="player_chip_instant_comp_off">Instant comp: OFF</string>
+    <string name="player_chip_instant_comp_on">Instant comp: ON</string>
+    <string name="player_chunk_set_lang_target">Set as target (%1$s)</string>
+    <string name="player_chunk_set_lang_base">Set as base (%1$s)</string>
+    <string name="player_chunk_set_lang_unknown">Reset language (?)</string>
+    <string name="player_bulk_set_unknown_target">Set all unknown languages to target (%1$s)</string>
+    <string name="player_offset_section_title">Transcript timing offset</string>
+    <string name="player_offset_current_value">Current offset: %1$s ms</string>
+    <string name="player_offset_auto_align">Auto-align to speech onset</string>
+    <string name="player_lookahead_chip_on">Lookahead STT: %1$d/%2$d done</string>
+    <string name="player_lookahead_chip_off">Lookahead STT: OFF</string>
+    <string name="player_lookahead_export_json">Save JSON</string>
+    <string name="player_lookahead_exported_badge">Saved to local JSON (Drive sync ready)</string>
 </resources>

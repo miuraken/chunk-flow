@@ -78,4 +78,21 @@
     <string name="player_resegment_threshold">無音判定の感度（閾値比）: %1$s</string>
     <string name="player_resegment_apply">この設定で再分割する</string>
     <string name="player_sheet_close">閉じる</string>
+    <!-- M3: 言語フィルタ・瞬間作文・言語修正・時刻ずれ補正・先読み文字起こし -->
+    <string name="player_chip_lang_filter_all">言語: すべて</string>
+    <string name="player_chip_lang_filter_target">学習言語のみ</string>
+    <string name="player_chip_lang_filter_base">母語のみ</string>
+    <string name="player_chip_instant_comp_off">瞬間作文: OFF</string>
+    <string name="player_chip_instant_comp_on">瞬間作文: ON</string>
+    <string name="player_chunk_set_lang_target">学習言語（%1$s）に設定</string>
+    <string name="player_chunk_set_lang_base">母語（%1$s）に設定</string>
+    <string name="player_chunk_set_lang_unknown">言語を未判定（?）に戻す</string>
+    <string name="player_bulk_set_unknown_target">未判定の言語をすべて学習言語（%1$s）に設定</string>
+    <string name="player_offset_section_title">文字起こしの時刻補正</string>
+    <string name="player_offset_current_value">現在の補正値: %1$s ms</string>
+    <string name="player_offset_auto_align">音声の立ち上がりに自動補正</string>
+    <string name="player_lookahead_chip_on">先読み文字起こし: %1$d/%2$d 完了</string>
+    <string name="player_lookahead_chip_off">先読み文字起こし: OFF</string>
+    <string name="player_lookahead_export_json">JSON保存</string>
+    <string name="player_lookahead_exported_badge">ローカルJSON保存済み（Drive同期対象）</string>
 </resources>

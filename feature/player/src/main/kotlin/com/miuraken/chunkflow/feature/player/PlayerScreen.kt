@@ -32,6 +32,7 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -71,9 +72,12 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PracticeSettings
@@ -125,7 +129,9 @@ fun PlayerRoute(
             }
         },
         onPickTranscriptJson = {
-            transcriptPickerLauncher.launch(arrayOf("application/json", "*/*"))
+            transcriptPickerLauncher.launch(
+                arrayOf("application/json", "text/vtt", "application/x-subrip", "text/plain", "*/*"),
+            )
         },
         modifier = modifier,
     )
@@ -271,11 +277,25 @@ fun PlayerScreen(
                         chineseScript = state.chineseScript,
                         cantoneseScript = state.cantoneseScript,
                         transcriptImportBanner = state.transcriptImportBanner,
+                        lookaheadStatus = state.lookaheadStatus,
+                        localTranscriptExported = state.localTranscriptExported,
                         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
                         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
                         onPickTranscriptJson = onPickTranscriptJson,
                         onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
+                        onUpdateChunkLanguage = { chunkId, lang ->
+                            onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
+                        },
+                        onBulkSetUnknownLanguage = { lang ->
+                            onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
+                        },
+                        onSetLookaheadEnabled = { enabled ->
+                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+                        },
+                        onExportLocalTranscriptJson = {
+                            onEvent(PlayerEvent.ExportLocalTranscriptJson)
+                        },
                         modifier = Modifier
                             .weight(0.52f)
                             .fillMaxHeight(),
@@ -329,11 +349,25 @@ fun PlayerScreen(
                         chineseScript = state.chineseScript,
                         cantoneseScript = state.cantoneseScript,
                         transcriptImportBanner = state.transcriptImportBanner,
+                        lookaheadStatus = state.lookaheadStatus,
+                        localTranscriptExported = state.localTranscriptExported,
                         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
                         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
                         onPickTranscriptJson = onPickTranscriptJson,
                         onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
+                        onUpdateChunkLanguage = { chunkId, lang ->
+                            onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
+                        },
+                        onBulkSetUnknownLanguage = { lang ->
+                            onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
+                        },
+                        onSetLookaheadEnabled = { enabled ->
+                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+                        },
+                        onExportLocalTranscriptJson = {
+                            onEvent(PlayerEvent.ExportLocalTranscriptJson)
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
@@ -398,6 +432,13 @@ fun PlayerScreen(
         ModalBottomSheet(onDismissRequest = { showResegmentSheet = false }) {
             ResegmentSheetContent(
                 initialParams = state.segmentationParams,
+                transcriptOffsetMs = state.transcriptOffsetMs,
+                onAdjustTranscriptOffset = { deltaMs ->
+                    onEvent(PlayerEvent.AdjustTranscriptOffset(deltaMs))
+                },
+                onAutoAlignTranscriptOffset = {
+                    onEvent(PlayerEvent.AutoAlignTranscriptOffset)
+                },
                 onApply = { params ->
                     onEvent(PlayerEvent.Resegment(params))
                     showResegmentSheet = false
@@ -444,7 +485,7 @@ private fun PlayerTitleMetaRow(
 }
 
 /**
- * 学習コントロールのチップ列（リピート、A-B クイック設定、自動ポーズ、ブラインドモード、チャンク出どころ、分割調整、速度）。
+ * 学習コントロールのチップ列（リピート、A-B クイック設定、自動ポーズ、瞬間作文、言語フィルタ、ブラインドモード、先読み文字起こし、チャンク出どころ、分割調整、速度）。
  */
 @Composable
 private fun PlayerPracticeControlStrip(
@@ -458,6 +499,7 @@ private fun PlayerPracticeControlStrip(
     var repeatMenuExpanded by remember { mutableStateOf(false) }
     var autoPauseMenuExpanded by remember { mutableStateOf(false) }
     var blindMenuExpanded by remember { mutableStateOf(false) }
+    var langFilterMenuExpanded by remember { mutableStateOf(false) }
     var pendingAbStartMs by remember { mutableStateOf<Long?>(null) }
 
     val loop = state.practice.loop
@@ -488,6 +530,22 @@ private fun PlayerPracticeControlStrip(
             R.string.player_chip_autopause_prop,
             String.format(Locale.ROOT, "%.1f", autoPause.factor),
         )
+    }
+
+    val isInstantCompositionOn =
+        state.practice.autoPauseScope == AutoPauseScope.AFTER_BASE_LANGUAGE &&
+            state.practice.autoPause !is AutoPause.Off
+    val instantCompositionLabel = if (isInstantCompositionOn) {
+        stringResource(R.string.player_chip_instant_comp_on)
+    } else {
+        stringResource(R.string.player_chip_instant_comp_off)
+    }
+
+    val languageFilter = state.practice.languageFilter
+    val languageFilterLabel = when (languageFilter) {
+        LanguageFilter.ALL -> stringResource(R.string.player_chip_lang_filter_all)
+        LanguageFilter.TARGET_ONLY -> stringResource(R.string.player_chip_lang_filter_target)
+        LanguageFilter.BASE_ONLY -> stringResource(R.string.player_chip_lang_filter_base)
     }
 
     val blindLabel = when (state.blindMode) {
@@ -653,7 +711,67 @@ private fun PlayerPracticeControlStrip(
             }
         }
 
-        // 3. ブラインドモードチップ (F7.2)
+        // 3. 瞬間作文モードチップ (F6.5: 母語チャンクの後だけ自動ポーズ)
+        if (state.languagePair?.base != null) {
+            FilterChip(
+                selected = isInstantCompositionOn,
+                onClick = { onEvent(PlayerEvent.ToggleInstantComposition) },
+                label = { Text(text = instantCompositionLabel, maxLines = 1) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Bolt,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+            )
+        }
+
+        // 4. 言語フィルタチップ (F6.4)
+        if (state.languagePair?.base != null) {
+            Column {
+                FilterChip(
+                    selected = languageFilter != LanguageFilter.ALL,
+                    onClick = { langFilterMenuExpanded = true },
+                    label = { Text(text = languageFilterLabel, maxLines = 1) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Translate,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                )
+                DropdownMenu(
+                    expanded = langFilterMenuExpanded,
+                    onDismissRequest = { langFilterMenuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(text = stringResource(R.string.player_chip_lang_filter_all)) },
+                        onClick = {
+                            langFilterMenuExpanded = false
+                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.ALL))
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(text = stringResource(R.string.player_chip_lang_filter_target)) },
+                        onClick = {
+                            langFilterMenuExpanded = false
+                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(text = stringResource(R.string.player_chip_lang_filter_base)) },
+                        onClick = {
+                            langFilterMenuExpanded = false
+                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
+                        },
+                    )
+                }
+            }
+        }
+
+        // 5. ブラインドモードチップ (F7.2)
         Column {
             FilterChip(
                 selected = state.blindMode != BlindMode.OFF,
@@ -699,7 +817,32 @@ private fun PlayerPracticeControlStrip(
             }
         }
 
-        // 4. チャンク出どころ切り替えチップ (F5.4)
+        // 6. 端末内の先読み簡易文字起こしトグルチップ (F6.2)
+        val lookahead = state.lookaheadStatus
+        val lookaheadTotal = if (lookahead.totalTargetCount > 0) {
+            lookahead.totalTargetCount
+        } else {
+            state.chunks.size
+        }
+        val lookaheadLabel = if (lookahead.enabled) {
+            stringResource(R.string.player_lookahead_chip_on, lookahead.completedCount, lookaheadTotal)
+        } else {
+            stringResource(R.string.player_lookahead_chip_off)
+        }
+        FilterChip(
+            selected = lookahead.enabled,
+            onClick = { onEvent(PlayerEvent.SetLookaheadEnabled(!lookahead.enabled)) },
+            label = { Text(text = lookaheadLabel, maxLines = 1) },
+            leadingIcon = {
+                Icon(
+                    imageVector = ChunkFlowIcons.Bolt,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+            },
+        )
+
+        // 7. チャンク出どころ切り替えチップ (F5.4)
         val canSwitchOrigin = state.availableChunkOrigins.contains(ChunkOrigin.IMPORTED) &&
             state.availableChunkOrigins.contains(ChunkOrigin.AUTO)
         if (canSwitchOrigin || state.availableChunkOrigins.isNotEmpty()) {
@@ -719,9 +862,9 @@ private fun PlayerPracticeControlStrip(
             )
         }
 
-        // 5. 分割調整チップ (F5.2)
+        // 8. 分割調整・時刻ずれ補正チップ (F5.2, F7.6)
         FilterChip(
-            selected = false,
+            selected = state.transcriptOffsetMs != 0,
             onClick = onOpenResegmentSheet,
             label = { Text(text = stringResource(R.string.player_chip_resegment), maxLines = 1) },
             leadingIcon = {
@@ -733,7 +876,7 @@ private fun PlayerPracticeControlStrip(
             },
         )
 
-        // 6. 再生速度チップ (F3.2)
+        // 9. 再生速度チップ (F3.2)
         FilterChip(
             selected = abs(state.speed - 1.0f) >= 0.01f,
             onClick = onOpenSpeedSheet,
@@ -1129,6 +1272,9 @@ private fun PlayerSpeedSheetContent(
 @Composable
 private fun ResegmentSheetContent(
     initialParams: SegmentationParams,
+    transcriptOffsetMs: Int,
+    onAdjustTranscriptOffset: (Int) -> Unit,
+    onAutoAlignTranscriptOffset: () -> Unit,
     onApply: (SegmentationParams) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -1137,6 +1283,12 @@ private fun ResegmentSheetContent(
     var postPaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.postPaddingMs) }
     var thresholdRatio by remember(initialParams) { mutableFloatStateOf(initialParams.thresholdRatio) }
 
+    val formattedOffset = if (transcriptOffsetMs >= 0) {
+        "+$transcriptOffsetMs"
+    } else {
+        transcriptOffsetMs.toString()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1144,6 +1296,47 @@ private fun ResegmentSheetContent(
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        // 文字起こしの時刻ずれ補正 (F7.6)
+        Text(
+            text = stringResource(R.string.player_offset_section_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = stringResource(R.string.player_offset_current_value, formattedOffset),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(-50, -10, 10, 50).forEach { delta ->
+                val label = if (delta > 0) "+${delta}ms" else "${delta}ms"
+                OutlinedButton(
+                    onClick = { onAdjustTranscriptOffset(delta) },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                ) {
+                    Text(text = label, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+        FilledTonalButton(
+            onClick = onAutoAlignTranscriptOffset,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Bolt,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = stringResource(R.string.player_offset_auto_align))
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        // 自動チャンク分割の調整 (F5.2)
         Text(
             text = stringResource(R.string.player_resegment_sheet_title),
             style = MaterialTheme.typography.titleMedium,
@@ -1232,6 +1425,8 @@ internal fun SampleMaterial.toPlayerUiState(
     blindMode: BlindMode = BlindMode.OFF,
     autoPauseEndsAtMs: Long? = null,
     error: PlaybackError? = null,
+    lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
+    localTranscriptExported: Boolean = false,
 ): PlayerUiState {
     val chunkUis = chunks.map { chunk ->
         val transcript = transcripts[chunk.id]
@@ -1270,6 +1465,8 @@ internal fun SampleMaterial.toPlayerUiState(
         blindMode = blindMode,
         chunkSource = if (transcripts.isNotEmpty()) ChunkOrigin.IMPORTED else ChunkOrigin.AUTO,
         availableChunkOrigins = origins,
+        lookaheadStatus = lookaheadStatus,
+        localTranscriptExported = localTranscriptExported,
     )
 }
 
