@@ -1,0 +1,145 @@
+package com.miuraken.chunkflow.core.data.library
+
+import android.net.Uri
+import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.transcript.TranscriptError
+import kotlinx.coroutines.flow.Flow
+
+/**
+ * ライブラリ（取り込んだ教材）の単一の情報源（§6.3、§7.1）。
+ *
+ * 実装は playback が書く（`core/data` の `library` パッケージ）。宣言は Phase 0 で lead が置いた契約（ADR 0003）。
+ */
+interface LibraryRepository {
+    /** すべての教材を購読する。 */
+    fun observeItems(): Flow<List<AudioItem>>
+
+    /** 教材 1 件を購読する。削除されたら `null` を流す。 */
+    fun observeItem(id: MediaId): Flow<AudioItem?>
+
+    /**
+     * 音声と文字起こしファイルをまとめて取り込む（名前と SHA-256 で対応付ける）。
+     *
+     * @param uris SAF の `content://` URI。それ以外のスキームは拒否する（§8.1）。
+     */
+    fun import(uris: List<Uri>): Flow<ImportProgress>
+
+    /** 文字起こしファイルだけを取り込み、SHA-256 が一致する既存の教材に付ける。 */
+    suspend fun importTranscript(uri: Uri): TranscriptImportResult
+
+    /** Drive の `ChunkFlow/` フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
+    fun syncFromDrive(): Flow<SyncProgress>
+
+    /** 教材を削除する（音声・解析結果・文字起こしを含む）。 */
+    suspend fun delete(id: MediaId)
+}
+
+/** 取り込みの進捗。 */
+sealed interface ImportProgress {
+    /**
+     * コピー中。
+     *
+     * @property fraction 進捗（0..1）。不明なら `null`。
+     */
+    data class Copying(val fraction: Float?) : ImportProgress
+
+    /**
+     * 完了した。
+     *
+     * @property mediaIds 取り込んだ（または既存の）教材。
+     * @property duplicates 既に取り込まれていた音声の数。
+     * @property transcriptsAttached 教材に付けた文字起こしの数。
+     */
+    data class Done(val mediaIds: List<MediaId>, val duplicates: Int, val transcriptsAttached: Int) : ImportProgress
+
+    /** 失敗した。 */
+    data class Failed(val error: ImportError) : ImportProgress
+}
+
+/** 取り込みの失敗の種別。 */
+enum class ImportError {
+    /** 対応していない形式。 */
+    UNSUPPORTED_FORMAT,
+
+    /** サイズの上限を超えた。 */
+    TOO_LARGE,
+
+    /** 空き容量が足りない。 */
+    NO_SPACE,
+
+    /** 読み書きに失敗した。 */
+    IO,
+
+    /** キャンセルされた。 */
+    CANCELLED,
+}
+
+/** Drive との同期の進捗。 */
+sealed interface SyncProgress {
+    /** Drive のファイルを一覧している。 */
+    data object Listing : SyncProgress
+
+    /**
+     * ダウンロード中。
+     *
+     * @property done ダウンロードを終えたファイルの数。
+     * @property total ダウンロードするファイルの数。
+     */
+    data class Downloading(val done: Int, val total: Int) : SyncProgress
+
+    /**
+     * 完了した。
+     *
+     * @property newAudio 追加した音声の数。
+     * @property newTranscripts 追加・更新した文字起こしの数。
+     * @property failed 失敗したファイルの数。
+     */
+    data class Done(val newAudio: Int, val newTranscripts: Int, val failed: Int) : SyncProgress
+
+    /** 失敗した。 */
+    data class Failed(val error: SyncError) : SyncProgress
+}
+
+/** 同期の失敗の種別。 */
+enum class SyncError {
+    /** 認可が必要（UI が認可の画面を開いてから、同期をやり直す）。 */
+    NOT_AUTHORIZED,
+
+    /** ネットワークのエラー。 */
+    NETWORK,
+
+    /** Drive に `ChunkFlow/` フォルダがない。 */
+    FOLDER_NOT_FOUND,
+
+    /** 空き容量が足りない。 */
+    NO_SPACE,
+
+    /** 読み書きに失敗した。 */
+    IO,
+
+    /** キャンセルされた。 */
+    CANCELLED,
+}
+
+/** 文字起こしファイルだけを取り込んだ結果。 */
+sealed interface TranscriptImportResult {
+    /**
+     * 教材に付けた。
+     *
+     * @property mediaId 文字起こしを付けた教材。
+     * @property chunkCount 作ったチャンクの数。
+     * @property durationMismatch 教材の長さと JSON の `durationMs` が 0.5 秒以上違う（別の版の音声の可能性がある）。
+     */
+    data class Attached(val mediaId: MediaId, val chunkCount: Int, val durationMismatch: Boolean) : TranscriptImportResult
+
+    /**
+     * 対応する音声がまだ取り込まれていない。
+     *
+     * @property audioFileName JSON に書かれた音声のファイル名（案内の表示に使う）。
+     */
+    data class NoMatchingAudio(val audioFileName: String?) : TranscriptImportResult
+
+    /** 文字起こしファイルが不正。 */
+    data class Invalid(val error: TranscriptError) : TranscriptImportResult
+}
