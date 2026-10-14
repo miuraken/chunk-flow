@@ -2,11 +2,18 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| Status | Draft v0.2（v0.1 をレビューして全面改訂） |
+| Status | Draft v0.3 |
 | Last updated | 2026-10-14 |
 | Owner | miuraken |
+| 利用形態 | 個人利用（自分の端末にインストールする。Google Play では公開しない） |
 | 対象 | Android 14 以上（minSdk 34）。主な対象端末は Pixel 8 以降 |
-| 主要技術 | Kotlin / Jetpack Compose + Material 3 / Media3（ExoPlayer・Session）/ Room / WorkManager / Hilt |
+| 主要技術 | アプリ: Kotlin / Jetpack Compose + Material 3 / Media3（ExoPlayer・Session）/ Room / WorkManager / Hilt。PC ツール: Python + Whisper |
+
+| 版 | 内容 |
+| --- | --- |
+| v0.1 | 初版ドラフト |
+| v0.2 | v0.1 をレビューして全面改訂 |
+| v0.3 | 個人利用に決定。文字起こしを GPU 搭載 PC 上の Whisper で生成し、Google Drive 経由で取り込む方式に変更。教材ごとに異なる言語ペアに対応 |
 
 本書は、人間と AI エージェントの双方が参照する設計の単一の情報源です。重要な判断は ADR（`docs/adr/`）に切り出し、本書には結論と理由の要約を残します。v0.1 からの変更点は[付録 A](#付録-a-v01-からの主な変更点) にまとめています。
 
@@ -16,17 +23,19 @@
 
 | # | 論点 | 決定 | 主な理由 | 詳細 |
 | --- | --- | --- | --- | --- |
-| D1 | 解析と再生の関係 | 取り込み直後から再生できる。解析（波形 → チャンク → 文字起こし）はバックグラウンドで実行し、できた順に画面へ反映する | 解析が終わるまで操作できない画面は体験を大きく損なう（文字起こしは数分かかり得る） | §5.3 |
-| D2 | 音声ファイルの保存先 | アプリ専用の内部ストレージ `filesDir/media/`（削除はユーザー操作） | `cacheDir` は OS が随時削除するため、教材ライブラリと高コストな解析結果が失われる | §7.1 |
+| D1 | 解析と再生の関係 | 取り込み直後から再生できる。解析（波形 → チャンク）はバックグラウンドで実行し、できた順に画面へ反映する | 解析が終わるまで操作できない画面は体験を大きく損なう | §5.3 |
+| D2 | 音声ファイルの保存先 | アプリ専用の内部ストレージ `filesDir/media/`（削除はユーザー操作） | `cacheDir` は OS が随時削除するため、教材ライブラリと解析結果が失われる | §7.1 |
 | D3 | チャンク境界での制御 | `PlaybackService` 内で ExoPlayer の `PlayerMessage` を使い、次の境界を予約して処理する | 100ms ポーリングでは最大 100ms 行き過ぎ、次の単語の頭が聞こえてしまう | §7.2.4 |
 | D4 | 前/次ボタン（イヤホン・通知・アプリ内） | `ForwardingSimpleBasePlayer` で「前/次のチャンク」に再割り当てする | 画面オフの「ながら学習」で最も使う操作。標準コマンドに載せれば全経路で動作が一致する | §7.2.3 |
 | D5 | 波形データ | 10ms/ビンの固定時間分解能（dB スケール）で保存し、表示時に縮約する | 全体を 1,000 点に固定すると 30 分音声で 1 点 = 1.8 秒になり、0.5 秒の無音すら描けない | §7.3.2 |
-| D6 | 無音検出 | 適応閾値 + ヒステリシス + 最短/最長チャンク制約 + 前後パディング。VAD は差し替え可能にする | 固定 dBFS 閾値は BGM や録音レベルの差に弱い。発話端ぎりぎりで切ると子音が欠ける | §7.3.3 |
-| D7 | 文字起こしエンジン | `SpeechTranscriber` で抽象化し、Phase 0 の技術検証（スパイク）の結果で選ぶ | 候補ごとに精度・速度・制約が大きく異なり、机上では決められない | §7.4 |
-| D8 | 2 言語の判定方法 | 言語識別（LID）を候補の 2 言語に限定して行う。両言語で認識して信頼度を比べる方式はフォールバックに限る | 言語モデル間の信頼度は比較できるように較正されておらず、コストも 2 倍になる | §7.4.3 |
+| D6 | 端末内の無音検出 | 適応閾値 + ヒステリシス + 最短/最長チャンク制約 + 前後パディング。VAD は差し替え可能にする。文字起こしファイルがない教材で使う | 固定 dBFS 閾値は BGM や録音レベルの差に弱い。発話端ぎりぎりで切ると子音が欠ける | §7.3.3 |
+| D7 | 文字起こし | GPU 搭載の PC 上で Whisper を使って生成し、決めた形式（`gogaku-transcript` JSON）で音声と同じ Google Drive のフォルダに置いて、アプリで取り込む。端末内やクラウドでの文字起こしは当面しない | 大きなモデルを使えるので精度が高く、多言語に強い。アプリが単純になり、通信も課金も発生しない。個人利用なら PC での前処理の手間は許容できる | §7.4 |
+| D8 | 2 言語の判定方法 | PC 側でチャンクごとに、候補を教材の言語ペアに限定して判定する | Whisper は冒頭で言語を 1 つに決めると、もう一方の言語の発話を訳して書いてしまうことがある。両言語で認識して信頼度を比べる方式は、信頼度が較正されていないため使わない | §7.4.5 |
 | D9 | UI 状態 | 関心ごとに状態を分け、高頻度で変わる再生位置は UiState に含めず描画フェーズで読む | 位置が変わるたびに画面全体が再コンポーズされるのを防ぐ | §6.2 |
 | D10 | モジュール分割 | 機能別（feature）+ 基盤（core）。信号処理は Android に依存しない純 Kotlin モジュールに置く | 並行開発時の衝突を避け、高速な JVM 単体テストを可能にする | §5.2 |
-| D11 | プライバシー | 既定ではすべて端末内で処理する。クラウドへの送信は明示的なオプトインのみ | 教材音声は著作物や個人的な内容を含み得る | §8 |
+| D11 | プライバシー | アプリはネットワーク通信をしない（`INTERNET` 権限なし）。音声と文字起こしは、端末・自分の PC・自分の Google Drive の外に出ない | 教材音声は著作物や個人的な内容を含み得る | §8 |
+| D12 | 言語 | 教材ごとに任意の言語ペア（BCP-47）を持つ。母語側は省略できる（単一言語の教材） | 英語-インドネシア語、日本語-韓国語など、教材によって組み合わせが異なる | §6.1 |
+| D13 | 文字起こしの形式 | JSON Schema で定義し、PC ツールとアプリの間の契約として版を管理する | 別々に開発する 2 つのプログラムの境界を明確にする | §7.4.3 |
 
 ---
 
@@ -38,31 +47,35 @@
 
 ### 1.2 想定ユーザーと利用シーン
 
-- **主なユーザー**: 日本語を母語とする英語学習者（まずは開発者本人）。言語ペアは設定で変更できる設計にします。
+- **ユーザー**: 開発者本人（日本語が母語）。複数の言語を学んでおり、教材ごとに言語の組み合わせが異なる（例: 英語で学ぶインドネシア語、日本語で学ぶ韓国語）。
 - **想定する教材**
-  - ラジオ講座型: 日本語の解説と英語のダイアログが交互に現れる（BGM・効果音あり）
+  - 講座型: 解説の言語（例: 日本語、英語）と学習言語（例: 韓国語、インドネシア語）のダイアログが交互に現れる（BGM・効果音あり）
   - 教材付属の音声（MP3 など）: 例文が無音を挟んで並ぶ
-  - 瞬間英作文型: 「日本語 →（ポーズ）→ 英語」の繰り返し
-  - Podcast、試験対策の音声（TOEIC / 英検など）
+  - 瞬間作文型: 「母語 →（ポーズ）→ 学習言語」の繰り返し
+  - Podcast など、学習言語だけの音声
 - **利用シーン**
-  - S1 移動中: 画面オフ、Bluetooth イヤホン。ボタン操作で「もう一度」「次の文」
-  - S2 机上: 波形とスクリプトを見ながら精聴・シャドーイング・ディクテーション
-  - S3 発話練習: 各チャンクの後で自動的に一時停止し、声に出して繰り返す
+  - U1 移動中: 画面オフ、Bluetooth イヤホン。ボタン操作で「もう一度」「次の文」
+  - U2 机上: 波形とスクリプトを見ながら精聴・シャドーイング・ディクテーション
+  - U3 発話練習: 各チャンクの後で自動的に一時停止し、声に出して繰り返す
+  - U4 準備: 新しい教材を Google Drive に置き、PC で文字起こしを作ってから端末に取り込む
 
 ### 1.3 Goals
 
 - **G1 即時再生**: ローカルや Google Drive から取り込んだ音声を待たずに再生でき、解析が再生を妨げない。
-- **G2 自動チャンク分割**: 無音区間（既定 0.5 秒以上、調整可能）で発話単位に分割し、チャンク単位で移動・リピート・自動ポーズができる。
+- **G2 チャンク単位の操作**: 発話単位のチャンク（PC の文字起こし、または端末内の無音検出で作る）ごとに、移動・リピート・自動ポーズができる。
 - **G3 波形表示**: 全体の波形とチャンク境界を表示し、波形上で直接シークや範囲指定ができる。
-- **G4 文字起こしと言語判定**: チャンクごとにテキスト化し、学習言語か母語かを判定する。判定結果を使った再生モード（学習言語のみ再生、瞬間英作文モードなど）を提供する。
+- **G4 スクリプトと言語**: PC で作った文字起こし（チャンクの区切り・テキスト・言語）を取り込み、再生位置と同期して表示する。言語の判定結果を使った再生モード（学習言語のみ再生、瞬間作文モードなど）を提供する。
 - **G5 ながら学習**: 画面オフでも、イヤホン・ロック画面・通知から主要な操作（再生 / 停止、前 / 次のチャンク）ができる。
 - **G6 標準準拠**: Media3 / Material 3 / Jetpack の標準部品を優先し、保守性と OS との親和性を高める。
-- **G7 プライバシー**: 既定は端末内処理。クラウド処理は明示的なオプトインのみ。
+- **G7 プライバシー**: アプリは通信しない。
+- **G8 PC ツール**: Google Drive 上の音声から、文字起こしファイルを手間なく作れる（フォルダ単位の一括処理と、フォルダの監視）。
 
-MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 は最も不確実性が高いため、技術検証を Phase 0 で先行させ、実装は M3 に置きます。
+MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に加えて、PC で作った文字起こしの取り込みとスクリプト表示も行います。
 
 ### 1.4 Non-Goals（当面のスコープ外）
 
+- 端末内やクラウドでの文字起こし（PC で生成したファイルを取り込む。端末内で行う場合の選択肢は付録 C）
+- Google Play での公開（個人利用のため）
 - 音声ファイルの編集・トリミング・再エンコード保存（チャンク境界の手動調整はメタデータの編集なので対象内: M4）
 - ストリーミング再生、Podcast の購読（RSS）
 - 3 言語以上の同時判定（ただし、データモデルは任意の BCP-47 言語ペアを扱える設計にする）
@@ -73,11 +86,12 @@ MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 �
 ### 1.5 設計原則
 
 1. **再生を最優先する**: どの解析処理も、再生の開始や操作をブロックしない。
-2. **段階的に情報を付け加える**: 再生 → 波形 → チャンク → 文字起こしの順に、準備できたものから表示する。
-3. **解析結果は資産として扱う**: 高コストな結果（特に文字起こし）は永続化して再計算を避ける。アルゴリズムを更新したらバージョンで判別する。
+2. **段階的に情報を付け加える**: 再生 → 波形 → チャンク → スクリプトの順に、準備できたものから表示する。
+3. **解析結果は資産として扱う**: 高コストな結果は永続化して再計算を避ける。アルゴリズムを更新したらバージョンで判別する。
 4. **標準を優先し、自作は最小限にする**: 標準 API で実現できるものは自作しない。自作する部分（波形、チャンクスケジューラなど）は境界を明確にする。
 5. **テストしやすくする**: 信号処理と分割アルゴリズムは Android に依存しない純 Kotlin で書き、JVM 単体テストで検証する。
-6. **最小権限**: ストレージ読み取りなどの危険な権限を要求しない。
+6. **最小権限**: 危険な権限やネットワーク権限を要求しない。
+7. **重い処理は PC へ**: 大きなモデルが必要な処理（文字起こし）は PC で行い、アプリは結果を取り込んで使う。
 
 ---
 
@@ -88,9 +102,11 @@ MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 �
 | ID | 機能 | 優先度 | 時期 |
 | --- | --- | --- | --- |
 | F1.1 | SAF による単一ファイルの取り込み（ローカル / Google Drive） | P0 | M1 |
-| F1.2 | 複数ファイルの一括取り込み、他アプリからの共有・「アプリで開く」 | P1 | M2 |
-| F1.3 | 字幕・スクリプトファイル（LRC / SRT / WebVTT）の取り込みとチャンク化 | P1 | M3 |
-| F2.1 | ライブラリ一覧（タイトル、長さ、進捗、解析状態）と削除 | P0 | M1 |
+| F1.2 | 複数ファイルの一括取り込み（音声と文字起こしファイルを同時に選び、名前と SHA-256 で対応付ける）、他アプリからの共有・「アプリで開く」 | P0 | M2 |
+| F1.3 | 文字起こしファイル（`gogaku-transcript` JSON）の取り込み（音声と同時に、または後から単独で） | P0 | M2 |
+| F1.4 | 他の形式の字幕・スクリプト（SRT / WebVTT / LRC）の取り込み | P1 | M3 |
+| F1.5 | Google Drive のフォルダとの自動同期（Drive API） | P2 | — |
+| F2.1 | ライブラリ一覧（タイトル、長さ、進捗、解析状態、文字起こしの有無）と削除 | P0 | M1 |
 | F2.2 | 教材ごとのレジューム（再生位置、速度、学習モード） | P0 | M1 |
 | F2.3 | フォルダ / コース単位での整理 | P2 | — |
 | F3.1 | 再生 / 一時停止 / シーク、バックグラウンド再生、通知・ロック画面からの操作 | P0 | M1 |
@@ -99,22 +115,28 @@ MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 �
 | F3.4 | イヤホン・通知・アプリ内の前 / 次ボタン → 前 / 次のチャンク | P0 | M2 |
 | F4.1 | 全体波形とチャンク境界の表示、タップ / ドラッグでシーク | P0 | M2 |
 | F4.2 | 拡大波形（ピンチズーム、再生位置への追従） | P1 | M2 |
-| F5.1 | 無音区間による自動チャンク分割 | P0 | M2 |
+| F5.1 | 端末内の無音検出による自動チャンク分割（文字起こしファイルがない教材向け） | P0 | M2 |
 | F5.2 | 分割パラメータの調整と即時再分割 | P1 | M2 |
 | F5.3 | チャンクの手動編集（分割・結合・境界のドラッグ） | P1 | M4 |
+| F5.4 | チャンクの出どころの切り替え（文字起こしファイル / 端末内の自動分割） | P1 | M2 |
 | F6.1 | チャンク移動（前 / 次 / 頭出し）とチャンクリピート（N 回 / 無限） | P0 | M2 |
 | F6.2 | A-B リピート（A / B ボタン、または波形上で範囲を選択） | P0 | M2 |
 | F6.3 | 自動ポーズ（固定秒数 / チャンク長 × 係数） | P0 | M2 |
 | F6.4 | 言語フィルタ再生（学習言語のみ / 母語のみ） | P1 | M3 |
-| F6.5 | 瞬間英作文モード（母語チャンクの後にだけ自動ポーズ） | P1 | M3 |
+| F6.5 | 瞬間作文モード（母語のチャンクの後にだけ自動ポーズ） | P1 | M3 |
 | F6.6 | 無音を短縮して再生 | P2 | — |
-| F7.1 | チャンク単位の文字起こしと言語判定（できた順に表示） | P1 | M3 |
-| F7.2 | 再生位置に同期したスクリプト表示、ブラインドモード（タップで表示） | P1 | M3 |
+| F7.1 | 再生位置に同期したスクリプト表示（言語ラベル付き） | P0 | M2 |
+| F7.2 | ブラインドモード（テキストを伏せ、タップで表示） | P1 | M2 |
 | F7.3 | 言語ラベルの手動修正 | P1 | M3 |
 | F7.4 | テキストの手動修正 | P2 | M4 |
 | F7.5 | 書き出し（SRT / LRC / TXT） | P2 | M4 |
+| F7.6 | 文字起こしと音声の時刻のずれの自動補正と手動調整 | P1 | M3 |
+| F7.7 | 単語単位のハイライト（カラオケ表示） | P2 | M4 |
 | F8.1 | チャンクのブックマークと、ブックマークしたチャンクだけの連続再生 | P2 | M4 |
-| F9.1 | 設定（言語ペア、既定速度、スキップ秒数、自動ポーズ、分割パラメータ、文字起こしエンジン、クラウド送信の同意） | P0〜P1 | M1〜M3 |
+| F9.1 | 設定（既定の言語ペア、既定速度、スキップ秒数、自動ポーズ、分割パラメータ） | P0〜P1 | M1〜M3 |
+| F10.1 | PC ツール: ファイル / フォルダ単位で文字起こしし、JSON を出力する | P0 | M2 |
+| F10.2 | PC ツール: Google Drive の同期フォルダを監視し、新しい音声を自動で処理する | P1 | M3 |
+| F10.3 | PC ツール: 学習言語のチャンクに母語の訳を付ける（LLM などを利用） | P2 | — |
 
 ---
 
@@ -128,12 +150,14 @@ MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 �
 | 解析性能 | 30 分の音声の波形とチャンクを 60 秒以内に生成する（Pixel 8 クラス） |
 | 描画 | 再生中も波形とリストが 60fps 以上を保つ。再生位置の更新で画面全体を再コンポーズしない |
 | メモリ | PCM 全体をメモリに載せない（ストリーミング処理）。解析中の追加ヒープは 64MB 未満を目標とする |
-| 時刻精度 | チャンク境界での停止・ループの行き過ぎは 50ms 未満。解析と再生の時間軸のずれは 20ms 未満 |
+| 時刻精度 | チャンク境界での停止・ループの行き過ぎは 50ms 未満。解析と再生の時間軸のずれ、文字起こしの時刻と再生位置のずれは、それぞれ 20ms / 50ms 未満 |
 | 対応形式 | MP3、AAC（M4A / MP4）、Ogg（Vorbis / Opus）、FLAC、WAV |
 | 長尺 | 2 時間程度の音声でも上記を満たす（解析は中断・再開できる） |
-| 堅牢性 | プロセスが終了しても再生位置と解析の進捗を復元する。破損ファイルでもクラッシュせず、エラーを表示する |
+| 堅牢性 | プロセスが終了しても再生位置と解析の進捗を復元する。破損したファイルや不正な文字起こしファイルでもクラッシュせず、エラーを表示する |
 | 電池 | 再生中と自動ポーズ中（タイムアウト付き）以外は WakeLock を保持しない。解析は WorkManager の管理下で実行する |
-| プライバシー | クラウド文字起こしを有効にしていない限り、ネットワーク通信を行わない。分析・トラッキング用 SDK は入れない |
+| プライバシー | アプリはネットワーク通信を行わない（`INTERNET` 権限なし）。分析・トラッキング用 SDK は入れない |
+| 多言語表示 | 日本語・韓国語・中国語・ラテン文字などを、言語に合った字形と改行規則で表示する |
+| PC ツールの処理時間 | 30 分の音声を 5 分以内（NVIDIA GPU と turbo 系モデルの場合の目安。S1 で実測） |
 | アクセシビリティ | TalkBack 対応、タップ領域 48dp 以上、文字サイズ設定に追従、言語ラベルを色だけで区別しない |
 | UI 言語 | 日本語（既定）、英語 |
 
@@ -141,12 +165,13 @@ MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 �
 
 ## 4. 技術スタックと対象環境
 
-### 4.1 SDK レベル
+### 4.1 SDK レベルと配布
 
-- **minSdk 34**: 個人利用と Pixel を前提に、古い OS 向けの分岐を減らす。API 34 で追加された音声認識の言語判定 API も前提にできる。一般公開する場合は見直す（§13）。
-- **compileSdk / targetSdk**: 最新の安定 API。Google Play では 2026-08-31 以降、新規アプリとアップデートに API 36 以上が必要。
+- **minSdk 34**: 個人利用で、手持ちの Pixel を前提に古い OS 向けの分岐を減らす。
+- **compileSdk / targetSdk**: 最新の安定 API。Google Play の要件（2026-08-31 以降は API 36 以上）には縛られないが、最新の挙動に合わせておく。
+- **配布**: Android Studio または `adb install` で自分の端末に入れる。署名鍵はリポジトリの外で管理する。
 - targetSdk 35 / 36 の挙動変更に対応する: edge-to-edge の強制、予測型「戻る」、大画面での向き・リサイズ制限の無視（→ アダプティブレイアウトが必須。§7.5.6）。
-- **Tensor の NPU を直接使う設計にはしない**。オンデバイス AI は OS / Google 提供の API（`SpeechRecognizer`、ML Kit GenAI）経由で使い、ハードウェアアクセラレーションはそれらに任せる。
+- **端末内で機械学習の推論はしない**（文字起こしは PC で行う）。
 
 ### 4.2 ライブラリ
 
@@ -160,10 +185,11 @@ MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 �
 | DI | Hilt（KSP） | Worker（`@HiltWorker`）と Service への注入も Hilt で統一する |
 | 永続化 | Room（KSP）、DataStore | |
 | バックグラウンド処理 | WorkManager | |
-| 文字起こし | `SpeechTranscriber` 抽象 + スパイク S1 で選んだエンジン | §7.4 |
+| 文字起こしの取り込み | kotlinx.serialization（JSON） | アプリは解析・検証して取り込むだけ（§7.4.6） |
+| PC ツール | Python 3.12 以上、uv、faster-whisper（NVIDIA GPU の場合）、Silero VAD、jsonschema、pytest | エンジンは GPU の種類で選ぶ（§7.4.4） |
 | ビルド | Gradle Kotlin DSL、Version Catalog、convention plugins（`build-logic/`） | |
 | テスト | JUnit、kotlinx-coroutines-test、Robolectric、`media3-test-utils`、Compose UI Test、（Turbine、Roborazzi） | 括弧内は導入審査の対象 |
-| 静的解析 | Android Lint、Spotless + ktlint | |
+| 静的解析 | Android Lint、Spotless + ktlint。PC ツールは Ruff | |
 | CI | GitHub Actions | |
 
 確認時点（2026-10-14）の最新安定版: Media3 1.11.1、Compose Material3 1.4.0、Navigation 3 1.2.0、Material3 Adaptive 1.3.0。実際に使うバージョンは Phase 0 で `gradle/libs.versions.toml` に固定します。
@@ -174,61 +200,63 @@ MVP は M1 + M2（§11）の「チャンクプレイヤー」とします。G4 �
 
 ### 5.1 全体構成
 
-Google 推奨のアーキテクチャ（UI 層とデータ層、単方向データフロー、単一の情報源）に従います。
+アプリは Google 推奨のアーキテクチャ（UI 層とデータ層、単方向データフロー、単一の情報源）に従います。文字起こしは PC 上の別のツールが作り、Google Drive を経由してアプリに渡します。
 
 ```mermaid
 flowchart TB
-    subgraph UIL["UI 層（feature:*）"]
-        LS["LibraryScreen"]
-        PS["PlayerScreen"]
+    subgraph PCSIDE["GPU 搭載 PC（tools/transcriber）"]
+        TOOL["gogaku-transcribe（Whisper）"]
     end
-    subgraph VML["ViewModel"]
-        LVM["LibraryViewModel"]
-        PVM["PlayerViewModel"]
+    GD[("Google Drive（音声 + 文字起こし JSON）")]
+    subgraph APP["Android アプリ"]
+        subgraph UIL["UI 層（feature:*）"]
+            LS["LibraryScreen / ViewModel"]
+            PS["PlayerScreen / ViewModel"]
+        end
+        subgraph DATA["データ層（core:data）"]
+            LR["LibraryRepository"]
+            AR["AnalysisRepository"]
+            TI["TranscriptImporter（core:transcript）"]
+        end
+        subgraph SVC["PlaybackService（core:playback）"]
+            MS["MediaSession"]
+            LP["LearningPlayer"]
+            EXO["ExoPlayer"]
+            CS["ChunkScheduler"]
+        end
+        subgraph WM["WorkManager"]
+            AW["AnalysisWorker"]
+            DEC["Decoder（core:media）"]
+            DSP["波形・VAD・分割（core:audio）"]
+        end
+        DB[("Room / filesDir / DataStore")]
     end
-    subgraph DATA["データ層（core:data）"]
-        LR["LibraryRepository"]
-        AR["AnalysisRepository"]
-    end
-    subgraph SVC["PlaybackService（core:playback）"]
-        MS["MediaSession"]
-        LP["LearningPlayer"]
-        EXO["ExoPlayer"]
-        CS["ChunkScheduler"]
-    end
-    subgraph WM["WorkManager"]
-        AW["AnalysisWorker"]
-        TW["TranscriptionWorker"]
-        DEC["Decoder（core:media）"]
-        DSP["波形・VAD・分割（core:audio）"]
-        STT["SpeechTranscriber（core:transcription）"]
-    end
-    DB[("Room / filesDir / DataStore")]
     SYS["通知・ロック画面・イヤホン"]
 
-    LS --> LVM
-    PS --> PVM
-    LVM --> LR
-    PVM --> AR
-    PVM -->|"PlaybackController"| MS
+    GD -->|"同期フォルダ"| TOOL
+    TOOL -->|"JSON を書き込む"| GD
+    GD -->|"SAF で選択"| LR
+    LS --> LR
+    PS --> AR
+    PS -->|"PlaybackController"| MS
     SYS --> MS
     MS --> LP --> EXO
     CS -->|"PlayerMessage"| EXO
     CS -.->|"チャンク・言語"| AR
+    LR --> TI
     LR --> DB
+    TI --> DB
     AR --> DB
     AR -->|"enqueue"| AW
-    AR -->|"enqueue"| TW
     AW --> DEC --> DSP
-    TW --> STT
     AW --> DB
-    TW --> DB
 ```
 
+- **PC ツール**: GPU 搭載 PC 上の `gogaku-transcribe`（`tools/transcriber/`）が、Google Drive の同期フォルダにある音声を文字起こしし、同じフォルダに JSON を書き込む。アプリとは JSON の形式（§7.4.3）だけでつながり、コードは共有しない。
 - **UI 層**: Compose の画面。ViewModel の `StateFlow` を `collectAsStateWithLifecycle` で購読し、ユーザー操作はイベントとして ViewModel に渡す。
-- **データ層**: Repository が Room・ファイル・DataStore をまとめ、単一の情報源（SSOT）として Flow を公開する。
+- **データ層**: Repository が Room・ファイル・DataStore をまとめ、単一の情報源（SSOT）として Flow を公開する。取り込んだ JSON は `TranscriptImporter` が検証し、チャンクと文字起こしとして保存する。
 - **再生**: `PlaybackService`（`MediaSessionService`）が ExoPlayer を所有する。アプリの UI は `PlaybackController`（`MediaController` のラッパー）経由でのみ操作し、通知・ロック画面・イヤホンと同じ経路（MediaSession）を通る。
-- **解析**: WorkManager 上の Worker が実行し、結果を Room / ファイルに書き込む。UI は Repository の Flow で結果を受け取り、Worker と UI は直接やり取りしない。
+- **解析**: WorkManager 上の Worker が波形と特徴量を作り（文字起こしがない教材ではチャンクも作り）、結果を Room / ファイルに書き込む。UI は Repository の Flow で結果を受け取り、Worker と UI は直接やり取りしない。
 
 ### 5.2 モジュール構成
 
@@ -239,9 +267,9 @@ flowchart TB
 :feature:settings       設定画面 + ViewModel
 :core:model             ドメインモデル（純 Kotlin、Android 非依存）
 :core:audio             波形の縮約・特徴量・VAD・チャンク分割・リサンプラ（純 Kotlin、Android 非依存）
+:core:transcript        文字起こしファイル（gogaku JSON / SRT / WebVTT / LRC）の解析・検証・チャンクへの対応付け（純 Kotlin）
 :core:media             デコード（MediaExtractor + MediaCodec）、メタデータ取得、形式検証
 :core:playback          PlaybackService、LearningPlayer、ChunkScheduler、PracticeController、PlaybackController
-:core:transcription     SpeechTranscriber の抽象 + エンジン実装（エンジンごとにサブモジュール化してよい）
 :core:database          Room（Entity / DAO / Migration）
 :core:datastore         DataStore（アプリ設定）
 :core:data              Repository、取り込み処理、Worker
@@ -249,42 +277,46 @@ flowchart TB
 :core:testing           Fake 実装、テスト用の音声生成ユーティリティ、フィクスチャ
 build-logic/            convention plugins（共通の Gradle 設定）
 gradle/libs.versions.toml
+tools/transcriber/      PC ツール（Python）。音声を文字起こしして JSON を出力する
+docs/format/            文字起こしの形式の仕様（JSON Schema とサンプル）
 ```
 
 依存ルール:
 
 - `feature:*` 同士は依存しない。画面遷移は `:app` で組み立てる。
-- `core:model` と `core:audio` は Android SDK に依存しない（JVM モジュール）。
+- `core:model`、`core:audio`、`core:transcript` は Android SDK に依存しない（JVM モジュール）。
 - ExoPlayer を直接触るのは `core:playback` だけ。ViewModel は `PlaybackController` インターフェースに依存する。
-- エンジン固有の SDK（ML Kit、Firebase、JNI など）は `core:transcription` 配下のエンジン別モジュールに閉じ込める。
+- PC ツールとアプリが共有するのは `docs/format/` の JSON Schema とサンプルだけ。どちらもそのサンプルでテストする（§9）。
 
 v0.1 の `feature/player/ui` と `feature/player/viewmodel` の分離はやめ、feature モジュールに統合します。UI と ViewModel は常に一緒に変更されるため、モジュールを分けても変更コストが増えるだけだからです。
 
-### 5.3 主要フロー: 取り込みから段階的な表示まで
+### 5.3 主要フロー: 文字起こしから取り込み・再生まで
 
 ```mermaid
 sequenceDiagram
     actor U as ユーザー
+    participant PC as PC（gogaku-transcribe）
+    participant G as Google Drive
     participant P as UI / ViewModel
     participant L as LibraryRepository
-    participant C as PlaybackController
-    participant W as Worker（解析 / 文字起こし）
+    participant W as AnalysisWorker
     participant D as Room / files
 
-    U->>P: ファイルを選択（SAF）
-    P->>L: import(uri)
-    L->>L: filesDir へコピー + SHA-256 + 形式検証
-    L->>D: AudioItem を登録
-    L->>W: 解析ジョブを投入（AnalysisRepository 経由のユニークワーク）
-    P->>C: open(mediaId)
-    Note over P,C: この時点で再生できる（解析を待たない）
-    W->>D: 波形・特徴量を段階的に保存
+    U->>G: 音声を置く
+    G->>PC: 同期フォルダに届く
+    PC->>PC: 文字起こし（Whisper）
+    PC->>G: JSON を書き込む
+    U->>P: 音声と JSON を選ぶ（SAF の複数選択）
+    P->>L: import(uris)
+    L->>L: filesDir へコピー + SHA-256 + 形式と JSON の検証
+    L->>D: AudioItem・チャンク・文字起こしを登録
+    L->>W: 解析ジョブを投入（波形・特徴量）
+    Note over P,D: この時点で再生でき、チャンクとスクリプトも使える
+    W->>D: 波形を段階的に保存
     D-->>P: Flow で波形を順次表示
-    W->>D: チャンクを保存
-    D-->>P: チャンク一覧と境界を表示し、チャンク操作を有効化
-    W->>D: 文字起こし（再生位置の近くから順に）
-    D-->>P: テキストと言語ラベルを順次反映
 ```
+
+- JSON がない教材は、Worker が端末内の無音検出でチャンクを作る（§7.3.3）。JSON は後から単独で取り込んでもよい（音声の SHA-256 で対応付ける。§7.4.6）。
 
 ### 5.4 スレッドモデル
 
@@ -307,13 +339,16 @@ package com.example.gogaku.core.model // パッケージ名は仮。Phase 0 で 
 // ---------- 識別子・値型 ----------
 @JvmInline value class MediaId(val value: String)    // UUID 文字列
 @JvmInline value class ChunkId(val value: Long)
-@JvmInline value class EngineId(val value: String)   // 例: "platform", "mlkit-advanced", "gemini", "imported"
+@JvmInline value class EngineId(val value: String)   // 文字起こしの出どころ。例: "whisper-large-v3-turbo"（JSON の generator）、"srt"、"manual"
 
-/** BCP-47 言語タグ（例: "en-US", "ja-JP"） */
+/** BCP-47 言語タグ（例: "en", "id", "ja", "ko"） */
 @JvmInline value class LanguageTag(val value: String)
 
-/** 学習言語（target）と、母語・解説の言語（base）の組 */
-data class LanguagePair(val target: LanguageTag, val base: LanguageTag)
+/**
+ * 学習言語（target）と、母語・解説の言語（base）の組。教材ごとに持つ。
+ * base が null なら単一言語の教材（言語フィルタと瞬間作文モードは使えない）。
+ */
+data class LanguagePair(val target: LanguageTag, val base: LanguageTag?)
 
 // ---------- ライブラリ ----------
 data class AudioItem(
@@ -322,8 +357,9 @@ data class AudioItem(
     val durationMs: Long,
     val mimeType: String,
     val sizeBytes: Long,
-    val contentSha256: String,      // 重複の検出と、解析結果を再利用するためのキー
+    val contentSha256: String,      // 重複の検出と、文字起こしファイルとの対応付けに使うキー
     val languagePair: LanguagePair,
+    val transcriptOffsetMs: Int = 0, // 文字起こしの時刻に足す補正値（§7.4.6）
     val importedAtEpochMs: Long,
 )
 
@@ -341,7 +377,7 @@ class Waveform(
     val durationMs: Long get() = peak.size.toLong() * binMs
 }
 
-/** 無音区間で区切られた発話の単位。startMs / endMs は前後のパディングを含む再生範囲 */
+/** 発話の単位。startMs / endMs は前後のパディングを含む再生範囲 */
 data class Chunk(
     val id: ChunkId,
     val startMs: Long,
@@ -352,7 +388,7 @@ data class Chunk(
     val durationMs: Long get() = endMs - startMs
 }
 
-enum class ChunkOrigin { AUTO, MANUAL, IMPORTED }
+enum class ChunkOrigin { AUTO, MANUAL, IMPORTED }   // AUTO = 端末内の無音検出、IMPORTED = 文字起こしファイル
 
 data class SegmentationParams(
     val minSilenceMs: Int = 500,      // これ以上続く無音を区切りとみなす
@@ -368,13 +404,16 @@ data class Transcript(
     val chunkId: ChunkId,
     val text: String,
     val language: LanguageTag?,       // null = 判定できなかった
-    val languageConfidence: Float?,   // 0..1。エンジンが提供しない場合は null（0 と区別する）
+    val languageConfidence: Float?,   // 0..1。提供されない場合は null（0 と区別する）
+    val words: List<WordTiming> = emptyList(),  // 単語単位の時刻（JSON にある場合）
     val engine: EngineId,
-    val userEdited: Boolean = false,  // true なら自動処理で上書きしない
+    val userEdited: Boolean = false,  // true なら再取り込みで上書きしない
 )
 
+data class WordTiming(val startMs: Long, val endMs: Long, val text: String, val confidence: Float?)
+
 // ---------- 解析の状態 ----------
-enum class AnalysisStage { FEATURES, SEGMENTATION, TRANSCRIPTION }
+enum class AnalysisStage { FEATURES, SEGMENTATION }   // 文字起こしは PC で行うため含まない
 
 sealed interface StageStatus {
     data object NotStarted : StageStatus
@@ -383,7 +422,7 @@ sealed interface StageStatus {
     data class Failed(val error: AnalysisError) : StageStatus
 }
 
-enum class AnalysisError { UNSUPPORTED_FORMAT, DECODE_FAILED, IO, ENGINE_UNAVAILABLE, NETWORK, QUOTA_EXCEEDED }
+enum class AnalysisError { UNSUPPORTED_FORMAT, DECODE_FAILED, IO }
 
 // ---------- 学習モード ----------
 sealed interface LoopMode {
@@ -401,7 +440,7 @@ sealed interface AutoPause {
     data class Proportional(val factor: Float = 1.0f, val minMs: Long = 1_000) : AutoPause
 }
 
-enum class AutoPauseScope { ALL_CHUNKS, AFTER_BASE_LANGUAGE }  // 後者が瞬間英作文モード
+enum class AutoPauseScope { ALL_CHUNKS, AFTER_BASE_LANGUAGE }  // 後者が瞬間作文モード
 enum class LanguageFilter { ALL, TARGET_ONLY, BASE_ONLY }
 
 data class PracticeSettings(
@@ -436,7 +475,7 @@ data class ChunkUi(
     val id: ChunkId,
     val startMs: Long,
     val endMs: Long,
-    val text: String?,                  // null = まだ文字起こしされていない
+    val text: String?,                  // null = 文字起こしがない
     val language: LanguageTag?,         // null = 未判定、または信頼度が低い（UI では「?」と表示）
     val isBookmarked: Boolean,
 )
@@ -491,17 +530,26 @@ enum class PlaybackError { SOURCE_MISSING, DECODER, UNKNOWN }
 interface LibraryRepository {
     fun observeItems(): Flow<List<AudioItem>>
     fun observeItem(id: MediaId): Flow<AudioItem?>
-    fun import(uri: Uri): Flow<ImportProgress>   // uri は SAF の content://
+    /** 音声と文字起こしファイルをまとめて取り込む（名前と SHA-256 で対応付ける）。uris は SAF の content:// */
+    fun import(uris: List<Uri>): Flow<ImportProgress>
+    /** 文字起こしファイルだけを取り込み、SHA-256 が一致する既存の教材に付ける */
+    suspend fun importTranscript(uri: Uri): TranscriptImportResult
     suspend fun delete(id: MediaId)
 }
 
 sealed interface ImportProgress {
     data class Copying(val fraction: Float?) : ImportProgress
-    data class Done(val mediaId: MediaId, val wasDuplicate: Boolean) : ImportProgress
+    data class Done(val mediaIds: List<MediaId>, val duplicates: Int, val transcriptsAttached: Int) : ImportProgress
     data class Failed(val error: ImportError) : ImportProgress
 }
 
 enum class ImportError { UNSUPPORTED_FORMAT, TOO_LARGE, NO_SPACE, IO, CANCELLED }
+
+sealed interface TranscriptImportResult {
+    data class Attached(val mediaId: MediaId, val chunkCount: Int, val durationMismatch: Boolean) : TranscriptImportResult
+    data class NoMatchingAudio(val audioFileName: String?) : TranscriptImportResult   // 対応する音声がまだ取り込まれていない
+    data class Invalid(val error: TranscriptError) : TranscriptImportResult
+}
 
 interface AnalysisRepository {
     fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>>
@@ -509,27 +557,40 @@ interface AnalysisRepository {
     fun observeChunks(id: MediaId): Flow<List<Chunk>>
     fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>>
     suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>)
-    suspend fun resegment(id: MediaId, params: SegmentationParams)  // 保存済みの特徴量から再計算（再デコード不要）
+    suspend fun resegment(id: MediaId, params: SegmentationParams)   // 保存済みの特徴量から再計算（再デコード不要）
+    suspend fun setChunkSource(id: MediaId, source: ChunkOrigin)      // IMPORTED / AUTO の切り替え（F5.4）
+    suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int)       // 時刻の補正（F7.6）
 }
 
-// ---------- core:transcription ----------
-interface SpeechTranscriber {
-    val engineId: EngineId
-    val location: ProcessingLocation                                     // ON_DEVICE / CLOUD
-    suspend fun availability(pair: LanguagePair): EngineAvailability     // AVAILABLE / NEEDS_DOWNLOAD / UNSUPPORTED
-    suspend fun transcribe(clip: PcmClip, pair: LanguagePair): TranscriptionResult
+// ---------- core:transcript（純 Kotlin） ----------
+interface TranscriptParser {
+    /** gogaku-transcript JSON / SRT / WebVTT / LRC を読み、検証して共通の形にする。上限（§8.1）を超えたら失敗にする */
+    fun parse(bytes: ByteArray, fileName: String): TranscriptParseResult
 }
 
-enum class ProcessingLocation { ON_DEVICE, CLOUD }
-enum class EngineAvailability { AVAILABLE, NEEDS_DOWNLOAD, UNSUPPORTED }
+sealed interface TranscriptParseResult {
+    data class Ok(val document: TranscriptDocument) : TranscriptParseResult
+    data class Error(val error: TranscriptError, val detail: String) : TranscriptParseResult
+}
 
-/** 16kHz・モノラル・16bit PCM の切り出し */
-class PcmClip(val samples: ShortArray, val sampleRateHz: Int = 16_000)
+enum class TranscriptError { UNKNOWN_FORMAT, UNSUPPORTED_VERSION, SCHEMA_VIOLATION, TOO_LARGE, TIME_OUT_OF_RANGE }
 
-data class TranscriptionResult(
-    val text: String,
+data class TranscriptDocument(
+    val audioSha256: String?,          // gogaku JSON のみ。SRT などでは null
+    val audioFileName: String?,
+    val durationMs: Long?,
+    val languages: LanguagePair?,
+    val generator: EngineId,
+    val segments: List<TranscriptSegment>,
+)
+
+data class TranscriptSegment(
+    val startMs: Long,                 // 発話そのものの範囲（パディングなし）
+    val endMs: Long,
     val language: LanguageTag?,
     val languageConfidence: Float?,
+    val text: String,
+    val words: List<WordTiming>,
 )
 ```
 
@@ -538,8 +599,8 @@ data class TranscriptionResult(
 | データ | 保存先 | 備考 |
 | --- | --- | --- |
 | 音声ファイル | `filesDir/media/<MediaId>.<ext>` | ファイル名は UUID。元の表示名は DB の `title` にのみ保存する |
+| 文字起こしファイルの原本 | `filesDir/media/<MediaId>.transcript.<ext>` | 取り込んだファイルをそのまま保存する（再取り込みや不具合の調査に使う） |
 | 波形・フレーム特徴量 | `filesDir/analysis/<MediaId>/waveform.bin`、`features.bin` | 独自バイナリ（マジック・バージョン・件数のヘッダ付き）。検証に失敗したら破棄して再計算する |
-| 文字起こし用の 16kHz PCM | `cacheDir/pcm/<MediaId>.pcm` | 一時ファイル。文字起こしが終わったら削除する。消えても再デコードで復元できる |
 | メタデータ・チャンク・文字起こし・ブックマーク・教材ごとの状態 | Room | |
 | アプリ設定 | DataStore | |
 
@@ -547,14 +608,18 @@ Room のテーブル（概要。外部キーは ON DELETE CASCADE）:
 
 | テーブル | 主な列 |
 | --- | --- |
-| `media_item` | `id`（PK）、`title`、`duration_ms`、`mime_type`、`size_bytes`、`sha256`（UNIQUE）、`target_lang`、`base_lang`、`imported_at` |
-| `item_state` | `media_id`（PK）、`position_ms`、`speed`、`auto_pause`、`auto_pause_scope`、`language_filter`、`updated_at` |
+| `media_item` | `id`（PK）、`title`、`duration_ms`、`mime_type`、`size_bytes`、`sha256`（UNIQUE）、`target_lang`、`base_lang`（NULL 可）、`transcript_offset_ms`、`imported_at` |
+| `item_state` | `media_id`（PK）、`position_ms`、`speed`、`chunk_source`、`auto_pause`、`auto_pause_scope`、`language_filter`、`updated_at` |
 | `analysis_state` | `media_id` + `stage`（PK）、`status`、`progress`、`error`、`algorithm_version`、`updated_at` |
 | `chunk` | `id`（PK）、`media_id`（`start_ms` との複合インデックス）、`start_ms`、`end_ms`、`origin`、`algorithm_version` |
-| `transcript` | `chunk_id`（PK）、`text`、`language`、`language_confidence`、`engine`、`user_edited`、`created_at` |
-| `bookmark` | `chunk_id`（PK）、`note`、`created_at` |
+| `transcript` | `chunk_id`（PK）、`text`、`language`、`language_confidence`、`words`（JSON 文字列）、`engine`、`user_edited`、`created_at` |
+| `bookmark` | `id`（PK）、`media_id`（`position_ms` との複合インデックス）、`position_ms`、`note`、`created_at` |
 
-同じ音声をもう一度取り込んだ場合は SHA-256 で検出して既存の項目を開くため、解析結果は教材（`media_id`）ごとに 1 組だけ持ちます。各結果には生成したアルゴリズムのバージョンを記録し、アルゴリズムを更新したときは自動生成（`AUTO`）の結果だけを再計算します。
+- ブックマークはチャンク ID ではなく**時刻**で持ち、表示時にその時刻を含むチャンクに対応付けます。再分割でチャンクが作り直されても消えません。
+- `chunk` には、文字起こし由来（`IMPORTED`）と端末内の自動分割（`AUTO`）の両方を保存し、`item_state.chunk_source` で使う方を選びます（文字起こしがあれば `IMPORTED` が既定）。`AUTO` を使うときのスクリプトは、時刻が重なる文字起こしを表示します。手動編集（M4）の扱いは M4 の着手時に決めます。
+- **チャンクの作り直しは 1 つのトランザクションで行います**（再分割、文字起こしの再取り込み）: 新しいチャンクを挿入 → 文字起こしを新しいチャンクに付け替え（§7.4.6 の規則）→ 古いチャンクを削除。`transcript` は `chunk_id` に ON DELETE CASCADE が付いているため、この順序を守らないと文字起こしが消えます。
+
+同じ音声をもう一度取り込んだ場合は SHA-256 で検出して既存の項目を開くため、解析結果は教材（`media_id`）ごとに 1 組だけ持ちます。各結果には生成したアルゴリズムのバージョンを記録し、アルゴリズムを更新したときは自動生成（`AUTO`）の結果だけを再計算します（再計算も上記と同じトランザクションで行う）。
 
 ---
 
@@ -562,18 +627,22 @@ Room のテーブル（概要。外部キーは ON DELETE CASCADE）:
 
 ### 7.1 取り込みとストレージ（`core:data` / `core:media`）
 
-- **ピッカー**: `ActivityResultContracts.OpenDocument()`（MIME は `audio/*`。必要に応じて `application/ogg` などを追加）。Google Drive のファイルも SAF の Drive プロバイダ経由で選べるため、Drive API や OAuth は不要。
+- **ピッカー**: `ActivityResultContracts.OpenMultipleDocuments()`。音声（`audio/*`）と文字起こしファイル（`.gogaku.json` など）を同じフォルダから一度に選べるようにする（Drive では JSON の MIME が `application/json` 以外になることがあるため、拡張子でも判定する）。Google Drive のファイルも SAF の Drive プロバイダ経由で選べるため、Drive API や OAuth は不要。
+- **フォルダ単位のアクセスに頼らない**: Google Drive のプロバイダはフォルダの選択（`OpenDocumentTree`）に対応していない可能性が高く（S2 で確認）、音声の隣にある文字起こしファイルをアプリが自動で探すことはできない前提にする。そのため、利用者が両方を選ぶか、後から文字起こしファイルだけを選ぶ。
 - **取り込み処理**（`LibraryRepository.import`）
-  1. `ContentResolver` で表示名・サイズ・MIME を取得する（表示名は `title` の初期値としてのみ使う）。
-  2. サイズの上限（例: 2GB）と空き容量（サイズの 1.2 倍以上）を確認する。
+  1. 選ばれたファイルを音声と文字起こしファイルに分ける。`ContentResolver` で表示名・サイズ・MIME を取得する（表示名は `title` の初期値と対応付けの手がかりとしてのみ使う）。
+  2. 音声ごとに、サイズの上限（例: 2GB）と空き容量（サイズの 1.2 倍以上）を確認する。
   3. `filesDir/media/<UUID>.tmp` へストリームでコピーしながら SHA-256 を計算し、進捗を通知する（キャンセル可能）。
-  4. 同じハッシュの項目が既にあれば、コピーを破棄して既存の項目を開く。
+  4. 同じハッシュの項目が既にあれば、コピーを破棄して既存の項目を使う。
   5. デコーダで音声トラックの有無と形式を検証し、不可なら破棄してエラーにする。
   6. 検証済みの形式から拡張子を決めてリネームし、DB に登録して解析ジョブを投入する。
+  7. 文字起こしファイルは `TranscriptParser` で検証し（§7.4.6）、JSON に書かれた音声の SHA-256 で対応する音声を探す（SRT などハッシュのない形式は、拡張子を除いたファイル名が一致する音声に付ける）。見つかればチャンクと文字起こしを登録する。
+- **文字起こしだけの取り込み**（`LibraryRepository.importTranscript`）: 音声を先に取り込んだあとで PC の処理が終わった場合に使う。SHA-256 で既存の教材を探して付ける。見つからなければ「対応する音声がまだない」と表示する。
 - 取り込み後は元の URI にアクセスしないため、永続的な URI 権限は取得しない（将来「コピーせずにリンク登録」を加える場合のみ `takePersistableUriPermission` を使う）。
 - Drive 上のファイルは選択時にダウンロードされるため時間がかかることがある。進捗表示を必須とし、オフラインで取得できない場合はエラーメッセージで案内する。
 - メタデータ（タイトル、アーティスト、長さ。アートワークは P2）は Media3 の inspector または `MediaMetadataRetriever` で取得する。
 - 他アプリからの共有・「アプリで開く」（F1.2）も、受け取った `content://` URI を同じ取り込み処理に通す。
+- **将来の自動化**（F1.5、P2）: Drive API（OAuth、読み取り専用の権限）で指定フォルダを定期的に確認し、新しい音声と文字起こしを自動で取り込む。`INTERNET` 権限と Google Cloud のプロジェクトが必要になるため、手動の取り込みで不便を感じてから判断する。
 
 ### 7.2 再生エンジン（`core:playback`）
 
@@ -594,22 +663,27 @@ PlaybackService : MediaSessionService
 
 - `AudioAttributes` は `USAGE_MEDIA` + `AUDIO_CONTENT_TYPE_SPEECH`、`handleAudioFocus = true`（通話や他アプリの再生で自動的に止まる）。
 - `setHandleAudioBecomingNoisy(true)`（イヤホンが外れたら止める）。
-- `setWakeMode(C.WAKE_MODE_LOCAL)`（画面オフでローカルファイルを再生するため）。
-- `DefaultExtractorsFactory().setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING)`: 目次（TOC）のない VBR MP3 でもシーク位置を正確にする。語学教材は MP3 が多く、シーク誤差はチャンクの頭出しの品質を直接損なう（スパイク S2 で検証）。
+- `setWakeMode(C.WAKE_MODE_LOCAL)`（画面オフでローカルファイルを再生するため。WakeLock は再生中だけ保持され、一時停止すると解放される。`WAKE_LOCK` 権限が必要）。
+- **MP3 のシーク精度**: `DefaultExtractorsFactory().setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING)` を指定する。ただし現行の API リファレンスでは、このフラグは「VBR だが目次（TOC）がない」「CBR でファイル長が不明」の場合のフォールバックとされている。Xing の TOC を持つ VBR（LAME の一般的な出力）は TOC による概算のシークになり、ヘッダのない VBR は CBR として概算される。概算のシークでも ExoPlayer は要求した位置を報告するため、チャンクの頭出し・A-B リピート・解析と再生の時間軸が気づかないうちにずれる。語学教材は MP3 が多いため、S2 で CBR / VBR + Xing / ヘッダのない VBR の 3 種をクリック音入りのテスト音源で検証し、対策（§12）を決める（固定したバージョンの `Mp3Extractor` の実装も確認する）。
 - 速度は `setPlaybackSpeed()` で変える（Sonic による時間伸縮のため、ピッチは変わらない）。
 - スキップ秒数は `setSeekBackIncrementMs()` / `setSeekForwardIncrementMs()` で設定値を反映し、UI・通知とも標準の `seekBack()` / `seekForward()` を使う。
 
 #### 7.2.3 LearningPlayer（前 / 次ボタンの再割り当て）
 
-- `handleSeek()` で `COMMAND_SEEK_TO_PREVIOUS` / `COMMAND_SEEK_TO_NEXT` を受けたとき、チャンクがあればチャンク境界へ移動する。チャンクがまだなければ、巻き戻し / 早送りとして扱う。
+- `handleSeek()` で `COMMAND_SEEK_TO_PREVIOUS` / `COMMAND_SEEK_TO_NEXT` を受けたとき、チャンクがあればチャンク境界へ移動する。チャンクがまだなければ、巻き戻し / 早送りとして扱う。単一の音声では、引数の `mediaItemIndex` が `C.INDEX_UNSET`、`positionMs` が `C.TIME_UNSET` で届くことがある（既定の動作が「何もしない」場合）ため、引数は使わず、現在の位置から移動先を求める。
 - 「前」の意味: 現在のチャンクの開始から 1 秒以上経っていれば現在のチャンクの頭へ、1 秒未満なら前のチャンクへ（音楽プレイヤーの慣習に合わせる）。
 - 単一の音声でも通知やイヤホンの前 / 次ボタンが有効になるよう、`getState()` で `COMMAND_SEEK_TO_PREVIOUS` / `COMMAND_SEEK_TO_NEXT` を利用可能として公開する。
 - アプリ内の前 / 次ボタン（`media3-ui-compose-material3` の `PreviousButton` / `NextButton`）も同じコマンドを送るため、すべての操作経路で動作が一致する。
 
 #### 7.2.4 ChunkScheduler（境界の処理）
 
-- **方式**: ExoPlayer の `createMessage(...).setPosition(境界のms).setLooper(mainLooper)` で、「次に処理すべき境界」を 1 件だけ予約する。境界に達したら動作を実行し、次の境界を予約し直す。シーク（`onPositionDiscontinuity`）、チャンクの更新、モードの変更のときも予約し直す。
+- **方式**: ExoPlayer の `createMessage(...).setPosition(境界のms).setLooper(mainLooper)` で、次のチャンク境界（開始または終了）を常に 1 件だけ予約する。境界に達したら `PlaybackStatus.currentChunkId` を更新し、モードに応じた動作を実行して、次の境界を予約し直す。シーク（`onPositionDiscontinuity`）、チャンクの更新、モードの変更のときも予約し直す。
 - `PlayerMessage` は再生スレッドで再生位置に基づいて配信されるため、UI 側のポーリングより正確で、画面が非表示でも動作する。
+- **実装上の注意**
+  - `createMessage` は ExoPlayer にしかない API なので、ChunkScheduler は LearningPlayer ではなく内側の ExoPlayer を直接持つ。
+  - 新しいメッセージを予約する前に、前のメッセージを必ず `cancel()` する。
+  - ChunkScheduler 自身の `seekTo()` でも `onPositionDiscontinuity`（理由は SEEK）が発生する。自分のシークとユーザーのシークを区別するフラグを持ち、自分のシークではリピート回数をリセットしない。
+  - A-B リピートは、`setDeleteAfterDelivery(false)`（位置を通過するたびに再配信される）を使うと単純にできる可能性がある。
 
 | モード | 境界 | 動作 |
 | --- | --- | --- |
@@ -621,20 +695,22 @@ PlaybackService : MediaSessionService
 - **組み合わせの優先順位**: A-B > チャンクリピート > 言語フィルタ。自動ポーズは各終端での動作の前に適用する（リピートの間にもポーズが入るので、リピーティング練習になる）。
 - ユーザーによる手動のシークは常に優先し、言語フィルタは次の境界から適用する。
 - チャンクがまだない間は、チャンクを前提とするモードを無効化する（A-B リピートはチャンクがなくても使える）。
-- 自動ポーズの再開タイマーは Service 側で持ち、`PlaybackState.autoPauseEndsAtMs` として UI に公開する（カウントダウン表示用）。
-- 自動ポーズは `pause()` で実現するため、画面オフ中にタイマーで再開するとき、バックグラウンドからのフォアグラウンドサービス開始の制限に当たらないようにする必要がある。Media3 の `MediaSessionService` は一時停止後も一定時間（`setForegroundServiceTimeoutMs`）フォアグラウンドを維持するので、その時間内に再開すれば問題ない想定。実際の挙動は S2 で確認する。
+- 自動ポーズの再開タイマーは Service 側で持ち、`PlaybackStatus.autoPauseEndsAtMs` として UI に公開する（カウントダウン表示用）。
+- **自動ポーズ中の CPU スリープ**: 一時停止すると ExoPlayer は WakeLock を解放し、フォアグラウンドサービスであっても CPU はスリープし得る。画面オフ中は再開タイマーが大きく遅れるおそれがあるため、自動ポーズの間だけ `PARTIAL_WAKE_LOCK` を「ポーズ長 + 余裕」のタイムアウト付きで保持し、再開・取り消しの時点で解放する。
+- **フォアグラウンドの維持**: Media3 の `MediaSessionService` は一時停止後も一定時間（既定 10 分、`setForegroundServiceTimeoutMs`）フォアグラウンドを維持する。自動ポーズ（数秒〜数十秒）からの再開は、バックグラウンドからのフォアグラウンドサービス開始の制限に当たらない想定。実際の挙動は S2 で確認する。
 
 #### 7.2.5 操作の経路
 
 - **アプリの UI** → `PlaybackController` → 標準操作は `MediaController`（Player API）、学習モードは `PracticeController`（同一プロセスの Singleton で型安全に扱う）。
 - **通知・ロック画面・Bluetooth イヤホンなどのシステム経路** → `MediaSession` → `LearningPlayer`（標準コマンド）、またはカスタムボタン（例: 「チャンクリピート切り替え」）→ `MediaSession.Callback.onCustomCommand` → `PracticeController`。Android Auto 対応（`MediaLibraryService` が必要）はスコープ外。
 - カスタムコマンドは信頼できるコントローラ（自アプリとシステム UI）からのみ受け付ける（§8）。
-- `MediaSession.Callback.onPlaybackResumption` を実装し、システムのメディアコントロールから前回の教材と位置で再開できるようにする。
+- `MediaSession.Callback.onPlaybackResumption` を実装し、システムのメディアコントロールから前回の教材と位置で再開できるようにする。この再開機能には、エクスポートした `androidx.media3.session.MediaButtonReceiver`（`MEDIA_BUTTON` のインテントフィルタ付き）の宣言が必要。
 - 学習モード（自動ポーズ、言語フィルタ）と速度は教材ごとに `item_state` に保存する。ループは再開時に解除する。
+- 再生位置は、再生中は 5 秒ごとに、また一時停止・停止・教材の切り替えのときに `item_state.position_ms` へ保存する（レジュームに使う）。
 
 #### 7.2.6 フォアグラウンドサービスと通知
 
-- `PlaybackService` は `foregroundServiceType="mediaPlayback"`。権限は `FOREGROUND_SERVICE` と `FOREGROUND_SERVICE_MEDIA_PLAYBACK`。フォアグラウンド化と通知は Media3 が自動で管理する。
+- `PlaybackService` は `foregroundServiceType="mediaPlayback"`。権限は `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`WAKE_LOCK`。フォアグラウンド化と通知は Media3 が自動で管理する。
 - メディアセッションの通知は `POST_NOTIFICATIONS` 権限の対象外（Android 13 以降）。この権限は解析の進捗通知のためだけに求め、拒否されても機能は動作する。
 - 通知のボタンは「前のチャンク / 再生・一時停止 / 次のチャンク」。P1 で「チャンクリピート切り替え」のカスタムボタンを追加する。
 
@@ -643,10 +719,9 @@ PlaybackService : MediaSessionService
 #### 7.3.1 デコード
 
 - `MediaExtractor`（または `media3-inspector` の `MediaExtractorCompat`。ExoPlayer と同じ抽出器を使えるため時間軸を揃えやすい。スパイク S3 で選ぶ）と `MediaCodec`（同期モード）で PCM にデコードする。
-- 1 パスのストリーミング処理にする: デコード → モノラル化 → 16kHz にリサンプル → 次の 3 つへ分配。PCM 全体はメモリに保持しない（60 分・44.1kHz・ステレオの 16bit PCM は約 635MB になる）。
+- 1 パスのストリーミング処理にする: デコード → モノラル化 → 16kHz にリサンプル → 次の 2 つへ分配。PCM 全体はメモリに保持しない（60 分・44.1kHz・ステレオの 16bit PCM は約 635MB になる）。
   1. 波形のビン（10ms ごとのピークと RMS）
-  2. フレーム特徴量（10ms ホップ、25ms 窓の対数エネルギー。Silero VAD を採用する場合は発話確率）
-  3. 文字起こしが有効な場合のみ、16kHz PCM の一時ファイル
+  2. フレーム特徴量（10ms ホップ、25ms 窓の対数エネルギー。Silero VAD を採用する場合は発話確率）。端末内の自動分割と、文字起こしの時刻のずれの自動補正（§7.4.6）に使う
 - **時間軸**: 出力したサンプル数の累計から時刻を求め、エンコーダ遅延（ギャップレス情報）の扱いを ExoPlayer と一致させる。既知の位置にクリック音を置いたテスト音源で、解析上の時刻と再生位置のずれが 20ms 未満であることを検証する。
 - 波形と特徴量は数秒分ごとに途中保存し、UI に段階的に表示する。
 
@@ -661,64 +736,127 @@ PlaybackService : MediaSessionService
 2. **適応閾値**: ノイズフロア N = E の 10 パーセンタイル、発話レベル S = 90 パーセンタイルとし、閾値 T = N + r × (S − N)（r = `thresholdRatio`、既定 0.3）とする。T は -60〜-25 dBFS に収める。BGM の強さが途中で変わる教材向けに、パーセンタイルを 30 秒程度の移動窓で求めるモードも用意する。
 3. **ヒステリシス**: E > T + 3dB で発話の開始、E < T で発話の終了とみなす。
 4. `minSilenceMs` 以上続く無音を区切りとして発話区間を抽出する。
-5. `minSpeechMs` 未満の発話は、近くに（300ms 未満）別の発話があれば統合し、孤立していればノイズとして捨てる。
+5. `minSpeechMs` 未満の短い発話は、前後どちらかの隣の発話との間隔が `mergeGapMs`（既定 1,000ms。`minSilenceMs` 以上）未満なら、近い方に統合する。統合先がなく、かつエネルギーが低い（ピークが T + 6dB 未満）場合だけノイズとして捨てる（「Yes」「はい」のような短い単語は残す）。
 6. `maxChunkMs` を超える区間は、内部で最もエネルギーの低い谷（150ms 以上の低エネルギー区間を優先）で再帰的に分割する。
 7. 前後にパディング（`prePaddingMs` / `postPaddingMs`）を付ける。ただし、隣のチャンクとの間にある無音の中点を越えない。
 
 - VAD は `VoiceActivityDetector` インターフェースで差し替えられるようにする。既定はエネルギー方式（依存ライブラリなし）。BGM の強い教材向けに Silero VAD（ONNX、約 2MB）を P1 で評価する（依存の追加は審査のうえで決める）。
-- **再分割**: パラメータを変えたら、保存済みの特徴量から再計算する（数十 ms で終わる）。スライダーを動かしながら結果を即座にプレビューできる。
-- `algorithmVersion` を保存し、アルゴリズムを更新したら自動分割（`AUTO`）のチャンクだけを再計算の対象にする（手動編集や字幕から取り込んだチャンクは保持する）。
+- **再分割**: パラメータを変えたら、保存済みの特徴量から再計算する（数十 ms で終わる）。スライダーを動かしながら結果を即座にプレビューできる。確定したら §6.4 のトランザクションで保存する。
+- `algorithmVersion` を保存し、アルゴリズムを更新したら自動分割（`AUTO`）のチャンクだけを再計算の対象にする（手動編集や文字起こしファイルから取り込んだチャンクは保持する）。
 
 #### 7.3.4 実行管理（WorkManager）
 
-- 「特徴量の計算 + 分割」と「文字起こし」は別の Worker にし、ユニークワーク名を `analysis-<MediaId>` と `transcription-<MediaId>` に分ける（同じ名前にすると、`KEEP` で後からの文字起こし要求が捨てられるため）。文字起こしのジョブは、分割が終わった時点で（文字起こしが有効なら）投入する。
-- **特徴量の計算と分割**: 30 分の音声で 60 秒以内を目標とする処理。通常 / expedited / 長時間ワーカー（`setForeground()`）のどれで実行するかは、S3 の実測で決める（2 時間の音声でも途中で止まらないことが条件）。
-- **文字起こし（一括処理）**: 長時間になり得るため、`setForeground()` を使う長時間ワーカーとして実行する（フォアグラウンドサービスの種類は API 35 以上で `mediaProcessing`、API 34 で `dataSync`）。クラウドエンジンを使う場合はネットワーク制約を付ける。逐次処理（§7.4.2）のエンジンでは Worker を使わず、再生中にアプリ内で処理する。
+- 「特徴量の計算 + 分割」を `AnalysisWorker`（`CoroutineWorker`）で行い、MediaId ごとのユニークワーク（`analysis-<MediaId>`、`ExistingWorkPolicy.KEEP`）として投入する。文字起こしは PC で行うため、端末内に文字起こしの Worker はない。
+- **前提となるプラットフォームの制約**
+  - Android 12 以降、アプリがバックグラウンドにある間に `setForeground()` を呼ぶと `ForegroundServiceStartNotAllowedException` になる（「すでに別のフォアグラウンドサービスを実行中」は例外の条件にない）。
+  - Android 16 では、通常 / expedited のジョブは、アプリが可視の間に開始したものや、フォアグラウンドサービスと並行して動くもの（再生中など）にも実行時間の割り当て（quota）が適用される。停止の理由は `WorkInfo.getStopReason()` で記録する。
+  - targetSdk 35 以上では、`dataSync` と `mediaProcessing` のフォアグラウンドサービスはそれぞれ 24 時間あたり 6 時間までで、超えると `onTimeout` で止められる。
+- **実行方式**: 取り込み直後（アプリが前面にある間）に、`setForeground()` を使う長時間ワーカーとして開始する（前面で開始したフォアグラウンドサービスは、その後アプリが背面に回っても続けられる。種類は API 35 以上で `mediaProcessing`、API 34 で `dataSync`）。バックグラウンドで投入された場合（例: アルゴリズム更新による再計算）は、次にアプリが前面に来たときに実行する。30 分の音声で 60 秒以内が目標で、実行方式の最終判断は S3 の実測で行う。
+- **マニフェスト**: WorkManager の `androidx.work.impl.foreground.SystemForegroundService` に `foregroundServiceType="mediaProcessing|dataSync"` を `tools:node="merge"` で追加し、`FOREGROUND_SERVICE_MEDIA_PROCESSING` と `FOREGROUND_SERVICE_DATA_SYNC` の権限を宣言する。
 - 進捗は Room の `analysis_state` に書き込み（0.5 秒に 1 回程度に間引く）、UI は Repository の Flow で購読する。プロセスが終了しても表示を復元できる。
-- **中断と再開**: 文字起こしは未処理のチャンクから再開する。デコードは高速なので最初からやり直す。
+- **中断と再開**: デコードは高速なので、止められたら最初からやり直す。
 
-### 7.4 文字起こしと言語判定（`core:transcription`）
+### 7.4 文字起こし（PC で生成して取り込む）
 
 #### 7.4.1 目的
 
 1. 再生位置に同期したスクリプトの表示
-2. チャンクごとの言語ラベル → 言語フィルタ再生、瞬間英作文モード
-3. 検索やブックマークの手がかり
+2. 自然なチャンクの区切り（文単位。端末内の無音検出より学習に使いやすい）
+3. チャンクごとの言語ラベル → 言語フィルタ再生、瞬間作文モード
+4. 検索やブックマークの手がかり
 
-#### 7.4.2 エンジンの候補（Phase 0 のスパイク S1 で評価する）
+#### 7.4.2 全体の流れ
 
-| 候補 | 処理場所 | 2 言語の判定 | 長所 | 短所・リスク |
-| --- | --- | --- | --- | --- |
-| A. Android `SpeechRecognizer`（オンデバイス） | 端末 | `EXTRA_ENABLE_LANGUAGE_DETECTION` + `EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES`（API 34） | 追加の依存なし、無料、オフライン。`EXTRA_AUDIO_SOURCE`（API 33）でファイル由来の PCM を入力できる | これらの機能は「認識エンジンの実装によっては無効」と明記されており、実機での検証が必須。本来はマイク入力（実時間）向けの API で、同時に 1 セッションのみ。実時間より速く処理できるか、バックグラウンドで動くかも未知 |
-| B. ML Kit GenAI Speech Recognition | 端末 | なし（認識器ごとに 1 ロケール）→ LID を別に用意する | Google 公式 SDK。`AudioSource.fromPfd()` で PCM を入力できる。Advanced モードは高精度（対応端末のみ） | 確認時点の公式サンプルは alpha 版（`1.0.0-alpha1`）。言語判定がない。エラーコードに `BACKGROUND_USE_BLOCKED`（バックグラウンドでは使えない）と `AUDIO_BUFFER_OVERFLOW`（入力が速すぎる）があり、Worker での一括処理や実時間より速い処理には向かない可能性が高い。モデルのダウンロードや対応端末にも制約がある |
-| C. Whisper 系（whisper.cpp、sherpa-onnx など） | 端末 | 言語トークンの確率を候補の 2 言語に限定して比較する（尤度の比較として理にかなう） | 完全オフライン、端末に依存しない、単語単位のタイムスタンプ、バックグラウンドでの一括処理が可能 | NDK / JNI の保守、数十〜数百 MB のモデルのダウンロード管理、大きいモデルは低速、日本語の精度はモデル次第 |
-| D. Gemini（Firebase AI Logic 経由） | クラウド | プロンプトと JSON スキーマで、言語ラベル付きの書き起こしを得る | 日英混在や句読点の整形に強い。一括処理が可能 | 通信と従量課金、送信の同意が必要。App Check が必須。音声中の時刻指定は粗いため、端末で切り出したチャンク単位で送る |
+```text
+[利用者]   音声を Google Drive の教材フォルダに置く（例: GogakuPlayer/korean-course/lesson01.mp3）
+     │
+[PC]       Google Drive for desktop がフォルダを同期する
+     │
+[PC]       gogaku-transcribe が未処理の音声を見つけて文字起こしし、
+           lesson01.gogaku.json を同じフォルダに書き込む
+     │
+[Drive]    JSON が同期される
+     │
+[アプリ]   音声と JSON を選んで取り込む（または JSON だけを後から取り込む）
+```
 
-- **処理モード**: 文字起こしには 2 つの使い方がある。
-  - **一括処理**: 取り込み後に Worker でファイル全体を処理する（実時間より速く、バックグラウンドで動くことが前提）。
-  - **逐次処理**: 再生中のチャンクを、再生と並行してその場で文字起こしする（初回の視聴中にスクリプトが埋まっていく）。実時間の処理で足り、アプリが前面にある間だけ動けばよい。
-- **方針**: インターフェースと「字幕ファイルからの取り込み（`IMPORTED`）」を先に実装し、エンジンはスパイクの結果で選ぶ。暫定の推奨は「一括処理 = C（端末内）または D（オプトイン）」「逐次処理 = A / B（無料・端末内）」。A / B が一括処理にも使えることが S1 で確認できれば、既定を A / B に寄せる。
-- **評価指標**: 英語の WER / 日本語の CER、チャンク単位の言語判定の正解率（1 秒以上と 1 秒未満で分けて集計）、処理速度（実時間比）、バックグラウンドでの実行可否、モデルのサイズ、電池消費、失敗時の挙動。結果は `docs/adr/` に記録する。
+- **この方式を選んだ理由**: GPU で大きな Whisper モデル（`large-v3` 系）を使えるため、端末内の認識より精度が高く、インドネシア語や韓国語を含む多くの言語に対応できる。アプリには機械学習の処理も通信も不要になり、課金も発生しない。
+- **代償**: 文字起こしが使えるのは PC で処理した後になる。文字起こしがなくても、アプリは端末内の無音検出でチャンクを作って使える（§7.3.3）。
+- 教材フォルダ（コース）ごとに `gogaku.toml` を置き、言語ペアなどを書く（§7.4.4）。
 
-#### 7.4.3 2 言語の判定方式
+#### 7.4.3 文字起こしの形式（`gogaku-transcript` v1）
 
-- LID 機能を持つエンジン（A、C、D）では、判定の候補を `LanguagePair` の 2 言語に限定する。
-- LID 機能のないエンジン（B）では、先に軽量な LID で言語を決めてから、その言語のロケールで認識する。
-- 両方の言語で認識して信頼度を比べる方式（v0.1 案）は、LID の結果に確信がない場合のフォールバックに限る。言語モデル間の信頼度は較正されておらず、コストも 2 倍になるため。
-- 短いチャンク（1 秒未満。「OK」「はい」など）は判定が不安定なため、前後のチャンクの言語と信頼度で平滑化する（教材では同じ言語が続きやすい性質を利用する）。それでも信頼度が低ければ「?」と表示し、手動で修正できるようにする。
+- **ファイル名**: 音声のファイル名から拡張子を除き `.gogaku.json` を付ける（例: `lesson01.mp3` → `lesson01.gogaku.json`）。音声と同じフォルダに置く。
+- **仕様**: JSON Schema（`docs/format/gogaku-transcript-v1.schema.json`）とサンプル（`docs/format/examples/`）を lead が管理する。PC ツールとアプリの間の契約なので、変更は §10.3 の手順に従う。
 
-#### 7.4.4 実行順序・保存・無効化
+```json
+{
+  "format": "gogaku-transcript",
+  "version": 1,
+  "audio": { "fileName": "lesson01.mp3", "sha256": "3f8a…（64 桁の 16 進数）", "durationMs": 1834560 },
+  "languages": { "target": "ko", "base": "ja" },
+  "generator": { "tool": "gogaku-transcribe 0.1.0", "model": "large-v3-turbo", "createdAt": "2026-10-14T12:00:00Z" },
+  "segments": [
+    { "startMs": 12340, "endMs": 14020, "lang": "ja", "langProb": 0.99,
+      "text": "では、聞いてみましょう。" },
+    { "startMs": 15210, "endMs": 17480, "lang": "ko", "langProb": 0.97,
+      "text": "안녕하세요. 만나서 반갑습니다.",
+      "words": [
+        { "startMs": 15210, "endMs": 15990, "text": "안녕하세요.", "prob": 0.95 },
+        { "startMs": 16120, "endMs": 16630, "text": "만나서", "prob": 0.93 },
+        { "startMs": 16700, "endMs": 17480, "text": "반갑습니다.", "prob": 0.96 }
+      ] }
+  ]
+}
+```
 
-- 現在の再生位置に近いチャンクから優先して処理し、1 件ごとにすぐ保存する（できた順に表示される）。
-- 再分割や手動編集でチャンクが変わった場合、境界が一致する（±50ms 以内）チャンクの結果は引き継ぎ、それ以外だけを処理し直す。
-- ユーザーが修正したテキストや言語（`userEdited = true`）は、自動処理で上書きしない。
+- **規則**
+  - 文字コードは UTF-8、テキストは NFC に正規化する。マークアップは含めない。
+  - 時刻はミリ秒の整数で、デコードした音声の先頭からの時刻。エンコーダ遅延はギャップレス情報に従って取り除く（ffmpeg と ExoPlayer の既定の扱いに合わせる）。残るずれはアプリ側で補正する（§7.4.6）。
+  - `segments` は学習用のチャンク（文単位が目安）。時刻は発話そのものの範囲で、前後のパディングはアプリが付ける。開始時刻の順に並べ、重ならないようにする。
+  - `lang` は `languages` のどちらか。判定できなければ `null`。`langProb` は、候補の 2 言語の中での確率（0〜1）。
+  - `words`（単語単位の時刻）は任意。カラオケ表示（F7.7）や、アプリでのチャンクの分割・結合に使う。
+  - `audio.sha256` は音声ファイルのバイト列そのものの SHA-256（小文字の 16 進数）。アプリはこれで音声と対応付ける。
+  - `languages.base` は省略できる（単一言語の教材）。
+- **互換性**: 知らないフィールドは無視する（フィールドの追加は互換）。互換性を壊す変更では `version` を上げ、アプリは対応していない版を「非対応の版」として拒否する。v1 の時点で予定している追加は、`translation`（母語の訳。F10.3）と `speaker`（話者）。
 
-#### 7.4.5 クラウドエンジンを採用する場合の条件
+#### 7.4.4 PC ツール（`tools/transcriber`、Python）
 
-- アプリに API キーを埋め込まない。Firebase AI Logic と App Check（Play Integrity）を使う。
-- 初回の利用時に「音声が Google のサーバーに送信される」ことを説明して同意を得る。教材ごとにオン / オフを切り替えられる。
-- 送信するのは 16kHz モノラルに変換したチャンクの音声だけ（1 リクエストにつき音声 1 件、インラインデータは 20MB 以内）。並列数を制限し、利用量（チャンク数と推定コスト）を設定画面に表示する。
-- 応答は JSON スキーマで受け取り、検証に失敗した結果は表示せずに破棄する。
+- **コマンド**: `gogaku-transcribe <フォルダまたはファイル> [--target ko] [--base ja] [--model large-v3-turbo] [--watch] [--force]`
+- **設定**: 教材フォルダの `gogaku.toml` に、言語ペア、モデル、VAD とチャンクのパラメータを書く。コマンドの引数が優先する。言語ペアの指定がなければ、ファイル全体の言語判定で上位 2 言語を推定してログに出す（誤りやすいので、設定ファイルでの指定を推奨する）。
+- **処理の流れ**
+  1. ffmpeg で 16kHz・モノラルにデコードし、音声ファイルの SHA-256 を計算する。
+  2. Silero VAD で発話区間を求め、短い無音でつながる区間をまとめて候補チャンクにする（長すぎる区間は分ける）。
+  3. 候補チャンクごとに Whisper の言語判定を行い、確率を言語ペアの 2 言語に限って比べる（§7.4.5）。
+  4. チャンクごとに、判定した言語を指定して文字起こしする。単語単位の時刻を付け、前のチャンクの文脈は引き継がない（言語が混ざるのと、繰り返しの誤認識を防ぐため）。
+  5. 単語の時刻・句読点・無音を使って、学習に使いやすい文単位のチャンクに整える（長すぎるものは分け、短すぎるものはつなぐ）。
+  6. JSON を一時ファイルに書いてから名前を変えて置き換える（書きかけのファイルを Drive に同期させないため）。出力は JSON Schema で検証する。
+- **エンジン**: GPU の種類で選び、ツールの中で差し替えられるようにする。
+  - NVIDIA: faster-whisper（CUDA 12 / cuDNN 9）。`turbo` や `large-v3` のモデル、単語単位の時刻、VAD、言語判定（全言語の確率）が使える。
+  - Apple Silicon: mlx-whisper または whisper.cpp（Metal）。
+  - AMD: whisper.cpp（Vulkan）。
+- **監視モード**（F10.2）: Google Drive for desktop で同期されたフォルダを定期的に確認し、JSON がない音声と、古い版のツールで作った JSON の音声を処理する。`--force` で作り直す。
+- **モデル**: 取得元とリビジョンを固定する（設定ファイルで指定する）。
+- **ログ**: 処理時間、チャンク数、言語ごとの割合、確率の低いチャンクの数を出す（品質の目安）。
+- **テスト**: チャンクの整形と言語の平滑化は純粋な関数にして pytest で検証する。出力はサンプルと JSON Schema で検証する。GPU が必要なテストは手元でのみ実行し、CI ではモックを使う。
+
+#### 7.4.5 言語が混ざった教材の判定（PC 側）
+
+- Whisper は既定では冒頭（約 30 秒）の音声で言語を 1 つに決め、ファイル全体をその言語として文字起こしする。そのまま使うと、もう一方の言語の発話を訳して書いたり、別の文字で書いたりすることがある。日本語の解説と韓国語のダイアログが交互に現れるような教材では、チャンクごとの判定が必須になる。
+- 判定はチャンクごとに行い、候補を `languages` の 2 言語に限る（Whisper が返す全言語の確率のうち、2 言語の値を比べる）。両方の言語で認識して信頼度を比べる方式は、信頼度が較正されておらずコストも 2 倍になるため使わない。
+- 短いチャンク（1 秒未満。「OK」「はい」「네」など）は判定が不安定なため、前後のチャンクの言語と確率で平滑化する（教材では同じ言語が続きやすい性質を利用する）。それでも確率が低ければ `lang` を `null` にする。アプリでは「?」と表示し、手動で修正できる（F7.3）。
+- 単一言語の教材（`base` なし）では判定を省く。
+
+#### 7.4.6 アプリでの取り込み（`core:transcript`）
+
+- **解析**: gogaku JSON は kotlinx.serialization で読み、知らないフィールドは無視する。SRT / WebVTT / LRC（F1.4）には言語の情報がないため、言語は未判定として取り込む（一括で学習言語に設定する操作を用意する）。
+- **検証**（不正なら取り込まない）: 形式名と版、時刻が 0 以上で `startMs < endMs`、開始時刻の順で重ならない、音声の長さを超えない（超えた分は切り詰める）、`lang` が言語ペアのどちらかか `null`、サイズと件数の上限（§8.1）。
+- **対応付け**: `audio.sha256` で教材を探す。教材の長さと `durationMs` が 0.5 秒以上違う場合は警告する（別の版の音声の可能性がある）。
+- **言語ペア**: JSON の `languages` を教材の言語ペアとして使う。教材側で手動設定した値と違う場合は、確認してから上書きする。
+- **チャンクへの変換**: 各セグメントを `IMPORTED` のチャンクにし、前後のパディング（§7.3.3 の手順 7 と同じ規則）を付けて再生範囲にする。テキスト・言語・単語の時刻を `transcript` に保存し、`engine` には JSON の `generator.model` を入れる。
+- **再取り込み**（PC で作り直した場合）: §6.4 のトランザクションでチャンクを作り直す。手動で修正した文字起こし（`userEdited = true`）は、境界が一致する（±50ms 以内）チャンクに引き継ぐ。一致しないものも捨てずに、最も重なりの大きい新しいチャンクへ引き継ぐ。
+- **時刻のずれの補正**（F7.6）: 文字起こしの発話の開始時刻と、端末内の解析で求めた発話の立ち上がり（§7.3.1 の特徴量）を比べ、±500ms の範囲で最もよく一致するずれを `transcriptOffsetMs` として自動で設定する。設定画面で 10ms 単位の手動調整もできる。
+- 端末内で文字起こしする場合の選択肢（現時点では採用しない）は付録 C にまとめる。
 
 ### 7.5 UI / UX（`feature:*`、`core:designsystem`）
 
@@ -735,16 +873,17 @@ PlaybackService : MediaSessionService
 │ TopAppBar: タイトル                  [⋮] │
 ├──────────────────────────────────────────┤
 │ 全体波形（チャンク境界・表示範囲の枠）   │ タップ / ドラッグでシーク
-│ 拡大波形（チャンクを言語別に色分け）     │ ピンチでズーム、長押し＋ドラッグで A-B
+│ 拡大波形（学習言語 / 母語で色分け）      │ ピンチでズーム、長押し＋ドラッグで A-B
 ├──────────────────────────────────────────┤
 │ チャンク / スクリプト一覧                │ 現在のチャンクを強調し、自動で追従
-│  00:12  [EN] How have you been?          │ タップ = 頭出し
-│  00:15  [JA] お元気でしたか？            │ 長押し = メニュー（リピート・ブックマーク・編集）
+│  00:12  [JA] では、聞いてみましょう。    │ タップ = 頭出し
+│  00:15  [KO] 안녕하세요. 만나서          │ 長押し = メニュー（リピート・ブックマーク・編集）
+│              반갑습니다.                 │ 長い文は折り返す。行ごとにその言語のロケールで表示
 │                       [現在位置へ戻る]   │
 ├──────────────────────────────────────────┤
-│ 学習モード: [リピート×3] [自動ポーズ] [言語] [1.0x] │
-│ ProgressSlider                            │
-│  [⏮]  [↺3s]   [ ▶ ]   [↻5s]  [⏭]        │ ⏮ / ⏭ = 前 / 次のチャンク
+│ [リピート×3] [自動ポーズ] [言語] [1.0x]  │ 学習モードの切り替え
+│ ProgressSlider                           │
+│  [⏮]  [↺3s]   [ ▶ ]   [↻5s]  [⏭]         │ ⏮ / ⏭ = 前 / 次のチャンク
 └──────────────────────────────────────────┘
 ```
 
@@ -758,7 +897,7 @@ PlaybackService : MediaSessionService
 | 学習モードの切り替え | `FilterChip`、`SegmentedButton` |
 | チャンク一覧 | `LazyColumn` + `ListItem` |
 | 解析の進捗 | `LinearProgressIndicator`（段階ごとに表示） |
-| 確認・同意 | `AlertDialog` |
+| 確認（言語ペアの上書き、削除など） | `AlertDialog` |
 
 - Media3 の Compose UI モジュールは比較的新しく、`@UnstableApi` を含む。`core:designsystem` の薄いラッパー経由で使い、API 変更の影響を局所化する。
 - Material 3 Expressive 系の API は、安定版に揃った時点で段階的に採用する（当面は安定版 1.4 系の API を使う）。
@@ -769,15 +908,18 @@ PlaybackService : MediaSessionService
 - 再生ヘッドは別のレイヤーに描く。再生中だけ `withFrameNanos` のループで描画フェーズだけを無効化し、再コンポーズはしない。位置は `PositionProvider` から読む。
 - 拡大波形は再生位置を中心に追従する。表示範囲の 3 倍の幅を描画済みにしておき、`graphicsLayer { translationX = ... }` で平行移動して、はみ出すときだけ Path を作り直す。
 - ジェスチャー: タップ = シーク、横ドラッグ = スクラブ、ピンチ = ズーム（2 秒〜全体）、長押し＋ドラッグ = A-B の範囲選択。
+- 画面端の横ドラッグはシステムの「戻る」ジェスチャーに取られるため、波形の操作領域に `Modifier.systemGestureExclusion()` を付ける（除外できるのは各辺で縦 200dp まで）か、ドラッグ用のハンドルを画面端から離して配置する。
 - アクセシビリティ: `progressBarRangeInfo` と `customActions`（前 / 次のチャンク、巻き戻し）を付ける。
 
 #### 7.5.5 スクリプト一覧
 
 - `LazyColumn` の `key` にチャンク ID を使い、現在のチャンクを強調する（`ListItem` の色と左端のインジケーター）。
 - **自動追従**: 現在のチャンクが変わったら `animateScrollToItem` でスクロールする。ユーザーがスクロールしている間と、その後 5 秒間は追従を止め、「現在位置へ戻る」ボタンを表示する。
-- 言語のバッジは色とテキスト（EN / JA）の両方で示す（色覚の多様性への配慮）。
-- **ブラインドモード**: テキストを伏せておき、タップで一時的に表示する（聞き取りの練習用）。
-- 未処理のチャンクは「文字起こし待ち」、言語の信頼度が低いものは「?」と表示する。
+- **言語のバッジ**: 言語コード（KO / JA / ID / EN など）のテキストと色の両方で示す（色覚の多様性への配慮）。色は言語ではなく役割（学習言語 / 母語）で決め、どの言語ペアの教材でも同じ配色にする。
+- **言語に合った表示**: 各行の `TextStyle` に、その行の言語タグから作った `localeList` を指定する。日本語・中国語・韓国語で字形が異なる漢字や、言語ごとの改行の規則が正しく扱われる。言語が不明な行は端末の既定のロケールで表示する。
+- **ブラインドモード**: テキストを伏せておき、タップで一時的に表示する（聞き取りの練習用）。学習言語の行だけを伏せることもできる（母語の文を見て、学習言語で言ってみる練習に使う）。
+- **文字起こしがない教材**: チャンクの時刻だけを表示し、「PC で文字起こしを作って取り込むと、スクリプトが表示されます」という案内と、文字起こしファイルを選ぶボタンを表示する。
+- 言語を判定できなかったチャンク（`Transcript.language` が `null`）は「?」と表示し、長押しのメニューから修正できる（F7.3）。
 
 #### 7.5.6 アダプティブ対応・テーマ・システム要件
 
@@ -794,27 +936,34 @@ PlaybackService : MediaSessionService
 
 | 資産・入力 | 脅威 | 対策 |
 | --- | --- | --- |
-| 教材の音声・文字起こし（著作物や個人的な内容を含み得る） | 他アプリからの読み取り、意図しない外部送信、バックアップ経由の流出 | 内部ストレージ（サンドボックス + ファイルベース暗号化）に保存し、外部ストレージには書かない。クラウドはオプトイン。バックアップの対象から外す |
-| 取り込むファイル（信頼できない入力） | 不正なコンテナや巨大なファイルによるクラッシュ / DoS、パストラバーサル | 形式の検証、サイズと空き容量の確認、UUID のファイル名、デコード失敗を項目単位で隔離 |
-| 字幕・スクリプトファイル（LRC / SRT / VTT） | 巨大な入力や異常な行によるハング | サイズ上限（例: 5MB）と行の長さの上限、線形時間で動くパーサ（破滅的なバックトラックを起こす正規表現を使わない） |
+| 教材の音声・文字起こし（著作物や個人的な内容を含み得る） | 他アプリからの読み取り、意図しない外部送信、バックアップ経由の流出 | 内部ストレージ（サンドボックス + ファイルベース暗号化）に保存し、外部ストレージには書かない。アプリは通信しない（`INTERNET` 権限なし）。バックアップの対象から外す |
+| 取り込む音声ファイル（信頼できない入力） | 不正なコンテナや巨大なファイルによるクラッシュ / DoS、パストラバーサル | 形式の検証、サイズと空き容量の確認、UUID のファイル名、デコード失敗を項目単位で隔離 |
+| 文字起こしファイル（gogaku JSON / SRT / WebVTT / LRC）。自分の PC で作ったものでも、信頼できない入力として扱う | 巨大な入力や異常な値によるメモリ不足・ハング・クラッシュ、表示の崩れ | 上限（ファイル 20MB、セグメント 50,000 件、1 セグメントのテキスト 2,000 文字）を読み込みながら確認する。厳密な検証（§7.4.6）。線形時間で動くパーサ（破滅的なバックトラックを起こす正規表現を使わない）。テキストはプレーンテキストとしてのみ表示する（HTML や WebVTT のタグを解釈しない） |
 | メタデータ（ID3 タグなど） | 表示の崩れ、パスへの混入 | Compose の `Text` でプレーンテキストとしてのみ表示し（HTML として解釈しない）、パスには使わない |
-| MediaSession（エクスポートされたサービス） | 他アプリからの不正な操作 | 標準コマンドは許可する（システム UI と Bluetooth に必要）。カスタムコマンドは `ControllerInfo` を確認し、自アプリと信頼済みのシステムからのみ受け付ける |
+| MediaSession（エクスポートされたサービス）と `MediaButtonReceiver`（エクスポートされた受信機） | 他アプリからの不正な操作 | 標準コマンドとメディアボタンのイベントは許可する（システム UI・Bluetooth・再生再開に必要。影響は再生操作に限られるため許容する）。カスタムコマンドは `ControllerInfo` を確認し、自アプリと信頼済みのシステムからのみ受け付ける |
 | 他アプリから受け取るインテント（共有・「開く」） | 想定外のスキームの URI、巨大なファイル | `content://` のみ受け付け、取り込み処理と同じ検証を通す |
-| クラウド API | 鍵の抽出、不正利用、課金攻撃 | 鍵を埋め込まない。Firebase AI Logic + App Check、利用量の上限 |
+| PC ツール（`tools/transcriber`） | 改ざんされたモデルや依存パッケージの実行、音声の外部送信 | モデルは取得元とリビジョンを固定し、依存は `uv.lock` でハッシュごと固定する。推論はローカルで行い、音声や文字起こしを外部のサービスに送らない |
 
 ### 8.2 実装ルール
 
-- **権限**: `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO` は要求しない（SAF のみを使う）。`INTERNET` はクラウドエンジンを採用した場合にのみ追加する（ビルドフレーバーで分け、通信しない `offline` フレーバーを用意する案も検討する）。
+- **権限**: 最小限にし、追加するときは理由を ADR に残す。
+  - 宣言する: `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`FOREGROUND_SERVICE_MEDIA_PROCESSING`、`FOREGROUND_SERVICE_DATA_SYNC`、`WAKE_LOCK`、`POST_NOTIFICATIONS`。実行時に許可を求めるのは `POST_NOTIFICATIONS` だけで、解析の進捗通知のためなので、拒否されても機能は動作する。
+  - 宣言しない: `INTERNET`（アプリは通信しない。Drive API による自動同期（F1.5）を加える場合にだけ見直す）、`READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO`（SAF のみを使う）、`RECORD_AUDIO`（自分の声の録音を加える場合にだけ見直す）。
+  - 依存ライブラリがマニフェストのマージで権限を持ち込んでいないことを CI で確認する（持ち込まれた場合は `tools:node="remove"` で取り除くか、依存を見直す）。
+  - Google Play では公開しないため、フォアグラウンドサービスの種類ごとの申告は不要（公開することになった場合は必要）。
 - **ファイル**: 保存名は UUID にする。削除するときは、正規化したパスがアプリの管理ディレクトリ配下にあることを確認する。Java のシリアライズ（`ObjectInputStream`）は使わない。
-- **エクスポートするコンポーネント**: `MainActivity`（ランチャー、共有・「開く」の受け口）と `PlaybackService` のみ。
-- **通信**: HTTPS のみ（cleartext 通信の禁止は targetSdk 28 以上の既定）。
+- **文字起こしファイルの読み込み**: kotlinx.serialization で決まった型として読み（任意のクラスへの逆シリアライズはしない）、サイズの上限を超えたら読み込みを打ち切る。検証を通るまでは DB に書かない。
+- **エクスポートするコンポーネント**: `MainActivity`（ランチャー、共有・「開く」の受け口）、`PlaybackService`、`MediaButtonReceiver`（再生の再開に必要）のみ。マージ後のマニフェストを CI で確認する（§9）。
+- **通信**: アプリは通信しない。将来通信を加える場合も HTTPS のみとする（cleartext 通信の禁止は targetSdk 28 以上の既定）。
 - **ログ**: リリースビルドでは、ファイル名・URI・文字起こしの本文をログに出さない。
 - **バックアップ**: `dataExtractionRules` で `filesDir/media/` と解析ファイルを除外する（大容量かつ著作物のため）。DB と設定の扱いは §13 で決める。
-- **依存関係**: 新しい依存を加える前に、ライセンス・保守状況・既知の脆弱性を確認し、バージョンを Version Catalog で固定する。
-- **リリース**: R8 による縮小・難読化を有効にする。署名鍵や Firebase の設定などの秘密情報はリポジトリに含めない。
+- **依存関係**: 新しい依存を加える前に、ライセンス・保守状況・既知の脆弱性を確認し、バージョンを固定する（アプリは Version Catalog、PC ツールは `uv.lock`）。
+- **PC ツール**: Whisper のモデルは取得元（例: Hugging Face のリポジトリ）とリビジョン（コミットハッシュ）を設定で固定する。推論はローカルで行い、音声や文字起こしを外部のサービスに送らない。書き込むのは、入力の音声と同じフォルダの `*.gogaku.json` とその一時ファイルだけにする。
+- **リリース**: R8 による縮小・難読化を有効にする。署名鍵などの秘密情報はリポジトリに含めない。
 - **意図的に見送る対策**（実装時はコードにも `TODO(security)` を残す）
   - `TODO(security)`: 保存データのアプリ独自の暗号化は行わない。サンドボックスとファイルベース暗号化で十分と判断する（root 化された端末は対象外）。
   - `TODO(security)`: 取り込みファイルのマルウェアスキャンは行わない。実行されないメディアデータであり、デコーダの堅牢性は OS と Media3 に依存する。
+  - `TODO(security)`: 文字起こしファイルの署名による改ざんの検知は行わない。自分の PC と自分の Google Drive の間でだけ受け渡すため。内容が不正な場合の影響は、検証と上限で抑える。
 
 ---
 
@@ -822,22 +971,27 @@ PlaybackService : MediaSessionService
 
 | レベル | 対象 | 手段 |
 | --- | --- | --- |
-| 単体（JVM） | `core:audio`（分割・波形の縮約・リサンプラ）、字幕パーサ、Repository、ViewModel | JUnit、kotlinx-coroutines-test、Turbine。合成信号（トーンバースト + 無音 + ノイズ / BGM）で期待する境界との誤差 ±10ms 以内を検証する |
-| 再生ロジック | LearningPlayer、ChunkScheduler（ループの行き過ぎ、自動ポーズの長さ、前 / 次の再割り当て） | `media3-test-utils`（`TestExoPlayerBuilder` + `FakeClock`）と Robolectric で、時間を決定的に進めて検証する |
-| 結合（実機 / エミュレータ） | 各形式のデコード、解析上の時刻と再生位置の一致、Room のマイグレーション、取り込みから再生まで | AndroidX Test、`MigrationTestHelper` |
-| UI | 画面の状態（解析中・完了・エラー、ライト / ダーク、スマートフォン / タブレット） | Compose UI テスト、スクリーンショットテスト（Roborazzi など） |
-| 手動（Pixel 実機） | Bluetooth イヤホンでの操作、ロック画面、通話による中断、2 時間の音声、電池消費 | チェックリスト（`docs/manual-test.md`） |
+| 単体（JVM） | `core:audio`（分割・波形の縮約・リサンプラ）、`core:transcript`（gogaku JSON / SRT / WebVTT / LRC の解析・検証・チャンクへの変換）、Repository、ViewModel | JUnit、kotlinx-coroutines-test、Turbine。合成信号（トーンバースト + 無音 + ノイズ / BGM）で期待する境界との誤差 ±10ms 以内を検証する |
+| 再生ロジック | LearningPlayer、ChunkScheduler（ループの行き過ぎ、自動ポーズの長さ、前 / 次の再割り当て、言語フィルタ） | `media3-test-utils`（`TestExoPlayerBuilder` + `FakeClock`）と Robolectric で、時間を決定的に進めて検証する |
+| 結合（実機 / エミュレータ） | 各形式のデコード、解析上の時刻と再生位置の一致、Room のマイグレーション、取り込みから再生まで、文字起こしの再取り込み（手動修正の引き継ぎ） | AndroidX Test、`MigrationTestHelper` |
+| UI | 画面の状態（解析中・完了・エラー・文字起こしなし、ライト / ダーク、スマートフォン / タブレット）、多言語の表示（日本語・韓国語・インドネシア語など） | Compose UI テスト、スクリーンショットテスト（Roborazzi など） |
+| PC ツール | `tools/transcriber` のチャンクの整形、言語の平滑化、JSON の出力 | pytest（純粋な関数と、モックにしたエンジン）、Ruff |
+| 契約 | `docs/format/` の JSON Schema とサンプル | アプリのパーサが正しいサンプルをすべて読め、不正なサンプル（`docs/format/examples/invalid/`）をすべて拒否すること。PC ツールの出力が Schema に合格すること |
+| 手動（Pixel 実機） | Bluetooth イヤホンでの操作、ロック画面、通話による中断、2 時間の音声、電池消費、Drive からの取り込み | チェックリスト（`docs/manual-test.md`） |
 
 - **テスト用の音源**: ライセンス上問題のない短い音源（合成音声やトーン）をスクリプトで生成し、期待するチャンク境界の JSON と一緒に `core:testing` に置く。実際の教材は手元での評価だけに使い、リポジトリには含めない（著作権のため）。
-- **静的解析**: Android Lint（新しい警告はエラー扱い）、Spotless + ktlint。
-- **CI**（GitHub Actions）: PR ごとに `spotlessCheck lint testDebugUnitTest assembleDebug` を実行する。
+- **文字起こしのフィクスチャ**: 言語ペアの異なるサンプル（ja-ko、en-id、単一言語）と、境界値・異常値のサンプルを `docs/format/examples/` に置き、アプリと PC ツールの両方のテストで使う。
+- **言語判定の評価**（S1、M3）: 実際の教材（ja-ko、en-id）の一部に、チャンクごとの正しい言語を手で付けた評価セットを手元で作り、PC ツールの判定の正解率を 1 秒以上 / 1 秒未満のチャンクに分けて測る。結果は `docs/spikes/` に記録する（評価セットの音声はリポジトリに含めない）。
+- **静的解析**: Android Lint（新しい警告はエラー扱い）、Spotless + ktlint。PC ツールは Ruff。
+- **CI**: ブランチを統合する前に（GitHub にリモートを置く場合は PR ごとに GitHub Actions で）、`spotlessCheck lint testDebugUnitTest assembleDebug` と、PC ツールの `uv run ruff check` / `uv run pytest`（GPU なし。エンジンはモック）を実行する。あわせて、マージ後のマニフェストでエクスポートされたコンポーネントと権限が §8.2 の一覧と一致することを確認する。
 - **セキュリティの検証項目**
   - 表示名に `../` やパス区切りを含むファイルを取り込んでも、`filesDir/media/` の外に書き込まれないこと
   - 破損したファイルや偽装されたファイル（拡張子だけ `.mp3` など）でクラッシュせず、エラーになること
-  - 巨大・異常な LRC / SRT でハングしないこと（タイムアウト付きのテスト）
+  - 巨大・異常な文字起こしファイル（上限を超えるサイズや件数、深い入れ子、負の時刻や逆転した時刻、言語ペアにない言語タグ、不正な UTF-8）が、ハングもクラッシュもせずに拒否されること（タイムアウト付きのテスト）
+  - 文字起こしのテキストに HTML や WebVTT のタグが含まれていても、文字としてそのまま表示されること
   - 外部アプリ（テスト用のコントローラ）からのカスタムコマンドが拒否されること
-  - リリース APK に API キーなどの秘密情報が含まれないこと（シークレットスキャン）、cleartext 通信が拒否されること
-  - クラウドを無効にしている間、ネットワーク通信が発生しないこと
+  - エクスポートされたコンポーネントと権限が §8.2 の一覧から増えていないこと（特に `INTERNET` がないこと）
+  - リリース APK に秘密情報が含まれないこと（シークレットスキャン）
 
 ---
 
@@ -845,7 +999,7 @@ PlaybackService : MediaSessionService
 
 ### 10.1 進め方
 
-- **事前準備**: 現在の `gogaku-player/` は親ディレクトリ（別プロジェクト）の Git リポジトリの中にあり、未追跡の状態です。ブランチや worktree で並行作業するため、また親ディレクトリのエージェント用ルールが混ざらないように、独立したリポジトリとして `git init` します。
+- **事前準備**（済）: `gogaku-player/` は独立した Git リポジトリにしてあります（親ディレクトリは別プロジェクトのリポジトリのため）。ブランチや worktree で並行作業するためと、親ディレクトリのエージェント用ルールが混ざらないようにするためです。
 - **Phase 0** は lead が単独で基盤（ビルド、モジュールの骨格、契約、Fake、CI）を作ります。並行開発はその後に始めます。
 - 並行作業はエージェントごとに別のブランチ / worktree で行い、lead が統合します。マイルストーンの最後にまとめるのではなく、機能単位で小さくマージします。
 - 設計の判断は ADR（`docs/adr/NNNN-タイトル.md`）に、スパイクの結果は `docs/spikes/` に記録します。
@@ -855,21 +1009,24 @@ PlaybackService : MediaSessionService
 
 | エージェント | 担当 | 書き込める範囲 | 実行できるコマンド |
 | --- | --- | --- | --- |
-| `lead` | 契約・ビルド設定・DI・画面遷移・DB スキーマ・設定・Fake・統合・ADR | `build-logic/`、`gradle/`、すべての `*.gradle.kts`（各モジュールへの依存追加を含む）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`、`AGENTS.md` | Gradle 全般、git |
-| `playback` | 取り込み・ライブラリ・再生・学習モード、スパイク S2 | `core/playback/`、`core/data/` の `library` パッケージ、`spikes/playback/` | 担当モジュールのビルド・テスト |
-| `audio-analysis` | デコード・波形・特徴量・分割・解析 Worker、スパイク S3 / S4 | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/` | 同上 |
-| `speech` | 文字起こし・言語判定のエンジン、字幕ファイルの取り込み、スパイク S1 | `core/transcription/`、`core/data/` の `transcription` パッケージ、`spikes/stt/` | 同上 |
+| `lead` | 契約（文字起こしの形式を含む）・ビルド設定・DI・画面遷移・DB スキーマ・設定・Fake・CI・統合・ADR | `build-logic/`、`gradle/`、すべての `*.gradle.kts`（各モジュールへの依存追加を含む）、リポジトリ直下の設定ファイル（`gradle.properties`、`.github/`、`.editorconfig`、`.gitignore` など）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`（`docs/format/` を含む。下の例外を除く）、`AGENTS.md` | Gradle 全般、uv、git |
+| `playback` | 取り込み・ライブラリ・再生・学習モード、スパイク S2 | `core/playback/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` | 担当モジュールのビルド・テスト |
+| `audio-analysis` | デコード・波形・特徴量・分割・解析 Worker、スパイク S3 / S4 | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md`、`docs/spikes/S4-*.md` | 同上 |
+| `transcriber` | PC ツール、文字起こしファイルの解析・取り込み、スパイク S1 | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md` | 同上 + PC ツールの `uv run`（pytest、Ruff、評価用の文字起こし） |
 | `ui` | 画面・波形 Composable・テーマ | `feature/`、`core/designsystem/` | 同上 + スクリーンショットテスト |
 | `qa` | レビュー、テストの追加、実機テスト | 各モジュールのテストディレクトリ（新しいテストファイルの追加のみ。既存ファイルの修正は担当者に依頼する）、`docs/manual-test.md` | すべてのチェック、adb |
 
-- 実装を担当するエージェントにも、担当モジュールのビルドとテストの実行を許可します（v0.1 では qa だけがコマンドを実行でき、実装者が自分で検証できませんでした）。コマンドは `./gradlew :<module>:<task>` の形に限定します。
-- Gradle ファイルは lead だけが変更します。依存の追加が必要になったら、理由（ライセンス・サイズ・代替案）を添えて lead に依頼します。
+- 実装を担当するエージェントにも、担当モジュールのビルドとテストの実行を許可します（v0.1 では qa だけがコマンドを実行でき、実装者が自分で検証できませんでした）。コマンドは `./gradlew :<module>:<task>`（PC ツールは `uv run --directory tools/transcriber <コマンド>`）の形に限定します。
+- Gradle ファイルは lead だけが変更します。依存の追加が必要になったら、理由（ライセンス・サイズ・代替案）を添えて lead に依頼します。PC ツールの `pyproject.toml` と `uv.lock` は transcriber が変更してよいですが、依存を追加するときは同じく lead の承認を得ます。
+- スパイクの担当者は結果を `docs/spikes/` に書き、ADR（`docs/adr/`）は lead がその結果をもとに書きます。
 - 人数は変えてかまいません（例: `playback` と `audio-analysis` を統合する）。ただし、作成者と検証者を分けるため、`lead` と `qa` は独立させます。
+- エージェントは開発用の Mac で動かします。Mac は Apple Silicon（M3 Pro）なので、PC ツールの動作確認や小規模な評価は Mac 上の mlx-whisper でも行えます。GPU 搭載 PC での実測と本番の処理は、人間がその PC で実行します。
 
 ### 10.3 契約（インターフェース）の変更手順
 
-- **対象**: `core:model`、§6.3 のインターフェース、Room のスキーマ、モジュール間の依存関係。
+- **対象**: `core:model`、§6.3 のインターフェース、Room のスキーマ、モジュール間の依存関係、文字起こしの形式（`docs/format/` の JSON Schema とサンプル）。
 - **手順**: 変更の要望（理由と影響範囲）を lead に出す → lead が変更し、全モジュールのビルドを通す → ADR と本書を更新する → 各エージェントは最新を取り込んでから作業を続ける。破壊的な変更は人間の承認を得る。
+- 文字起こしの形式を変えるときは、アプリのパーサと PC ツールの両方のテストが新しいサンプルで通ることを確かめてから統合する。互換性を壊す変更では `version` を上げる（§7.4.3）。
 
 ### 10.4 完了の定義（DoD）
 
@@ -885,30 +1042,38 @@ PlaybackService : MediaSessionService
 
 ```text
 Phase 0  基盤と技術検証（基盤は lead、スパイクは各担当）
-  ├─ リポジトリの初期化、Gradle マルチモジュールの骨格、Version Catalog、convention plugins、CI
+  ├─ Gradle マルチモジュールの骨格、Version Catalog、convention plugins、CI
   ├─ core:model と主要インターフェースの確定、Fake 実装、DI、画面遷移の骨格、AGENTS.md
-  └─ スパイク: S1 文字起こし / 言語判定エンジンの比較（speech）
-               S2 PlayerMessage によるループの精度と MP3 のシーク精度（playback）
+  ├─ 文字起こしの形式 v1（JSON Schema とサンプル）の確定（lead）
+  └─ スパイク: S1 PC の文字起こしパイプラインの試作（transcriber）。実際の教材（ja-ko、en-id）での
+                  チャンクごとの言語判定の精度、文単位のチャンクの質、処理時間、
+                  再生位置との時刻のずれ（S3 と合同）
+               S2 PlayerMessage によるループの精度、MP3（CBR / VBR + Xing / ヘッダのない VBR）のシーク精度、
+                  画面オフでの自動ポーズからの再開タイミング、
+                  Google Drive での複数選択とフォルダ選択の可否（playback）
                S3 デコード速度と、解析・再生の時間軸の一致（audio-analysis）
                S4（任意）BGM のある教材での VAD の比較（audio-analysis）
 M1  使えるプレイヤー（playback + ui が Fake を使って並行開発 → 統合）
   └─ 取り込み、ライブラリ、バックグラウンド再生と通知、速度、スキップ、レジューム
-M2  チャンクプレイヤー = MVP（audio-analysis + playback + ui）
-  └─ 解析 Worker、波形、自動分割、チャンク一覧、チャンク移動・リピート・A-B・自動ポーズ、イヤホン操作
-M3  文字起こしと言語（speech + ui）
-  └─ ADR で選んだエンジン、字幕ファイルの取り込み、言語判定、スクリプト表示、言語フィルタ、瞬間英作文モード
+M2  チャンクプレイヤー = MVP（audio-analysis + playback + transcriber + ui）
+  └─ 解析 Worker、波形、端末内の自動分割、PC ツール（F10.1）、文字起こしの取り込み（音声と同時 / 後から）、
+     チャンクの出どころの切り替え、チャンク / スクリプト一覧、ブラインドモード、
+     チャンク移動・リピート・A-B・自動ポーズ、イヤホン操作
+M3  言語を使った学習（transcriber + playback + ui）
+  └─ 言語フィルタ、瞬間作文モード、言語ラベルの修正、時刻のずれの補正、
+     SRT / WebVTT / LRC の取り込み、PC ツールの監視モード
 M4  編集と仕上げ
-  └─ チャンクの手動編集、ブックマーク、書き出し、2 ペイン表示、Baseline Profile
+  └─ チャンクの手動編集、テキストの修正、ブックマーク、書き出し、カラオケ表示、2 ペイン表示、Baseline Profile
 ```
 
-各マイルストーンの最後に、qa によるレビューと Pixel 実機での手動テストを品質ゲートとして行います（v0.1 のように最終フェーズでまとめて行うのではなく、毎回行います）。
+各マイルストーンの最後に、qa によるレビューと Pixel 実機での手動テストを品質ゲートとして行います（v0.1 のように最終フェーズでまとめて行うのではなく、毎回行います）。時期を決めていない P2（F1.5 Drive API による自動同期、F2.3、F6.6、F10.3）は、M4 の後に必要性を見て判断します。
 
 | マイルストーン | 完了条件 |
 | --- | --- |
-| Phase 0 | `./gradlew build` が通り、空の画面の間を遷移できる。スパイクの報告と ADR がそろっている |
+| Phase 0 | `./gradlew build` が通り、空の画面の間を遷移できる。形式 v1 の Schema とサンプル、スパイクの報告、ADR がそろっている |
 | M1 | Pixel 実機で Drive / ローカルの教材を取り込み、画面オフで 1 時間再生できる。プロセスが終了しても再生位置を復元できる |
-| M2 | 30 分の教材を 60 秒以内に解析できる。イヤホンの前 / 次ボタンでチャンクを移動できる。ループの行き過ぎが 50ms 未満。テスト音源で境界の誤差 ±50ms 以内のチャンクが 90% 以上 |
-| M3 | 評価用の教材で、1 秒以上のチャンクの言語判定の正解率が 95% 以上。再生位置の近くから文字起こしが表示される |
+| M2 | 30 分の教材を 60 秒以内に解析できる。PC ツールで作った JSON を Drive から取り込み、スクリプトが再生位置に同期して表示される（時間軸のずれ 50ms 未満）。イヤホンの前 / 次ボタンでチャンクを移動できる。ループの行き過ぎが 50ms 未満（S2 で対策した MP3 を含む）。画面オフでも自動ポーズの長さの誤差が小さい。テスト音源で境界の誤差 ±50ms 以内のチャンクが 90% 以上 |
+| M3 | 評価用の教材（ja-ko、en-id）で、PC ツールによる 1 秒以上のチャンクの言語判定の正解率が 95% 以上。言語フィルタと瞬間作文モードが画面オフでも正しく動く |
 | M4 | 手動で編集した後も文字起こしが正しく引き継がれる。アクセシビリティのチェックを通過する |
 
 ---
@@ -917,32 +1082,38 @@ M4  編集と仕上げ
 
 | リスク | 影響 | 対策 |
 | --- | --- | --- |
-| オンデバイスの音声認識（A / B）が、ファイル入力・言語判定・一括処理（実時間より速い処理、バックグラウンド実行）に対応していない、または不安定 | M3 の遅れ。文字起こしが視聴中にしか進まない | S1 で早期に検証する。エンジンを抽象化し、一括処理は C / D、A / B は逐次処理に限って使う |
-| 短いチャンクの言語判定の精度が足りない | 言語フィルタの誤動作 | 前後のチャンクでの平滑化、信頼度の表示、手動での修正 |
-| VBR MP3 のシーク誤差 | 頭出しがずれる | インデックスシークを使い、S2 で検証する |
-| BGM の強い教材で無音検出が破綻する | 不自然なチャンク | 適応閾値と移動窓、Silero VAD、パラメータ調整の UI、手動編集 |
-| 長尺ファイルでの処理時間とメモリ | 解析の失敗 | ストリーミング処理、途中保存、再開できる Worker |
+| 言語が混ざった教材で、Whisper が言語を誤って判定する、またはもう一方の言語の発話を訳して書く | スクリプトの誤り、言語フィルタの誤動作 | チャンクごとに判定した言語を指定して文字起こしする（§7.4.5）。前後のチャンクで平滑化し、確率の低いチャンクは「?」と表示してアプリで修正できるようにする。S1 で実際の教材を使って測る |
+| Whisper の幻覚（無音や BGM の区間に存在しない文を出す、同じ文を繰り返す） | 実在しないチャンクや誤ったテキスト | VAD で求めた発話区間だけを認識させる。前のチャンクの文脈を引き継がない。無音の確率や圧縮率が閾値を超える出力は捨てるか、印を付ける |
+| 文字起こしの時刻と再生位置のずれ（エンコーダ遅延の扱いの違い、Whisper の時刻の粗さ） | スクリプトの強調やチャンクの頭出しがずれる | 時刻の基準を形式で定める（§7.4.3）。S1 と S3 でクリック音入りの音源を使って測る。アプリでの自動補正と手動調整（F7.6）、チャンクのパディング |
+| PC での処理を忘れる、手順が面倒になる | スクリプトのないまま学習することになる | 監視モード（F10.2）。文字起こしがなくても端末内の分割でチャンクを使える。JSON を後から単独で取り込める |
+| Google Drive の同期の遅れ、オフライン | JSON をすぐに取り込めない | 取り込み時の進捗とエラーの表示。JSON を後から単独で取り込める |
+| PC の環境構築（GPU ドライバ、CUDA など） | PC ツールが動かない、手間がかかる | uv で依存を固定する。エンジンを GPU の種類に合わせて選べるようにし、CPU でも（遅いが）動くようにする |
+| MP3（特に VBR）のシーク誤差。`FLAG_ENABLE_INDEX_SEEKING` はフォールバックでしか使われない | 頭出し・A-B リピートがずれ、解析と再生の時間軸も気づかないうちにずれる | S2 で 3 種の MP3 を検証する。解析のデコードでファイル全体を読むので、そこで VBR（Xing / VBRI ヘッダ、フレームごとのビットレートのばらつき）を検出する。VBR なら、(a) 再エンコードせずに MP4 コンテナへ詰め替える、(b) バックグラウンドで M4A（AAC）に変換する（Media3 Transformer）、(c) 自前で正確な時刻→バイト位置の索引を作り、シークに使う、のいずれかを S2 の結果で選ぶ |
+| バックグラウンド実行の制約（バックグラウンドからのフォアグラウンドサービス開始の禁止、Android 16 のジョブ実行時間の割り当て、FGS の 6 時間上限、自動ポーズ中の CPU スリープ） | 解析が止まる。自動ポーズが長引く | 前面にいる間に長時間ワーカーを開始する、停止理由を記録する、自動ポーズ中は期限付きの WakeLock を保持する（§7.2.4、§7.3.4） |
+| BGM の強い教材で無音検出が破綻する | 不自然なチャンク | 文字起こしファイルのチャンクを使う（PC 側は Silero VAD と文単位の整形）。端末内の分割は、適応閾値と移動窓、Silero VAD、パラメータ調整の UI、手動編集 |
+| 長尺ファイルでの処理時間とメモリ | 解析の失敗 | ストリーミング処理、途中保存、止められても再実行される Worker |
 | Media3 の Compose UI モジュールの API 変更 | 改修のコスト | バージョンを固定し、`core:designsystem` でラップする |
-| エージェント間の衝突、契約の揺れ | 手戻り | Phase 0 で契約を確定させ、パス単位で担当を分け、変更手順を守る |
-| クラウドのコストとプライバシー | 想定外の課金や送信 | オプトイン、利用量の表示と上限、App Check |
+| エージェント間の衝突、契約の揺れ | 手戻り | Phase 0 で契約（インターフェースと文字起こしの形式）を確定させ、パス単位で担当を分け、変更手順を守る |
 
 ---
 
 ## 13. 未決事項
 
-1. **配布形態**: 個人利用（サイドロード / 内部テスト）か、Google Play での一般公開か。minSdk、プライバシーポリシー、クラウドの構成に影響する。
-2. **言語ペア**: 当面は「学習言語 = 英語 / 母語 = 日本語」に固定してよいか。
-3. **クラウド文字起こし**: 利用してよいか。使う場合の月額予算の目安。
-4. **主に使う教材**: 種類、BGM の有無、1 ファイルの長さ、形式。評価用データとパラメータの既定値を決めるのに使う。
-5. **アプリ名と applicationId**。
-6. **バックアップ**: DB と設定をクラウドバックアップの対象にするか。
+1. **文字起こしに使う PC**: OS と GPU（NVIDIA / Apple Silicon / AMD）。PC ツールのエンジン（§7.4.4）と S1 の進め方が決まる。開発用の Mac（M3 Pro）でも mlx-whisper で動かせるが、別の PC を使うか。
+2. **Google Drive のフォルダ構成**: 例えば `GogakuPlayer/<コース>/` に音声と `gogaku.toml` を置く形でよいか。PC では Google Drive for desktop を使うか（ストリーミング / ミラーのどちらでも動くようにする）。
+3. **主に使う教材**: 種類、BGM の有無、1 ファイルの長さ、形式、言語ペアの一覧。S1 の評価用データとパラメータの既定値を決めるのに使う。
+4. **Drive API による自動同期**（F1.5）の優先度: 手動での取り込み（複数選択、JSON の後からの取り込み）で足りるか。
+5. **母語の訳**（F10.3）: PC 側で LLM などを使って訳を付けたいか。使う場合、ローカルの LLM かクラウドの API か。
+6. **バックアップ**: DB と設定（文字起こしの手動修正を含む）をバックアップの対象にするか。
 7. **自分の声の録音と比較**（シャドーイングの評価）の優先度。
+8. **アプリ名と applicationId**。
+9. **対象端末**: 手持ちの端末が Android 14 以上か（minSdk 34 でよいか）。
 
 ---
 
 ## 付録 A: v0.1 からの主な変更点
 
-| # | 項目 | v0.1 | v0.2 | 理由 |
+| # | 項目 | v0.1 | 現行（v0.3） | 理由 |
 | --- | --- | --- | --- | --- |
 | 1 | 画面の状態 | `PlayerUiState` で Loading と Ready を排他的に表現 | 再生・解析の段階・データを独立した状態として組み合わせる | 解析中も再生したい。文字起こしを待つ間、操作できなくなる |
 | 2 | 再生位置 | `Ready.currentPositionMs` に保持 | UiState から分離し、描画フェーズで読む | 位置の更新ごとに画面全体が再コンポーズされるのを避ける |
@@ -951,28 +1122,51 @@ M4  編集と仕上げ
 | 5 | 波形 | 全体を 1,000 スライスに正規化 | 10ms の固定分解能 + 表示時に縮約、dB スケール | 長尺では解像度が足りず、拡大表示もできない |
 | 6 | PCM の抽出 | 「全量またはチャンク単位でデコード」 | 1 パスのストリーミング処理 | 60 分のステレオ 44.1kHz は約 635MB になり、メモリ不足の危険がある |
 | 7 | 無音検出 | 固定閾値（-40〜-50dBFS） | 適応閾値 + ヒステリシス + 最短 / 最長の制約 + パディング、VAD は差し替え可能 | BGM や音量差への耐性、子音の欠けの防止 |
-| 8 | 言語判定 | 2 言語で認識して信頼度を比較 | LID を候補の 2 言語に限定。比較方式はフォールバック | 信頼度は較正されておらず、コストも 2 倍 |
+| 8 | 言語判定 | 2 言語で認識して信頼度を比較 | PC の Whisper で、チャンクごとに候補を言語ペアの 2 言語に限定して判定 | 信頼度は較正されておらず、コストも 2 倍。ファイル全体を 1 言語として扱うと、もう一方の言語を訳して書いてしまう |
 | 9 | データモデル | `AudioChunk` に分割結果と文字起こし結果が同居 | `Chunk` と `Transcript` を分け、出どころ・エンジン・手動修正の有無を持つ | 生成のタイミングと担当が異なる。再生成と手動修正に対応する |
 | 10 | 再生速度 | 0.8 / 1.0 / 1.2 / 1.5 倍 | 0.5〜2.0 倍（0.05 刻み）+ プリセット | 学習では 0.5〜0.75 倍がよく使われる |
 | 11 | イヤホン操作 | 記載なし | 前 / 次 → チャンク移動 | 画面オフでの学習の中心となる操作 |
-| 12 | モジュール | ui と viewmodel を別モジュールに | feature 単位に統合し、純 Kotlin の `core:audio` を新設 | 変更の単位に合わせる。テストしやすくする |
+| 12 | モジュール | ui と viewmodel を別モジュールに | feature 単位に統合し、純 Kotlin の `core:audio` と `core:transcript` を新設 | 変更の単位に合わせる。テストしやすくする |
 | 13 | 永続化 | 記載なし | Room / DataStore / ファイルの役割を定義 | ライブラリ、レジューム、解析結果を保持するため |
 | 14 | エージェントの権限 | 実装者は `run_command` を使えない | 担当モジュールのビルドとテストは実行できる | 実装者が自分で検証できない |
 | 15 | QA | 最終フェーズのみ | 各マイルストーンに品質ゲートを置く | 不具合を早く見つける |
-| 16 | 対象端末の記述 | Tensor の NPU が前提 | NPU を直接使わず、OS / Google の API を経由する | NPU の直接利用は API と端末への依存が大きく、本アプリの要件には不要 |
-| 17 | セキュリティ | 記載なし | 簡易な脅威モデルと実装ルールを追加 | 外部からの入力、エクスポートされたサービス、クラウド送信があるため |
+| 16 | 対象端末の記述 | Tensor の NPU が前提 | 端末内では機械学習の推論をしない（文字起こしは PC で行う） | NPU の直接利用は API と端末への依存が大きい。PC の GPU の方が大きなモデルを使える |
+| 17 | セキュリティ | 記載なし | 簡易な脅威モデルと実装ルールを追加 | 外部からの入力（音声・文字起こしファイル）と、エクスポートされたコンポーネントがあるため |
+| 18 | MP3 のシーク精度 | 記載なし | VBR を検出し、対策（詰め替え / 変換 / 自前の索引）を S2 の結果で選ぶ | フラグの指定だけでは VBR の正確なシークが保証されない |
+| 19 | バックグラウンド実行 | 記載なし | フォアグラウンドサービスの開始条件、ジョブの実行時間の割り当て、6 時間の上限、自動ポーズ中の WakeLock を考慮 | 画面オフやバックグラウンドでの停止・遅延を防ぐ |
+| 20 | 文字起こしの方式 | 端末内でチャンクごとに STT（エンジンは未定） | GPU 搭載 PC の Whisper で生成し、Google Drive 経由で JSON を取り込む | 精度が高く多言語に強い。アプリが単純になり、通信も課金もない |
+| 21 | 言語ペア | 「英語 / 日本語」などの 2 言語ペア（教材ごとの扱いは記載なし） | 教材ごとに任意の言語ペア（BCP-47）。母語側は省略できる | 英語-インドネシア語、日本語-韓国語など、教材ごとに組み合わせが異なる |
+| 22 | 通信と配布 | 記載なし | アプリは通信しない（`INTERNET` 権限なし）。個人利用でサイドロードする | 教材の音声を外に出さない。Google Play の申告やポリシーに縛られない |
 
 ## 付録 B: 用語集
 
 | 用語 | 意味 |
 | --- | --- |
-| チャンク | 無音区間で区切られた発話の単位。前後のパディングを含む再生範囲 |
+| チャンク | 発話の単位（文字起こしの文、または端末内の無音検出で区切った区間）。前後のパディングを含む再生範囲 |
 | VAD | Voice Activity Detection。発話区間の検出 |
 | LID | Language Identification。音声の言語の識別 |
 | STT | Speech-to-Text。音声認識、文字起こし |
+| Whisper | OpenAI の多言語音声認識モデル。PC ツールで使う（faster-whisper、mlx-whisper、whisper.cpp などの実装がある） |
+| PC ツール（`gogaku-transcribe`） | GPU 搭載 PC で音声を文字起こしし、`gogaku-transcript` 形式の JSON を出力するコマンド（`tools/transcriber/`） |
+| `gogaku-transcript` | PC ツールとアプリの間で受け渡す文字起こしファイルの形式（JSON。§7.4.3） |
+| BCP-47 | 言語タグの標準（例: `ko`、`id`、`ja`、`en`） |
 | 学習言語（target）/ 母語（base） | 学習の対象の言語 / 解説や訳に使われる言語 |
 | 自動ポーズ | チャンクの終わりで自動的に一時停止し、発話練習の時間を作る機能 |
-| 瞬間英作文モード | 母語のチャンクの後にだけ自動ポーズを入れ、学習言語で言ってみてから正解を聞くモード |
+| 瞬間作文モード | 母語のチャンクの後にだけ自動ポーズを入れ、学習言語で言ってみてから正解を聞くモード |
 | SSOT / UDF | Single Source of Truth（単一の情報源）/ Unidirectional Data Flow（単方向データフロー） |
 | ADR | Architecture Decision Record。設計判断の記録 |
 | スパイク | 実装方針を決めるための、使い捨て前提の短期間の技術検証 |
+
+## 付録 C: 将来の選択肢（端末内での文字起こし）
+
+PC で生成する方式（§7.4）を採用したため、端末内やクラウドでの文字起こしは行いません。v0.2 で検討した候補と、その時点でわかっていた課題を、将来見直すときのために残します。
+
+| 候補 | 概要 | 主な課題 |
+| --- | --- | --- |
+| A. Android `SpeechRecognizer`（オンデバイス） | API 34 の言語判定のオプション（`EXTRA_ENABLE_LANGUAGE_DETECTION` など）と、API 33 の `EXTRA_AUDIO_SOURCE` によるファイル由来の PCM の入力 | これらの機能は認識エンジンの実装によっては無効。マイク入力（実時間）向けの API で、実時間より速い処理やバックグラウンドでの実行ができるか不明。呼び出し元の `RECORD_AUDIO` 権限を求められる可能性が高い |
+| B. ML Kit GenAI Speech Recognition | Google 公式の SDK。`AudioSource.fromPfd()` で PCM を入力できる | 確認時点では alpha 版。言語判定がない（認識器ごとに 1 ロケール）。`BACKGROUND_USE_BLOCKED` と `AUDIO_BUFFER_OVERFLOW` のエラーがあり、一括処理には向かない可能性が高い。対応端末とモデルのダウンロードに制約がある |
+| C. 端末内の Whisper（whisper.cpp、sherpa-onnx など） | 完全オフライン。言語トークンの確率を 2 言語に限定して比べられる。単語単位の時刻 | NDK / JNI の保守。数十〜数百 MB のモデルの管理（ダウンロードには `INTERNET` 権限が必要）。端末で実用的な速度で動く小さなモデルは精度が下がる |
+| D. Gemini（Firebase AI Logic 経由のクラウド） | 言語ラベル付きの書き起こしを JSON で得られる。混在した言語や句読点の整形に強い | 通信と従量課金、送信の同意、App Check が必要。音声中の時刻が粗いため、端末で切り出したチャンク単位で送る必要がある |
+
+- 見直すきっかけの例: PC を使わずに端末だけで完結させたくなった場合や、端末内のモデルの精度と速度が十分に上がった場合。
+- 見直す場合も出力は `gogaku-transcript` 形式（§7.4.3）に揃え、アプリの取り込み処理（§7.4.6）をそのまま使う。
