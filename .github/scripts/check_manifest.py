@@ -43,11 +43,12 @@ ALLOWED_EXPORTED = [
     ("receiver", lambda name: name == "androidx.media3.session.MediaButtonReceiver"),
 ]
 
-# android.permission.DUMP（signature|privileged。shell とシステムだけが持つ）で保護された、AndroidX の診断用の受信機。
-# 他のアプリからは呼べないため、エクスポートの一覧の対象外として許容する（ADR 0001）。
-DUMP_PROTECTED_ALLOWED = {
-    "androidx.profileinstaller.ProfileInstallReceiver",
-    "androidx.work.impl.diagnostics.DiagnosticsReceiver",
+# システム権限（signature / signature|privileged。OS と shell だけが持つ）で保護された AndroidX のコンポーネント。
+# 他のアプリからは呼べないため、名前と保護権限の両方が一致する場合に限って許容する（ADR 0001、ADR 0004）。
+SYSTEM_PERMISSION_PROTECTED_ALLOWED = {
+    ("receiver", "androidx.profileinstaller.ProfileInstallReceiver", "android.permission.DUMP"),
+    ("receiver", "androidx.work.impl.diagnostics.DiagnosticsReceiver", "android.permission.DUMP"),
+    ("service", "androidx.work.impl.background.systemjob.SystemJobService", "android.permission.BIND_JOB_SERVICE"),
 }
 
 # デバッグビルドにだけ入る、Compose のプレビューを端末で表示するための Activity（ui-tooling。debugImplementation）。
@@ -100,7 +101,7 @@ def check(path: Path, debug: bool) -> list[str]:
                 if any(t == tag and ok(name) for t, ok in ALLOWED_EXPORTED):
                     continue
                 permission = el.get(f"{ANDROID}permission")
-                if name in DUMP_PROTECTED_ALLOWED and permission == "android.permission.DUMP":
+                if (tag, name, permission) in SYSTEM_PERMISSION_PROTECTED_ALLOWED:
                     continue
                 if debug and (tag, name) in DEBUG_ONLY_ALLOWED_EXPORTED:
                     continue

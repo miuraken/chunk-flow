@@ -3,11 +3,14 @@ package com.miuraken.chunkflow.core.datastore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import java.io.File
 import kotlin.test.Test
@@ -44,6 +47,15 @@ class DataStoreUserSettingsRepositoryTest {
     @Test
     fun `各設定項目を更新するとFlowに反映される`() = runTest(UnconfinedTestDispatcher()) {
         val (repository, _) = createRepository(this)
+        val customSeg = SegmentationParams(
+            minSilenceMs = 600,
+            minSpeechMs = 300,
+            mergeGapMs = 1_200,
+            maxChunkMs = 12_000,
+            prePaddingMs = 100,
+            postPaddingMs = 250,
+            thresholdRatio = 0.4f,
+        )
 
         repository.setDefaultLanguagePair(LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")))
         repository.setChineseScript(ChineseScript.HANT)
@@ -51,6 +63,8 @@ class DataStoreUserSettingsRepositoryTest {
         repository.setDefaultSpeed(1.25f)
         repository.setSeekBackMs(2_000L)
         repository.setSeekForwardMs(10_000L)
+        repository.setDefaultAutoPause(AutoPause.Fixed(pauseMs = 1_500L))
+        repository.setDefaultSegmentationParams(customSeg)
 
         val current = repository.settings.first()
         assertEquals(LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")), current.defaultLanguagePair)
@@ -59,6 +73,14 @@ class DataStoreUserSettingsRepositoryTest {
         assertEquals(1.25f, current.defaultSpeed)
         assertEquals(2_000L, current.seekBackMs)
         assertEquals(10_000L, current.seekForwardMs)
+        assertEquals(AutoPause.Fixed(pauseMs = 1_500L), current.defaultAutoPause)
+        assertEquals(customSeg, current.defaultSegmentationParams)
+
+        repository.setDefaultAutoPause(AutoPause.Proportional(factor = 1.5f, minMs = 800L))
+        assertEquals(AutoPause.Proportional(factor = 1.5f, minMs = 800L), repository.settings.first().defaultAutoPause)
+
+        repository.setDefaultAutoPause(AutoPause.Off)
+        assertEquals(AutoPause.Off, repository.settings.first().defaultAutoPause)
     }
 
     @Test
@@ -79,16 +101,33 @@ class DataStoreUserSettingsRepositoryTest {
         assertFailsWith<IllegalArgumentException> {
             repository.setDefaultLanguagePair(LanguagePair(target = LanguageTag(""), base = LanguageTag("ja")))
         }
+        assertFailsWith<IllegalArgumentException> {
+            repository.setDefaultAutoPause(AutoPause.Fixed(pauseMs = 0L))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            repository.setDefaultAutoPause(AutoPause.Proportional(factor = 0f, minMs = 1_000L))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            repository.setDefaultSegmentationParams(SegmentationParams(minSilenceMs = 800, mergeGapMs = 500))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            repository.setDefaultSegmentationParams(SegmentationParams(thresholdRatio = 1.5f))
+        }
 
         // DataStore に直接不正な値が入った場合でもクラッシュせず既定値にフォールバックする
         dataStore.edit { prefs ->
             prefs[stringPreferencesKey("chinese_script")] = "UNKNOWN"
             prefs[floatPreferencesKey("default_speed")] = 9.9f
             prefs[longPreferencesKey("seek_back_ms")] = -1L
+            prefs[stringPreferencesKey("default_auto_pause")] = "FIXED:-100"
+            prefs[intPreferencesKey("seg_min_silence_ms")] = -10
+            prefs[floatPreferencesKey("seg_threshold_ratio")] = 2.0f
         }
         val current = repository.settings.first()
         assertEquals(ChineseScript.HANS, current.chineseScript)
         assertEquals(1.0f, current.defaultSpeed)
         assertEquals(UserSettings.DEFAULT_SEEK_BACK_MS, current.seekBackMs)
+        assertEquals(AutoPause.Off, current.defaultAutoPause)
+        assertEquals(SegmentationParams(), current.defaultSegmentationParams)
     }
 }

@@ -73,6 +73,8 @@ class ModelInvariantsTest {
         assertEquals(1.0f, settings.defaultSpeed)
         assertEquals(3_000L, settings.seekBackMs)
         assertEquals(5_000L, settings.seekForwardMs)
+        assertEquals(AutoPause.Off, settings.defaultAutoPause)
+        assertEquals(SegmentationParams(), settings.defaultSegmentationParams)
     }
 
     @Test

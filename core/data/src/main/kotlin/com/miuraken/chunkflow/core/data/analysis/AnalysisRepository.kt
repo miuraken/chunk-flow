@@ -10,6 +10,7 @@ import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.Waveform
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * 解析結果（波形・チャンク・文字起こし）と解析の状態の単一の情報源（§6.3、§7.3）。
@@ -28,6 +29,11 @@ interface AnalysisRepository {
 
     /** チャンクごとの文字起こしを購読する。 */
     fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>>
+
+    /**
+     * 指定した教材で利用可能なチャンクの出どころ（[ChunkOrigin.IMPORTED] / [ChunkOrigin.AUTO] など）の集合を購読する（F5.4）。
+     */
+    fun observeAvailableChunkOrigins(id: MediaId): Flow<Set<ChunkOrigin>> = flowOf(emptySet())
 
     /** 解析ジョブを投入する（WorkManager のユニークワーク）。 */
     suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>)
