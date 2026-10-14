@@ -234,3 +234,73 @@ python3 spikes/audio/scripts/s3_summarize.py s3_results.jsonl
 - AudioTrack の出力遅延を含めた「耳で聞こえる位置」とのずれ（ExoPlayer は AudioTimestamp で補正している。今回は測っていない）。
 - MP3 以外のサンプルレート（48kHz の MP3、16kHz の MP3）での実測（表の値は計算値）。
 - シーク後の位置の精度（S2 の範囲。今回は先頭から再生した場合だけ）。
+
+## D6. ヘッダを隠した MP3 の時間軸（追加の計測、2026-10-14）
+
+ブランチ `agent/audio-analysis/s3-d6`（main ad38b06 から）。ADR 0005 / 0006 / 0008（提案）の「すべての MP3 を Xing / Info / VBRI ヘッダを隠す
+DataSource 経由で再生し、解析も同じ DataSource で読む」案を、同じ音源で直接測った（エミュレータ Pixel_8_Pro、android-36、`c2.android.mp3.decoder`）。
+
+### D6.1 測り方
+
+- `spikes/playback` の `IndexSeekDataSource` を `spikes/audio` に写した（中身は同じ。`spikes/playback` は変更していない）。
+- `HiddenHeaderMedia`: ExoPlayer と `MediaExtractorCompat` に、同じ抽出器の設定（`DefaultExtractorsFactory().setMp3ExtractorFlags(FLAG_ENABLE_INDEX_SEEKING)`）と
+  同じ DataSource（`IndexSeekDataSource.Factory(DefaultDataSource.Factory(context))`）を渡す。
+  - ExoPlayer: `DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)`（S2 の `SpikePlayers` と同じ）。
+  - 解析: `MediaExtractorCompat(extractorsFactory, dataSourceFactory)` に `setDataSource(Uri.fromFile(file), 0)`。形式（`encoder-delay` など）をそのまま
+    `MediaCodec.configure()` に渡し、出力サンプル数の累計からクリックの時刻を求める（§3.1 と同じ）。
+- ExoPlayer の時刻は §3.2 の高速モードのプローブで測る。ffmpeg の時刻は §3.3 と同じ（ffmpeg 8.0.1）。
+- 音源は 1min セット（12 クリック）の MP3。D6 のために「22.05kHz・ヘッダなし」（`mp3_cbr64_22k_mono_noxing.mp3`）を生成スクリプトに足した。
+- 実行: `am start ... --es cmd d6 --es path d6`（フォルダ内の MP3 ごとに、Compat・Compat（隠す）・ExoPlayer・ExoPlayer（隠す）を測る）。
+
+### D6.2 結果（クリックの時刻 − 正解。ms、括弧はサンプル数。12 クリックすべて同じ値）
+
+| ファイル | ffmpeg | Compat（既定） | ExoPlayer（既定） | **Compat（隠す）** | **ExoPlayer（隠す）** | 隠したときの遅延 / パディング |
+| --- | --- | --- | --- | --- | --- | --- |
+| MP3 CBR 128k 44.1kHz（LAME ヘッダあり） | 0.00 (0) | −11.995 (−529) | −11.995 (−529) | **+39.184 (+1,728)** | **+39.184 (+1,728)** | 0 / 0 |
+| MP3 VBR q4 44.1kHz（Xing + LAME） | 0.00 (0) | −11.995 (−529) | −11.995 (−529) | **+39.184 (+1,728)** | **+39.184 (+1,728)** | 0 / 0 |
+| MP3 CBR 128k 44.1kHz（ヘッダなし） | +25.057 (+1,105) | +13.061 (+576) | +13.061 (+576) | **+13.061 (+576)** | **+13.061 (+576)** | 0 / 0 |
+| MP3 64k 22.05kHz（LAME ヘッダあり） | 0.00 (0) | −23.991 (−529) | −23.991 (−529) | **+52.245 (+1,152)** | **+52.245 (+1,152)** | 0 / 0 |
+| MP3 64k 22.05kHz（ヘッダなし） | +50.113 (+1,105) | +26.122 (+576) | +26.122 (+576) | **+26.122 (+576)** | **+26.122 (+576)** | 0 / 0 |
+
+（16kHz にリサンプルした後の時刻も、ネイティブの累計と 0.01ms 以内で同じ。）
+
+1. **ヘッダを隠した MediaExtractorCompat と、同じ DataSource の ExoPlayer は、全ファイルで一致した**（差 0.000ms）。ADR 0005 の「解析も同じ DataSource で読む」で、
+   解析と再生の時間軸は揃う。
+2. **ffmpeg との差（ExoPlayer（隠す）− ffmpeg）**:
+
+   | 音声 | 実測 | ADR 0008 の推定 | 判定 |
+   | --- | --- | --- | --- |
+   | ヘッダあり・44.1kHz（MPEG-1。CBR / VBR とも） | **+1,728 サンプル**（+39.18ms） | +1,728 | 合っている |
+   | ヘッダあり・22.05kHz（MPEG-2） | **+1,152 サンプル**（+52.24ms） | +1,728 | **違う** |
+   | ヘッダなし・44.1kHz | **−529 サンプル**（−12.00ms） | −529 | 合っている |
+   | ヘッダなし・22.05kHz | **−529 サンプル**（−23.99ms） | −529 | 合っている |
+
+   - ヘッダありの差は「ヘッダのフレーム 1 つ分（無音として再生される）+ エンコーダ遅延 576」。1 フレームのサンプル数は MPEG-1（32 / 44.1 / 48kHz）で 1,152、
+     **MPEG-2 / 2.5（24kHz 以下）で 576** なので、22.05kHz では 576 + 576 = 1,152 になる。ADR 0008 の表は
+     「ヘッダあり: +(1 フレームのサンプル数 + 576) / sr」（MPEG-1 は +1,728、MPEG-2 / 2.5 は +1,152）に直す必要がある。
+     LAME のエンコーダ遅延が 576 でない MP3（他のエンコーダ）では値が変わる（未確認。LAME ヘッダの遅延の値を読めば計算できる）。
+   - ヘッダを隠すと、Media3 はギャップレス情報を使わない（隠したときの遅延 / パディングは 0 / 0）。ヘッダのない MP3 は、隠しても隠さなくても同じ。
+   - 出力の長さ: 44.1kHz・ヘッダありは 2,648,448 フレーム（60 秒 + 1,728 + 末尾のパディング 720）。末尾も削られない。
+3. **`MediaExtractorCompat` に DataSource を渡す API**: Media3 1.11.1 にある。
+   `MediaExtractorCompat(ExtractorsFactory, DataSource.Factory)` と `MediaExtractorCompat(ProgressiveMediaExtractor, DataSource.Factory)` の 2 つの公開コンストラクタ
+   （クラス全体が `@UnstableApi`。`MediaExtractorCompat(Context)` を含め、使うには `@OptIn(UnstableApi::class)` が要る）。今回は前者を使った。
+   代替を探す必要はなかった。
+
+### D6.3 設計への影響（判断は lead に任せる）
+
+- ADR 0008 の `transcriptOffsetMs` の初期値の表のうち「MP3（ヘッダあり）」を、サンプルレートで分ける（MPEG-1: +1,728 / sr、MPEG-2 / 2.5: +1,152 / sr）。
+  22.05kHz では +52ms（ADR の推定どおり +1,728 なら +78ms で、26ms ずれる）。
+- 解析（チャンクの境界）と再生は同じ DataSource で読む限り一致するので、ヘッダの有無による補正は文字起こしの取り込み（ffmpeg の時間軸との差）にだけ要る。
+- 補正の値はデコーダ（`c2.android.mp3.decoder`）とエンコーダ（LAME）に依存する。実機で同じかを確かめる（D6 は実機でも同じ手順で測れる）。
+
+### D6.4 未確認
+
+- 実機のデコーダでの値。
+- 48kHz・16kHz・11.025kHz の MP3（表の式からの計算値だけ）。LAME 以外のエンコーダの MP3。
+
+### D6.5 30 分の VBR（ヘッダを隠す）
+
+合成 30 分の MP3 VBR q4（30 クリック）で、Compat（隠す・同期）と ExoPlayer（隠す・高速モード）のどちらも、30 個すべてが +39.184ms（+1,728 サンプル）だった。
+30 分でもドリフトはなく、両者は一致した（壁時計はエミュレータの負荷が重い時間帯で、それぞれ 290 秒・192 秒。参考値）。
+
+計測の後、エミュレータの合成音源（`files/s3/` の 1min・30min・60min・d6）と結果ファイルは削除した。
