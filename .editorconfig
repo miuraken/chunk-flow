@@ -1,0 +1,35 @@
+# Chunk Flow のエディタ設定。Kotlin の整形は Spotless + ktlint（ktlint_official ではなく android_studio スタイル）。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{kt,kts}]
+max_line_length = 120
+ij_kotlin_allow_trailing_comma = true
+ij_kotlin_allow_trailing_comma_on_call_site = true
+ktlint_code_style = android_studio
+# Composable 関数は大文字で始まるため、関数名の規則から除外する
+ktlint_function_naming_ignore_when_annotated_with = Composable
+# 行の長さは Lint と IDE に任せる（日本語の KDoc で誤検出しやすいため）
+ktlint_standard_max-line-length = disabled
+
+[*.{yml,yaml,json,toml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.py]
+indent_size = 4
+
+[{gradlew,*.sh}]
+end_of_line = lf
+
+[*.bat]
+end_of_line = crlf

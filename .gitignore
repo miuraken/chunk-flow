@@ -1,0 +1,63 @@
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Gradle / ビルド成果物 ----
+.gradle/
+.kotlin/
+build/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+.externalNativeBuild/
+.cxx/
+
+# ---- ローカルの設定（SDK のパスなど。コミットしない） ----
+local.properties
+
+# ---- 署名と秘密情報（§8.2: リポジトリに含めない） ----
+*.jks
+*.keystore
+*.p12
+*.pem
+keystore.properties
+signing.properties
+secrets.properties
+google-services.json
+client_secret*.json
+oauth*.json
+.env
+*.env
+
+# ---- IDE の個人設定 ----
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.fleet/
+.project
+.classpath
+.settings/
+
+# ---- Python（tools/transcriber） ----
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- 実際の教材の音声（著作権のため。コミットしない。テスト音源はスクリプトで生成する） ----
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.opus
+*.flac
+*.wav
+
+# ---- ログ ----
+*.log

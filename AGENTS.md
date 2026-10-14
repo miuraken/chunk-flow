@@ -61,6 +61,7 @@
 | git | `git status/diff/log/add/commit/switch`、`git worktree` | 全員（自分のブランチ）。統合は lead |
 
 - 長時間かかるコマンドは、止まらないように `gtimeout <秒> <コマンド>` で上限を付けて実行します（例: `gtimeout 900 ./gradlew build`）。
+- Gradle は Android Studio の JBR で動かします（Homebrew の JDK はこの Mac では起動できない。ADR 0001）。ターミナルからは `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew ...` のように実行します。
 - ネットワークからのインストール（`pip install`、`brew install`、新しい Gradle の依存など）は勝手に行いません。§8 の手順で lead に依頼します。
 - リポジトリの外のファイル（`~/.gradle`、`~/.androidrc` などの設定）を変更しません。必要なら人間に依頼します。
 
