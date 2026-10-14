@@ -94,13 +94,11 @@ class DefaultAnalysisRepository(
     private val chunkSegmenter: ChunkSegmenter = ChunkSegmenter()
     private val waveformRefreshEvents = MutableSharedFlow<MediaId>(extraBufferCapacity = 16)
 
-    override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> {
-        return analysisStateDao.observeByMediaId(id.value)
-            .map { entities ->
-                entities.mapNotNull { it.toStageAndStatus() }.toMap()
-            }
-            .distinctUntilChanged()
-    }
+    override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = analysisStateDao.observeByMediaId(id.value)
+        .map { entities ->
+            entities.mapNotNull { it.toStageAndStatus() }.toMap()
+        }
+        .distinctUntilChanged()
 
     override fun observeWaveform(id: MediaId): Flow<Waveform?> {
         val statusTrigger = analysisStateDao.observeByMediaId(id.value)
@@ -112,24 +110,20 @@ class DefaultAnalysisRepository(
             .flowOn(ioDispatcher)
     }
 
-    override fun observeChunks(id: MediaId): Flow<List<Chunk>> {
-        return combine(
-            itemStateDao.observeByMediaId(id.value),
-            chunkDao.observeByMediaId(id.value),
-        ) { itemState, allChunks ->
-            selectActiveChunkEntities(itemState, allChunks).map { it.toExternalModel() }
-        }.distinctUntilChanged()
-    }
+    override fun observeChunks(id: MediaId): Flow<List<Chunk>> = combine(
+        itemStateDao.observeByMediaId(id.value),
+        chunkDao.observeByMediaId(id.value),
+    ) { itemState, allChunks ->
+        selectActiveChunkEntities(itemState, allChunks).map { it.toExternalModel() }
+    }.distinctUntilChanged()
 
-    override fun observeAvailableChunkOrigins(id: MediaId): Flow<Set<ChunkOrigin>> {
-        return chunkDao.observeOriginsByMediaId(id.value)
-            .map { rawOrigins ->
-                rawOrigins.mapNotNull { raw ->
-                    ChunkOrigin.entries.firstOrNull { it.name == raw }
-                }.toSet()
-            }
-            .distinctUntilChanged()
-    }
+    override fun observeAvailableChunkOrigins(id: MediaId): Flow<Set<ChunkOrigin>> = chunkDao.observeOriginsByMediaId(id.value)
+        .map { rawOrigins ->
+            rawOrigins.mapNotNull { raw ->
+                ChunkOrigin.entries.firstOrNull { it.name == raw }
+            }.toSet()
+        }
+        .distinctUntilChanged()
 
     override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> {
         return combine(

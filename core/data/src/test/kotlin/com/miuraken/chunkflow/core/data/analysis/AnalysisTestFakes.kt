@@ -25,11 +25,9 @@ import kotlinx.coroutines.flow.update
 internal class FakeAnalysisStateDao : AnalysisStateDao {
     private val store = MutableStateFlow<Map<Pair<String, String>, AnalysisStateEntity>>(emptyMap())
 
-    override fun observeByMediaId(mediaId: String): Flow<List<AnalysisStateEntity>> =
-        store.map { map -> map.values.filter { it.mediaId == mediaId } }
+    override fun observeByMediaId(mediaId: String): Flow<List<AnalysisStateEntity>> = store.map { map -> map.values.filter { it.mediaId == mediaId } }
 
-    override suspend fun getByMediaId(mediaId: String): List<AnalysisStateEntity> =
-        store.value.values.filter { it.mediaId == mediaId }
+    override suspend fun getByMediaId(mediaId: String): List<AnalysisStateEntity> = store.value.values.filter { it.mediaId == mediaId }
 
     override suspend fun upsert(state: AnalysisStateEntity) {
         store.update { current -> current + ((state.mediaId to state.stage) to state) }
@@ -58,28 +56,25 @@ internal class FakeTranscriptDao : TranscriptDao {
         chunksProvider = provider
     }
 
-    override fun observeByMediaId(mediaId: String): Flow<List<TranscriptEntity>> =
-        store.map { map ->
-            val orderedChunkIds = chunksProvider()
-                .filter { it.mediaId == mediaId }
-                .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
-                .map { it.id }
-            orderedChunkIds.mapNotNull { map[it] }
-        }
+    override fun observeByMediaId(mediaId: String): Flow<List<TranscriptEntity>> = store.map { map ->
+        val orderedChunkIds = chunksProvider()
+            .filter { it.mediaId == mediaId }
+            .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
+            .map { it.id }
+        orderedChunkIds.mapNotNull { map[it] }
+    }
 
-    override fun observeByMediaIdAndOrigin(mediaId: String, origin: String): Flow<List<TranscriptEntity>> =
-        store.map { map ->
-            val orderedChunkIds = chunksProvider()
-                .filter { it.mediaId == mediaId && it.origin == origin }
-                .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
-                .map { it.id }
-            orderedChunkIds.mapNotNull { map[it] }
-        }
+    override fun observeByMediaIdAndOrigin(mediaId: String, origin: String): Flow<List<TranscriptEntity>> = store.map { map ->
+        val orderedChunkIds = chunksProvider()
+            .filter { it.mediaId == mediaId && it.origin == origin }
+            .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
+            .map { it.id }
+        orderedChunkIds.mapNotNull { map[it] }
+    }
 
     override suspend fun getByChunkId(chunkId: Long): TranscriptEntity? = store.value[chunkId]
 
-    override suspend fun getByChunkIds(chunkIds: List<Long>): List<TranscriptEntity> =
-        chunkIds.mapNotNull { store.value[it] }
+    override suspend fun getByChunkIds(chunkIds: List<Long>): List<TranscriptEntity> = chunkIds.mapNotNull { store.value[it] }
 
     override suspend fun upsert(transcript: TranscriptEntity) {
         store.update { it + (transcript.chunkId to transcript) }
@@ -121,32 +116,28 @@ internal class FakeChunkDao(
         transcriptDao.bindChunksProvider { store.value.values.toList() }
     }
 
-    override fun observeByMediaIdAndOrigin(mediaId: String, origin: String): Flow<List<ChunkEntity>> =
-        store.map { map ->
-            map.values
-                .filter { it.mediaId == mediaId && it.origin == origin }
-                .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
-        }
-
-    override fun observeByMediaId(mediaId: String): Flow<List<ChunkEntity>> =
-        store.map { map ->
-            map.values
-                .filter { it.mediaId == mediaId }
-                .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
-        }
-
-    override fun observeOriginsByMediaId(mediaId: String): Flow<List<String>> =
-        store.map { map ->
-            map.values
-                .filter { it.mediaId == mediaId }
-                .map { it.origin }
-                .distinct()
-        }
-
-    override suspend fun getByMediaIdAndOrigin(mediaId: String, origin: String): List<ChunkEntity> =
-        store.value.values
+    override fun observeByMediaIdAndOrigin(mediaId: String, origin: String): Flow<List<ChunkEntity>> = store.map { map ->
+        map.values
             .filter { it.mediaId == mediaId && it.origin == origin }
             .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
+    }
+
+    override fun observeByMediaId(mediaId: String): Flow<List<ChunkEntity>> = store.map { map ->
+        map.values
+            .filter { it.mediaId == mediaId }
+            .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
+    }
+
+    override fun observeOriginsByMediaId(mediaId: String): Flow<List<String>> = store.map { map ->
+        map.values
+            .filter { it.mediaId == mediaId }
+            .map { it.origin }
+            .distinct()
+    }
+
+    override suspend fun getByMediaIdAndOrigin(mediaId: String, origin: String): List<ChunkEntity> = store.value.values
+        .filter { it.mediaId == mediaId && it.origin == origin }
+        .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
 
     override suspend fun insertAll(chunks: List<ChunkEntity>): List<Long> {
         val assignedIds = ArrayList<Long>(chunks.size)
@@ -162,8 +153,7 @@ internal class FakeChunkDao(
         return assignedIds
     }
 
-    override suspend fun getTranscriptsByChunkIds(chunkIds: List<Long>): List<TranscriptEntity> =
-        transcriptDao.getByChunkIds(chunkIds)
+    override suspend fun getTranscriptsByChunkIds(chunkIds: List<Long>): List<TranscriptEntity> = transcriptDao.getByChunkIds(chunkIds)
 
     override suspend fun upsertTranscripts(transcripts: List<TranscriptEntity>) {
         transcriptDao.upsertAll(transcripts)
@@ -178,14 +168,11 @@ internal class FakeChunkDao(
 internal class FakeItemStateDao : ItemStateDao {
     private val store = MutableStateFlow<Map<String, ItemStateEntity>>(emptyMap())
 
-    override fun observeAll(): Flow<List<ItemStateEntity>> =
-        store.map { it.values.toList() }
+    override fun observeAll(): Flow<List<ItemStateEntity>> = store.map { it.values.toList() }
 
-    override fun observeByMediaId(mediaId: String): Flow<ItemStateEntity?> =
-        store.map { it[mediaId] }
+    override fun observeByMediaId(mediaId: String): Flow<ItemStateEntity?> = store.map { it[mediaId] }
 
-    override suspend fun getByMediaId(mediaId: String): ItemStateEntity? =
-        store.value[mediaId]
+    override suspend fun getByMediaId(mediaId: String): ItemStateEntity? = store.value[mediaId]
 
     override suspend fun upsert(state: ItemStateEntity) {
         store.update { it + (state.mediaId to state) }
@@ -205,17 +192,13 @@ internal class FakeItemStateDao : ItemStateDao {
 internal class FakeMediaItemDao : MediaItemDao {
     private val store = MutableStateFlow<Map<String, MediaItemEntity>>(emptyMap())
 
-    override fun observeAll(): Flow<List<MediaItemEntity>> =
-        store.map { it.values.toList() }
+    override fun observeAll(): Flow<List<MediaItemEntity>> = store.map { it.values.toList() }
 
-    override fun observeById(id: String): Flow<MediaItemEntity?> =
-        store.map { it[id] }
+    override fun observeById(id: String): Flow<MediaItemEntity?> = store.map { it[id] }
 
-    override suspend fun getById(id: String): MediaItemEntity? =
-        store.value[id]
+    override suspend fun getById(id: String): MediaItemEntity? = store.value[id]
 
-    override suspend fun getBySha256(sha256: String): MediaItemEntity? =
-        store.value.values.firstOrNull { it.sha256 == sha256 }
+    override suspend fun getBySha256(sha256: String): MediaItemEntity? = store.value.values.firstOrNull { it.sha256 == sha256 }
 
     override suspend fun upsert(item: MediaItemEntity) {
         store.update { it + (item.id to item) }

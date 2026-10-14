@@ -59,8 +59,7 @@ class WaveformReducer(
         0.75f,
         true,
     ) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CacheKey, ReducedWaveform>?): Boolean =
-            size > maxCacheEntries
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CacheKey, ReducedWaveform>?): Boolean = size > maxCacheEntries
     }
 
     init {

@@ -418,8 +418,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 override val trackCount: Int get() = extractor.trackCount
                 override fun getTrackFormat(index: Int): MediaFormat = extractor.getTrackFormat(index)
                 override fun selectTrack(index: Int) = extractor.selectTrack(index)
-                override fun readSampleData(buffer: ByteBuffer, offset: Int): Int =
-                    extractor.readSampleData(buffer, offset)
+                override fun readSampleData(buffer: ByteBuffer, offset: Int): Int = extractor.readSampleData(buffer, offset)
                 override val sampleTime: Long get() = extractor.sampleTime
                 override fun advance(): Boolean = extractor.advance()
                 override fun close() {
@@ -451,11 +450,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
                     presentationTimeUs: Long,
                     flags: Int,
                 ) = codec.queueInputBuffer(index, offset, size, presentationTimeUs, flags)
-                override fun dequeueOutputBuffer(info: MediaCodec.BufferInfo, timeoutUs: Long): Int =
-                    codec.dequeueOutputBuffer(info, timeoutUs)
+                override fun dequeueOutputBuffer(info: MediaCodec.BufferInfo, timeoutUs: Long): Int = codec.dequeueOutputBuffer(info, timeoutUs)
                 override fun getOutputBuffer(index: Int): ByteBuffer? = codec.getOutputBuffer(index)
-                override fun releaseOutputBuffer(index: Int, render: Boolean) =
-                    codec.releaseOutputBuffer(index, render)
+                override fun releaseOutputBuffer(index: Int, render: Boolean) = codec.releaseOutputBuffer(index, render)
                 override fun close() {
                     runCatching { codec.stop() }
                     runCatching { codec.release() }
@@ -467,5 +464,4 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
 private fun MediaFormat.intOrZero(key: String): Int = intOr(key, 0)
 
-private fun MediaFormat.intOr(key: String, default: Int): Int =
-    if (containsKey(key)) getInteger(key) else default
+private fun MediaFormat.intOr(key: String, default: Int): Int = if (containsKey(key)) getInteger(key) else default

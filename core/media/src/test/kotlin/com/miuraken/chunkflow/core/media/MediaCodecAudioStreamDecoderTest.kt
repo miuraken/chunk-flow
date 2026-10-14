@@ -307,8 +307,7 @@ class MediaCodecAudioStreamDecoderTest {
             return 0
         }
 
-        override fun getOutputBuffer(index: Int): ByteBuffer? =
-            currentOutputBytes?.let { ByteBuffer.wrap(it).order(ByteOrder.nativeOrder()) }
+        override fun getOutputBuffer(index: Int): ByteBuffer? = currentOutputBytes?.let { ByteBuffer.wrap(it).order(ByteOrder.nativeOrder()) }
 
         override fun releaseOutputBuffer(index: Int, render: Boolean) {
             currentOutputBytes = null
