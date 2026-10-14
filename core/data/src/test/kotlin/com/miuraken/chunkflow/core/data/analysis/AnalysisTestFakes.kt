@@ -1,11 +1,13 @@
 package com.miuraken.chunkflow.core.data.analysis
 
 import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
+import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
+import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
@@ -302,5 +304,32 @@ internal class FakeUserSettingsRepository(
 
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
         state.update { it.copy(defaultSegmentationParams = params) }
+    }
+}
+
+internal class FakeBookmarkDao : BookmarkDao {
+    private val nextId = AtomicLong(1L)
+    private val store = MutableStateFlow<Map<Long, BookmarkEntity>>(emptyMap())
+
+    override fun observeByMediaId(mediaId: String): Flow<List<BookmarkEntity>> = store.map { map ->
+        map.values
+            .filter { it.mediaId == mediaId }
+            .sortedWith(compareBy<BookmarkEntity> { it.positionMs }.thenBy { it.id })
+    }
+
+    override suspend fun getByMediaId(mediaId: String): List<BookmarkEntity> = store.value.values
+        .filter { it.mediaId == mediaId }
+        .sortedWith(compareBy<BookmarkEntity> { it.positionMs }.thenBy { it.id })
+
+    override suspend fun insert(bookmark: BookmarkEntity): Long {
+        val assignedId = if (bookmark.id > 0L) bookmark.id else nextId.getAndIncrement()
+        store.update { current -> current + (assignedId to bookmark.copy(id = assignedId)) }
+        return assignedId
+    }
+
+    override suspend fun upsert(bookmark: BookmarkEntity): Long = insert(bookmark)
+
+    override suspend fun deleteById(id: Long) {
+        store.update { current -> current - id }
     }
 }

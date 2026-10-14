@@ -30,6 +30,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -52,6 +53,7 @@ class DefaultAnalysisRepositoryTest {
     private lateinit var chunkDao: FakeChunkDao
     private lateinit var itemStateDao: FakeItemStateDao
     private lateinit var mediaItemDao: FakeMediaItemDao
+    private lateinit var bookmarkDao: FakeBookmarkDao
     private lateinit var mediaFileLocator: MediaFileLocator
     private var currentEpochMs: Long = 1_700_000_000_000L
 
@@ -66,6 +68,7 @@ class DefaultAnalysisRepositoryTest {
         chunkDao = FakeChunkDao(transcriptDao)
         itemStateDao = FakeItemStateDao()
         mediaItemDao = FakeMediaItemDao()
+        bookmarkDao = FakeBookmarkDao()
         mediaFileLocator = MediaFileLocator(context.filesDir)
     }
 
@@ -83,6 +86,7 @@ class DefaultAnalysisRepositoryTest {
             mediaFileResolver = mediaFileLocator,
             ioDispatcher = UnconfinedTestDispatcher(testScheduler),
             onDeviceChunkTranscriber = onDeviceChunkTranscriber,
+            bookmarkDao = bookmarkDao,
             clock = { currentEpochMs },
         )
     } else {
@@ -95,6 +99,7 @@ class DefaultAnalysisRepositoryTest {
             mediaItemDao = mediaItemDao,
             mediaFileResolver = mediaFileLocator,
             ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            bookmarkDao = bookmarkDao,
             clock = { currentEpochMs },
         )
     }
@@ -517,5 +522,323 @@ class DefaultAnalysisRepositoryTest {
         assertEquals("Chunk 1000-1800", transcripts[ChunkId(301L)]?.text)
         assertEquals("Chunk 6000-6800", transcripts[ChunkId(306L)]?.text)
         assertNull(transcripts[ChunkId(307L)])
+    }
+
+    @Test
+    fun `toggleChunkBookmark_チャンク内のブックマークをトグルし再分割後も時刻を保持する`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_bookmark_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Bookmark Test",
+                durationMs = 3_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 401L,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 1_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+                ChunkEntity(
+                    id = 402L,
+                    mediaId = mediaId.value,
+                    startMs = 1_600L,
+                    endMs = 3_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+
+        // 1回目トグル: 追加され true を返す（positionMs = (0 + 1000) / 2 = 500ms）
+        val added = repository.toggleChunkBookmark(mediaId, ChunkId(401L), note = "  重要フレーズ  ")
+        assertTrue(added)
+        val bookmarksAfterAdd = repository.observeBookmarks(mediaId).first()
+        assertEquals(1, bookmarksAfterAdd.size)
+        assertEquals(500L, bookmarksAfterAdd.first().positionMs)
+        assertEquals("重要フレーズ", bookmarksAfterAdd.first().note)
+
+        // AUTO チャンクを再分割してもブックマークの時刻（500ms）は消えずに残る（§6.4、F8.1）
+        val logEnergyDb = FloatArray(150) { idx ->
+            if (idx * 20 in 1_000 until 1_600) -65f else -15f
+        }
+        val featuresFile = File(File(File(context.filesDir, "analysis"), mediaId.value), "features.bin")
+        assertTrue(
+            AnalysisBinaryFormat.writeFeaturesAtomic(
+                file = featuresFile,
+                features = StoredFeatures(binMs = 20, logEnergyDb = logEnergyDb),
+            ),
+        )
+        repository.resegment(mediaId, SegmentationParams(minSilenceMs = 800, mergeGapMs = 800))
+        val resegmentedChunks = repository.observeChunks(mediaId).first()
+        assertEquals(1, resegmentedChunks.size)
+
+        val bookmarksAfterResegment = repository.observeBookmarks(mediaId).first()
+        assertEquals(1, bookmarksAfterResegment.size)
+        assertEquals(500L, bookmarksAfterResegment.first().positionMs)
+
+        // 2回目トグル: 同じ区間を含む新しいチャンクでトグルすると削除され false を返す
+        val removed = repository.toggleChunkBookmark(mediaId, resegmentedChunks.first().id)
+        assertFalse(removed)
+        assertTrue(repository.observeBookmarks(mediaId).first().isEmpty())
+    }
+
+    @Test
+    fun `updateChunkText_NFC正規化と2000文字上限を適用しuserEditedとchunkflowJsonを更新する`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_text_edit_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Text Edit Test",
+                durationMs = 3_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ja",
+                baseLang = "en",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 501L,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 2_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+
+        // NFD の「が」（か + 濁点 U+3099）を含む文字列と 2,000 文字超の入力
+        val nfdGa = "か\u3099"
+        val longSuffix = "あ".repeat(2_010)
+        repository.updateChunkText(mediaId, ChunkId(501L), "  $nfdGa$longSuffix  ")
+
+        val saved = transcriptDao.getByChunkId(501L)
+        assertNotNull(saved)
+        assertTrue(saved.userEdited)
+        assertEquals("user", saved.engine)
+        assertTrue(saved.text.startsWith("が"))
+        assertEquals(2_000, saved.text.codePointCount(0, saved.text.length))
+
+        val backupFile = File(File(context.filesDir, "media"), "${mediaId.value}.transcript.chunkflow.json")
+        assertTrue(backupFile.isFile)
+        val parsed = ChunkFlowTranscriptParser().parse(backupFile.readBytes(), backupFile.name)
+        assertTrue(parsed is TranscriptParseResult.Ok)
+        assertEquals(1, parsed.document.segments.size)
+        assertEquals(saved.text, parsed.document.segments.first().text)
+    }
+
+    @Test
+    fun `splitChunk_wordsありとwordsなしの両方でMANUALチャンクへ分割し1トランザクション保存する`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_split_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Split Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 601L,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 2_000L,
+                    origin = ChunkOrigin.IMPORTED.name,
+                ),
+                ChunkEntity(
+                    id = 602L,
+                    mediaId = mediaId.value,
+                    startMs = 2_000L,
+                    endMs = 4_000L,
+                    origin = ChunkOrigin.IMPORTED.name,
+                ),
+            ),
+        )
+        transcriptDao.upsertAll(
+            listOf(
+                Transcript(
+                    chunkId = ChunkId(601L),
+                    text = "Hello brave world",
+                    language = LanguageTag("en"),
+                    languageConfidence = 0.9f,
+                    words = listOf(
+                        WordTiming(startMs = 100L, endMs = 500L, text = "Hello", confidence = 0.9f),
+                        WordTiming(startMs = 600L, endMs = 1_100L, text = "brave", confidence = 0.9f),
+                        WordTiming(startMs = 1_200L, endMs = 1_800L, text = "world", confidence = 0.9f),
+                    ),
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+                Transcript(
+                    chunkId = ChunkId(602L),
+                    text = "No word timings here",
+                    language = LanguageTag("en"),
+                    languageConfidence = 0.9f,
+                    words = emptyList(),
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+            ),
+        )
+
+        // 範囲外の分割位置は false
+        assertFalse(repository.splitChunk(mediaId, ChunkId(601L), 0L))
+        assertFalse(repository.splitChunk(mediaId, ChunkId(601L), 2_000L))
+
+        // 1. words ありのチャンク (601L: 0..2000ms) を 1,150ms で分割
+        assertTrue(repository.splitChunk(mediaId, ChunkId(601L), 1_150L))
+        val chunksAfterFirstSplit = repository.observeChunks(mediaId).first()
+        assertEquals(3, chunksAfterFirstSplit.size)
+        assertTrue(chunksAfterFirstSplit.all { it.origin == ChunkOrigin.MANUAL })
+        assertEquals(0L to 1_150L, chunksAfterFirstSplit[0].startMs to chunksAfterFirstSplit[0].endMs)
+        assertEquals(1_150L to 2_000L, chunksAfterFirstSplit[1].startMs to chunksAfterFirstSplit[1].endMs)
+
+        val transcriptsAfterFirstSplit = repository.observeTranscripts(mediaId).first()
+        val firstHalfTr = transcriptsAfterFirstSplit[chunksAfterFirstSplit[0].id]
+        val secondHalfTr = transcriptsAfterFirstSplit[chunksAfterFirstSplit[1].id]
+        assertNotNull(firstHalfTr)
+        assertNotNull(secondHalfTr)
+        assertEquals("Hello brave", firstHalfTr.text)
+        assertEquals(2, firstHalfTr.words.size)
+        assertTrue(firstHalfTr.userEdited)
+        assertEquals("world", secondHalfTr.text)
+        assertEquals(1, secondHalfTr.words.size)
+        assertTrue(secondHalfTr.userEdited)
+
+        // 2. words なしのチャンク (chunksAfterFirstSplit[2]: 2000..4000ms) を 3,000ms で分割
+        val thirdChunkId = chunksAfterFirstSplit[2].id
+        assertTrue(repository.splitChunk(mediaId, thirdChunkId, 3_000L))
+        val chunksAfterSecondSplit = repository.observeChunks(mediaId).first()
+        assertEquals(4, chunksAfterSecondSplit.size)
+        val transcriptsAfterSecondSplit = repository.observeTranscripts(mediaId).first()
+        val noWordsFirstHalf = transcriptsAfterSecondSplit[chunksAfterSecondSplit[2].id]
+        val noWordsSecondHalf = transcriptsAfterSecondSplit[chunksAfterSecondSplit[3].id]
+        assertNotNull(noWordsFirstHalf)
+        assertEquals("No word timings here", noWordsFirstHalf.text)
+        assertTrue(noWordsFirstHalf.userEdited)
+        assertNull(noWordsSecondHalf)
+    }
+
+    @Test
+    fun `mergeWithNextChunkとmoveChunkBoundary_MANUALチャンクを生成し文字起こしと境界を更新する`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_merge_move_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Merge Move Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 701L,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 1_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+                ChunkEntity(
+                    id = 702L,
+                    mediaId = mediaId.value,
+                    startMs = 1_000L,
+                    endMs = 2_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+                ChunkEntity(
+                    id = 703L,
+                    mediaId = mediaId.value,
+                    startMs = 2_200L,
+                    endMs = 3_500L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+        transcriptDao.upsertAll(
+            listOf(
+                Transcript(
+                    chunkId = ChunkId(701L),
+                    text = "Part one",
+                    language = LanguageTag("en"),
+                    languageConfidence = 0.9f,
+                    words = listOf(WordTiming(startMs = 100L, endMs = 800L, text = "Part", confidence = 0.9f)),
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+                Transcript(
+                    chunkId = ChunkId(702L),
+                    text = "Part two",
+                    language = LanguageTag("en"),
+                    languageConfidence = 0.9f,
+                    words = listOf(WordTiming(startMs = 1_100L, endMs = 1_800L, text = "two", confidence = 0.9f)),
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+            ),
+        )
+
+        // 末尾チャンクは直後のチャンクがないため mergeWithNextChunk は false
+        assertFalse(repository.mergeWithNextChunk(mediaId, ChunkId(703L)))
+
+        // 701L と 702L を結合 -> [0..2000ms] と [2200..3500ms] の 2 チャンク（MANUAL）になる
+        assertTrue(repository.mergeWithNextChunk(mediaId, ChunkId(701L)))
+        val mergedChunks = repository.observeChunks(mediaId).first()
+        assertEquals(2, mergedChunks.size)
+        assertEquals(ChunkOrigin.MANUAL, mergedChunks[0].origin)
+        assertEquals(0L to 2_000L, mergedChunks[0].startMs to mergedChunks[0].endMs)
+
+        val mergedTranscript = repository.observeTranscripts(mediaId).first()[mergedChunks[0].id]
+        assertNotNull(mergedTranscript)
+        assertEquals("Part one Part two", mergedTranscript.text)
+        assertEquals(2, mergedTranscript.words.size)
+        assertTrue(mergedTranscript.userEdited)
+
+        // 2つ目のチャンク (2200..3500ms) の開始を 1,500ms（前のチャンク 0..2000ms に食い込む値）へ移動すると 2,000ms にクランプされる
+        val secondChunkId = mergedChunks[1].id
+        assertTrue(repository.moveChunkBoundary(mediaId, secondChunkId, newStartMs = 1_500L, newEndMs = 3_800L))
+        val movedChunks = repository.observeChunks(mediaId).first()
+        assertEquals(2, movedChunks.size)
+        assertEquals(2_000L to 3_800L, movedChunks[1].startMs to movedChunks[1].endMs)
+
+        val availableOrigins = repository.observeAvailableChunkOrigins(mediaId).first()
+        assertTrue(ChunkOrigin.MANUAL in availableOrigins)
     }
 }
