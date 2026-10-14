@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/miuraken/chunk-flow/blob/main/docs/format/chunkflow-transcript-v1.schema.json",
+  "title": "chunkflow-transcript v1",
+  "description": "Chunk Flow の文字起こしファイルの形式（設計書 §7.4.3）。PC ツール（tools/transcriber）とアプリ（core:transcript）の間の契約。JSON Schema だけで表せない規則（重なり、言語ペアとの一致など）は README.md の「意味の検証」を参照。知らないフィールドは無視する（フィールドの追加は互換）ため、additionalProperties は制限しない。",
+  "type": "object",
+  "required": ["format", "version", "audio", "languages", "generator", "segments"],
+  "properties": {
+    "format": {
+      "description": "形式名。固定値。",
+      "const": "chunkflow-transcript"
+    },
+    "version": {
+      "description": "形式の版。互換性を壊す変更で上げる。アプリは対応していない版を拒否する。",
+      "const": 1
+    },
+    "audio": {
+      "description": "対応する音声ファイル。",
+      "type": "object",
+      "required": ["fileName", "sha256", "durationMs"],
+      "properties": {
+        "fileName": {
+          "description": "音声のファイル名（パスを含まない）。対応付けの手がかりと表示にだけ使う。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^/\\\\\\u0000-\\u001f]+$"
+        },
+        "sha256": {
+          "description": "音声ファイルのバイト列そのものの SHA-256（小文字の 16 進数 64 桁）。アプリはこれで音声と対応付ける。",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "durationMs": {
+          "description": "デコードした音声の長さ（ミリ秒）。",
+          "$ref": "#/$defs/timeMs"
+        }
+      }
+    },
+    "languages": {
+      "description": "教材の言語ペア。base を省略する（または null にする）と単一言語の教材。",
+      "type": "object",
+      "required": ["target"],
+      "properties": {
+        "target": { "description": "学習言語。", "$ref": "#/$defs/languageTag" },
+        "base": {
+          "description": "母語・解説の言語。単一言語の教材では省略するか null。",
+          "anyOf": [{ "$ref": "#/$defs/languageTag" }, { "type": "null" }]
+        }
+      }
+    },
+    "generator": {
+      "description": "生成したツール・エンジン・モデルと日時（問題の調査に使う）。",
+      "type": "object",
+      "required": ["tool", "engine", "model", "createdAt"],
+      "properties": {
+        "tool": { "$ref": "#/$defs/shortText" },
+        "engine": { "$ref": "#/$defs/shortText" },
+        "model": { "$ref": "#/$defs/shortText" },
+        "createdAt": {
+          "description": "RFC 3339 の日時（UTC を推奨）。同じ音声の JSON が複数あるときに新しい方を選ぶのに使う。",
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+        }
+      }
+    },
+    "segments": {
+      "description": "学習用のチャンク（文単位が目安）。開始時刻の順に並べ、重ならないようにする（意味の検証）。上限 50,000 件（§8.1）。",
+      "type": "array",
+      "maxItems": 50000,
+      "items": { "$ref": "#/$defs/segment" }
+    }
+  },
+  "$defs": {
+    "timeMs": {
+      "description": "デコードした音声の先頭からの時刻（ミリ秒の整数）。",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "languageTag": {
+      "description": "BCP-47 の言語タグ（Whisper の言語コード。例: en, ja, ko, zh, yue, vi, ru, es, hi, de, el）。",
+      "type": "string",
+      "maxLength": 35,
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+    },
+    "shortText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "segmentText": {
+      "description": "プレーンテキスト（NFC、マークアップなし）。上限 2,000 文字（Unicode のコードポイントで数える。§8.1）。",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "probability": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "segment": {
+      "type": "object",
+      "required": ["startMs", "endMs", "text"],
+      "properties": {
+        "startMs": { "description": "発話そのものの範囲の開始（パディングなし）。", "$ref": "#/$defs/timeMs" },
+        "endMs": { "description": "発話そのものの範囲の終了。startMs より大きい（意味の検証）。", "$ref": "#/$defs/timeMs" },
+        "lang": {
+          "description": "言語。languages.target か languages.base と完全に一致させる（意味の検証）。判定できなければ null（省略も null として扱う）。",
+          "anyOf": [{ "$ref": "#/$defs/languageTag" }, { "type": "null" }]
+        },
+        "langProb": {
+          "description": "候補の 2 言語の中での確率（0〜1）。提供しない場合は省略するか null。",
+          "anyOf": [{ "$ref": "#/$defs/probability" }, { "type": "null" }]
+        },
+        "text": { "$ref": "#/$defs/segmentText" },
+        "textVariants": {
+          "description": "別の字体のテキスト。キーは ISO 15924 の文字コード（Hans / Hant）。",
+          "type": "object",
+          "maxProperties": 4,
+          "propertyNames": { "enum": ["Hans", "Hant"] },
+          "additionalProperties": { "$ref": "#/$defs/segmentText" }
+        },
+        "words": {
+          "description": "単語単位の時刻（任意）。セグメントの範囲内で、開始時刻の順に並べ、重ならない（意味の検証）。",
+          "type": "array",
+          "maxItems": 2000,
+          "items": { "$ref": "#/$defs/word" }
+        }
+      }
+    },
+    "word": {
+      "type": "object",
+      "required": ["startMs", "endMs", "text"],
+      "properties": {
+        "startMs": { "$ref": "#/$defs/timeMs" },
+        "endMs": { "$ref": "#/$defs/timeMs" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "prob": {
+          "anyOf": [{ "$ref": "#/$defs/probability" }, { "type": "null" }]
+        }
+      }
+    }
+  }
+}

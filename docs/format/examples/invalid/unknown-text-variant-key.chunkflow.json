@@ -1,0 +1,52 @@
+{
+  "format": "chunkflow-transcript",
+  "version": 1,
+  "audio": {
+    "fileName": "lesson01.mp3",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000c0ffef",
+    "durationMs": 30000
+  },
+  "languages": {
+    "target": "ko",
+    "base": "ja"
+  },
+  "generator": {
+    "tool": "chunkflow-transcribe 0.1.0",
+    "engine": "faster-whisper 1.1.1",
+    "model": "large-v3-turbo",
+    "createdAt": "2026-10-14T12:00:00Z"
+  },
+  "segments": [
+    {
+      "startMs": 1200,
+      "endMs": 3400,
+      "lang": "ja",
+      "langProb": 0.99,
+      "text": "では、聞いてみましょう。"
+    },
+    {
+      "startMs": 4100,
+      "endMs": 6900,
+      "lang": "ko",
+      "langProb": 0.98,
+      "text": "안녕하세요. 만나서 반갑습니다.",
+      "textVariants": {
+        "Latn": "annyeonghaseyo"
+      }
+    },
+    {
+      "startMs": 7800,
+      "endMs": 9600,
+      "lang": "ja",
+      "langProb": 0.96,
+      "text": "もう一度。"
+    },
+    {
+      "startMs": 10300,
+      "endMs": 13100,
+      "lang": "ko",
+      "langProb": 0.97,
+      "text": "이건 얼마예요?"
+    }
+  ]
+}

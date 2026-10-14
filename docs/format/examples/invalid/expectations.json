@@ -1,0 +1,149 @@
+{
+  "description": "不正なサンプルごとに、どの段階（parse / schema / semantic）で拒否されるべきか、アプリの TranscriptError の何になるべきかを示す。README.md の「不正なサンプル」を参照。",
+  "files": [
+    {
+      "file": "invalid-utf8.chunkflow.json",
+      "layer": "parse",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "UTF-8 として不正なバイト列"
+    },
+    {
+      "file": "truncated-json.chunkflow.json",
+      "layer": "parse",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "JSON として不完全（途中で切れている）"
+    },
+    {
+      "file": "deep-nesting.chunkflow.json",
+      "layer": "parse",
+      "error": "TOO_LARGE",
+      "rule": "入れ子の深さが上限（64）を超える（知らないフィールドの中でも拒否する）"
+    },
+    {
+      "file": "wrong-format-name.chunkflow.json",
+      "layer": "schema",
+      "error": "UNKNOWN_FORMAT",
+      "rule": "format が chunkflow-transcript ではない"
+    },
+    {
+      "file": "unsupported-version.chunkflow.json",
+      "layer": "schema",
+      "error": "UNSUPPORTED_VERSION",
+      "rule": "version が 1 ではない"
+    },
+    {
+      "file": "negative-time.chunkflow.json",
+      "layer": "schema",
+      "error": "TIME_OUT_OF_RANGE",
+      "rule": "時刻が負"
+    },
+    {
+      "file": "non-integer-time.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "時刻が整数ではない"
+    },
+    {
+      "file": "text-too-long.chunkflow.json",
+      "layer": "schema",
+      "error": "TOO_LARGE",
+      "rule": "1 セグメントのテキストが 2,000 文字を超える（2,001 文字）"
+    },
+    {
+      "file": "empty-text.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "text が空文字列"
+    },
+    {
+      "file": "missing-sha256.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "audio.sha256 がない"
+    },
+    {
+      "file": "uppercase-sha256.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "audio.sha256 が小文字の 16 進数 64 桁ではない"
+    },
+    {
+      "file": "path-in-file-name.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "audio.fileName にパス区切りを含む"
+    },
+    {
+      "file": "lang-prob-out-of-range.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "langProb が 0〜1 の範囲外"
+    },
+    {
+      "file": "unknown-text-variant-key.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "textVariants のキーが Hans / Hant 以外"
+    },
+    {
+      "file": "invalid-language-tag.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "言語タグが BCP-47 の形ではない"
+    },
+    {
+      "file": "missing-segments.chunkflow.json",
+      "layer": "schema",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "segments がない"
+    },
+    {
+      "file": "start-equals-end.chunkflow.json",
+      "layer": "semantic",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "startMs >= endMs（等しい）"
+    },
+    {
+      "file": "start-after-end.chunkflow.json",
+      "layer": "semantic",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "startMs >= endMs（逆転）"
+    },
+    {
+      "file": "overlapping-segments.chunkflow.json",
+      "layer": "semantic",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "セグメントが重なる（前の endMs > 次の startMs）"
+    },
+    {
+      "file": "unsorted-segments.chunkflow.json",
+      "layer": "semantic",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "セグメントが開始時刻の順に並んでいない"
+    },
+    {
+      "file": "lang-not-in-pair.chunkflow.json",
+      "layer": "semantic",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "lang が言語ペアのどちらでもない（ja-ko の教材に zh）"
+    },
+    {
+      "file": "same-target-and-base.chunkflow.json",
+      "layer": "semantic",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "languages.target と languages.base が同じ"
+    },
+    {
+      "file": "segment-exceeds-duration.chunkflow.json",
+      "layer": "semantic",
+      "error": "TIME_OUT_OF_RANGE",
+      "rule": "セグメントの endMs が audio.durationMs を超える"
+    },
+    {
+      "file": "word-outside-segment.chunkflow.json",
+      "layer": "semantic",
+      "error": "SCHEMA_VIOLATION",
+      "rule": "単語の時刻がセグメントの範囲の外"
+    }
+  ]
+}
