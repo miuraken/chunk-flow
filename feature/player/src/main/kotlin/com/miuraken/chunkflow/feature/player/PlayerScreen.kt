@@ -82,6 +82,7 @@ import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fake.FakePositionProvider
@@ -119,6 +120,17 @@ fun PlayerRoute(
         }
     }
 
+    var pendingExportFormat by remember { mutableStateOf<TranscriptExportFormat?>(null) }
+    val exportDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        val format = pendingExportFormat
+        pendingExportFormat = null
+        if (uri != null && format != null) {
+            viewModel.onEvent(PlayerEvent.ExportTranscriptToUri(format = format, uri = uri))
+        }
+    }
+
     PlayerScreen(
         state = state,
         positionProvider = viewModel.positionProvider,
@@ -133,6 +145,11 @@ fun PlayerRoute(
                 arrayOf("application/json", "text/vtt", "application/x-subrip", "text/plain", "*/*"),
             )
         },
+        onRequestExportTranscript = { format ->
+            pendingExportFormat = format
+            val baseName = state.title.ifBlank { "transcript" }
+            exportDocumentLauncher.launch("$baseName.${format.name.lowercase(Locale.ROOT)}")
+        },
         modifier = modifier,
     )
 }
@@ -140,7 +157,7 @@ fun PlayerRoute(
 /**
  * プレイヤー画面（状態を受け取って描くだけの Composable。§6.2、§7.5.2〜§7.5.6）。
  *
- * 再生位置は [PlayerUiState] に含めず、[positionProvider] を子 Composable（[WaveformSection]・[PlayerProgressSection]）にのみ渡す。
+ * 再生位置は [PlayerUiState] に含めず、[positionProvider] を子 Composable（[WaveformSection]・[PlayerProgressSection]・[TranscriptList]）にのみ渡す。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -150,9 +167,11 @@ fun PlayerScreen(
     onEvent: (PlayerEvent) -> Unit,
     modifier: Modifier = Modifier,
     onPickTranscriptJson: () -> Unit = {},
+    onRequestExportTranscript: (TranscriptExportFormat) -> Unit = {},
 ) {
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showResegmentSheet by remember { mutableStateOf(false) }
+    val seekBackSeconds = (state.seekBackMs / 1_000L).toInt().coerceAtLeast(1)
 
     Scaffold(
         modifier = modifier,
@@ -228,6 +247,7 @@ fun PlayerScreen(
                             loopMode = state.practice.loop,
                             analysis = state.analysis,
                             positionProvider = positionProvider,
+                            seekBackSeconds = seekBackSeconds,
                             onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
                             onSetAbRange = { startMs, endMs ->
                                 onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
@@ -277,8 +297,12 @@ fun PlayerScreen(
                         chineseScript = state.chineseScript,
                         cantoneseScript = state.cantoneseScript,
                         transcriptImportBanner = state.transcriptImportBanner,
+                        positionProvider = positionProvider,
                         lookaheadStatus = state.lookaheadStatus,
                         localTranscriptExported = state.localTranscriptExported,
+                        transcriptExportBanner = state.transcriptExportBanner,
+                        onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
+                        onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
                         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
                         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
@@ -286,6 +310,18 @@ fun PlayerScreen(
                         onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
                         onUpdateChunkLanguage = { chunkId, lang ->
                             onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
+                        },
+                        onUpdateChunkText = { chunkId, text ->
+                            onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
+                        },
+                        onSplitChunk = { chunkId, splitMs ->
+                            onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
+                        },
+                        onMergeWithNextChunk = { chunkId ->
+                            onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
+                        },
+                        onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
+                            onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
                         },
                         onBulkSetUnknownLanguage = { lang ->
                             onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
@@ -329,6 +365,7 @@ fun PlayerScreen(
                             loopMode = state.practice.loop,
                             analysis = state.analysis,
                             positionProvider = positionProvider,
+                            seekBackSeconds = seekBackSeconds,
                             onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
                             onSetAbRange = { startMs, endMs ->
                                 onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
@@ -349,8 +386,12 @@ fun PlayerScreen(
                         chineseScript = state.chineseScript,
                         cantoneseScript = state.cantoneseScript,
                         transcriptImportBanner = state.transcriptImportBanner,
+                        positionProvider = positionProvider,
                         lookaheadStatus = state.lookaheadStatus,
                         localTranscriptExported = state.localTranscriptExported,
+                        transcriptExportBanner = state.transcriptExportBanner,
+                        onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
+                        onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
                         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
                         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
@@ -358,6 +399,18 @@ fun PlayerScreen(
                         onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
                         onUpdateChunkLanguage = { chunkId, lang ->
                             onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
+                        },
+                        onUpdateChunkText = { chunkId, text ->
+                            onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
+                        },
+                        onSplitChunk = { chunkId, splitMs ->
+                            onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
+                        },
+                        onMergeWithNextChunk = { chunkId ->
+                            onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
+                        },
+                        onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
+                            onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
                         },
                         onBulkSetUnknownLanguage = { lang ->
                             onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
@@ -439,6 +492,10 @@ fun PlayerScreen(
                 onAutoAlignTranscriptOffset = {
                     onEvent(PlayerEvent.AutoAlignTranscriptOffset)
                 },
+                onExportTranscript = { format ->
+                    showResegmentSheet = false
+                    onRequestExportTranscript(format)
+                },
                 onApply = { params ->
                     onEvent(PlayerEvent.Resegment(params))
                     showResegmentSheet = false
@@ -485,7 +542,7 @@ private fun PlayerTitleMetaRow(
 }
 
 /**
- * 学習コントロールのチップ列（リピート、A-B クイック設定、自動ポーズ、瞬間作文、言語フィルタ、ブラインドモード、先読み文字起こし、チャンク出どころ、分割調整、速度）。
+ * 学習コントロールのチップ列（リピート、A-B クイック設定、自動ポーズ、瞬間作文、言語フィルタ、ブックマークのみ、ブラインドモード、先読み文字起こし、チャンク出どころ、分割調整、速度）。
  */
 @Composable
 private fun PlayerPracticeControlStrip(
@@ -770,6 +827,24 @@ private fun PlayerPracticeControlStrip(
                 }
             }
         }
+
+        // 4b. ブックマークのみ再生チップ (F8.1)
+        FilterChip(
+            selected = state.practice.bookmarksOnly,
+            onClick = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
+            label = { Text(text = stringResource(R.string.player_chip_bookmarks_only), maxLines = 1) },
+            leadingIcon = {
+                Icon(
+                    imageVector = if (state.practice.bookmarksOnly) {
+                        ChunkFlowIcons.Bookmark
+                    } else {
+                        ChunkFlowIcons.BookmarkBorder
+                    },
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+            },
+        )
 
         // 5. ブラインドモードチップ (F7.2)
         Column {
@@ -1275,6 +1350,7 @@ private fun ResegmentSheetContent(
     transcriptOffsetMs: Int,
     onAdjustTranscriptOffset: (Int) -> Unit,
     onAutoAlignTranscriptOffset: () -> Unit,
+    onExportTranscript: (TranscriptExportFormat) -> Unit,
     onApply: (SegmentationParams) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -1332,6 +1408,68 @@ private fun ResegmentSheetContent(
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(text = stringResource(R.string.player_offset_auto_align))
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        // 文字起こし・字幕のエクスポート (F7.5)
+        Text(
+            text = stringResource(R.string.player_export_section_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = { onExportTranscript(TranscriptExportFormat.SRT) },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = stringResource(R.string.player_export_srt),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            OutlinedButton(
+                onClick = { onExportTranscript(TranscriptExportFormat.LRC) },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = stringResource(R.string.player_export_lrc),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            OutlinedButton(
+                onClick = { onExportTranscript(TranscriptExportFormat.TXT) },
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = stringResource(R.string.player_export_txt),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -1437,6 +1575,7 @@ internal fun SampleMaterial.toPlayerUiState(
             text = transcript?.text,
             language = transcript?.language,
             textVariants = transcript?.textVariants.orEmpty(),
+            words = transcript?.words.orEmpty(),
             origin = chunk.origin,
         )
     }

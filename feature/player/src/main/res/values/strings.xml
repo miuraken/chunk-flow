@@ -95,4 +95,25 @@
     <string name="player_lookahead_chip_off">先読み文字起こし: OFF</string>
     <string name="player_lookahead_export_json">JSON保存</string>
     <string name="player_lookahead_exported_badge">ローカルJSON保存済み（Drive同期対象）</string>
+    <!-- M4: ブックマーク・テキスト手動編集・チャンク分割結合・字幕エクスポート -->
+    <string name="player_chip_bookmarks_only">ブックマークのみ</string>
+    <string name="player_bookmark_toggle_add">ブックマークに追加</string>
+    <string name="player_bookmark_toggle_remove">ブックマークを解除</string>
+    <string name="player_chunk_edit_text">テキストを編集</string>
+    <string name="player_chunk_edit_text_dialog_title">チャンク #%1$d のテキスト編集</string>
+    <string name="player_chunk_edit_text_label">文字起こし本文</string>
+    <string name="player_chunk_edit_save">保存</string>
+    <string name="player_chunk_edit_cancel">キャンセル</string>
+    <string name="player_chunk_split_here">再生位置（または中央）で分割</string>
+    <string name="player_chunk_merge_next">次のチャンクと結合</string>
+    <string name="player_chunk_boundary_start_minus">開始を 100ms 早める (-100ms)</string>
+    <string name="player_chunk_boundary_start_plus">開始を 100ms 遅らせる (+100ms)</string>
+    <string name="player_chunk_boundary_end_minus">終了を 100ms 早める (-100ms)</string>
+    <string name="player_chunk_boundary_end_plus">終了を 100ms 遅らせる (+100ms)</string>
+    <string name="player_export_section_title">文字起こし・字幕のエクスポート</string>
+    <string name="player_export_srt">SRT 書き出し</string>
+    <string name="player_export_lrc">LRC 書き出し</string>
+    <string name="player_export_txt">TXT 書き出し</string>
+    <string name="player_export_done">%1$s ファイルを書き出しました</string>
+    <string name="player_export_failed">ファイルの書き出しに失敗しました</string>
 </resources>

@@ -95,4 +95,25 @@
     <string name="player_lookahead_chip_off">Lookahead STT: OFF</string>
     <string name="player_lookahead_export_json">Save JSON</string>
     <string name="player_lookahead_exported_badge">Saved to local JSON (Drive sync ready)</string>
+    <!-- M4: Bookmarks, manual text editing, chunk split/merge, transcript export -->
+    <string name="player_chip_bookmarks_only">Bookmarks only</string>
+    <string name="player_bookmark_toggle_add">Add bookmark</string>
+    <string name="player_bookmark_toggle_remove">Remove bookmark</string>
+    <string name="player_chunk_edit_text">Edit text</string>
+    <string name="player_chunk_edit_text_dialog_title">Edit chunk #%1$d text</string>
+    <string name="player_chunk_edit_text_label">Transcript text</string>
+    <string name="player_chunk_edit_save">Save</string>
+    <string name="player_chunk_edit_cancel">Cancel</string>
+    <string name="player_chunk_split_here">Split at playhead / midpoint</string>
+    <string name="player_chunk_merge_next">Merge with next chunk</string>
+    <string name="player_chunk_boundary_start_minus">Move start -100ms</string>
+    <string name="player_chunk_boundary_start_plus">Move start +100ms</string>
+    <string name="player_chunk_boundary_end_minus">Move end -100ms</string>
+    <string name="player_chunk_boundary_end_plus">Move end +100ms</string>
+    <string name="player_export_section_title">Export transcript / subtitles</string>
+    <string name="player_export_srt">Export SRT</string>
+    <string name="player_export_lrc">Export LRC</string>
+    <string name="player_export_txt">Export TXT</string>
+    <string name="player_export_done">Exported %1$s file</string>
+    <string name="player_export_failed">Failed to export file</string>
 </resources>

@@ -43,7 +43,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * ライブラリ一覧の各教材の UI 表示モデル（F2.1、F2.2、F7.1）。
+ * ライブラリ一覧の各教材の UI 表示モデル（F2.1〜F2.4、F7.1）。
  *
  * @property item 教材のメタデータ。
  * @property positionMs 前回のレジューム再生位置（ミリ秒）。
@@ -51,6 +51,7 @@ import kotlinx.coroutines.launch
  * @property chunkCount チャンク数（解析前・未取得の場合は 0）。
  * @property hasTranscript 文字起こしが紐付いているかどうか。
  * @property isAnalyzing 端末内解析を実行中かどうか。
+ * @property isAudioMissing バックアップ復元後などで音声ファイルが未取り込みかどうか（F2.4）。
  */
 data class LibraryItemUiModel(
     val item: AudioItem,
@@ -59,6 +60,7 @@ data class LibraryItemUiModel(
     val chunkCount: Int = 0,
     val hasTranscript: Boolean = false,
     val isAnalyzing: Boolean = false,
+    val isAudioMissing: Boolean = false,
 ) {
     /** 再生進捗の割合（0.0..1.0）。 */
     val progressFraction: Float
@@ -72,6 +74,9 @@ data class LibraryItemUiModel(
     val transcriptRelativePath: String
         get() = "transcription/${item.title}.chunkflow.json"
 }
+
+/** [LibraryItemUiModel] の別名。 */
+typealias LibraryItemUi = LibraryItemUiModel
 
 /**
  * ディレクトリ（フォルダ）単位の教材グループ表示モデル。
@@ -221,9 +226,9 @@ data class MiniPlayerUiState(
 )
 
 /**
- * ライブラリ画面の状態（F1.1〜F2.3、F7.1、§7.5.1）。
+ * ライブラリ画面の状態（F1.1〜F2.4、F7.1、§7.5.1）。
  *
- * @property items 教材の一覧（レジューム位置・速度・チャンク数を含む）。
+ * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無を含む）。
  * @property importState 音声・フォルダ取り込みの進捗・エラー状態。
  * @property transcriptImportState 文字起こし単体取り込みの結果状態。
  * @property syncState Google Drive 同期の進捗・エラー状態。
@@ -327,6 +332,13 @@ private data class ItemAnalysisSummary(
     val isAnalyzing: Boolean = false,
 )
 
+private data class LibraryRepositorySnapshot(
+    val items: List<AudioItem> = emptyList(),
+    val itemStates: Map<MediaId, ItemState> = emptyMap(),
+    val summaries: Map<MediaId, ItemAnalysisSummary> = emptyMap(),
+    val missingAudioIds: Set<MediaId> = emptySet(),
+)
+
 private data class DialogAndImportSnapshot(
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
     val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
@@ -348,7 +360,7 @@ private object EmptyAnalysisRepository : AnalysisRepository {
 }
 
 /**
- * ライブラリ画面の ViewModel（F1.1〜F2.3、F7.1、§7.5.1）。
+ * ライブラリ画面の ViewModel（F1.1〜F2.4、F7.1、§7.5.1）。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -423,18 +435,25 @@ class LibraryViewModel @Inject constructor(
             libraryRepository.observeItems(),
             libraryRepository.observeItemStates(),
             analysisSummaries,
-        ) { items, itemStates, summaries ->
-            Triple(items, itemStates, summaries)
+            libraryRepository.observeMissingAudioIds(),
+        ) { items, itemStates, summaries, missingAudioIds ->
+            LibraryRepositorySnapshot(
+                items = items,
+                itemStates = itemStates,
+                summaries = summaries,
+                missingAudioIds = missingAudioIds,
+            )
         },
         playbackController.status,
         dialogAndImportFlow,
         selectedDirectoryName,
         collapsedDirectories,
-    ) { (items, itemStates, summaries), playbackStatus, dialogAndImport, dirName, collapsed ->
+    ) { repoSnapshot, playbackStatus, dialogAndImport, dirName, collapsed ->
         buildUiState(
-            items = items,
-            itemStates = itemStates,
-            summaries = summaries,
+            items = repoSnapshot.items,
+            itemStates = repoSnapshot.itemStates,
+            summaries = repoSnapshot.summaries,
+            missingAudioIds = repoSnapshot.missingAudioIds,
             playbackStatus = playbackStatus,
             dialogAndImport = dialogAndImport,
             selectedDirectoryName = dirName,
@@ -632,6 +651,7 @@ class LibraryViewModel @Inject constructor(
         items: List<AudioItem>,
         itemStates: Map<MediaId, ItemState>,
         summaries: Map<MediaId, ItemAnalysisSummary>,
+        missingAudioIds: Set<MediaId>,
         playbackStatus: PlaybackStatus,
         dialogAndImport: DialogAndImportSnapshot,
         selectedDirectoryName: String?,
@@ -647,6 +667,7 @@ class LibraryViewModel @Inject constructor(
                 chunkCount = summary?.chunkCount ?: 0,
                 hasTranscript = summary?.hasTranscript ?: false,
                 isAnalyzing = summary?.isAnalyzing ?: false,
+                isAudioMissing = audioItem.id in missingAudioIds,
             )
         }
         val activeMediaId = playbackStatus.mediaId

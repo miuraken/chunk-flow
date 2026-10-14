@@ -60,4 +60,5 @@
     <string name="library_edit_base_lang_none">単一言語（なし）</string>
     <string name="library_edit_save">保存</string>
     <string name="library_edit_cancel">キャンセル</string>
+    <string name="library_item_missing_audio">音声なし（再取り込み待ち）</string>
 </resources>
