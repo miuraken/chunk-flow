@@ -1,0 +1,484 @@
+package com.miuraken.chunkflow.core.audio
+
+import com.miuraken.chunkflow.core.model.Chunk
+import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.SegmentationParams
+import kotlin.math.max
+import kotlin.math.min
+
+/** 端末内のチャンク分割アルゴリズムの現在のバージョン（§6.4、§7.3.3）。 */
+const val CURRENT_ALGORITHM_VERSION: Int = 1
+
+/**
+ * チャンクの前後にパディング（余白）を付与するユーティリティ（§7.3.3 手順 7、§7.4.6）。
+ *
+ * 前後のパディング（`prePaddingMs` / `postPaddingMs`）を付与際、`[0, durationMs]` の範囲に収め、
+ * かつ隣接するチャンクとの間にある無音区間の中点を越えないようにクランプする。
+ */
+object ChunkPadding {
+
+    /**
+     * 発話区間の一覧 [rawIntervals]（開始・終了ミリ秒のペア）にパディングを適用して [Chunk] のリストを返す。
+     *
+     * @param rawIntervals パディング前の発話区間（`first = startMs`, `second = endMs`）。
+     * @param prePaddingMs 発話の前に含める余白（ミリ秒、0 以上）。
+     * @param postPaddingMs 発話の後に含める余白（ミリ秒、0 以上）。
+     * @param durationMs 音声全体の長さ（ミリ秒）。
+     * @param origin 生成するチャンクの [ChunkOrigin]。
+     */
+    fun applyPadding(
+        rawIntervals: List<Pair<Long, Long>>,
+        prePaddingMs: Int,
+        postPaddingMs: Int,
+        durationMs: Long,
+        origin: ChunkOrigin = ChunkOrigin.AUTO,
+    ): List<Chunk> {
+        if (rawIntervals.isEmpty()) return emptyList()
+        val sorted = rawIntervals
+            .filter { (start, end) -> start < end }
+            .sortedWith(compareBy<Pair<Long, Long>> { it.first }.thenBy { it.second })
+        if (sorted.isEmpty()) return emptyList()
+
+        val maxEndInIntervals = sorted.maxOf { it.second }
+        val effectiveDurationMs = if (durationMs > 0L) durationMs else maxEndInIntervals
+        if (effectiveDurationMs <= 0L) return emptyList()
+
+        val preMs = prePaddingMs.coerceAtLeast(0).toLong()
+        val postMs = postPaddingMs.coerceAtLeast(0).toLong()
+
+        val result = ArrayList<Chunk>(sorted.size)
+        for (i in sorted.indices) {
+            val rawStart = sorted[i].first.coerceIn(0L, effectiveDurationMs)
+            val rawEnd = sorted[i].second.coerceIn(rawStart, effectiveDurationMs)
+            if (rawStart >= effectiveDurationMs || rawEnd <= rawStart) continue
+
+            val minAllowedStart = if (i == 0) {
+                0L
+            } else {
+                val prevRawEnd = sorted[i - 1].second.coerceIn(0L, rawStart)
+                (prevRawEnd + rawStart) / 2L
+            }
+
+            val maxAllowedEnd = if (i == sorted.lastIndex) {
+                effectiveDurationMs
+            } else {
+                val nextRawStart = sorted[i + 1].first.coerceIn(rawEnd, effectiveDurationMs)
+                min(effectiveDurationMs, (rawEnd + nextRawStart) / 2L)
+            }
+
+            val paddedStart = max(minAllowedStart, rawStart - preMs).coerceIn(0L, rawStart)
+            val paddedEnd = min(maxAllowedEnd, rawEnd + postMs)
+                .coerceIn(max(rawEnd, paddedStart + 1L), effectiveDurationMs)
+
+            if (paddedStart < paddedEnd) {
+                result.add(
+                    Chunk(
+                        id = ChunkId((result.size + 1).toLong()),
+                        startMs = paddedStart,
+                        endMs = paddedEnd,
+                        origin = origin,
+                    ),
+                )
+            }
+        }
+        return result
+    }
+
+    /**
+     * [SegmentationParams] の `prePaddingMs` / `postPaddingMs` を使ってパディングを適用する。
+     */
+    fun applyPadding(
+        rawIntervals: List<Pair<Long, Long>>,
+        params: SegmentationParams,
+        durationMs: Long,
+        origin: ChunkOrigin = ChunkOrigin.AUTO,
+    ): List<Chunk> = applyPadding(
+        rawIntervals = rawIntervals,
+        prePaddingMs = params.prePaddingMs,
+        postPaddingMs = params.postPaddingMs,
+        durationMs = durationMs,
+        origin = origin,
+    )
+}
+
+/**
+ * 端末内の無音検出によるチャンク分割器（§7.3.3 手順 1〜7）。
+ *
+ * 1. フレームエネルギー `E[n]`（dBFS、10ms ホップ）を 5 フレームのメディアンフィルタで平滑化する。
+ * 2. 適応閾値: `N = P10`、`S = P90`、`T = (N + thresholdRatio * (S - N)).coerceIn(-60f, -25f)`。
+ * 3. ヒステリシス: `E > T + 3dB` で発話開始、`E < T` で発話終了。
+ * 4. `minSilenceMs` 以上続く無音を区切りとして発話区間を抽出する。
+ * 5. `minSpeechMs` 未満の短い発話は、前後の隣との間隔が `mergeGapMs` 未満なら近い方に統合する。
+ *    統合先がなく、かつピークエネルギーが `T + 6dB` 未満の場合だけノイズとして捨てる（「Yes」「はい」は残す）。
+ * 6. `maxChunkMs` を超える区間は、内部で最もエネルギーの低い谷（150ms 以上の低エネルギー区間を優先）で再帰的に分割する。
+ * 7. 前後にパディング（`prePaddingMs` / `postPaddingMs`）を付け、隣のチャンクとの無音の中点を越えないようにする。
+ *
+ * @param vad 発話フレームの検出器（既定は [EnergyVoiceActivityDetector]）。
+ * @param defaultBinMs 1 フレーム（ビン）の時間長（ミリ秒、既定 10ms）。
+ */
+class ChunkSegmenter(
+    private val vad: VoiceActivityDetector = EnergyVoiceActivityDetector(),
+    private val defaultBinMs: Int = DEFAULT_BIN_MS,
+) {
+    private data class FrameInterval(
+        val startFrame: Int,
+        val endFrame: Int,
+    ) {
+        val frameCount: Int get() = endFrame - startFrame
+        fun durationMs(binMs: Int): Int = frameCount * binMs
+    }
+
+    /**
+     * フレームごとの対数エネルギー [logEnergyDb] から自動分割チャンクを生成する。
+     *
+     * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
+     * @param params 分割パラメータ。
+     * @param binMs 1 フレームの長さ（ミリ秒）。
+     * @param durationMs 音声全体の長さ（ミリ秒）。省略時は `logEnergyDb.size * binMs`。
+     */
+    fun segment(
+        logEnergyDb: FloatArray,
+        params: SegmentationParams = SegmentationParams(),
+        binMs: Int = defaultBinMs,
+        durationMs: Long = logEnergyDb.size.toLong() * binMs,
+    ): List<Chunk> {
+        require(binMs > 0) { "binMs must be > 0: $binMs" }
+        if (logEnergyDb.isEmpty() || durationMs <= 0L) return emptyList()
+
+        val rawIntervals = extractSpeechIntervalsWithoutPadding(
+            logEnergyDb = logEnergyDb,
+            params = params,
+            binMs = binMs,
+        )
+        return ChunkPadding.applyPadding(
+            rawIntervals = rawIntervals,
+            params = params,
+            durationMs = durationMs,
+            origin = ChunkOrigin.AUTO,
+        )
+    }
+
+    /**
+     * 手順 1〜6 までを実行し、パディング付与前の発話区間（`startMs to endMs`）を返す。
+     */
+    fun extractSpeechIntervalsWithoutPadding(
+        logEnergyDb: FloatArray,
+        params: SegmentationParams = SegmentationParams(),
+        binMs: Int = defaultBinMs,
+    ): List<Pair<Long, Long>> {
+        require(binMs > 0) { "binMs must be > 0: $binMs" }
+        if (logEnergyDb.isEmpty()) return emptyList()
+
+        // 手順 1〜3: メディアンフィルタ + 適応閾値 + ヒステリシス
+        val vadResult = vad.detect(logEnergyDb, params)
+        val smoothed = vadResult.smoothedEnergyDb
+        val thresholdDb = vadResult.thresholdDb
+
+        // 手順 4: 連続する発話フレームを抽出し、minSilenceMs 未満の短い無音ギャップを結合する
+        val bridged = extractAndBridgeIntervals(
+            speechFrames = vadResult.speechFrames,
+            minSilenceMs = params.minSilenceMs,
+            binMs = binMs,
+        )
+        if (bridged.isEmpty()) return emptyList()
+
+        // 手順 5: minSpeechMs 未満の短い発話の統合・選別
+        val afterShortSpeech = resolveShortSpeechIntervals(
+            intervals = bridged,
+            rawEnergyDb = logEnergyDb,
+            smoothedEnergyDb = smoothed,
+            thresholdDb = thresholdDb,
+            params = params,
+            binMs = binMs,
+        )
+        if (afterShortSpeech.isEmpty()) return emptyList()
+
+        // 手順 6: maxChunkMs を超える区間の再帰的な谷分割
+        val splitIntervals = ArrayList<FrameInterval>(afterShortSpeech.size)
+        for (interval in afterShortSpeech) {
+            splitLongIntervalRecursive(
+                interval = interval,
+                smoothedEnergyDb = smoothed,
+                thresholdDb = thresholdDb,
+                params = params,
+                binMs = binMs,
+                out = splitIntervals,
+            )
+        }
+
+        return splitIntervals.map { interval ->
+            (interval.startFrame.toLong() * binMs) to (interval.endFrame.toLong() * binMs)
+        }
+    }
+
+    private fun extractAndBridgeIntervals(
+        speechFrames: BooleanArray,
+        minSilenceMs: Int,
+        binMs: Int,
+    ): List<FrameInterval> {
+        val rawRuns = ArrayList<FrameInterval>()
+        var i = 0
+        val n = speechFrames.size
+        while (i < n) {
+            if (!speechFrames[i]) {
+                i++
+                continue
+            }
+            val start = i
+            while (i < n && speechFrames[i]) {
+                i++
+            }
+            rawRuns.add(FrameInterval(start, i))
+        }
+        if (rawRuns.isEmpty()) return emptyList()
+
+        val merged = ArrayList<FrameInterval>(rawRuns.size)
+        var current = rawRuns[0]
+        for (k in 1 until rawRuns.size) {
+            val next = rawRuns[k]
+            val silenceMs = (next.startFrame - current.endFrame) * binMs
+            if (silenceMs < minSilenceMs) {
+                current = FrameInterval(current.startFrame, next.endFrame)
+            } else {
+                merged.add(current)
+                current = next
+            }
+        }
+        merged.add(current)
+        return merged
+    }
+
+    private fun resolveShortSpeechIntervals(
+        intervals: List<FrameInterval>,
+        rawEnergyDb: FloatArray,
+        smoothedEnergyDb: FloatArray,
+        thresholdDb: Float,
+        params: SegmentationParams,
+        binMs: Int,
+    ): List<FrameInterval> {
+        val list = intervals.toMutableList()
+        val shortWordKeepThresholdDb = thresholdDb + SHORT_WORD_PEAK_OFFSET_DB
+
+        var index = 0
+        while (index < list.size) {
+            val current = list[index]
+            if (current.durationMs(binMs) >= params.minSpeechMs) {
+                index++
+                continue
+            }
+
+            val prevGapMs = if (index > 0) {
+                (current.startFrame - list[index - 1].endFrame) * binMs
+            } else {
+                Int.MAX_VALUE
+            }
+            val nextGapMs = if (index + 1 < list.size) {
+                (list[index + 1].startFrame - current.endFrame) * binMs
+            } else {
+                Int.MAX_VALUE
+            }
+            val nearestGapMs = min(prevGapMs, nextGapMs)
+
+            if (nearestGapMs < params.mergeGapMs) {
+                if (prevGapMs <= nextGapMs) {
+                    val prev = list[index - 1]
+                    list[index - 1] = FrameInterval(prev.startFrame, current.endFrame)
+                    list.removeAt(index)
+                    index = (index - 1).coerceAtLeast(0)
+                } else {
+                    val next = list[index + 1]
+                    list[index + 1] = FrameInterval(current.startFrame, next.endFrame)
+                    list.removeAt(index)
+                }
+            } else {
+                val peakDb = maxPeakEnergyDb(current, rawEnergyDb, smoothedEnergyDb)
+                if (peakDb < shortWordKeepThresholdDb) {
+                    list.removeAt(index)
+                } else {
+                    // ピークが T + 6dB 以上の孤立した短い発話（「Yes」「はい」など）は残す
+                    index++
+                }
+            }
+        }
+        return list
+    }
+
+    private fun maxPeakEnergyDb(
+        interval: FrameInterval,
+        rawEnergyDb: FloatArray,
+        smoothedEnergyDb: FloatArray,
+    ): Float {
+        var maxDb = FrameFeatureExtractor.MIN_DB
+        for (f in interval.startFrame until interval.endFrame) {
+            val v = max(rawEnergyDb[f], smoothedEnergyDb[f])
+            if (v > maxDb) maxDb = v
+        }
+        return maxDb
+    }
+
+    private fun splitLongIntervalRecursive(
+        interval: FrameInterval,
+        smoothedEnergyDb: FloatArray,
+        thresholdDb: Float,
+        params: SegmentationParams,
+        binMs: Int,
+        out: MutableList<FrameInterval>,
+    ) {
+        if (interval.durationMs(binMs) <= params.maxChunkMs || interval.frameCount < 2) {
+            out.add(interval)
+            return
+        }
+
+        val splitFrame = findBestValleyFrame(
+            interval = interval,
+            smoothedEnergyDb = smoothedEnergyDb,
+            thresholdDb = thresholdDb,
+            params = params,
+            binMs = binMs,
+        )
+        if (splitFrame <= interval.startFrame || splitFrame >= interval.endFrame) {
+            out.add(interval)
+            return
+        }
+
+        splitLongIntervalRecursive(
+            interval = FrameInterval(interval.startFrame, splitFrame),
+            smoothedEnergyDb = smoothedEnergyDb,
+            thresholdDb = thresholdDb,
+            params = params,
+            binMs = binMs,
+            out = out,
+        )
+        splitLongIntervalRecursive(
+            interval = FrameInterval(splitFrame, interval.endFrame),
+            smoothedEnergyDb = smoothedEnergyDb,
+            thresholdDb = thresholdDb,
+            params = params,
+            binMs = binMs,
+            out = out,
+        )
+    }
+
+    /**
+     * 区間 [interval] 内部で最もエネルギーの低い谷フレームを探す（§7.3.3 手順 6）。
+     * 150ms 以上の低エネルギー区間があればそれを優先し、なければ 150ms 移動窓の平均エネルギー最小箇所を選ぶ。
+     */
+    private fun findBestValleyFrame(
+        interval: FrameInterval,
+        smoothedEnergyDb: FloatArray,
+        thresholdDb: Float,
+        params: SegmentationParams,
+        binMs: Int,
+    ): Int {
+        val totalFrames = interval.frameCount
+        val minMarginFrames = min(
+            max(1, params.minSpeechMs / binMs),
+            max(1, totalFrames / 4),
+        )
+        val searchStart = interval.startFrame + minMarginFrames
+        val searchEnd = interval.endFrame - minMarginFrames
+        if (searchStart >= searchEnd) {
+            return (interval.startFrame + interval.endFrame) / 2
+        }
+
+        val preferredValleyFrames = max(1, PREFERRED_VALLEY_MS / binMs)
+        val lowEnergyCeilingDb = thresholdDb + EnergyVoiceActivityDetector.HYSTERESIS_ONSET_OFFSET_DB
+
+        // 1. 150ms 以上続く低エネルギー区間（<= T + 3dB）があれば、平均エネルギーが最も低い区間の中央付近で分割する
+        var bestRunStart = -1
+        var bestRunEnd = -1
+        var bestRunMeanDb = Float.POSITIVE_INFINITY
+        var f = searchStart
+        while (f < searchEnd) {
+            if (smoothedEnergyDb[f] > lowEnergyCeilingDb) {
+                f++
+                continue
+            }
+            val rStart = f
+            var sumDb = 0.0
+            while (f < searchEnd && smoothedEnergyDb[f] <= lowEnergyCeilingDb) {
+                sumDb += smoothedEnergyDb[f]
+                f++
+            }
+            val rLen = f - rStart
+            if (rLen >= preferredValleyFrames) {
+                val meanDb = (sumDb / rLen).toFloat()
+                if (meanDb < bestRunMeanDb) {
+                    bestRunMeanDb = meanDb
+                    bestRunStart = rStart
+                    bestRunEnd = f
+                }
+            }
+        }
+        if (bestRunStart >= 0 && bestRunEnd > bestRunStart) {
+            return findMinEnergyFrameInRange(smoothedEnergyDb, bestRunStart, bestRunEnd)
+        }
+
+        // 2. 150ms の移動窓で平均エネルギーが最小になる窓を探し、その窓内の最小エネルギーフレームで分割する
+        if (searchEnd - searchStart >= preferredValleyFrames) {
+            var windowSum = 0.0
+            for (i in searchStart until searchStart + preferredValleyFrames) {
+                windowSum += smoothedEnergyDb[i]
+            }
+            var bestWinStart = searchStart
+            var bestWinSum = windowSum
+            for (wStart in (searchStart + 1)..(searchEnd - preferredValleyFrames)) {
+                windowSum += smoothedEnergyDb[wStart + preferredValleyFrames - 1] - smoothedEnergyDb[wStart - 1]
+                if (windowSum < bestWinSum) {
+                    bestWinSum = windowSum
+                    bestWinStart = wStart
+                }
+            }
+            return findMinEnergyFrameInRange(
+                smoothedEnergyDb = smoothedEnergyDb,
+                startFrame = bestWinStart,
+                endFrame = bestWinStart + preferredValleyFrames,
+            )
+        }
+
+        // 3. 探索範囲が 150ms 未満の場合は単純な最小フレームを返す
+        return findMinEnergyFrameInRange(smoothedEnergyDb, searchStart, searchEnd)
+    }
+
+    private fun findMinEnergyFrameInRange(
+        smoothedEnergyDb: FloatArray,
+        startFrame: Int,
+        endFrame: Int,
+    ): Int {
+        var minDb = Float.POSITIVE_INFINITY
+        for (i in startFrame until endFrame) {
+            if (smoothedEnergyDb[i] < minDb) {
+                minDb = smoothedEnergyDb[i]
+            }
+        }
+        // 最小値に並ぶフレームが複数ある場合は、その区間の中央を選ぶ
+        var firstMin = startFrame
+        var lastMin = startFrame
+        var found = false
+        for (i in startFrame until endFrame) {
+            if (smoothedEnergyDb[i] <= minDb + 1e-4f) {
+                if (!found) {
+                    firstMin = i
+                    found = true
+                }
+                lastMin = i
+            }
+        }
+        return (firstMin + lastMin) / 2
+    }
+
+    companion object {
+        /** 端末内のチャンク分割アルゴリズムの現在のバージョン（§6.4、§7.3.3）。 */
+        const val CURRENT_ALGORITHM_VERSION: Int = com.miuraken.chunkflow.core.audio.CURRENT_ALGORITHM_VERSION
+
+        /** 既定の 1 フレーム（ビン）時間長（10ms、§7.3.1）。 */
+        const val DEFAULT_BIN_MS: Int = 10
+
+        /** 短い発話を残すピークエネルギーの閾値オフセット（+6dB、§7.3.3 手順 5）。 */
+        const val SHORT_WORD_PEAK_OFFSET_DB: Float = 6f
+
+        /** 長いチャンクを谷分割するときに優先する低エネルギー谷の最小長（150ms、§7.3.3 手順 6）。 */
+        const val PREFERRED_VALLEY_MS: Int = 150
+    }
+}
