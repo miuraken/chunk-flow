@@ -13,6 +13,7 @@ import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
+import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.LanguageFilter
@@ -73,6 +74,7 @@ class ChunkScheduler(
 
     private var chunks: List<Chunk> = emptyList()
     private var transcripts: Map<ChunkId, Transcript> = emptyMap()
+    private var bookmarks: List<Bookmark> = emptyList()
     private var languagePair: LanguagePair? = null
     private var practiceSettings: PracticeSettings = practiceController.settings.value
 
@@ -135,6 +137,7 @@ class ChunkScheduler(
         if (mediaId == null) {
             chunks = emptyList()
             transcripts = emptyMap()
+            bookmarks = emptyList()
             updateState(chunkId = null, autoPauseEndsAt = null)
             cancelPendingMessage()
             return
@@ -150,6 +153,11 @@ class ChunkScheduler(
             launch {
                 analysisRepo.observeTranscripts(mediaId).collect { newTranscripts ->
                     setTranscripts(newTranscripts)
+                }
+            }
+            launch {
+                analysisRepo.observeBookmarks(mediaId).collect { newBookmarks ->
+                    setBookmarks(newBookmarks)
                 }
             }
             libraryRepository?.let { libRepo ->
@@ -185,6 +193,15 @@ class ChunkScheduler(
     fun setTranscripts(newTranscripts: Map<ChunkId, Transcript>) {
         if (transcripts == newTranscripts) return
         transcripts = newTranscripts
+        reschedule()
+    }
+
+    /**
+     * 教材のブックマーク一覧を更新する（F8.1）。
+     */
+    fun setBookmarks(newBookmarks: List<Bookmark>) {
+        if (bookmarks == newBookmarks) return
+        bookmarks = newBookmarks
         reschedule()
     }
 
@@ -511,9 +528,11 @@ class ChunkScheduler(
             LoopMode.Off -> Unit
         }
 
-        // 言語フィルタ（ALL / TARGET_ONLY / BASE_ONLY）の適用
+        // 言語フィルタ（ALL / TARGET_ONLY / BASE_ONLY）およびブックマーク連続再生（F8.1）の適用
         val filter = practiceSettings.languageFilter
-        if (filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)) {
+        val useLanguageFilter = filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)
+        val useBookmarkFilter = practiceSettings.bookmarksOnly && chunks.any(::isChunkBookmarked)
+        if (useLanguageFilter || useBookmarkFilter) {
             val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
             val candidates = if (currentIndex >= 0) {
                 chunks.drop(currentIndex + 1)
@@ -521,17 +540,34 @@ class ChunkScheduler(
                 chunks.filter { it.startMs >= chunk.endMs }
             }
             val nextMatching = candidates.firstOrNull { candidate ->
-                matchesLanguageFilter(candidate.id, filter)
+                matchesPlaybackFilter(
+                    chunk = candidate,
+                    languageFilter = filter,
+                    useLanguageFilter = useLanguageFilter,
+                    useBookmarkFilter = useBookmarkFilter,
+                )
             }
-            return if (nextMatching != null) {
-                if (nextMatching.startMs == chunk.endMs) {
+            if (nextMatching != null) {
+                return if (nextMatching.startMs == chunk.endMs) {
                     PostChunkAction.AdvanceAfter(chunk.endMs)
                 } else {
                     PostChunkAction.SeekToChunk(nextMatching)
                 }
-            } else {
-                PostChunkAction.AdvanceAfter(chunk.endMs)
             }
+            if (useBookmarkFilter) {
+                val firstMatching = chunks.firstOrNull { candidate ->
+                    matchesPlaybackFilter(
+                        chunk = candidate,
+                        languageFilter = filter,
+                        useLanguageFilter = useLanguageFilter,
+                        useBookmarkFilter = useBookmarkFilter,
+                    )
+                }
+                if (firstMatching != null) {
+                    return PostChunkAction.SeekToChunk(firstMatching)
+                }
+            }
+            return PostChunkAction.AdvanceAfter(chunk.endMs)
         }
 
         return PostChunkAction.AdvanceAfter(chunk.endMs)
@@ -712,6 +748,21 @@ class ChunkScheduler(
         LanguageFilter.ALL -> false
         LanguageFilter.TARGET_ONLY -> languagePair != null && transcripts.isNotEmpty()
         LanguageFilter.BASE_ONLY -> languagePair?.base != null && transcripts.isNotEmpty()
+    }
+
+    private fun isChunkBookmarked(chunk: Chunk): Boolean = bookmarks.any {
+        it.positionMs in chunk.startMs until chunk.endMs || it.positionMs == chunk.startMs
+    }
+
+    private fun matchesPlaybackFilter(
+        chunk: Chunk,
+        languageFilter: LanguageFilter,
+        useLanguageFilter: Boolean,
+        useBookmarkFilter: Boolean,
+    ): Boolean {
+        if (useBookmarkFilter && !isChunkBookmarked(chunk)) return false
+        if (useLanguageFilter && !matchesLanguageFilter(chunk.id, languageFilter)) return false
+        return true
     }
 
     private fun matchesLanguageFilter(chunkId: ChunkId, filter: LanguageFilter): Boolean {

@@ -42,6 +42,7 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.testing.fake.FakeTranscriptParser
@@ -51,6 +52,7 @@ import com.miuraken.chunkflow.core.transcript.TranscriptError
 import com.miuraken.chunkflow.core.transcript.TranscriptParseResult
 import com.miuraken.chunkflow.core.transcript.TranscriptSegment
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 import kotlin.test.AfterTest
@@ -484,11 +486,14 @@ class DefaultLibraryRepositoryTest {
         val mediaId = firstDone.mediaIds.single()
 
         // レジューム位置を更新したあと、音声ファイルだけを削除してバックアップ復元直後の状態を模擬する（§6.4）
+        assertEquals(emptySet(), repo.observeMissingAudioIds().first())
         repo.updatePlaybackPosition(mediaId, positionMs = 45_000L, speed = 1.5f, updatedAtEpochMs = 2_000L)
         val audioFile = mediaFileLocator.resolveAudioFile(mediaId)
         assertNotNull(audioFile)
         assertTrue(audioFile.delete())
         assertNull(mediaFileLocator.resolveAudioFile(mediaId))
+        assertEquals(setOf(mediaId), repo.observeMissingAudioIds().first())
+        analysisRepository.requestedAnalyses.clear()
 
         // 同じ音声を再度取り込む
         val uri2 = registerContent("restore2", "lesson_reimport.mp3", audioBytes.size.toLong(), audioBytes)
@@ -496,6 +501,11 @@ class DefaultLibraryRepositoryTest {
 
         assertEquals(listOf(mediaId), secondDone.mediaIds)
         assertEquals(1, secondDone.duplicates)
+        assertEquals(emptySet(), repo.observeMissingAudioIds().first())
+        assertEquals(
+            listOf(mediaId to setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION)),
+            analysisRepository.requestedAnalyses,
+        )
 
         // 既存の MediaId のパスに音声ファイルが復活し、レジューム位置も保持されていること
         val restoredFile = mediaFileLocator.resolveAudioFile(mediaId)
@@ -1105,6 +1115,63 @@ class DefaultLibraryRepositoryTest {
         assertEquals(0, secondSyncDone.uploadedTranscripts)
     }
 
+    @Test
+    fun `exportTranscriptTextとwriteExportedTranscriptToUri_SRTとLRCとTXTを整形しSAFのcontentURIへ書き出す`() = runTest {
+        val repo = createRepository()
+        val mediaId = MediaId("export-text-media")
+
+        // 文字起こしがない場合は null / false を返すこと
+        assertNull(repo.exportTranscriptText(mediaId, TranscriptExportFormat.SRT))
+
+        val c1 = Chunk(id = ChunkId(10L), startMs = 1_250L, endMs = 3_500L, origin = ChunkOrigin.IMPORTED)
+        val c2 = Chunk(id = ChunkId(20L), startMs = 65_000L, endMs = 68_400L, origin = ChunkOrigin.IMPORTED)
+        analysisRepository.chunksByMedia[mediaId] = listOf(c1, c2)
+        analysisRepository.transcriptsByMedia[mediaId] = mapOf(
+            c1.id to Transcript(
+                chunkId = c1.id,
+                text = "Hello world",
+                language = LanguageTag("en"),
+                languageConfidence = 0.98f,
+                engine = EngineId("whisper"),
+            ),
+            c2.id to Transcript(
+                chunkId = c2.id,
+                text = "こんにちは",
+                language = LanguageTag("ja"),
+                languageConfidence = 0.95f,
+                engine = EngineId("whisper"),
+            ),
+        )
+
+        val srt = repo.exportTranscriptText(mediaId, TranscriptExportFormat.SRT)
+        assertEquals(
+            "1\n00:00:01,250 --> 00:00:03,500\nHello world\n\n2\n00:01:05,000 --> 00:01:08,400\nこんにちは",
+            srt,
+        )
+
+        val lrc = repo.exportTranscriptText(mediaId, TranscriptExportFormat.LRC)
+        assertEquals(
+            "[00:01.25]Hello world\n[01:05.00]こんにちは",
+            lrc,
+        )
+
+        val txt = repo.exportTranscriptText(mediaId, TranscriptExportFormat.TXT)
+        assertEquals(
+            "[00:01] [EN] Hello world\n[01:05] [JA] こんにちは",
+            txt,
+        )
+
+        // content:// URI への書き出しと非 content:// スキームの拒否
+        val targetUri = Uri.parse("content://${TestContentProvider.AUTHORITY}/exports/out.srt")
+        val outStream = ByteArrayOutputStream()
+        shadowOf(context.contentResolver).registerOutputStream(targetUri, outStream)
+        assertTrue(repo.writeExportedTranscriptToUri(mediaId, TranscriptExportFormat.SRT, targetUri))
+        assertEquals(srt, outStream.toByteArray().decodeToString())
+
+        val fileUri = Uri.parse("file:///sdcard/out.srt")
+        assertFalse(repo.writeExportedTranscriptToUri(mediaId, TranscriptExportFormat.SRT, fileUri))
+    }
+
     private class InMemoryDriveFileDao : DriveFileDao {
         private val records = MutableStateFlow<Map<String, DriveFileEntity>>(emptyMap())
 
@@ -1336,11 +1403,13 @@ class DefaultLibraryRepositoryTest {
 
     private class RecordingAnalysisRepository : AnalysisRepository {
         val requestedAnalyses = mutableListOf<Pair<MediaId, Set<AnalysisStage>>>()
+        val chunksByMedia = mutableMapOf<MediaId, List<Chunk>>()
+        val transcriptsByMedia = mutableMapOf<MediaId, Map<ChunkId, Transcript>>()
 
         override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = flowOf(emptyMap())
         override fun observeWaveform(id: MediaId): Flow<Waveform?> = flowOf(null)
-        override fun observeChunks(id: MediaId): Flow<List<Chunk>> = flowOf(emptyList())
-        override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> = flowOf(emptyMap())
+        override fun observeChunks(id: MediaId): Flow<List<Chunk>> = flowOf(chunksByMedia[id].orEmpty())
+        override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> = flowOf(transcriptsByMedia[id].orEmpty())
 
         override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) {
             requestedAnalyses += id to stages

@@ -13,6 +13,7 @@ import androidx.media3.test.utils.FakeTimeline
 import androidx.media3.test.utils.TestExoPlayerBuilder
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
+import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -21,6 +22,7 @@ import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LoopMode
+import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.Transcript
 import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
@@ -356,6 +358,85 @@ class ChunkSchedulerTest {
 
         assertEquals(chunk3.id, scheduler.currentChunkId.value)
         assertTrue(exoPlayer.currentPosition >= chunk3.startMs)
+    }
+
+    @Test
+    fun `BookmarksOnly_ブックマークされたチャンクだけを順次再生し終端から先頭のブックマークチャンクへ戻る`() {
+        val mediaId = MediaId("media-bm")
+        scheduler.setChunks(sampleChunks)
+        scheduler.setBookmarks(
+            listOf(
+                Bookmark(id = 1L, mediaId = mediaId, positionMs = 500L),
+                Bookmark(id = 2L, mediaId = mediaId, positionMs = 4_500L),
+            ),
+        )
+        practiceController.update {
+            it.copy(bookmarksOnly = true)
+        }
+
+        // chunk1 (0..2000, ブックマーク有) 終端で chunk2 を飛ばして chunk3 (4500..7000, ブックマーク有) へシークする
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition >= chunk3.startMs)
+
+        // 最後のブックマークチャンク chunk3 の終端 (7000ms) に達すると先頭のブックマークチャンク chunk1 (0ms) へ戻る
+        runUntil { scheduler.currentChunkId.value == chunk1.id && exoPlayer.currentPosition < 1_000L }
+        pumpLoopers()
+        assertEquals(chunk1.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition < 1_000L)
+    }
+
+    @Test
+    fun `BookmarksOnly_LanguageFilterとAutoPause併用時はポーズ後に条件を満たすブックマークチャンクへシークしループする`() {
+        val mediaId = MediaId("media-bm-combo")
+        scheduler.setChunks(sampleChunks)
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                chunk1.id to sampleTranscript(chunk1.id, "First", "en"),
+                chunk2.id to sampleTranscript(chunk2.id, "二番目", "ja"),
+                chunk3.id to sampleTranscript(chunk3.id, "Third", "en"),
+            ),
+        )
+        // 全チャンクにブックマークがあるが TARGET_ONLY (en) のため chunk1 と chunk3 のみが対象になる
+        scheduler.setBookmarks(
+            listOf(
+                Bookmark(id = 1L, mediaId = mediaId, positionMs = 100L),
+                Bookmark(id = 2L, mediaId = mediaId, positionMs = 2_500L),
+                Bookmark(id = 3L, mediaId = mediaId, positionMs = 5_000L),
+            ),
+        )
+        practiceController.update {
+            it.copy(
+                bookmarksOnly = true,
+                languageFilter = LanguageFilter.TARGET_ONLY,
+                autoPause = AutoPause.Fixed(pauseMs = 1_000L),
+                autoPauseScope = AutoPauseScope.ALL_CHUNKS,
+            )
+        }
+
+        exoPlayer.play()
+        // chunk1 終端でまず自動ポーズに入る
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+
+        // 1_000ms 経過で chunk2 (ja) を飛ばして chunk3 (en) へシークして再開する
+        shadowOf(Looper.getMainLooper()).idleFor(1_000L, TimeUnit.MILLISECONDS)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+
+        // chunk3 終端でも自動ポーズに入り、解除後に先頭の chunk1 へシークしてループする
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        shadowOf(Looper.getMainLooper()).idleFor(1_000L, TimeUnit.MILLISECONDS)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(chunk1.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition < 500L)
     }
 
     private fun sampleTranscript(
