@@ -1117,12 +1117,12 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 
 | エージェント | 担当 | 書き込める範囲 | 実行できるコマンド |
 | --- | --- | --- | --- |
-| `lead` | 契約（文字起こしの形式を含む）・ビルド設定・DI・画面遷移・DB スキーマ・設定・Fake・CI・統合・ADR | `build-logic/`、`gradle/`、すべての `*.gradle.kts`（各モジュールへの依存追加を含む）、リポジトリ直下の設定ファイル（`gradle.properties`、`.github/`、`.editorconfig`、`.gitignore` など）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`（`docs/format/` を含む。下の例外を除く）、`AGENTS.md` | Gradle 全般、uv、git |
+| `lead` | 契約（文字起こしの形式を含む）・ビルド設定・DI・画面遷移・DB スキーマ・設定・Fake・CI・統合・ADR | `build-logic/`、`gradle/`、すべての `*.gradle.kts`（各モジュールへの依存追加を含む）、リポジトリ直下の設定ファイル（`settings.gradle.kts`、`gradle.properties`、`.github/`、`.editorconfig`、`.gitignore` など）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`（`docs/format/` を含む。下の例外を除く）、`AGENTS.md`、`_agents/`、`design_doc.md` | Gradle 全般、uv、git |
 | `playback` | 取り込み・ライブラリ・Drive の同期・再生・学習モード、スパイク S2 | `core/playback/`、`core/drive/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` | 担当モジュールのビルド・テスト |
 | `audio-analysis` | デコード・波形・特徴量・分割・解析 Worker、スパイク S3 | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md` | 同上 |
 | `transcriber` | PC ツール、文字起こしファイルの解析・取り込み、スパイク S1 | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md` | 同上 + PC ツールの `uv run`（pytest、Ruff、評価用の文字起こし） |
 | `ui` | 画面・波形 Composable・テーマ | `feature/`、`core/designsystem/` | 同上 + スクリーンショットテスト、Android CLI の `studio render-compose-preview`・`screen capture`・`layout`・`run`（§10.5） |
-| `qa` | レビュー、テストの追加、実機テスト | 各モジュールのテストディレクトリ（新しいテストファイルの追加のみ。既存ファイルの修正は担当者に依頼する）、`docs/manual-test.md` | すべてのチェック、adb、Android CLI（Journeys を含む） |
+| `qa` | レビュー、テストの追加、実機テスト | 各モジュールのテストディレクトリ（新しいテストファイルの追加のみ。既存ファイルの修正は担当者に依頼する）、`docs/manual-test.md`、`docs/qa/` | すべてのチェック、adb、Android CLI（Journeys を含む） |
 
 - 実装を担当するエージェントにも、担当モジュールのビルドとテストの実行を許可します（v0.1 では qa だけがコマンドを実行でき、実装者が自分で検証できませんでした）。コマンドは `./gradlew :<module>:<task>`（PC ツールは `uv run --directory tools/transcriber <コマンド>`）の形に限定します。
 - Gradle ファイルは lead だけが変更します。依存の追加が必要になったら、理由（ライセンス・サイズ・代替案）を添えて lead に依頼します。PC ツールの `pyproject.toml` と `uv.lock` は transcriber が変更してよいですが、依存を追加するときは同じく lead の承認を得ます。
