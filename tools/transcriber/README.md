@@ -21,6 +21,9 @@ Chunk Flow の教材の音声を PC で文字起こしし、`chunkflow-transcrip
 | Linux（NVIDIA） | faster-whisper（CUDA 12 / cuDNN 9） | **未検証** |
 | Windows 11（NVIDIA） | faster-whisper（WSL2 上の CUDA） | **未検証** |
 
+依存は `uv.lock` でハッシュごと固定しています。**`uv.lock` は公開の PyPI（`https://pypi.org/simple`）を取得元に
+しています**（`pyproject.toml` の `[[tool.uv.index]]`。PC ごとの uv の設定より優先されます）。
+
 ### macOS（Apple Silicon）
 
 ```sh
