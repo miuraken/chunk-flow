@@ -6,6 +6,7 @@ import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.MediaId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,11 +17,17 @@ import kotlinx.coroutines.flow.update
 /**
  * テストとプレビュー用の [LibraryRepository]。
  *
- * 教材の一覧はメモリ上に持つ。取り込みと同期の結果は [importResult] / [importTranscriptResult] / [syncResult] で決める。
+ * 教材の一覧と教材ごとの状態はメモリ上に持つ。取り込みと同期の結果は [importResult] / [importTranscriptResult] / [syncResult] で決める。
  */
-class FakeLibraryRepository(initialItems: List<AudioItem> = emptyList()) : LibraryRepository {
+class FakeLibraryRepository(
+    initialItems: List<AudioItem> = emptyList(),
+    initialItemStates: Map<MediaId, ItemState> = emptyMap(),
+) : LibraryRepository {
     /** 教材の一覧。テストから直接書き換えられる。 */
     val items: MutableStateFlow<List<AudioItem>> = MutableStateFlow(initialItems)
+
+    /** 教材ごとの再生・学習状態。テストから直接書き換えられる。 */
+    val itemStates: MutableStateFlow<Map<MediaId, ItemState>> = MutableStateFlow(initialItemStates)
 
     /** [import] に渡された URI（呼ばれた順）。 */
     val importedUris: MutableList<List<Uri>> = mutableListOf()
@@ -42,6 +49,36 @@ class FakeLibraryRepository(initialItems: List<AudioItem> = emptyList()) : Libra
 
     override fun observeItem(id: MediaId): Flow<AudioItem?> = items.map { list -> list.firstOrNull { it.id == id } }
 
+    override fun observeItemStates(): Flow<Map<MediaId, ItemState>> = itemStates
+
+    override fun observeItemState(id: MediaId): Flow<ItemState?> = itemStates.map { map -> map[id] }
+
+    override suspend fun upsertItemState(state: ItemState) {
+        itemStates.update { current -> current + (state.mediaId to state) }
+    }
+
+    override suspend fun updatePlaybackPosition(
+        id: MediaId,
+        positionMs: Long,
+        speed: Float,
+        updatedAtEpochMs: Long,
+    ) {
+        itemStates.update { current ->
+            val existing = current[id]
+            val updated = existing?.copy(
+                positionMs = positionMs,
+                speed = speed,
+                updatedAtEpochMs = updatedAtEpochMs,
+            ) ?: ItemState(
+                mediaId = id,
+                positionMs = positionMs,
+                speed = speed,
+                updatedAtEpochMs = updatedAtEpochMs,
+            )
+            current + (id to updated)
+        }
+    }
+
     override fun import(uris: List<Uri>): Flow<ImportProgress> {
         importedUris += uris
         return importResult(uris)
@@ -53,5 +90,6 @@ class FakeLibraryRepository(initialItems: List<AudioItem> = emptyList()) : Libra
 
     override suspend fun delete(id: MediaId) {
         items.update { list -> list.filterNot { it.id == id } }
+        itemStates.update { current -> current - id }
     }
 }

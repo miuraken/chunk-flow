@@ -39,4 +39,56 @@ class ModelInvariantsTest {
         assertEquals(AutoPauseScope.ALL_CHUNKS, settings.autoPauseScope)
         assertEquals(LanguageFilter.ALL, settings.languageFilter)
     }
+
+    @Test
+    fun `ItemState_既定値と境界値で作れる`() {
+        val id = MediaId("00000000-0000-4000-8000-000000000001")
+        val state = ItemState(mediaId = id)
+        assertEquals(0L, state.positionMs)
+        assertEquals(1.0f, state.speed)
+        assertEquals(ChunkOrigin.AUTO, state.chunkSource)
+        assertEquals(AutoPause.Off, state.autoPause)
+        assertEquals(AutoPauseScope.ALL_CHUNKS, state.autoPauseScope)
+        assertEquals(LanguageFilter.ALL, state.languageFilter)
+        assertEquals(0.5f, ItemState(mediaId = id, speed = 0.5f).speed)
+        assertEquals(2.0f, ItemState(mediaId = id, speed = 2.0f).speed)
+    }
+
+    @Test
+    fun `ItemState_位置が負または速度が範囲外なら作れない`() {
+        val id = MediaId("00000000-0000-4000-8000-000000000001")
+        assertFailsWith<IllegalArgumentException> { ItemState(mediaId = id, positionMs = -1L) }
+        assertFailsWith<IllegalArgumentException> { ItemState(mediaId = id, speed = 0.49f) }
+        assertFailsWith<IllegalArgumentException> { ItemState(mediaId = id, speed = 2.01f) }
+    }
+
+    @Test
+    fun `UserSettings_既定値は英語と日本語で中国語は簡体字かつ広東語は繁体字`() {
+        val settings = UserSettings()
+        assertEquals(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")), settings.defaultLanguagePair)
+        assertEquals(ChineseScript.HANS, settings.chineseScript)
+        assertEquals("Hans", settings.chineseScript.iso15924)
+        assertEquals(ChineseScript.HANT, settings.cantoneseScript)
+        assertEquals("Hant", settings.cantoneseScript.iso15924)
+        assertEquals(1.0f, settings.defaultSpeed)
+        assertEquals(3_000L, settings.seekBackMs)
+        assertEquals(5_000L, settings.seekForwardMs)
+    }
+
+    @Test
+    fun `UserSettings_速度が範囲外またはスキップ秒数が0以下なら作れない`() {
+        assertFailsWith<IllegalArgumentException> { UserSettings(defaultSpeed = 0.4f) }
+        assertFailsWith<IllegalArgumentException> { UserSettings(defaultSpeed = 2.5f) }
+        assertFailsWith<IllegalArgumentException> { UserSettings(seekBackMs = 0L) }
+        assertFailsWith<IllegalArgumentException> { UserSettings(seekBackMs = -100L) }
+        assertFailsWith<IllegalArgumentException> { UserSettings(seekForwardMs = 0L) }
+        assertFailsWith<IllegalArgumentException> { UserSettings(seekForwardMs = -100L) }
+    }
+
+    @Test
+    fun `Bookmark_位置が負なら作れない`() {
+        val id = MediaId("00000000-0000-4000-8000-000000000001")
+        assertFailsWith<IllegalArgumentException> { Bookmark(mediaId = id, positionMs = -1L) }
+        assertEquals(0L, Bookmark(mediaId = id, positionMs = 0L).positionMs)
+    }
 }
