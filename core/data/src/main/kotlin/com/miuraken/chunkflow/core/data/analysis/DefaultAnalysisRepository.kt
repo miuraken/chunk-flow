@@ -14,10 +14,12 @@ import com.miuraken.chunkflow.core.data.di.Dispatcher
 import com.miuraken.chunkflow.core.data.library.LibraryMediaFileResolver
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
+import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
+import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
@@ -28,9 +30,11 @@ import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
 import com.miuraken.chunkflow.core.model.AnalysisError
 import com.miuraken.chunkflow.core.model.AnalysisStage
+import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
@@ -43,6 +47,7 @@ import com.miuraken.chunkflow.core.model.WordTiming
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
+import java.text.Normalizer
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -59,6 +64,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
@@ -68,13 +74,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * [AnalysisRepository] の本番実装（§6.3、§7.3、§7.4.5、§7.4.6、§10.6、F6.2）。
+ * [AnalysisRepository] の本番実装（§6.3、§6.4、§7.3、§7.4.5、§7.4.6、§10.6、F5.3、F6.2、F7.4、F8.1）。
  *
  * - `filesDir/analysis/<MediaId>/waveform.bin` と `features.bin` を [AnalysisBinaryFormat] で読み書きする。
  * - `item_state.chunk_source` に応じて表示するチャンクの出どころを切り替え、未存在時は優先順（`IMPORTED` → `MANUAL` → `AUTO`）にフォールバックする。
  * - `AUTO`（または `MANUAL`）チャンク表示時に `IMPORTED` チャンクの文字起こしが Room に存在する場合は、
  *   `media_item.transcript_offset_ms` を反映したうえで時間重なりが最大のチャンクへ対応付ける（§7.3、§10.6）。
  * - チャンク単位の言語手動変更・不明言語の一括設定・文字起こし時刻の自動合わせ・端末内先読み音声認識（F6.2）を提供する。
+ * - チャンクの手動編集（分割・結合・境界移動、F5.3）、文字起こしテキストの手動修正（F7.4）、チャンクのブックマーク（F8.1）を提供する。
  */
 @Singleton
 class DefaultAnalysisRepository(
@@ -87,6 +94,7 @@ class DefaultAnalysisRepository(
     private val mediaFileResolver: LibraryMediaFileResolver,
     @Dispatcher(ChunkFlowDispatchers.IO) private val ioDispatcher: CoroutineDispatcher,
     private val onDeviceChunkTranscriber: OnDeviceChunkTranscriber = NoOpOnDeviceChunkTranscriber,
+    private val bookmarkDao: BookmarkDao = NoOpBookmarkDao,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : AnalysisRepository {
 
@@ -101,6 +109,7 @@ class DefaultAnalysisRepository(
         mediaFileResolver: LibraryMediaFileResolver,
         @Dispatcher(ChunkFlowDispatchers.IO) ioDispatcher: CoroutineDispatcher,
         onDeviceChunkTranscriber: OnDeviceChunkTranscriber,
+        bookmarkDao: BookmarkDao,
     ) : this(
         context = context,
         analysisStateDao = analysisStateDao,
@@ -111,6 +120,7 @@ class DefaultAnalysisRepository(
         mediaFileResolver = mediaFileResolver,
         ioDispatcher = ioDispatcher,
         onDeviceChunkTranscriber = onDeviceChunkTranscriber,
+        bookmarkDao = bookmarkDao,
         clock = System::currentTimeMillis,
     )
 
@@ -167,8 +177,13 @@ class DefaultAnalysisRepository(
 
             // AUTO / MANUAL チャンク表示時に IMPORTED チャンクの文字起こしが存在する場合、
             // 時間重なりが最大のチャンクへ対応付ける（§7.3、§10.6）。
+            val isManualWithOwnTranscripts = activeChunks.firstOrNull()?.origin == ChunkOrigin.MANUAL.name &&
+                activeChunks.any { transcriptsByChunkId.containsKey(it.id) }
             val importedChunks = allChunks.filter { it.origin == ChunkOrigin.IMPORTED.name }
-            if (importedChunks.isNotEmpty() && activeChunks.firstOrNull()?.origin != ChunkOrigin.IMPORTED.name) {
+            if (!isManualWithOwnTranscripts &&
+                importedChunks.isNotEmpty() &&
+                activeChunks.firstOrNull()?.origin != ChunkOrigin.IMPORTED.name
+            ) {
                 result.putAll(
                     mapOverlappingTranscripts(
                         activeChunks = activeChunks,
@@ -179,7 +194,7 @@ class DefaultAnalysisRepository(
                 )
             }
 
-            // アクティブチャンクに直接紐付く文字起こし（IMPORTED 表示時、または先読み認識・手動言語編集時）を優先して重ねる。
+            // アクティブチャンクに直接紐付く文字起こし（IMPORTED 表示時、または先読み認識・手動編集時）を優先して重ねる。
             for (chunk in activeChunks) {
                 val entity = transcriptsByChunkId[chunk.id] ?: continue
                 val chunkId = ChunkId(chunk.id)
@@ -590,6 +605,385 @@ class DefaultAnalysisRepository(
         }
     }
 
+    override fun observeBookmarks(id: MediaId): Flow<List<Bookmark>> = bookmarkDao.observeByMediaId(id.value)
+        .map { list -> list.map { it.toExternalModel() } }
+        .distinctUntilChanged()
+
+    override suspend fun toggleChunkBookmark(id: MediaId, chunkId: ChunkId, note: String): Boolean = withContext(ioDispatcher) {
+        val allChunks = chunkDao.observeByMediaId(id.value).first()
+        val chunk = allChunks.firstOrNull { it.id == chunkId.value } ?: return@withContext false
+
+        val existingBookmarks = bookmarkDao.getByMediaId(id.value)
+        val matching = existingBookmarks.filter { bm ->
+            bm.positionMs in chunk.startMs until chunk.endMs || bm.positionMs == chunk.startMs
+        }
+        if (matching.isNotEmpty()) {
+            for (bm in matching) {
+                bookmarkDao.deleteById(bm.id)
+            }
+            return@withContext false
+        }
+
+        val normalizedNote = truncateCodePoints(
+            Normalizer.normalize(note, Normalizer.Form.NFC).trim(),
+            MAX_BOOKMARK_NOTE_CODE_POINTS,
+        )
+        val midpointMs = (chunk.startMs + chunk.endMs) / 2L
+        bookmarkDao.insert(
+            BookmarkEntity(
+                mediaId = id.value,
+                positionMs = midpointMs.coerceAtLeast(0L),
+                note = normalizedNote,
+                createdAt = clock(),
+            ),
+        )
+        true
+    }
+
+    override suspend fun updateChunkText(id: MediaId, chunkId: ChunkId, text: String) {
+        withContext(ioDispatcher) {
+            val normalizedText = truncateCodePoints(
+                Normalizer.normalize(text, Normalizer.Form.NFC).trim(),
+                MAX_TRANSCRIPT_TEXT_CODE_POINTS,
+            )
+            val now = clock()
+            val existing = transcriptDao.getByChunkId(chunkId.value)
+            if (existing != null) {
+                transcriptDao.upsert(
+                    existing.copy(
+                        text = normalizedText,
+                        userEdited = true,
+                    ),
+                )
+            } else {
+                val allChunks = chunkDao.observeByMediaId(id.value).first()
+                val targetChunk = allChunks.firstOrNull { it.id == chunkId.value }
+                val mediaItem = mediaItemDao.getById(id.value)
+                val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
+                val overlappingImported = if (targetChunk != null) {
+                    val importedChunks = allChunks.filter { it.origin == ChunkOrigin.IMPORTED.name }
+                    val importedTranscripts = transcriptDao.getByChunkIds(importedChunks.map { it.id })
+                        .associateBy { it.chunkId }
+                    findBestOverlappingTranscript(
+                        target = targetChunk,
+                        sourceChunks = importedChunks,
+                        transcriptsByChunkId = importedTranscripts,
+                        offsetMs = offsetMs,
+                    )
+                } else {
+                    null
+                }
+
+                if (overlappingImported != null) {
+                    transcriptDao.upsert(
+                        overlappingImported.copy(
+                            chunkId = chunkId.value,
+                            text = normalizedText,
+                            userEdited = true,
+                            createdAt = now,
+                        ),
+                    )
+                } else {
+                    transcriptDao.upsert(
+                        TranscriptEntity(
+                            chunkId = chunkId.value,
+                            text = normalizedText,
+                            textVariants = "{}",
+                            language = mediaItem?.targetLang?.takeIf { it.isNotBlank() },
+                            languageConfidence = null,
+                            words = "[]",
+                            engine = USER_EDIT_ENGINE_ID,
+                            userEdited = true,
+                            createdAt = now,
+                        ),
+                    )
+                }
+            }
+            persistTranscriptBackupFile(id)
+        }
+    }
+
+    override suspend fun splitChunk(id: MediaId, chunkId: ChunkId, splitPositionMs: Long): Boolean = withContext(ioDispatcher) {
+        val allChunks = chunkDao.observeByMediaId(id.value).first()
+        val itemState = itemStateDao.getByMediaId(id.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        val targetIndex = activeChunks.indexOfFirst { it.id == chunkId.value }
+        if (targetIndex < 0) return@withContext false
+
+        val target = activeChunks[targetIndex]
+        if (splitPositionMs <= target.startMs || splitPositionMs >= target.endMs) {
+            return@withContext false
+        }
+
+        val now = clock()
+        val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
+        val newChunks = ArrayList<ChunkEntity>(activeChunks.size + 1)
+        val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
+
+        for ((index, chunk) in activeChunks.withIndex()) {
+            if (index < targetIndex) {
+                newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
+                effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[index] = it }
+            } else if (index == targetIndex) {
+                val firstHalfIndex = newChunks.size
+                val secondHalfIndex = firstHalfIndex + 1
+                newChunks.add(
+                    chunk.copy(
+                        id = 0L,
+                        startMs = chunk.startMs,
+                        endMs = splitPositionMs,
+                        origin = ChunkOrigin.MANUAL.name,
+                    ),
+                )
+                newChunks.add(
+                    chunk.copy(
+                        id = 0L,
+                        startMs = splitPositionMs,
+                        endMs = chunk.endMs,
+                        origin = ChunkOrigin.MANUAL.name,
+                    ),
+                )
+
+                val targetTranscript = effectiveTranscripts[chunk.id]
+                if (targetTranscript != null) {
+                    val domain = targetTranscript.toExternalModel()
+                    if (domain.words.isNotEmpty()) {
+                        val (firstWordsRaw, secondWordsRaw) = domain.words.partition { word ->
+                            (word.startMs + word.endMs) / 2L < splitPositionMs
+                        }
+                        val firstWords = clampWordTimings(firstWordsRaw, chunk.startMs, splitPositionMs)
+                        val secondWords = clampWordTimings(secondWordsRaw, splitPositionMs, chunk.endMs)
+                        val separator = if (domain.text.contains(' ')) " " else ""
+                        val firstText = truncateCodePoints(
+                            firstWords.joinToString(separator) { it.text }.trim(),
+                            MAX_TRANSCRIPT_TEXT_CODE_POINTS,
+                        )
+                        val secondText = truncateCodePoints(
+                            secondWords.joinToString(separator) { it.text }.trim(),
+                            MAX_TRANSCRIPT_TEXT_CODE_POINTS,
+                        )
+
+                        newTranscriptsByIndex[firstHalfIndex] = domain.copy(
+                            text = firstText,
+                            words = firstWords,
+                            userEdited = true,
+                        ).toEntity(createdAtEpochMs = now)
+
+                        newTranscriptsByIndex[secondHalfIndex] = domain.copy(
+                            text = secondText,
+                            words = secondWords,
+                            userEdited = true,
+                        ).toEntity(createdAtEpochMs = now)
+                    } else {
+                        // words が空の場合は前半チャンクに元のテキスト（userEdited = true）を引き継ぐ
+                        newTranscriptsByIndex[firstHalfIndex] = targetTranscript.copy(
+                            userEdited = true,
+                            createdAt = now,
+                        )
+                    }
+                }
+            } else {
+                val newIdx = newChunks.size
+                newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
+                effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[newIdx] = it }
+            }
+        }
+
+        val insertedChunks = chunkDao.replaceChunksTransaction(
+            mediaId = id.value,
+            origin = ChunkOrigin.MANUAL.name,
+            newChunks = newChunks,
+            newTranscriptsByIndex = newTranscriptsByIndex,
+            preserveAllOldTranscripts = true,
+        )
+        syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
+        setChunkSource(id, ChunkOrigin.MANUAL)
+        persistTranscriptBackupFile(id)
+        true
+    }
+
+    override suspend fun mergeWithNextChunk(id: MediaId, chunkId: ChunkId): Boolean = withContext(ioDispatcher) {
+        val allChunks = chunkDao.observeByMediaId(id.value).first()
+        val itemState = itemStateDao.getByMediaId(id.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        val targetIndex = activeChunks.indexOfFirst { it.id == chunkId.value }
+        if (targetIndex < 0 || targetIndex + 1 >= activeChunks.size) {
+            return@withContext false
+        }
+
+        val target = activeChunks[targetIndex]
+        val next = activeChunks[targetIndex + 1]
+        val now = clock()
+        val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
+
+        val newChunks = ArrayList<ChunkEntity>(activeChunks.size - 1)
+        val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
+
+        var index = 0
+        while (index < activeChunks.size) {
+            if (index == targetIndex) {
+                val mergedIndex = newChunks.size
+                val mergedStartMs = target.startMs
+                val mergedEndMs = maxOf(next.endMs, mergedStartMs + 1L)
+                newChunks.add(
+                    target.copy(
+                        id = 0L,
+                        startMs = mergedStartMs,
+                        endMs = mergedEndMs,
+                        origin = ChunkOrigin.MANUAL.name,
+                    ),
+                )
+
+                val mergedTranscript = mergeTranscriptEntities(
+                    first = effectiveTranscripts[target.id],
+                    second = effectiveTranscripts[next.id],
+                    mergedStartMs = mergedStartMs,
+                    mergedEndMs = mergedEndMs,
+                    createdAtEpochMs = now,
+                )
+                if (mergedTranscript != null) {
+                    newTranscriptsByIndex[mergedIndex] = mergedTranscript
+                }
+                index += 2
+            } else {
+                val chunk = activeChunks[index]
+                val destIndex = newChunks.size
+                newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
+                effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIndex] = it }
+                index += 1
+            }
+        }
+
+        val insertedChunks = chunkDao.replaceChunksTransaction(
+            mediaId = id.value,
+            origin = ChunkOrigin.MANUAL.name,
+            newChunks = newChunks,
+            newTranscriptsByIndex = newTranscriptsByIndex,
+            preserveAllOldTranscripts = true,
+        )
+        syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
+        setChunkSource(id, ChunkOrigin.MANUAL)
+        persistTranscriptBackupFile(id)
+        true
+    }
+
+    override suspend fun moveChunkBoundary(
+        id: MediaId,
+        chunkId: ChunkId,
+        newStartMs: Long,
+        newEndMs: Long,
+    ): Boolean = withContext(ioDispatcher) {
+        if (newStartMs < 0L || newStartMs >= newEndMs) {
+            return@withContext false
+        }
+
+        val allChunks = chunkDao.observeByMediaId(id.value).first()
+        val itemState = itemStateDao.getByMediaId(id.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        val targetIndex = activeChunks.indexOfFirst { it.id == chunkId.value }
+        if (targetIndex < 0) return@withContext false
+
+        val target = activeChunks[targetIndex]
+        val prevChunk = activeChunks.getOrNull(targetIndex - 1)
+        val nextChunk = activeChunks.getOrNull(targetIndex + 1)
+
+        var adjustedPrevEndMs: Long? = null
+        val clampedStartMs = if (prevChunk != null) {
+            if (newStartMs < prevChunk.endMs) {
+                if (prevChunk.endMs == target.startMs && newStartMs > prevChunk.startMs) {
+                    adjustedPrevEndMs = newStartMs
+                    newStartMs
+                } else {
+                    prevChunk.endMs
+                }
+            } else {
+                newStartMs
+            }
+        } else {
+            newStartMs.coerceAtLeast(0L)
+        }
+
+        var adjustedNextStartMs: Long? = null
+        val clampedEndMs = if (nextChunk != null) {
+            if (newEndMs > nextChunk.startMs) {
+                if (nextChunk.startMs == target.endMs && newEndMs < nextChunk.endMs) {
+                    adjustedNextStartMs = newEndMs
+                    newEndMs
+                } else {
+                    nextChunk.startMs
+                }
+            } else {
+                newEndMs
+            }
+        } else {
+            val mediaDurationMs = mediaItemDao.getById(id.value)?.durationMs?.takeIf { it > 0L }
+            if (mediaDurationMs != null && mediaDurationMs >= target.endMs) {
+                newEndMs.coerceAtMost(mediaDurationMs)
+            } else {
+                newEndMs
+            }
+        }
+
+        if (clampedStartMs >= clampedEndMs) {
+            return@withContext false
+        }
+
+        val now = clock()
+        val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
+        val newChunks = ArrayList<ChunkEntity>(activeChunks.size)
+        val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
+
+        for ((index, chunk) in activeChunks.withIndex()) {
+            val updatedChunk = when (index) {
+                targetIndex - 1 -> {
+                    val endMs = adjustedPrevEndMs ?: chunk.endMs
+                    chunk.copy(id = 0L, endMs = endMs, origin = ChunkOrigin.MANUAL.name)
+                }
+
+                targetIndex -> chunk.copy(
+                    id = 0L,
+                    startMs = clampedStartMs,
+                    endMs = clampedEndMs,
+                    origin = ChunkOrigin.MANUAL.name,
+                )
+
+                targetIndex + 1 -> {
+                    val startMs = adjustedNextStartMs ?: chunk.startMs
+                    chunk.copy(id = 0L, startMs = startMs, origin = ChunkOrigin.MANUAL.name)
+                }
+
+                else -> chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name)
+            }
+            newChunks.add(updatedChunk)
+
+            val existingTr = effectiveTranscripts[chunk.id]
+            if (existingTr != null) {
+                val domain = existingTr.toExternalModel()
+                val clampedWords = if (domain.words.isNotEmpty()) {
+                    clampWordTimings(domain.words, updatedChunk.startMs, updatedChunk.endMs)
+                } else {
+                    emptyList()
+                }
+                newTranscriptsByIndex[index] = domain.copy(
+                    words = clampedWords,
+                    userEdited = if (index == targetIndex) true else domain.userEdited,
+                ).toEntity(createdAtEpochMs = if (index == targetIndex) now else existingTr.createdAt)
+            }
+        }
+
+        val insertedChunks = chunkDao.replaceChunksTransaction(
+            mediaId = id.value,
+            origin = ChunkOrigin.MANUAL.name,
+            newChunks = newChunks,
+            newTranscriptsByIndex = newTranscriptsByIndex,
+            preserveAllOldTranscripts = true,
+        )
+        syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
+        setChunkSource(id, ChunkOrigin.MANUAL)
+        persistTranscriptBackupFile(id)
+        true
+    }
+
     /**
      * `waveform.bin` 更新後に Flow 購読者へ再読込を通知する。
      */
@@ -712,8 +1106,149 @@ class DefaultAnalysisRepository(
         return result
     }
 
+    private suspend fun resolveEffectiveTranscriptsForActiveChunks(
+        id: MediaId,
+        activeChunks: List<ChunkEntity>,
+        allChunks: List<ChunkEntity>,
+    ): Map<Long, TranscriptEntity> {
+        val allTranscripts = transcriptDao.observeByMediaId(id.value).first()
+        if (allTranscripts.isEmpty()) return emptyMap()
+        val transcriptsByChunkId = allTranscripts.associateBy { it.chunkId }
+        val importedChunks = allChunks.filter { it.origin == ChunkOrigin.IMPORTED.name }
+        val offsetMs = (mediaItemDao.getById(id.value)?.transcriptOffsetMs ?: 0).toLong()
+
+        val result = LinkedHashMap<Long, TranscriptEntity>()
+        for (chunk in activeChunks) {
+            val direct = transcriptsByChunkId[chunk.id]
+            if (direct != null) {
+                result[chunk.id] = direct
+            } else if (importedChunks.isNotEmpty() && chunk.origin != ChunkOrigin.IMPORTED.name) {
+                val mapped = findBestOverlappingTranscript(
+                    target = chunk,
+                    sourceChunks = importedChunks,
+                    transcriptsByChunkId = transcriptsByChunkId,
+                    offsetMs = offsetMs,
+                )
+                if (mapped != null) {
+                    result[chunk.id] = mapped.copy(chunkId = chunk.id)
+                }
+            }
+        }
+        return result
+    }
+
+    private suspend fun syncManualTranscriptsExact(
+        insertedChunks: List<ChunkEntity>,
+        newTranscriptsByIndex: Map<Int, TranscriptEntity>,
+    ) {
+        val toUpsert = ArrayList<TranscriptEntity>(newTranscriptsByIndex.size)
+        for ((index, inserted) in insertedChunks.withIndex()) {
+            val desired = newTranscriptsByIndex[index]
+            if (desired != null) {
+                toUpsert.add(desired.copy(chunkId = inserted.id))
+            } else {
+                transcriptDao.deleteByChunkId(inserted.id)
+            }
+        }
+        if (toUpsert.isNotEmpty()) {
+            chunkDao.upsertTranscripts(toUpsert)
+        }
+    }
+
+    private fun clampWordTimings(
+        words: List<WordTiming>,
+        chunkStartMs: Long,
+        chunkEndMs: Long,
+    ): List<WordTiming> {
+        val clamped = ArrayList<WordTiming>(words.size)
+        var prevEnd = chunkStartMs
+        for (word in words.sortedBy { it.startMs }) {
+            val ws = maxOf(word.startMs, prevEnd)
+            val we = minOf(word.endMs, chunkEndMs)
+            val text = word.text.trim()
+            if (ws < we && text.isNotEmpty()) {
+                prevEnd = we
+                clamped.add(word.copy(startMs = ws, endMs = we, text = text))
+            }
+        }
+        return clamped
+    }
+
+    private fun mergeTranscriptEntities(
+        first: TranscriptEntity?,
+        second: TranscriptEntity?,
+        mergedStartMs: Long,
+        mergedEndMs: Long,
+        createdAtEpochMs: Long,
+    ): TranscriptEntity? {
+        if (first == null && second == null) return null
+        if (first != null && second == null) {
+            return first.copy(userEdited = true, createdAt = createdAtEpochMs)
+        }
+        if (first == null) {
+            return second?.copy(userEdited = true, createdAt = createdAtEpochMs)
+        }
+        val secondEntity = second ?: return first.copy(userEdited = true, createdAt = createdAtEpochMs)
+        val d1 = first.toExternalModel()
+        val d2 = secondEntity.toExternalModel()
+
+        val mergedText = when {
+            d1.text.isNotBlank() && d2.text.isNotBlank() ->
+                truncateCodePoints("${d1.text.trim()} ${d2.text.trim()}", MAX_TRANSCRIPT_TEXT_CODE_POINTS)
+
+            d1.text.isNotBlank() -> d1.text.trim()
+
+            else -> d2.text.trim()
+        }
+
+        val mergedVariants = LinkedHashMap<String, String>()
+        for (key in (d1.textVariants.keys + d2.textVariants.keys)) {
+            val v1 = d1.textVariants[key]?.trim().orEmpty()
+            val v2 = d2.textVariants[key]?.trim().orEmpty()
+            val combined = when {
+                v1.isNotEmpty() && v2.isNotEmpty() -> "$v1 $v2"
+                v1.isNotEmpty() -> v1
+                else -> v2
+            }
+            if (combined.isNotEmpty()) {
+                mergedVariants[key] = truncateCodePoints(combined, MAX_TRANSCRIPT_TEXT_CODE_POINTS)
+            }
+        }
+
+        val mergedWords = clampWordTimings(
+            words = d1.words + d2.words,
+            chunkStartMs = mergedStartMs,
+            chunkEndMs = mergedEndMs,
+        )
+        val mergedLang = d1.language ?: d2.language
+        val mergedConfidence = if (mergedLang != null) {
+            d1.languageConfidence ?: d2.languageConfidence ?: 1.0f
+        } else {
+            null
+        }
+        val mergedEngine = d1.engine.value.ifBlank { d2.engine.value }.ifBlank { USER_EDIT_ENGINE_ID }
+
+        return Transcript(
+            chunkId = ChunkId(0L),
+            text = mergedText,
+            textVariants = mergedVariants,
+            language = mergedLang,
+            languageConfidence = mergedConfidence,
+            words = mergedWords,
+            engine = EngineId(mergedEngine),
+            userEdited = true,
+        ).toEntity(createdAtEpochMs = createdAtEpochMs)
+    }
+
+    private fun truncateCodePoints(text: String, maxCodePoints: Int): String {
+        val cpCount = text.codePointCount(0, text.length)
+        if (cpCount <= maxCodePoints) return text
+        val endOffset = text.offsetByCodePoints(0, maxCodePoints)
+        return text.substring(0, endOffset)
+    }
+
     /**
-     * 言語の手動変更・不明言語の一括設定・先読み認識の結果を
+     * 言語の手動変更・テキストの手動修正・チャンクの手動編集・先読み認識の結果を
      * `filesDir/media/<MediaId>.transcript.chunkflow.json` に書き戻す（§7.4.5、§7.4.6）。
      */
     private suspend fun persistTranscriptBackupFile(id: MediaId) {
@@ -727,15 +1262,21 @@ class DefaultAnalysisRepository(
         val importedChunks = allChunks
             .filter { it.origin == ChunkOrigin.IMPORTED.name }
             .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
-        val exportChunks = if (importedChunks.any { transcriptsByChunkId.containsKey(it.id) }) {
+        val itemState = itemStateDao.getByMediaId(id.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        val exportChunks = if (activeChunks.any { transcriptsByChunkId.containsKey(it.id) } ||
+            activeChunks.firstOrNull()?.origin == ChunkOrigin.MANUAL.name
+        ) {
+            activeChunks
+        } else if (importedChunks.any { transcriptsByChunkId.containsKey(it.id) }) {
             importedChunks
         } else {
-            val itemState = itemStateDao.getByMediaId(id.value)
-            selectActiveChunkEntities(itemState, allChunks)
+            activeChunks
         }
         if (exportChunks.isEmpty()) return
 
         val mediaItem = mediaItemDao.getById(id.value)
+        val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
         val audioFile = mediaFileResolver.resolveAudioFile(id)
         val audioFileName = audioFile?.name ?: "${id.value}.mp3"
         val sha256 = mediaItem?.sha256?.takeIf { it.length == 64 && it.all { ch -> ch in '0'..'9' || ch in 'a'..'f' } }
@@ -744,7 +1285,9 @@ class DefaultAnalysisRepository(
 
         // S5（各セグメントの lang は target か base か null）を満たすため、base 未設定時に別言語があれば base に補完する
         val distinctLangs = exportChunks.mapNotNull { chunk ->
-            transcriptsByChunkId[chunk.id]?.language?.takeIf { it.isNotBlank() && it != "und" }
+            val tr = transcriptsByChunkId[chunk.id]
+                ?: findBestOverlappingTranscript(chunk, importedChunks, transcriptsByChunkId, offsetMs)
+            tr?.language?.takeIf { it.isNotBlank() && it != "und" }
         }.distinct()
         val configuredBase = mediaItem?.baseLang?.takeIf { it.isNotBlank() && it != targetLang }
         val effectiveBase = configuredBase ?: distinctLangs.firstOrNull { it != targetLang }
@@ -756,7 +1299,9 @@ class DefaultAnalysisRepository(
         var previousEndMs = 0L
         val segmentsJson = JSONArray()
         for (chunk in exportChunks) {
-            val trEntity = transcriptsByChunkId[chunk.id] ?: continue
+            val trEntity = transcriptsByChunkId[chunk.id]
+                ?: findBestOverlappingTranscript(chunk, importedChunks, transcriptsByChunkId, offsetMs)
+                ?: continue
             val startMs = maxOf(chunk.startMs, previousEndMs)
             val endMs = maxOf(chunk.endMs, startMs + 1L).coerceAtMost(durationMs)
             if (startMs >= endMs) continue
@@ -814,6 +1359,8 @@ class DefaultAnalysisRepository(
             }
             segmentsJson.put(segObj)
         }
+
+        if (segmentsJson.length() == 0) return
 
         val rootJson = JSONObject().apply {
             put("format", "chunkflow-transcript")
@@ -874,6 +1421,9 @@ class DefaultAnalysisRepository(
         internal const val FEATURES_FILE_NAME: String = "features.bin"
         internal const val LOOKAHEAD_WINDOW_AHEAD: Int = 5
         private const val MANUAL_LANGUAGE_ENGINE_ID: String = "manual-language"
+        private const val USER_EDIT_ENGINE_ID: String = "user"
+        private const val MAX_TRANSCRIPT_TEXT_CODE_POINTS: Int = 2_000
+        private const val MAX_BOOKMARK_NOTE_CODE_POINTS: Int = 500
 
         private val FALLBACK_ORIGIN_PRIORITY: List<ChunkOrigin> = listOf(
             ChunkOrigin.IMPORTED,
@@ -892,4 +1442,16 @@ private object NoOpOnDeviceChunkTranscriber : OnDeviceChunkTranscriber {
         endMs: Long,
         languagePair: LanguagePair?,
     ): OnDeviceChunkTranscriptionResult? = null
+}
+
+private object NoOpBookmarkDao : BookmarkDao {
+    override fun observeByMediaId(mediaId: String): Flow<List<BookmarkEntity>> = flowOf(emptyList())
+
+    override suspend fun getByMediaId(mediaId: String): List<BookmarkEntity> = emptyList()
+
+    override suspend fun insert(bookmark: BookmarkEntity): Long = 0L
+
+    override suspend fun upsert(bookmark: BookmarkEntity): Long = 0L
+
+    override suspend fun deleteById(id: Long) = Unit
 }
