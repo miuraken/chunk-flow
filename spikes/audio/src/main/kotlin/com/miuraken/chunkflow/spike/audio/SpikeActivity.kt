@@ -45,7 +45,8 @@ import org.json.JSONObject
  * cmd: `decode`（抽出 + デコード + 解析）、`decodeonly`（デコードだけ）、`exo`（ExoPlayer・高速）、
  * `exort`（ExoPlayer・等速）、`decodeasync`（非同期モードのデコード + 解析）、
  * `speed`（同期・非同期・ExoPlayer の速度の比較）、`suite`（フォルダ内の全ファイルで decode×2 種の抽出器・decodeonly・exo）。
- * extractor: `platform` / `compat`。
+ * `d6`（ヘッダを隠した MP3 の時間軸）、`exohidden`（ExoPlayer・高速・ヘッダを隠す DataSource）。
+ * extractor: `platform` / `compat` / `hidden`（ヘッダを隠す DataSource 経由の Compat）。
  */
 class SpikeActivity : ComponentActivity() {
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "s3-worker") }
@@ -83,7 +84,11 @@ class SpikeActivity : ComponentActivity() {
     private fun handle(intent: Intent?) {
         val cmd = intent?.getStringExtra("cmd") ?: return
         val path = intent.getStringExtra("path") ?: return
-        val kind = if (intent.getStringExtra("extractor") == "compat") ExtractorKind.COMPAT else ExtractorKind.PLATFORM
+        val kind = when (intent.getStringExtra("extractor")) {
+            "compat" -> ExtractorKind.COMPAT
+            "hidden" -> ExtractorKind.COMPAT_HIDDEN
+            else -> ExtractorKind.PLATFORM
+        }
         val repeat = intent.getIntExtra("repeat", 1).coerceIn(1, 10)
         val target = resolve(path) ?: run {
             append("パスが不正: $path")
@@ -120,6 +125,13 @@ class SpikeActivity : ComponentActivity() {
 
                     "speed" -> speed(target)
 
+                    "d6" -> d6(target)
+
+                    "exohidden" -> record(
+                        ExoTimingProbe(this, target, false, ClickMatch.loadExpected(target), hideMp3Header = true)
+                            .run(TIMEOUT_MS),
+                    )
+
                     "suite" -> suite(target)
 
                     else -> append("不明なコマンド: $cmd")
@@ -150,6 +162,18 @@ class SpikeActivity : ComponentActivity() {
             record(AsyncDecodeBenchmark(this, f, ExtractorKind.PLATFORM, expected).run(TIMEOUT_MS))
             record(AsyncDecodeBenchmark(this, f, ExtractorKind.COMPAT, expected).run(TIMEOUT_MS))
             record(ExoTimingProbe(this, f, false, expected).run(TIMEOUT_MS))
+        }
+    }
+
+    /** D6: ヘッダを隠した MP3 の時間軸（Compat と ExoPlayer を、隠す / 隠さないの両方で）。[target] はファイルかフォルダ。 */
+    private fun d6(target: File) {
+        val files = if (target.isDirectory) audioFiles(target).filter { it.extension == "mp3" } else listOf(target)
+        for (f in files) {
+            val expected = ClickMatch.loadExpected(f)
+            record(DecodeBenchmark(this, f, ExtractorKind.COMPAT, true, expected).run())
+            record(DecodeBenchmark(this, f, ExtractorKind.COMPAT_HIDDEN, true, expected).run())
+            record(ExoTimingProbe(this, f, false, expected).run(TIMEOUT_MS))
+            record(ExoTimingProbe(this, f, false, expected, hideMp3Header = true).run(TIMEOUT_MS))
         }
     }
 

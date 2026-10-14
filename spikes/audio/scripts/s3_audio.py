@@ -43,6 +43,8 @@ ENCODINGS: list[tuple[str, list[str]]] = [
     # LAME / Xing ヘッダを書かない MP3（ギャップレス情報がない）
     ("mp3_cbr128_noxing.mp3", ["-c:a", "libmp3lame", "-b:a", "128k", "-write_xing", "0"]),
     ("mp3_cbr64_22k_mono.mp3", ["-c:a", "libmp3lame", "-b:a", "64k", "-ac", "1", "-ar", "22050"]),
+    ("mp3_cbr64_22k_mono_noxing.mp3",
+     ["-c:a", "libmp3lame", "-b:a", "64k", "-ac", "1", "-ar", "22050", "-write_xing", "0"]),
     ("aac_lc128.m4a", ["-c:a", "aac", "-b:a", "128k"]),
     # ADTS（コンテナなし。ギャップレス情報がない）
     ("aac_lc128_adts.aac", ["-c:a", "aac", "-b:a", "128k"]),
