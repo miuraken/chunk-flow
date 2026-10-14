@@ -136,6 +136,7 @@ class AnalysisWorker(
                         markStagesFailed(mediaId, requestedStages, decodeResult.error)
                         return Result.failure()
                     }
+
                     is AudioDecodeResult.Success -> {
                         extractor.finish()
                         decodedDurationMs = decodeResult.durationMs
@@ -247,11 +248,9 @@ class AnalysisWorker(
         }
     }
 
-    private suspend fun readSegmentationParams(): SegmentationParams {
-        return runCatching {
-            userSettingsRepository.settings.first().defaultSegmentationParams
-        }.getOrDefault(SegmentationParams())
-    }
+    private suspend fun readSegmentationParams(): SegmentationParams = runCatching {
+        userSettingsRepository.settings.first().defaultSegmentationParams
+    }.getOrDefault(SegmentationParams())
 
     private suspend fun markStagesFailed(
         mediaId: MediaId,

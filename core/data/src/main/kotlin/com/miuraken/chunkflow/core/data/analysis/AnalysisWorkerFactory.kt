@@ -49,20 +49,19 @@ class AnalysisWorkerFactory(
         appContext: Context,
         workerClassName: String,
         workerParameters: WorkerParameters,
-    ): ListenableWorker? {
-        return when (workerClassName) {
-            AnalysisWorker::class.java.name -> AnalysisWorker(
-                appContext = appContext,
-                workerParams = workerParameters,
-                audioStreamDecoder = audioStreamDecoder,
-                analysisStateDao = analysisStateDao,
-                chunkDao = chunkDao,
-                mediaItemDao = mediaItemDao,
-                mediaFileResolver = mediaFileResolver,
-                userSettingsRepository = userSettingsRepository,
-                clock = clock,
-            )
-            else -> null
-        }
+    ): ListenableWorker? = when (workerClassName) {
+        AnalysisWorker::class.java.name -> AnalysisWorker(
+            appContext = appContext,
+            workerParams = workerParameters,
+            audioStreamDecoder = audioStreamDecoder,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileResolver,
+            userSettingsRepository = userSettingsRepository,
+            clock = clock,
+        )
+
+        else -> null
     }
 }
