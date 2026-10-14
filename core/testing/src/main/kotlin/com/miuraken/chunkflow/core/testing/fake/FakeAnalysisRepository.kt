@@ -30,12 +30,16 @@ class FakeAnalysisRepository : AnalysisRepository {
      * @property waveform 波形。
      * @property chunks チャンク。
      * @property transcripts チャンクごとの文字起こし。
+     * @property availableOrigins 利用可能なチャンク出どころの明示指定（`null` の場合は [chunks] および [chunksByOrigin] から算出）。
+     * @property chunksByOrigin 出どころ別のチャンク一覧（[setChunkSource] で切り替えを再現したい場合に設定する）。
      */
     data class Entry(
         val status: Map<AnalysisStage, StageStatus> = emptyMap(),
         val waveform: Waveform? = null,
         val chunks: List<Chunk> = emptyList(),
         val transcripts: Map<ChunkId, Transcript> = emptyMap(),
+        val availableOrigins: Set<ChunkOrigin>? = null,
+        val chunksByOrigin: Map<ChunkOrigin, List<Chunk>> = emptyMap(),
     )
 
     private val entries = MutableStateFlow<Map<MediaId, Entry>>(emptyMap())
@@ -72,6 +76,12 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> = entries.map { it[id]?.transcripts.orEmpty() }
 
+    override fun observeAvailableChunkOrigins(id: MediaId): Flow<Set<ChunkOrigin>> = entries.map { map ->
+        val entry = map[id] ?: return@map emptySet()
+        entry.availableOrigins
+            ?: (entry.chunksByOrigin.keys + entry.chunks.map { it.origin })
+    }
+
     override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) {
         requestedAnalyses += id to stages
     }
@@ -82,6 +92,11 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) {
         chunkSources[id] = source
+        entries.update { map ->
+            val current = map[id] ?: return@update map
+            val switched = current.chunksByOrigin[source] ?: return@update map
+            map + (id to current.copy(chunks = switched))
+        }
     }
 
     override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) {

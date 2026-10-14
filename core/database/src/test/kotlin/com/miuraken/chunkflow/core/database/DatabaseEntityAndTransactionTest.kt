@@ -195,6 +195,8 @@ class DatabaseEntityAndTransactionTest {
 
         override fun observeByMediaId(mediaId: String): Flow<List<ChunkEntity>> = emptyFlow()
 
+        override fun observeOriginsByMediaId(mediaId: String): Flow<List<String>> = emptyFlow()
+
         override suspend fun getByMediaIdAndOrigin(mediaId: String, origin: String): List<ChunkEntity> = chunks.filter { it.mediaId == mediaId && it.origin == origin }.sortedBy { it.startMs }
 
         override suspend fun insertAll(chunks: List<ChunkEntity>): List<Long> = chunks.map { chunk ->

@@ -6,5 +6,6 @@ plugins {
 
 dependencies {
     api(project(":core:model"))
+    implementation(project(":core:audio"))
     implementation(libs.kotlinx.serialization.json)
 }

@@ -12,6 +12,7 @@ android {
 dependencies {
     api(project(":core:model"))
     api(project(":core:transcript"))
+    api(libs.androidx.work.runtime)
     api(libs.kotlinx.coroutines.core)
     implementation(project(":core:database"))
     implementation(project(":core:datastore"))
@@ -20,8 +21,10 @@ dependencies {
     implementation(project(":core:audio"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.media3.common)
+    implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.inspector)
 
+    testImplementation(project(":core:testing"))
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.robolectric)
 }

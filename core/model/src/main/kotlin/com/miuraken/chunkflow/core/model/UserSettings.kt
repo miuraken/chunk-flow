@@ -22,6 +22,8 @@ enum class ChineseScript(val iso15924: String) {
  * @property defaultSpeed 既定の再生速度（0.5..2.0）。
  * @property seekBackMs 巻き戻しのミリ秒数（正の値、既定 3,000ms）。
  * @property seekForwardMs 早送りのミリ秒数（正の値、既定 5,000ms）。
+ * @property defaultAutoPause 新しく開く教材の既定の自動ポーズ設定（F6.3、F9.1）。
+ * @property defaultSegmentationParams 端末内の自動チャンク分割の既定パラメータ（§7.3.3、F5.2、F9.1）。
  */
 data class UserSettings(
     val defaultLanguagePair: LanguagePair = LanguagePair(
@@ -33,6 +35,8 @@ data class UserSettings(
     val defaultSpeed: Float = 1.0f,
     val seekBackMs: Long = DEFAULT_SEEK_BACK_MS,
     val seekForwardMs: Long = DEFAULT_SEEK_FORWARD_MS,
+    val defaultAutoPause: AutoPause = AutoPause.Off,
+    val defaultSegmentationParams: SegmentationParams = SegmentationParams(),
 ) {
     init {
         require(defaultSpeed in ItemState.MIN_SPEED..ItemState.MAX_SPEED) {

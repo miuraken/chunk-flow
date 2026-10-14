@@ -1,14 +1,16 @@
 package com.miuraken.chunkflow.core.datastore
 
+import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
 
 /**
  * アプリ設定（[UserSettings]）の単一の情報源（§2 F9.1、§6.4 DataStore）。
  *
- * ViewModel や 재생・取り込み処理はこのインターフェースに依存し、テストでは `FakeUserSettingsRepository` を使う。
+ * ViewModel や再生・取り込み処理はこのインターフェースに依存し、テストでは `FakeUserSettingsRepository` を使う。
  */
 interface UserSettingsRepository {
     /** 現在のアプリ設定を購読する。 */
@@ -31,4 +33,10 @@ interface UserSettingsRepository {
 
     /** 早送りのミリ秒数（正の値）を更新する。 */
     suspend fun setSeekForwardMs(seekForwardMs: Long)
+
+    /** 既定の自動ポーズ設定を更新する（F6.3、F9.1）。 */
+    suspend fun setDefaultAutoPause(autoPause: AutoPause) {}
+
+    /** 端末内の自動チャンク分割の既定パラメータを更新する（§7.3.3、F5.2、F9.1）。 */
+    suspend fun setDefaultSegmentationParams(params: SegmentationParams) {}
 }

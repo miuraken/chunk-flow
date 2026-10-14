@@ -29,6 +29,10 @@ interface ChunkDao {
     @Query("SELECT * FROM chunk WHERE media_id = :mediaId ORDER BY start_ms ASC, id ASC")
     fun observeByMediaId(mediaId: String): Flow<List<ChunkEntity>>
 
+    /** 指定した教材に保存されているチャンクの出どころ（`origin`）の一覧を購読する（F5.4）。 */
+    @Query("SELECT DISTINCT origin FROM chunk WHERE media_id = :mediaId")
+    fun observeOriginsByMediaId(mediaId: String): Flow<List<String>>
+
     /** 指定した教材・出どころのチャンクを開始時刻順で取得する。 */
     @Query("SELECT * FROM chunk WHERE media_id = :mediaId AND origin = :origin ORDER BY start_ms ASC, id ASC")
     suspend fun getByMediaIdAndOrigin(mediaId: String, origin: String): List<ChunkEntity>

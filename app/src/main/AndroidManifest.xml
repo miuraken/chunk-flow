@@ -2,6 +2,8 @@
 <!--
   権限とエクスポートするコンポーネントは §8.2 の一覧を超えない（CI の .github/scripts/check_manifest.py で確認する）。
   M1（§7.2.6、§8.2）: バックグラウンド再生・メディア通知・WakeLock に必要な権限を宣言する。
+  M2（§7.3.4、§8.2、F1.2）: 解析 Worker のフォアグラウンドサービス権限・進捗通知権限と、
+  他アプリからの共有・「アプリで開く」の intent-filter を宣言する。
   PlaybackService（MediaSessionService）と MediaButtonReceiver（再生再開用）のコンポーネント宣言は、
   実装を持つ :core:playback モジュールの core/playback/src/main/AndroidManifest.xml に置き、マニフェストマージで統合する。
 -->
@@ -10,7 +12,15 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- WorkManager（androidx.work:work-runtime）が持ち込む RECEIVE_BOOT_COMPLETED を §8.2 の一覧に合わせて取り除く -->
+    <uses-permission
+        android:name="android.permission.RECEIVE_BOOT_COMPLETED"
+        tools:node="remove" />
 
     <application
         android:name=".ChunkFlowApplication"
@@ -28,7 +38,45 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- F1.2: 他アプリからの「アプリで開く」（音声ファイル） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+            <!-- F1.2: 他アプリからの単一ファイル共有（音声ファイル） -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+            <!-- F1.2: 他アプリからの複数ファイル共有（音声 + 文字起こしファイル） -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
+
+        <!-- §7.3.4: WorkManager のフォアグラウンドサービスに mediaProcessing|dataSync を設定する -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="mediaProcessing|dataSync"
+            tools:node="merge" />
+
+        <!-- ChunkFlowApplication（Configuration.Provider）でカスタム WorkerFactory を登録するため、
+             WorkManager の既定の自動初期化を無効化する -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
 
         <!-- media3-session 1.11.1 が持ち込む BluetoothValidationActivity（BLUETOOTH_PRIVILEGED 保護）を
              §8.2 / ADR 0004 のエクスポート一覧に合わせて取り除く -->

@@ -1,8 +1,10 @@
 package com.miuraken.chunkflow.core.testing.fake
 
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
+import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,5 +49,13 @@ class FakeUserSettingsRepository(
 
     override suspend fun setSeekForwardMs(seekForwardMs: Long) {
         state.update { it.copy(seekForwardMs = seekForwardMs) }
+    }
+
+    override suspend fun setDefaultAutoPause(autoPause: AutoPause) {
+        state.update { it.copy(defaultAutoPause = autoPause) }
+    }
+
+    override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
+        state.update { it.copy(defaultSegmentationParams = params) }
     }
 }
