@@ -1,6 +1,8 @@
-// Google Drive の手動同期（担当: playback）。ネットワークに触るのはこのモジュールだけ（§5.2）。
+// Google Drive API の最小クライアントと OAuth トークン管理（担当: playback、設計書 §7.2）。
 plugins {
     alias(libs.plugins.chunkflow.android.library)
+    alias(libs.plugins.chunkflow.hilt)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -9,4 +11,11 @@ android {
 
 dependencies {
     api(project(":core:model"))
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.serialization.json)
+
+    testImplementation(libs.junit4)
+    testImplementation(libs.kotlin.test.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
 }

@@ -3,6 +3,7 @@ package com.miuraken.chunkflow.core.data.library
 import android.net.Uri
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import kotlinx.coroutines.flow.Flow
@@ -52,6 +53,20 @@ interface LibraryRepository {
 
     /** Drive の `ChunkFlow/` フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
     fun syncFromDrive(): Flow<SyncProgress>
+
+    /** 教材のコース名と言語ペアを更新する（F1.3、F1.4）。 */
+    suspend fun updateItemMetadata(
+        id: MediaId,
+        course: String?,
+        languages: LanguagePair,
+    ) = Unit
+
+    /**
+     * 教材の文字起こし（手動修正された言語ラベルを含む）を `.chunkflow.json` 形式でローカル原本ファイルへ書き出す（§7.2 書き戻し準備）。
+     *
+     * @return 書き出しに成功した場合は `true`、書き出す文字起こしがない場合は `false`。
+     */
+    suspend fun exportLocalTranscriptJson(id: MediaId): Boolean = false
 
     /** 教材を削除する（音声・解析結果・文字起こし・状態を含む）。 */
     suspend fun delete(id: MediaId)
@@ -116,8 +131,14 @@ sealed interface SyncProgress {
      * @property newAudio 追加した音声の数。
      * @property newTranscripts 追加・更新した文字起こしの数。
      * @property failed 失敗したファイルの数。
+     * @property uploadedTranscripts Drive へ書き戻した（アップロードした）文字起こしの数。
      */
-    data class Done(val newAudio: Int, val newTranscripts: Int, val failed: Int) : SyncProgress
+    data class Done(
+        val newAudio: Int,
+        val newTranscripts: Int,
+        val failed: Int,
+        val uploadedTranscripts: Int = 0,
+    ) : SyncProgress
 
     /** 失敗した。 */
     data class Failed(val error: SyncError) : SyncProgress

@@ -48,6 +48,19 @@ interface MediaItemDao {
     @Query("UPDATE media_item SET target_lang = :targetLang, base_lang = :baseLang WHERE id = :id")
     suspend fun updateLanguagePair(id: String, targetLang: String, baseLang: String?)
 
+    /** 教材のコース名を更新する（F1.3）。 */
+    @Query("UPDATE media_item SET course = :course WHERE id = :id")
+    suspend fun updateCourse(id: String, course: String?)
+
+    /** 教材のコース名と言語ペアをまとめて更新する（F1.3、F1.4）。 */
+    @Query("UPDATE media_item SET course = :course, target_lang = :targetLang, base_lang = :baseLang WHERE id = :id")
+    suspend fun updateCourseAndLanguagePair(
+        id: String,
+        course: String?,
+        targetLang: String,
+        baseLang: String?,
+    )
+
     /** 教材を削除する（外部キーの `ON DELETE CASCADE` により関連テーブルも削除される）。 */
     @Query("DELETE FROM media_item WHERE id = :id")
     suspend fun deleteById(id: String)

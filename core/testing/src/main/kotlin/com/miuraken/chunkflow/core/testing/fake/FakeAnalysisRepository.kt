@@ -5,6 +5,8 @@ import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -32,6 +34,7 @@ class FakeAnalysisRepository : AnalysisRepository {
      * @property transcripts チャンクごとの文字起こし。
      * @property availableOrigins 利用可能なチャンク出どころの明示指定（`null` の場合は [chunks] および [chunksByOrigin] から算出）。
      * @property chunksByOrigin 出どころ別のチャンク一覧（[setChunkSource] で切り替えを再現したい場合に設定する）。
+     * @property lookaheadStatus 端末上の先読み簡易文字起こし状態（F6.2）。
      */
     data class Entry(
         val status: Map<AnalysisStage, StageStatus> = emptyMap(),
@@ -40,6 +43,7 @@ class FakeAnalysisRepository : AnalysisRepository {
         val transcripts: Map<ChunkId, Transcript> = emptyMap(),
         val availableOrigins: Set<ChunkOrigin>? = null,
         val chunksByOrigin: Map<ChunkOrigin, List<Chunk>> = emptyMap(),
+        val lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
     )
 
     private val entries = MutableStateFlow<Map<MediaId, Entry>>(emptyMap())
@@ -55,6 +59,12 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     /** [setTranscriptOffset] で設定された補正値。 */
     val transcriptOffsets: MutableMap<MediaId, Int> = mutableMapOf()
+
+    /** [autoAlignTranscriptOffset] が返す自動補正値のスタブ設定。 */
+    val autoAlignedOffsets: MutableMap<MediaId, Int?> = mutableMapOf()
+
+    /** [triggerLookaheadAt] の呼び出し履歴（呼ばれた順）。 */
+    val lookaheadTriggers: MutableList<Pair<MediaId, ChunkId?>> = mutableListOf()
 
     /** フィクスチャの解析結果を入れる。 */
     fun put(material: SampleMaterial) {
@@ -82,6 +92,8 @@ class FakeAnalysisRepository : AnalysisRepository {
             ?: (entry.chunksByOrigin.keys + entry.chunks.map { it.origin })
     }
 
+    override fun observeLookaheadStatus(id: MediaId): Flow<LookaheadTranscriptionStatus> = entries.map { it[id]?.lookaheadStatus ?: LookaheadTranscriptionStatus() }
+
     override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) {
         requestedAnalyses += id to stages
     }
@@ -101,5 +113,53 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) {
         transcriptOffsets[id] = offsetMs
+    }
+
+    override suspend fun updateChunkLanguage(id: MediaId, chunkId: ChunkId, language: LanguageTag?) {
+        update(id) { entry ->
+            val existing = entry.transcripts[chunkId] ?: return@update entry
+            val updated = existing.copy(
+                language = language,
+                languageConfidence = 1.0f,
+                userEdited = true,
+            )
+            entry.copy(transcripts = entry.transcripts + (chunkId to updated))
+        }
+    }
+
+    override suspend fun bulkSetUnknownTranscriptLanguage(id: MediaId, language: LanguageTag) {
+        update(id) { entry ->
+            val updatedTranscripts = entry.transcripts.mapValues { (_, transcript) ->
+                val tag = transcript.language?.value
+                if (tag.isNullOrBlank() || tag == "und") {
+                    transcript.copy(
+                        language = language,
+                        languageConfidence = 1.0f,
+                        userEdited = true,
+                    )
+                } else {
+                    transcript
+                }
+            }
+            entry.copy(transcripts = updatedTranscripts)
+        }
+    }
+
+    override suspend fun autoAlignTranscriptOffset(id: MediaId): Int? {
+        val aligned = autoAlignedOffsets[id]
+        if (aligned != null) {
+            transcriptOffsets[id] = aligned
+        }
+        return aligned
+    }
+
+    override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
+        update(id) { entry ->
+            entry.copy(lookaheadStatus = entry.lookaheadStatus.copy(enabled = enabled))
+        }
+    }
+
+    override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
+        lookaheadTriggers += id to currentChunkId
     }
 }

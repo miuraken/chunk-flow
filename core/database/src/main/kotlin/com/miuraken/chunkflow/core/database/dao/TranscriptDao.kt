@@ -57,6 +57,19 @@ interface TranscriptDao {
     )
     suspend fun updateLanguage(chunkId: Long, language: String?)
 
+    /**
+     * 指定した教材で言語ラベルが未設定または `'und'` の文字起こしを一括で設定し、`user_edited = 1` にする（F7.3）。
+     */
+    @Query(
+        """
+        UPDATE transcript
+        SET language = :language, language_confidence = 1.0, user_edited = 1
+        WHERE chunk_id IN (SELECT id FROM chunk WHERE media_id = :mediaId)
+          AND (language IS NULL OR language = '' OR language = 'und')
+        """,
+    )
+    suspend fun bulkSetUnknownLanguageForMedia(mediaId: String, language: String)
+
     /** 指定したチャンク ID の文字起こしを削除する。 */
     @Query("DELETE FROM transcript WHERE chunk_id = :chunkId")
     suspend fun deleteByChunkId(chunkId: Long)

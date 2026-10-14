@@ -97,6 +97,19 @@ internal class FakeTranscriptDao : TranscriptDao {
         }
     }
 
+    override suspend fun bulkSetUnknownLanguageForMedia(mediaId: String, language: String) {
+        val mediaChunkIds = chunksProvider().filter { it.mediaId == mediaId }.map { it.id }.toSet()
+        store.update { current ->
+            current.mapValues { (chunkId, existing) ->
+                if (chunkId in mediaChunkIds && (existing.language.isNullOrEmpty() || existing.language == "und")) {
+                    existing.copy(language = language, languageConfidence = 1.0f, userEdited = true)
+                } else {
+                    existing
+                }
+            }
+        }
+    }
+
     override suspend fun deleteByChunkId(chunkId: Long) {
         store.update { current -> current - chunkId }
     }
@@ -225,6 +238,25 @@ internal class FakeMediaItemDao : MediaItemDao {
         store.update { current ->
             val existing = current[id] ?: return@update current
             current + (id to existing.copy(targetLang = targetLang, baseLang = baseLang))
+        }
+    }
+
+    override suspend fun updateCourse(id: String, course: String?) {
+        store.update { current ->
+            val existing = current[id] ?: return@update current
+            current + (id to existing.copy(course = course))
+        }
+    }
+
+    override suspend fun updateCourseAndLanguagePair(
+        id: String,
+        course: String?,
+        targetLang: String,
+        baseLang: String?,
+    ) {
+        store.update { current ->
+            val existing = current[id] ?: return@update current
+            current + (id to existing.copy(course = course, targetLang = targetLang, baseLang = baseLang))
         }
     }
 
