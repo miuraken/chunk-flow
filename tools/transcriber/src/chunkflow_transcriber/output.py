@@ -214,6 +214,10 @@ def write_atomic(
     fd, tmp_name = tempfile.mkstemp(dir=tdir, prefix=f".{out_path.name}.", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
+        # mkstemp は 0600 で作るので、通常のファイルと同じ権限（umask に従う）にする
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp, 0o666 & ~umask)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()

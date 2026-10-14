@@ -164,6 +164,10 @@ def test_write_atomic_writes_only_into_transcription(tmp_path: Path) -> None:
     ]
     assert sorted(p.name for p in course.iterdir()) == ["transcription"]
     assert existing_tool(out) == "chunkflow-transcribe 0.1.0"
+    # 一時ファイルの 0600 のままにしない（umask に従う）
+    umask = os.umask(0)
+    os.umask(umask)
+    assert out.stat().st_mode & 0o777 == 0o666 & ~umask
 
 
 def test_write_atomic_rejects_path_outside(tmp_path: Path) -> None:
