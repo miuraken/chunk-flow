@@ -26,6 +26,7 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.testing.fake.FakeTranscriptParser
 import com.miuraken.chunkflow.core.transcript.ChunkFlowTranscriptParser
+import com.miuraken.chunkflow.core.transcript.CompositeTranscriptParser
 import com.miuraken.chunkflow.core.transcript.TranscriptDocument
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import com.miuraken.chunkflow.core.transcript.TranscriptParseResult
@@ -34,6 +35,7 @@ import com.miuraken.chunkflow.core.transcript.TranscriptSegment
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
+import java.text.Normalizer
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -89,7 +91,7 @@ class DefaultTranscriptImporterTest {
     }
 
     private fun createImporter(
-        parser: TranscriptParser = ChunkFlowTranscriptParser(),
+        parser: TranscriptParser = CompositeTranscriptParser(),
     ): DefaultTranscriptImporter = DefaultTranscriptImporter(
         context = context,
         mediaItemDao = mediaItemDao,
@@ -298,6 +300,81 @@ class DefaultTranscriptImporterTest {
                 durationMismatch = false,
             ),
             result,
+        )
+    }
+
+    @Test
+    fun `importTranscript_SRTとWebVTTとLRCをNFC正規化と大文字小文字無視のファイル名stem照合で取り込める`() = runTest {
+        val importer = createImporter()
+
+        // 1. SRT: NFD ファイル名 & 大文字小文字違い -> NFC タイトルの教材に一致
+        val itemSrtId = "00000000-0000-4000-8000-000000000201"
+        insertAudioItem(id = itemSrtId, title = "がっこう_Lesson01.mp3", sha256 = "1".repeat(64))
+        val srtBytes = """
+            1
+            00:00:01,000 --> 00:00:03,000
+            <b>Hello</b> SRT!
+        """.trimIndent().encodeToByteArray()
+        val nfdFileName = Normalizer.normalize("がっこう_lesson01.SRT", Normalizer.Form.NFD)
+        val srtUri = registerContent("sub_srt", nfdFileName, srtBytes.size.toLong(), srtBytes, "application/x-subrip")
+
+        val srtResult = importer.importTranscript(srtUri)
+        assertEquals(
+            TranscriptImportResult.Attached(
+                mediaId = MediaId(itemSrtId),
+                chunkCount = 1,
+                durationMismatch = false,
+            ),
+            srtResult,
+        )
+        val srtChunks = chunkDao.getByMediaIdAndOrigin(itemSrtId, ChunkOrigin.IMPORTED.name)
+        assertEquals(1, srtChunks.size)
+        val srtTranscript = chunkDao.getTranscriptsByChunkIds(listOf(srtChunks[0].id)).single().toExternalModel()
+        assertEquals("Hello SRT!", srtTranscript.text)
+        assertEquals(EngineId("subtitle-srt"), srtTranscript.engine)
+
+        // 2. WebVTT
+        val itemVttId = "00000000-0000-4000-8000-000000000202"
+        insertAudioItem(id = itemVttId, title = "Dialogue_Unit02", sha256 = "2".repeat(64))
+        val vttBytes = """
+            WEBVTT
+
+            00:01.000 --> 00:02.500
+            <c.yellow>WebVTT</c> line 1
+
+            00:03.000 --> 00:04.500
+            WebVTT line 2
+        """.trimIndent().encodeToByteArray()
+        val vttUri = registerContent("sub_vtt", "dialogue_unit02.vtt", vttBytes.size.toLong(), vttBytes, "text/vtt")
+
+        val vttResult = importer.importTranscript(vttUri)
+        assertEquals(
+            TranscriptImportResult.Attached(
+                mediaId = MediaId(itemVttId),
+                chunkCount = 2,
+                durationMismatch = false,
+            ),
+            vttResult,
+        )
+
+        // 3. LRC
+        val itemLrcId = "00000000-0000-4000-8000-000000000203"
+        insertAudioItem(id = itemLrcId, title = "Track_03.m4a", sha256 = "3".repeat(64))
+        val lrcBytes = """
+            [ti:Track 03]
+            [00:01.00]First LRC line
+            [00:03.50]Second LRC line
+        """.trimIndent().encodeToByteArray()
+        val lrcUri = registerContent("sub_lrc", "track_03.lrc", lrcBytes.size.toLong(), lrcBytes, "text/plain")
+
+        val lrcResult = importer.importTranscript(lrcUri)
+        assertEquals(
+            TranscriptImportResult.Attached(
+                mediaId = MediaId(itemLrcId),
+                chunkCount = 2,
+                durationMismatch = false,
+            ),
+            lrcResult,
         )
     }
 
