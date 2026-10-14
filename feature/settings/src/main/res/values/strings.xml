@@ -2,5 +2,30 @@
 <resources>
     <string name="settings_title">設定</string>
     <string name="settings_back">戻る</string>
-    <string name="settings_placeholder">設定画面（雛形）</string>
+    <string name="settings_section_playback">再生設定</string>
+    <string name="settings_seek_back_label">巻き戻し秒数</string>
+    <string name="settings_seek_forward_label">早送り秒数</string>
+    <string name="settings_seconds_format">%1$d秒</string>
+    <string name="settings_default_speed_label">既定の再生速度</string>
+    <string name="settings_section_language">既定の言語ペア</string>
+    <string name="settings_target_language_label">学習言語（Target）</string>
+    <string name="settings_base_language_label">母語・解説の言語（Base）</string>
+    <string name="settings_base_language_none">なし（単一言語）</string>
+    <string name="settings_section_script">漢字の字体</string>
+    <string name="settings_chinese_script_label">中国語（zh）の表示字体</string>
+    <string name="settings_cantonese_script_label">広東語（yue）の表示字体</string>
+    <string name="settings_script_hans">簡体字（Hans）</string>
+    <string name="settings_script_hant">繁体字（Hant）</string>
+    <string name="settings_lang_en">英語 (EN)</string>
+    <string name="settings_lang_ja">日本語 (JA)</string>
+    <string name="settings_lang_ko">韓国語 (KO)</string>
+    <string name="settings_lang_zh">中国語 (ZH)</string>
+    <string name="settings_lang_yue">広東語 (YUE)</string>
+    <string name="settings_lang_hi">ヒンディー語 (HI)</string>
+    <string name="settings_lang_vi">ベトナム語 (VI)</string>
+    <string name="settings_lang_ru">ロシア語 (RU)</string>
+    <string name="settings_lang_es">スペイン語 (ES)</string>
+    <string name="settings_lang_de">ドイツ語 (DE)</string>
+    <string name="settings_lang_el">ギリシャ語 (EL)</string>
+    <string name="settings_lang_id">インドネシア語 (ID)</string>
 </resources>

@@ -2,6 +2,25 @@
 <resources>
     <string name="library_title">ライブラリ</string>
     <string name="library_open_settings">設定</string>
+    <string name="library_import_button">音声を取り込む</string>
     <string name="library_empty">教材がまだありません。</string>
-    <string name="library_open_placeholder">プレイヤーを開く（仮）</string>
+    <string name="library_empty_hint">端末や Google ドライブから音声ファイルを選んで取り込みます。</string>
+    <string name="library_empty_import_action">音声ファイルを取り込む</string>
+    <string name="library_importing">音声ファイルを取り込み中…</string>
+    <string name="library_import_done">%1$d 件を取り込みました（重複 %2$d 件）</string>
+    <string name="library_import_error_unsupported">対応していないファイル形式です（MP3 / M4A / Ogg / FLAC / WAV に対応）。</string>
+    <string name="library_import_error_too_large">ファイルサイズが上限を超えています。</string>
+    <string name="library_import_error_no_space">端末の空き容量が不足しています。</string>
+    <string name="library_import_error_io">ファイルの読み込みに失敗しました。</string>
+    <string name="library_import_error_cancelled">取り込みをキャンセルしました。</string>
+    <string name="library_dismiss_banner">閉じる</string>
+    <string name="library_item_resume_position">前回 %1$s / %2$s</string>
+    <string name="library_delete_content_description">%1$s を削除</string>
+    <string name="library_delete_dialog_title">教材を削除しますか？</string>
+    <string name="library_delete_dialog_message">「%1$s」をライブラリから削除します。取り込んだ音声と学習の記録も消去されます。</string>
+    <string name="library_delete_confirm">削除する</string>
+    <string name="library_delete_cancel">キャンセル</string>
+    <string name="library_mini_player_play">再生</string>
+    <string name="library_mini_player_pause">一時停止</string>
+    <string name="library_mini_player_open">プレイヤー画面を開く: %1$s</string>
 </resources>

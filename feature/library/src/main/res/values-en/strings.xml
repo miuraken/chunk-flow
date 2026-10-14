@@ -2,6 +2,25 @@
 <resources>
     <string name="library_title">Library</string>
     <string name="library_open_settings">Settings</string>
+    <string name="library_import_button">Import</string>
     <string name="library_empty">No materials yet.</string>
-    <string name="library_open_placeholder">Open player (placeholder)</string>
+    <string name="library_empty_hint">Select audio files from your device or Google Drive to start learning.</string>
+    <string name="library_empty_import_action">Import audio files</string>
+    <string name="library_importing">Importing audio files…</string>
+    <string name="library_import_done">Imported: %1$d (skipped duplicates: %2$d)</string>
+    <string name="library_import_error_unsupported">Unsupported file format (supports MP3, M4A, Ogg, FLAC, WAV).</string>
+    <string name="library_import_error_too_large">The file exceeds the maximum allowed size.</string>
+    <string name="library_import_error_no_space">Not enough storage space on the device.</string>
+    <string name="library_import_error_io">Failed to read the selected file.</string>
+    <string name="library_import_error_cancelled">Import was cancelled.</string>
+    <string name="library_dismiss_banner">Dismiss</string>
+    <string name="library_item_resume_position">Resume %1$s / %2$s</string>
+    <string name="library_delete_content_description">Delete %1$s</string>
+    <string name="library_delete_dialog_title">Delete material?</string>
+    <string name="library_delete_dialog_message">“%1$s” will be removed from your library along with its audio and progress.</string>
+    <string name="library_delete_confirm">Delete</string>
+    <string name="library_delete_cancel">Cancel</string>
+    <string name="library_mini_player_play">Play</string>
+    <string name="library_mini_player_pause">Pause</string>
+    <string name="library_mini_player_open">Open player: %1$s</string>
 </resources>

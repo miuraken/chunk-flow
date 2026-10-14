@@ -2,5 +2,18 @@
 <resources>
     <string name="player_title">Player</string>
     <string name="player_back">Back</string>
-    <string name="player_placeholder">Player screen (placeholder)</string>
+    <string name="player_play">Play</string>
+    <string name="player_pause">Pause</string>
+    <string name="player_seek_back_label">-%1$ds</string>
+    <string name="player_seek_forward_label">+%1$ds</string>
+    <string name="player_seek_back_cd">Seek back (%1$ds)</string>
+    <string name="player_seek_forward_cd">Seek forward (%1$ds)</string>
+    <string name="player_seek_slider_cd">Playback position</string>
+    <string name="player_speed_section_title">Playback speed</string>
+    <string name="player_speed_decrease_cd">Decrease speed by 0.05x</string>
+    <string name="player_speed_increase_cd">Increase speed by 0.05x</string>
+    <string name="player_speed_slider_cd">Playback speed slider</string>
+    <string name="player_error_source_missing">Audio file not found. Re-import the same audio file to restore playback.</string>
+    <string name="player_error_decoder">Failed to decode the audio file.</string>
+    <string name="player_error_unknown">An error occurred during playback.</string>
 </resources>
