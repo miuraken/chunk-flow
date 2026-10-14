@@ -9,10 +9,13 @@ import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
+import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
+import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.EngineId
+import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
@@ -20,6 +23,8 @@ import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.model.WordTiming
+import com.miuraken.chunkflow.core.transcript.ChunkFlowTranscriptParser
+import com.miuraken.chunkflow.core.transcript.TranscriptParseResult
 import java.io.File
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -64,17 +69,35 @@ class DefaultAnalysisRepositoryTest {
         mediaFileLocator = MediaFileLocator(context.filesDir)
     }
 
-    private fun createRepository(testScheduler: TestCoroutineScheduler): DefaultAnalysisRepository = DefaultAnalysisRepository(
-        context = context,
-        analysisStateDao = analysisStateDao,
-        chunkDao = chunkDao,
-        transcriptDao = transcriptDao,
-        itemStateDao = itemStateDao,
-        mediaItemDao = mediaItemDao,
-        mediaFileResolver = mediaFileLocator,
-        ioDispatcher = UnconfinedTestDispatcher(testScheduler),
-        clock = { currentEpochMs },
-    )
+    private fun createRepository(
+        testScheduler: TestCoroutineScheduler,
+        onDeviceChunkTranscriber: OnDeviceChunkTranscriber? = null,
+    ): DefaultAnalysisRepository = if (onDeviceChunkTranscriber != null) {
+        DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            onDeviceChunkTranscriber = onDeviceChunkTranscriber,
+            clock = { currentEpochMs },
+        )
+    } else {
+        DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            clock = { currentEpochMs },
+        )
+    }
 
     @Test
     fun `observeWaveform_waveformBinが存在する場合に読み込みステータス更新に追従する`() = runTest {
@@ -298,5 +321,201 @@ class DefaultAnalysisRepositoryTest {
 
         val status = repository.observeStatus(mediaId).first()[AnalysisStage.SEGMENTATION]
         assertTrue(status is StageStatus.Done)
+    }
+
+    @Test
+    fun `updateChunkLanguageとbulkSetUnknownTranscriptLanguage_言語を更新しchunkflowJsonへ書き戻す`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_lang_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Language Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        val c1 = ChunkEntity(id = 101L, mediaId = mediaId.value, startMs = 0L, endMs = 1_500L, origin = ChunkOrigin.IMPORTED.name)
+        val c2 = ChunkEntity(id = 102L, mediaId = mediaId.value, startMs = 1_600L, endMs = 3_200L, origin = ChunkOrigin.IMPORTED.name)
+        chunkDao.insertAll(listOf(c1, c2))
+
+        transcriptDao.upsertAll(
+            listOf(
+                Transcript(
+                    chunkId = ChunkId(101L),
+                    text = "Good morning",
+                    language = LanguageTag("en"),
+                    languageConfidence = 0.8f,
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+                Transcript(
+                    chunkId = ChunkId(102L),
+                    text = "おはようございます",
+                    language = null,
+                    languageConfidence = null,
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+            ),
+        )
+
+        // 1. 単一チャンクの言語変更
+        repository.updateChunkLanguage(mediaId, ChunkId(101L), LanguageTag("ja"))
+        val updated101 = transcriptDao.getByChunkId(101L)
+        assertNotNull(updated101)
+        assertEquals("ja", updated101.language)
+        assertEquals(true, updated101.userEdited)
+
+        // 2. 不明言語の一括設定
+        repository.bulkSetUnknownTranscriptLanguage(mediaId, LanguageTag("en"))
+        val updated102 = transcriptDao.getByChunkId(102L)
+        assertNotNull(updated102)
+        assertEquals("en", updated102.language)
+        assertEquals(true, updated102.userEdited)
+
+        // 3. filesDir/media/<MediaId>.transcript.chunkflow.json に有効な JSON が書き戻されていることを検証
+        val backupFile = File(File(context.filesDir, "media"), "${mediaId.value}.transcript.chunkflow.json")
+        assertTrue(backupFile.isFile)
+        val parseResult = ChunkFlowTranscriptParser().parse(backupFile.readBytes(), backupFile.name)
+        assertTrue(parseResult is TranscriptParseResult.Ok)
+        assertEquals(2, parseResult.document.segments.size)
+        assertEquals(LanguageTag("ja"), parseResult.document.segments[0].language)
+        assertEquals(LanguageTag("en"), parseResult.document.segments[1].language)
+    }
+
+    @Test
+    fun `autoAlignTranscriptOffset_featuresBinとチャンク開始時刻から最適オフセットを推定して更新する`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_align_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Align Test",
+                durationMs = 5_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        // 文字起こしセグメントは 1,000ms と 3,000ms 開始だが、実音声の立ち上がりは +150ms 後ろ（1,150ms と 3,150ms）
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 201L, mediaId = mediaId.value, startMs = 1_000L, endMs = 2_000L, origin = ChunkOrigin.IMPORTED.name),
+                ChunkEntity(id = 202L, mediaId = mediaId.value, startMs = 3_000L, endMs = 4_000L, origin = ChunkOrigin.IMPORTED.name),
+            ),
+        )
+
+        // 10ms ホップで 500 フレーム (5,000ms)
+        val energyDb = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 1_150 until 2_150 || ms in 3_150 until 4_150) {
+                -12f
+            } else {
+                -70f
+            }
+        }
+        val featuresFile = File(File(File(context.filesDir, "analysis"), mediaId.value), "features.bin")
+        assertTrue(
+            AnalysisBinaryFormat.writeFeaturesAtomic(
+                file = featuresFile,
+                features = StoredFeatures(binMs = 10, logEnergyDb = energyDb),
+            ),
+        )
+
+        val alignedOffset = repository.autoAlignTranscriptOffset(mediaId)
+        assertNotNull(alignedOffset)
+        assertEquals(150, alignedOffset)
+        assertEquals(150, mediaItemDao.getById(mediaId.value)?.transcriptOffsetMs)
+    }
+
+    @Test
+    fun `triggerLookaheadAt_現在位置から最大6チャンクを先読み認識しステータスと文字起こしを更新する`() = runTest {
+        val transcribedRanges = mutableListOf<Pair<Long, Long>>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult {
+                transcribedRanges.add(startMs to endMs)
+                return OnDeviceChunkTranscriptionResult(
+                    text = "Chunk $startMs-$endMs",
+                    language = languagePair?.target ?: LanguageTag("en"),
+                    confidence = 0.88f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_lookahead_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Lookahead Test",
+                durationMs = 10_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        // 音声ダミーファイルを配置
+        val audioFile = mediaFileLocator.audioFileFor(mediaId, "mp3")
+        audioFile.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+
+        // 8 個の AUTO チャンク（チャンク間に 200ms の無音ギャップあり）
+        val chunks = (0 until 8).map { idx ->
+            ChunkEntity(
+                id = (300 + idx).toLong(),
+                mediaId = mediaId.value,
+                startMs = idx * 1_000L,
+                endMs = idx * 1_000L + 800L,
+                origin = ChunkOrigin.AUTO.name,
+            )
+        }
+        chunkDao.insertAll(chunks)
+
+        repository.setLookaheadEnabled(mediaId, true)
+        // インデックス 1 からトリガーすると 1..6 の 6 チャンクのみが対象になり、チャンク間の無音（800..1000ms 等）は渡されない
+        repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(301L))
+
+        assertEquals(6, transcribedRanges.size)
+        assertEquals(1_000L to 1_800L, transcribedRanges.first())
+        assertEquals(6_000L to 6_800L, transcribedRanges.last())
+
+        val status = repository.observeLookaheadStatus(mediaId).first()
+        assertTrue(status.enabled)
+        assertTrue(status.engineAvailable)
+        assertNull(status.inFlightChunkId)
+        assertEquals(6, status.completedCount)
+        assertEquals(6, status.totalTargetCount)
+
+        val transcripts = repository.observeTranscripts(mediaId).first()
+        assertEquals("Chunk 1000-1800", transcripts[ChunkId(301L)]?.text)
+        assertEquals("Chunk 6000-6800", transcripts[ChunkId(306L)]?.text)
+        assertNull(transcripts[ChunkId(307L)])
     }
 }
