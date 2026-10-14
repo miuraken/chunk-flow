@@ -1,11 +1,10 @@
 # Chunk Flow の Version Catalog（AGENTS.md §8: バージョンはここで固定する）
 # 確認日: 2026-10-14。各リポジトリ（dl.google.com / repo.maven.apache.org / plugins.gradle.org）の
-# maven-metadata.xml で、プレリリースを除く最新を確かめた。ただし compileSdk 36 で使える（AAR の minCompileSdk が 36 以下の）
-# 版に限る。方針は docs/adr/0001 を参照。
+# maven-metadata.xml で、プレリリースを除く最新を確かめた。方針は docs/adr/0001 を参照。
 
 [versions]
 # ---- SDK（convention plugins から参照する） ----
-compileSdk = "36"
+compileSdk = "37"                  # targetSdk は 36 のまま（ADR 0001）
 targetSdk = "36"
 minSdk = "34"
 jvmTarget = "17"
@@ -19,12 +18,12 @@ ktlint = "1.8.0"
 screenshot = "0.0.1-alpha16"
 
 # ---- AndroidX / Compose ----
-androidxCore = "1.18.0"            # 1.19 は compileSdk 37 が必要
+androidxCore = "1.19.1"
 androidxActivity = "1.13.0"
-androidxLifecycle = "2.10.0"       # 2.11 は compileSdk 37 が必要
-composeBom = "2026.06.01"          # material3 1.4.0、ui 1.11.4（ui 1.12 の BOM は compileSdk 37 が必要）
+androidxLifecycle = "2.11.0"
+composeBom = "2026.09.00"          # material3 1.4.0、ui 1.12.1
 material3Adaptive = "1.3.0"
-navigation3 = "1.1.7"              # 1.2 は compileSdk 37 が必要
+navigation3 = "1.2.0"
 media3 = "1.11.1"
 room = "2.8.5"
 datastore = "1.2.1"
