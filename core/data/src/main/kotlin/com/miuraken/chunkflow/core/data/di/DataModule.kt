@@ -12,7 +12,7 @@ import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.data.transcript.DefaultTranscriptImporter
 import com.miuraken.chunkflow.core.data.transcript.TranscriptImporter
-import com.miuraken.chunkflow.core.transcript.ChunkFlowTranscriptParser
+import com.miuraken.chunkflow.core.transcript.CompositeTranscriptParser
 import com.miuraken.chunkflow.core.transcript.TranscriptParser
 import dagger.Binds
 import dagger.Module
@@ -79,9 +79,12 @@ abstract class DataModule {
     ): WorkerFactory
 
     companion object {
-        /** [ChunkFlowTranscriptParser] を [TranscriptParser] として提供する（§6.3、§7.4.6）。 */
+        /**
+         * `.chunkflow.json` と字幕形式（`.srt` / `.vtt` / `.lrc`）の両方を解釈する
+         * [CompositeTranscriptParser] を [TranscriptParser] として提供する（F1.4、§6.3、§7.4.6）。
+         */
         @Provides
         @Singleton
-        fun provideTranscriptParser(): TranscriptParser = ChunkFlowTranscriptParser()
+        fun provideTranscriptParser(): TranscriptParser = CompositeTranscriptParser()
     }
 }
