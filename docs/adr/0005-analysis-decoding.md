@@ -1,6 +1,6 @@
 # 0005. 解析のデコード（抽出器・時間軸・MediaCodec の方式・実行方式）
 
-- 状態: 提案（人間の承認待ち）
+- 状態: 承認済み
 - 日付: 2026-10-14
 - 決めた人: lead（スパイク S3 の結果をもとに）
 - 根拠: [docs/spikes/S3-audio-analysis.md](../spikes/S3-audio-analysis.md)（エミュレータ Pixel_8_Pro、android-36 での計測）
@@ -19,7 +19,8 @@
    - プラットフォームの `MediaExtractor` は、LAME ヘッダ付きの MP3 でエンコーダ遅延を 576 サンプルとして渡すため、ExoPlayer（1,105 サンプル）と
      529 サンプル（44.1kHz で 12ms、22.05kHz で 24ms）ずれた。目標（20ms 未満）を 22.05kHz の MP3 で満たさない。
    - MP3 は、再生と同じく ADR 0006 の DataSource（ヘッダを隠す）を通して読む（`MediaExtractorCompat` に `DataSource.Factory` を渡す）。
-     再生と解析で同じバイト列を同じ抽出器で読むことで、時間軸を一致させる（**未計測**。下の「実機待ち・未確認」）。
+     再生と解析で同じバイト列を同じ抽出器で読むことで、時間軸を一致させる。**S3 の D6 で、ヘッダを隠した `MediaExtractorCompat` と同じ DataSource の ExoPlayer の時刻が全ファイルで一致することを確かめた**（差 0、30 分でドリフトなし。エミュレータ）。
+   - API: Media3 1.11.1 の `MediaExtractorCompat(ExtractorsFactory, DataSource.Factory)`（ほかに `MediaExtractorCompat(ProgressiveMediaExtractor, DataSource.Factory)`）。クラス全体が `@UnstableApi` なので `@OptIn(UnstableApi::class)` が要る。Media3 を上げるときに API の存続を確かめる。
 2. **時刻は「デコーダの出力サンプル数の累計 ÷ サンプルレート」で求め、自前ではトリミングしない。**
    - `MediaExtractorCompat` の `MediaFormat`（`encoder-delay` / `encoder-padding` を含む）をそのまま `MediaCodec.configure()` に渡すと、
      Codec2 のデコーダが先頭と末尾を自分で削る（S3 で m4a・MP3 を確認）。自前でさらに削ると削りすぎになった。
@@ -49,6 +50,5 @@
 - **速度の目標（30 分を 60 秒以内、Pixel 8 クラス）を満たすかは未確認**。エミュレータでは同期モードで 78〜89 秒（負荷の軽い時間帯）、
   ホストの負荷で 4〜5 倍ばらついたので、判断に使えない。
 - 529 サンプルの差・FLAC の EOS・非同期モードの欠けが、実機のデコーダでも同じかは未確認。
-- ADR 0006 のヘッダを隠した MP3 を `MediaExtractorCompat` で読んだときの時刻が、ExoPlayer（同じ DataSource）と一致するかは**未計測**
-  （どちらもヘッダのフレームを無音として 1,152 サンプル出し、エンコーダ遅延を削らない見込み。S3 の計測アプリで、実機を待たずエミュレータでも確かめられる）。
+- ヘッダを隠した MP3 での解析と再生の一致は、エミュレータでは確認済み（D6）。実機のデコーダでも同じかは実機待ち。
 - 一覧は [docs/spikes/README.md](../spikes/README.md) の「実機待ちの計測」。

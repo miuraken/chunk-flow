@@ -1,6 +1,6 @@
 # 0007. チャンク境界の処理の精度（ExoPlayer の dynamic scheduling を無効にする）
 
-- 状態: 提案（人間の承認待ち）
+- 状態: 承認済み
 - 日付: 2026-10-14
 - 決めた人: lead（スパイク S2 の結果をもとに）
 - 根拠: [docs/spikes/S2-playback.md](../spikes/S2-playback.md) §2、§4（エミュレータでの計測。タイミングは参考値）

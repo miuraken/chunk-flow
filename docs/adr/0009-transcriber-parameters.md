@@ -1,6 +1,6 @@
 # 0009. PC ツールのパラメータと、人間のレビュー待ちで保留する判断
 
-- 状態: 提案（人間の承認待ち）
+- 状態: 承認済み
 - 日付: 2026-10-14
 - 決めた人: lead（スパイク S1 の結果をもとに）
 - 根拠: [S1-pipeline-prototype.md](../spikes/S1-pipeline-prototype.md)（合成音声）、[S1-real-materials.md](../spikes/S1-real-materials.md)（実際の教材 3 本）
