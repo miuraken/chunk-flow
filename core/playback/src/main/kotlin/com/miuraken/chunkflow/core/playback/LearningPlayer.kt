@@ -8,6 +8,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.UserSettings
 
 /**
@@ -23,6 +24,21 @@ class LearningPlayer(
     player: Player,
     private val chunkStartsMsProvider: () -> List<Long> = { emptyList() },
 ) : ForwardingSimpleBasePlayer(player) {
+
+    /**
+     * 現在有効なチャンクの一覧（M2 以降）。
+     * 空でない場合は [chunkStartsMsProvider] より優先して前 / 次チャンク移動に使用される。
+     */
+    var chunks: List<Chunk> = emptyList()
+        set(value) {
+            field = value.sortedBy { it.startMs }
+        }
+
+    /**
+     * ユーザ（UI または MediaSession）から再生・一時停止コマンドが発行されたときに呼ばれるコールバック。
+     * 自動ポーズ中の手動操作によるタイマー解除（§7.2.4）に使用する。
+     */
+    var onUserPlayWhenReadyCommand: (() -> Unit)? = null
 
     /**
      * DB（`AudioItem.durationMs`）から判明している教材の長さ（ミリ秒）。
@@ -98,12 +114,17 @@ class LearningPlayer(
         return stateBuilder.build()
     }
 
+    override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        onUserPlayWhenReadyCommand?.invoke()
+        return super.handleSetPlayWhenReady(playWhenReady)
+    }
+
     override fun handleSeek(
         mediaItemIndex: Int,
         positionMs: Long,
         seekCommand: Int,
     ): ListenableFuture<*> {
-        val starts = chunkStartsMsProvider()
+        val starts = resolveChunkStartsMs()
         val now = player.currentPosition.coerceAtLeast(0L)
 
         when (seekCommand) {
@@ -145,6 +166,12 @@ class LearningPlayer(
 
             else -> return super.handleSeek(mediaItemIndex, positionMs, seekCommand)
         }
+    }
+
+    private fun resolveChunkStartsMs(): List<Long> = if (chunks.isNotEmpty()) {
+        chunks.map { it.startMs }
+    } else {
+        chunkStartsMsProvider()
     }
 
     private fun seekByOffset(deltaMs: Long) {

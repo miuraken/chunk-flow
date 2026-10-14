@@ -96,6 +96,19 @@ class MediaFileLocator(
     }
 
     /**
+     * 取り込んだ文字起こし原本ファイルの保存先（`filesDir/media/<MediaId>.transcript.<ext>`）を返す（§6.4）。
+     */
+    fun transcriptFileFor(mediaId: MediaId, extension: String = "chunkflow.json"): File {
+        require(isSafeIdentifier(mediaId.value)) { "Unsafe MediaId" }
+        val normalizedExt = extension.lowercase().removePrefix(".")
+        require(normalizedExt in SUPPORTED_TRANSCRIPT_EXTENSIONS) { "Unsupported transcript extension: $extension" }
+        val dir = mediaDir.apply { mkdirs() }
+        val target = File(dir, "${mediaId.value}.transcript.$normalizedExt")
+        require(isChildOf(target, dir)) { "Transcript file path escapes mediaDir" }
+        return target
+    }
+
+    /**
      * 指定した [mediaId] に関連する音声ファイル・原本文字起こしファイル（`filesDir/media/<id>.*`）および
      * 解析ディレクトリ（`filesDir/analysis/<id>/`）をすべて削除する（§6.4、§8.2）。
      */
@@ -141,6 +154,15 @@ class MediaFileLocator(
             "opus",
             "flac",
             "wav",
+        )
+
+        /** サポートする文字起こし原本ファイルの拡張子一覧（§6.4、§7.4.6）。 */
+        val SUPPORTED_TRANSCRIPT_EXTENSIONS: Set<String> = setOf(
+            "chunkflow.json",
+            "json",
+            "srt",
+            "vtt",
+            "lrc",
         )
 
         /** 識別子がパストラバーサルを含まない安全な文字列かを確認する（§8.1、§8.2）。 */

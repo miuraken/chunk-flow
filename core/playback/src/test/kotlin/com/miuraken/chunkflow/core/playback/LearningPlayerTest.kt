@@ -7,6 +7,9 @@ import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.Util
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.miuraken.chunkflow.core.model.Chunk
+import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.ChunkOrigin
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -53,8 +56,13 @@ class LearningPlayerTest {
             initialPositionMs = 5_500L,
             reportedDurationUs = Util.msToUs(60_000L),
         )
-        val chunks = listOf(0L, 5_000L, 12_000L, 20_000L)
-        val learningPlayer = LearningPlayer(innerPlayer) { chunks }
+        val learningPlayer = LearningPlayer(innerPlayer)
+        learningPlayer.chunks = listOf(
+            Chunk(ChunkId(1L), 0L, 5_000L, ChunkOrigin.AUTO),
+            Chunk(ChunkId(2L), 5_000L, 12_000L, ChunkOrigin.AUTO),
+            Chunk(ChunkId(3L), 12_000L, 20_000L, ChunkOrigin.AUTO),
+            Chunk(ChunkId(4L), 20_000L, 30_000L, ChunkOrigin.AUTO),
+        )
 
         // チャンク開始 (5_000ms) から 500ms (< 1000ms) なので前のチャンク (0ms) へ移動
         learningPlayer.seekToPrevious()

@@ -11,23 +11,32 @@ import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.Util
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
+import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
+import com.miuraken.chunkflow.core.model.Chunk
+import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.UserSettings
+import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import java.io.File
 import kotlin.test.AfterTest
@@ -62,6 +71,7 @@ class PlaybackControllerTest {
     private lateinit var context: Context
     private lateinit var mediaFileLocator: MediaFileLocator
     private lateinit var libraryRepository: InMemoryLibraryRepository
+    private lateinit var analysisRepository: InMemoryAnalysisRepository
     private lateinit var settingsRepository: InMemoryUserSettingsRepository
     private lateinit var practiceController: PracticeController
     private lateinit var stubPlayer: FakeMedia3Player
@@ -76,6 +86,7 @@ class PlaybackControllerTest {
         File(context.filesDir, "media").deleteRecursively()
         mediaFileLocator = MediaFileLocator(context.filesDir)
         libraryRepository = InMemoryLibraryRepository()
+        analysisRepository = InMemoryAnalysisRepository()
         settingsRepository = InMemoryUserSettingsRepository()
         practiceController = PracticeController()
         stubPlayer = FakeMedia3Player()
@@ -110,6 +121,7 @@ class PlaybackControllerTest {
             practiceController = practiceController,
             mediaFileLocator = mediaFileLocator,
             mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
             rawPlayerFactory = { stubPlayer },
             clock = { nowEpochMs },
         )
@@ -141,6 +153,49 @@ class PlaybackControllerTest {
     }
 
     @Test
+    fun `open_新規教材かつItemState未保存時はUserSettingsのdefaultAutoPauseが適用されseekToChunkで対象チャンクへ移動する`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val item = sampleAudioItem(mediaId1, durationMs = 60_000L)
+        libraryRepository.items.value = listOf(item)
+        mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+
+        val chunk1 = Chunk(ChunkId(10L), 0L, 4_000L, ChunkOrigin.AUTO)
+        val chunk2 = Chunk(ChunkId(20L), 4_000L, 9_500L, ChunkOrigin.AUTO)
+        analysisRepository.chunksByMedia.value = mapOf(mediaId1 to listOf(chunk1, chunk2))
+        settingsRepository.state.value = UserSettings(defaultAutoPause = AutoPause.Fixed(800L))
+
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        assertEquals(AutoPause.Fixed(800L), controller.practice.value.autoPause)
+        assertEquals(chunk1.id, controller.status.value.currentChunkId)
+
+        controller.seekToChunk(chunk2.id)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        assertEquals(4_000L, controller.position.currentPositionMs())
+        assertEquals(chunk2.id, controller.status.value.currentChunkId)
+
+        controller.release()
+    }
+
+    @Test
     fun `open_音声ファイルが存在しない場合はSOURCE_MISSINGエラーになる`() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val item = sampleAudioItem(mediaId1, durationMs = 90_000L)
@@ -154,6 +209,7 @@ class PlaybackControllerTest {
             practiceController = practiceController,
             mediaFileLocator = mediaFileLocator,
             mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
             rawPlayerFactory = { stubPlayer },
             clock = { nowEpochMs },
         )
@@ -183,6 +239,7 @@ class PlaybackControllerTest {
             practiceController = practiceController,
             mediaFileLocator = mediaFileLocator,
             mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
             rawPlayerFactory = { stubPlayer },
             clock = { nowEpochMs },
         )
@@ -247,6 +304,7 @@ class PlaybackControllerTest {
             practiceController = practiceController,
             mediaFileLocator = mediaFileLocator,
             mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
             rawPlayerFactory = { stubPlayer },
             clock = { nowEpochMs },
         )
@@ -421,8 +479,22 @@ class PlaybackControllerTest {
         override suspend fun delete(id: MediaId) {}
     }
 
+    private class InMemoryAnalysisRepository : AnalysisRepository {
+        val chunksByMedia = MutableStateFlow<Map<MediaId, List<Chunk>>>(emptyMap())
+        val transcriptsByMedia = MutableStateFlow<Map<MediaId, Map<ChunkId, Transcript>>>(emptyMap())
+
+        override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = flowOf(emptyMap())
+        override fun observeWaveform(id: MediaId): Flow<Waveform?> = flowOf(null)
+        override fun observeChunks(id: MediaId): Flow<List<Chunk>> = chunksByMedia.map { it[id].orEmpty() }
+        override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> = transcriptsByMedia.map { it[id].orEmpty() }
+        override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) {}
+        override suspend fun resegment(id: MediaId, params: SegmentationParams) {}
+        override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) {}
+        override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) {}
+    }
+
     private class InMemoryUserSettingsRepository : UserSettingsRepository {
-        private val state = MutableStateFlow(UserSettings())
+        val state = MutableStateFlow(UserSettings())
         override val settings: Flow<UserSettings> = state
         override suspend fun setDefaultLanguagePair(pair: LanguagePair) {}
         override suspend fun setChineseScript(script: ChineseScript) {}

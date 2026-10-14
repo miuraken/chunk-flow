@@ -7,17 +7,37 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
+import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
+import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
+import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
+import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
+import com.miuraken.chunkflow.core.model.Chunk
+import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.UserSettings
+import com.miuraken.chunkflow.core.model.Waveform
+import com.miuraken.chunkflow.core.testing.fake.FakeTranscriptParser
+import com.miuraken.chunkflow.core.transcript.TranscriptDocument
+import com.miuraken.chunkflow.core.transcript.TranscriptError
+import com.miuraken.chunkflow.core.transcript.TranscriptParseResult
+import com.miuraken.chunkflow.core.transcript.TranscriptSegment
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.security.MessageDigest
@@ -33,6 +53,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.flow.update
@@ -53,6 +74,9 @@ class DefaultLibraryRepositoryTest {
     private lateinit var context: Context
     private lateinit var itemStateDao: InMemoryItemStateDao
     private lateinit var mediaItemDao: InMemoryMediaItemDao
+    private lateinit var chunkDao: InMemoryChunkDao
+    private lateinit var analysisRepository: RecordingAnalysisRepository
+    private lateinit var transcriptParser: FakeTranscriptParser
     private lateinit var settingsRepository: TestUserSettingsRepository
     private lateinit var mediaFileLocator: MediaFileLocator
     private var inspectHandler: (File) -> AudioFormatInfo? = {
@@ -83,7 +107,15 @@ class DefaultLibraryRepositoryTest {
         File(context.filesDir, "analysis").deleteRecursively()
 
         itemStateDao = InMemoryItemStateDao()
-        mediaItemDao = InMemoryMediaItemDao(onCascadeDelete = { mediaId -> itemStateDao.deleteByMediaId(mediaId) })
+        chunkDao = InMemoryChunkDao()
+        mediaItemDao = InMemoryMediaItemDao(
+            onCascadeDelete = { mediaId ->
+                itemStateDao.deleteByMediaId(mediaId)
+                chunkDao.deleteByMediaId(mediaId)
+            },
+        )
+        analysisRepository = RecordingAnalysisRepository()
+        transcriptParser = FakeTranscriptParser()
         settingsRepository = TestUserSettingsRepository()
         mediaFileLocator = MediaFileLocator(context.filesDir)
     }
@@ -103,12 +135,15 @@ class DefaultLibraryRepositoryTest {
         ioDispatcher = dispatcher,
         audioFormatInspector = AudioFormatInspector { file -> inspectHandler(file) },
         mediaFileLocator = mediaFileLocator,
+        chunkDao = chunkDao,
+        analysisRepository = analysisRepository,
+        transcriptParser = transcriptParser,
         clock = { currentEpochMs },
         usableSpaceBytesProvider = { usableSpaceBytes },
     )
 
     @Test
-    fun `import_正常な音声ファイルを取り込むとUUID名で保存されDBと初期ItemStateが登録される`() = runTest {
+    fun `import_正常な音声ファイルを取り込むとUUID名で保存されDBと初期ItemStateが登録され解析が投入される`() = runTest {
         settingsRepository.setDefaultLanguagePair(
             LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
         )
@@ -146,6 +181,12 @@ class DefaultLibraryRepositoryTest {
         // ADR 0008: MPEG-1 (1152) + LAME (576) = 1728 サンプル @ 44.1kHz -> +39ms
         assertEquals(39, item.transcriptOffsetMs)
 
+        // 解析ジョブ（FEATURES + SEGMENTATION）が自動で投入されていること（§7.1 手順 6）
+        assertEquals(
+            listOf(mediaId to setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION)),
+            analysisRepository.requestedAnalyses,
+        )
+
         // 保存ファイルが UUID.mp3 として filesDir/media/ 配下にのみ存在すること
         val savedFile = mediaFileLocator.resolveAudioFile(mediaId)
         assertNotNull(savedFile)
@@ -158,6 +199,239 @@ class DefaultLibraryRepositoryTest {
         assertNotNull(state)
         assertEquals(0L, state.positionMs)
         assertEquals(1.25f, state.speed)
+    }
+
+    @Test
+    fun `import_音声と文字起こしJSONを同時に選ぶとSHA256で照合しパディング付きIMPORTEDチャンクと言語ペアを保存する`() = runTest {
+        val audioBytes = "audio-with-transcript-payload".encodeToByteArray()
+        val audioSha = sha256Hex(audioBytes)
+        val audioUri = registerContent("a1", "lesson01.mp3", audioBytes.size.toLong(), audioBytes)
+
+        val oldJsonBytes = """{"createdAt":"2026-10-14T10:00:00Z"}""".encodeToByteArray()
+        val newJsonBytes = """{"createdAt":"2026-10-14T12:00:00Z"}""".encodeToByteArray()
+        val oldJsonUri = registerContent(
+            id = "t_old",
+            displayName = "lesson01_old.chunkflow.json",
+            sizeBytes = oldJsonBytes.size.toLong(),
+            bytes = oldJsonBytes,
+            mimeType = "application/json",
+        )
+        val newJsonUri = registerContent(
+            id = "t_new",
+            displayName = "lesson01.chunkflow.json",
+            sizeBytes = newJsonBytes.size.toLong(),
+            bytes = newJsonBytes,
+            mimeType = "application/json",
+        )
+
+        transcriptParser.result = { bytes, _ ->
+            val isNew = bytes.decodeToString().contains("12:00:00Z")
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = audioSha,
+                    audioFileName = "lesson01.mp3",
+                    durationMs = 120_000L,
+                    languages = LanguagePair(LanguageTag("zh"), LanguageTag("ja")),
+                    generator = EngineId(if (isNew) "qwen3-asr-new" else "qwen3-asr-old"),
+                    segments = listOf(
+                        // 1000..3000 と 3100..5000（間の無音は 100ms なので中点 3050ms でクランプされる）
+                        TranscriptSegment(
+                            startMs = 1_000L,
+                            endMs = 3_000L,
+                            language = LanguageTag("ja"),
+                            languageConfidence = 0.98f,
+                            text = if (isNew) "新しいテキスト" else "古いテキスト",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                        TranscriptSegment(
+                            startMs = 3_100L,
+                            endMs = 5_000L,
+                            language = LanguageTag("zh"),
+                            languageConfidence = 0.95f,
+                            text = "你好",
+                            textVariants = mapOf("Hant" to "你好"),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val repo = createRepository()
+        val done = repo.import(listOf(audioUri, oldJsonUri, newJsonUri)).toList().last() as ImportProgress.Done
+
+        assertEquals(1, done.mediaIds.size)
+        assertEquals(0, done.duplicates)
+        assertEquals(1, done.transcriptsAttached)
+
+        val mediaId = done.mediaIds.single()
+        val item = repo.observeItem(mediaId).first()
+        assertNotNull(item)
+        assertEquals(LanguagePair(LanguageTag("zh"), LanguageTag("ja")), item.languagePair)
+
+        // ItemState の chunkSource が IMPORTED に切り替わっていること
+        val state = repo.observeItemState(mediaId).first()
+        assertNotNull(state)
+        assertEquals(ChunkOrigin.IMPORTED, state.chunkSource)
+
+        // パディング（前 150ms / 後 200ms、隣接チャンクの中点 3050ms でクランプ）が適用されていること
+        val importedChunks = chunkDao.getByMediaIdAndOrigin(mediaId.value, ChunkOrigin.IMPORTED.name)
+        assertEquals(2, importedChunks.size)
+        assertEquals(850L, importedChunks[0].startMs) // 1000 - 150
+        assertEquals(3_050L, importedChunks[0].endMs) // min(3000 + 200, (3000 + 3100) / 2) = 3050
+        assertEquals(3_050L, importedChunks[1].startMs) // max(3100 - 150, (3000 + 3100) / 2) = 3050
+        assertEquals(5_200L, importedChunks[1].endMs) // 5000 + 200
+
+        // createdAt が新しい方の JSON が採用されていること（§7.4.6）
+        val transcripts = chunkDao.getTranscriptsByChunkIds(importedChunks.map { it.id })
+        assertEquals(2, transcripts.size)
+        assertEquals("新しいテキスト", transcripts[0].text)
+        assertEquals("qwen3-asr-new", transcripts[0].engine)
+
+        // 原本ファイルが保存されていること
+        val savedTranscriptFile = mediaFileLocator.transcriptFileFor(mediaId, "chunkflow.json")
+        assertTrue(savedTranscriptFile.exists())
+        assertTrue(savedTranscriptFile.readBytes().contentEquals(newJsonBytes))
+    }
+
+    @Test
+    fun `import_SAFフォルダTreeURIを渡すとフォルダ名をcourseに設定しtranscription配下のJSONも自動で紐付ける`() = runTest {
+        val audioBytes = "tree-import-audio-lesson01".encodeToByteArray()
+        val jsonBytes = """{"createdAt":"2026-10-14T12:00:00Z"}""".encodeToByteArray()
+
+        val treeUri = registerTreeDirectory(
+            rootDocId = "primary:ChunkFlow/korean-course",
+            rootDisplayName = "korean-course",
+            audioFiles = listOf("lesson01.mp3" to audioBytes),
+            transcriptionFiles = listOf("lesson01.chunkflow.json" to jsonBytes),
+        )
+
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = null, // SHA-256 なしでも <directory>/transcription/<stem>.chunkflow.json から紐付く
+                    audioFileName = "lesson01.mp3",
+                    durationMs = 120_000L,
+                    languages = LanguagePair(LanguageTag("ko"), LanguageTag("ja")),
+                    generator = EngineId("whisper-large-v3"),
+                    segments = listOf(
+                        TranscriptSegment(
+                            startMs = 500L,
+                            endMs = 2_000L,
+                            language = LanguageTag("ko"),
+                            languageConfidence = 0.99f,
+                            text = "안녕하세요",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val repo = createRepository()
+        val done = repo.import(listOf(treeUri)).toList().last() as ImportProgress.Done
+
+        assertEquals(1, done.mediaIds.size)
+        assertEquals(1, done.transcriptsAttached)
+
+        val mediaId = done.mediaIds.single()
+        val item = repo.observeItem(mediaId).first()
+        assertNotNull(item)
+        assertEquals("korean-course", item.course)
+        assertEquals("lesson01", item.title)
+        assertEquals(LanguagePair(LanguageTag("ko"), LanguageTag("ja")), item.languagePair)
+
+        val chunks = chunkDao.getByMediaIdAndOrigin(mediaId.value, ChunkOrigin.IMPORTED.name)
+        assertEquals(1, chunks.size)
+        assertEquals(350L, chunks.single().startMs)
+        assertEquals(2_200L, chunks.single().endMs)
+    }
+
+    @Test
+    fun `importTranscript_単体取り込みでAttachedとNoMatchingAudioとInvalidを正しく返す`() = runTest {
+        val audioBytes = "standalone-transcript-test-audio".encodeToByteArray()
+        val audioSha = sha256Hex(audioBytes)
+        val audioUri = registerContent("sa1", "unit01.mp3", audioBytes.size.toLong(), audioBytes)
+
+        val repo = createRepository()
+        val mediaId = (repo.import(listOf(audioUri)).toList().last() as ImportProgress.Done).mediaIds.single()
+
+        // 1. 20MB 超過 -> Invalid(TOO_LARGE)
+        val hugeTranscriptUri = registerContent(
+            id = "t_huge",
+            displayName = "huge.chunkflow.json",
+            sizeBytes = DefaultLibraryRepository.MAX_TRANSCRIPT_SIZE_BYTES + 1L,
+            bytes = ByteArray(16),
+            mimeType = "application/json",
+        )
+        assertEquals(
+            TranscriptImportResult.Invalid(TranscriptError.TOO_LARGE),
+            repo.importTranscript(hugeTranscriptUri),
+        )
+
+        // 2. 対応する音声が DB にない -> Unmatched
+        val unmatchedBytes = "{}".encodeToByteArray()
+        val unmatchedUri = registerContent(
+            id = "t_unmatched",
+            displayName = "other.chunkflow.json",
+            sizeBytes = unmatchedBytes.size.toLong(),
+            bytes = unmatchedBytes,
+            mimeType = "application/json",
+        )
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = "f".repeat(64),
+                    audioFileName = "other.mp3",
+                    durationMs = 60_000L,
+                    languages = LanguagePair(LanguageTag("en"), LanguageTag("ja")),
+                    generator = EngineId("qwen3"),
+                    segments = emptyList(),
+                ),
+            )
+        }
+        assertEquals(
+            TranscriptImportResult.NoMatchingAudio(audioFileName = "other.mp3"),
+            repo.importTranscript(unmatchedUri),
+        )
+
+        // 3. SHA-256 が一致 -> Attached(mediaId)
+        val matchedUri = registerContent(
+            id = "t_matched",
+            displayName = "unit01.chunkflow.json",
+            sizeBytes = unmatchedBytes.size.toLong(),
+            bytes = unmatchedBytes,
+            mimeType = "application/json",
+        )
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = audioSha,
+                    audioFileName = "unit01.mp3",
+                    durationMs = 120_000L,
+                    languages = LanguagePair(LanguageTag("en"), LanguageTag("ja")),
+                    generator = EngineId("qwen3"),
+                    segments = listOf(
+                        TranscriptSegment(
+                            startMs = 2_000L,
+                            endMs = 4_000L,
+                            language = LanguageTag("en"),
+                            languageConfidence = 0.9f,
+                            text = "Good morning.",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+        assertEquals(
+            TranscriptImportResult.Attached(mediaId = mediaId, chunkCount = 1, durationMismatch = false),
+            repo.importTranscript(matchedUri),
+        )
+        assertEquals(ChunkOrigin.IMPORTED, repo.observeItemState(mediaId).first()?.chunkSource)
     }
 
     @Test
@@ -308,7 +582,7 @@ class DefaultLibraryRepositoryTest {
         val mediaId = done.mediaIds.single()
 
         // 文字起こし原本ファイルと解析ディレクトリも作成しておく（§6.4）
-        val transcriptFile = File(mediaFileLocator.mediaDir, "${mediaId.value}.transcript.json").apply {
+        val transcriptFile = mediaFileLocator.transcriptFileFor(mediaId, "chunkflow.json").apply {
             writeText("{}")
         }
         val analysisDir = File(mediaFileLocator.analysisRootDir, mediaId.value).apply {
@@ -482,6 +756,75 @@ class DefaultLibraryRepositoryTest {
         return uri
     }
 
+    private fun registerTreeDirectory(
+        rootDocId: String,
+        rootDisplayName: String,
+        audioFiles: List<Pair<String, ByteArray>>,
+        transcriptionFiles: List<Pair<String, ByteArray>>,
+    ): Uri {
+        val treeUri = DocumentsContract.buildTreeDocumentUri(TestContentProvider.AUTHORITY, rootDocId)
+        val rootDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId)
+        TestContentProvider.entries[rootDocUri] = TestContentProvider.Entry(
+            displayName = rootDisplayName,
+            sizeBytes = null,
+            bytes = ByteArray(0),
+            mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+        )
+
+        val rootChildren = mutableListOf<TestContentProvider.ChildRow>()
+        for ((name, bytes) in audioFiles) {
+            val docId = "$rootDocId/$name"
+            val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            TestContentProvider.entries[docUri] = TestContentProvider.Entry(
+                displayName = name,
+                sizeBytes = bytes.size.toLong(),
+                bytes = bytes,
+                mimeType = "audio/mpeg",
+            )
+            shadowOf(context.contentResolver).registerInputStream(docUri, ByteArrayInputStream(bytes))
+            rootChildren += TestContentProvider.ChildRow(
+                documentId = docId,
+                displayName = name,
+                mimeType = "audio/mpeg",
+                sizeBytes = bytes.size.toLong(),
+            )
+        }
+
+        if (transcriptionFiles.isNotEmpty()) {
+            val transDirDocId = "$rootDocId/transcription"
+            rootChildren += TestContentProvider.ChildRow(
+                documentId = transDirDocId,
+                displayName = "transcription",
+                mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+                sizeBytes = null,
+            )
+            val transChildren = mutableListOf<TestContentProvider.ChildRow>()
+            for ((name, bytes) in transcriptionFiles) {
+                val docId = "$transDirDocId/$name"
+                val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                TestContentProvider.entries[docUri] = TestContentProvider.Entry(
+                    displayName = name,
+                    sizeBytes = bytes.size.toLong(),
+                    bytes = bytes,
+                    mimeType = "application/json",
+                )
+                shadowOf(context.contentResolver).registerInputStream(docUri, ByteArrayInputStream(bytes))
+                transChildren += TestContentProvider.ChildRow(
+                    documentId = docId,
+                    displayName = name,
+                    mimeType = "application/json",
+                    sizeBytes = bytes.size.toLong(),
+                )
+            }
+            val transChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, transDirDocId)
+            TestContentProvider.treeChildren[transChildrenUri] = transChildren
+        }
+
+        val rootChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, rootDocId)
+        TestContentProvider.treeChildren[rootChildrenUri] = rootChildren
+        return treeUri
+    }
+
     private fun sha256Hex(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private class InMemoryMediaItemDao(
@@ -561,12 +904,88 @@ class DefaultLibraryRepositoryTest {
         }
     }
 
+    private class InMemoryChunkDao : ChunkDao {
+        private var nextId: Long = 1L
+        private val chunks = MutableStateFlow<List<ChunkEntity>>(emptyList())
+        private val transcripts = MutableStateFlow<Map<Long, TranscriptEntity>>(emptyMap())
+
+        override fun observeByMediaIdAndOrigin(mediaId: String, origin: String): Flow<List<ChunkEntity>> = chunks.map { list ->
+            list.filter { it.mediaId == mediaId && it.origin == origin }
+                .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
+        }
+
+        override fun observeByMediaId(mediaId: String): Flow<List<ChunkEntity>> = chunks.map { list ->
+            list.filter { it.mediaId == mediaId }
+                .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
+        }
+
+        override fun observeOriginsByMediaId(mediaId: String): Flow<List<String>> = chunks.map { list -> list.filter { it.mediaId == mediaId }.map { it.origin }.distinct() }
+
+        override suspend fun getByMediaIdAndOrigin(mediaId: String, origin: String): List<ChunkEntity> = chunks.value.filter { it.mediaId == mediaId && it.origin == origin }
+            .sortedWith(compareBy<ChunkEntity> { it.startMs }.thenBy { it.id })
+
+        override suspend fun insertAll(chunks: List<ChunkEntity>): List<Long> {
+            val ids = mutableListOf<Long>()
+            val inserted = chunks.map { chunk ->
+                val assignedId = if (chunk.id == 0L) nextId++ else chunk.id
+                ids += assignedId
+                chunk.copy(id = assignedId)
+            }
+            this.chunks.update { it + inserted }
+            return ids
+        }
+
+        override suspend fun getTranscriptsByChunkIds(chunkIds: List<Long>): List<TranscriptEntity> = chunkIds.mapNotNull { transcripts.value[it] }
+
+        override suspend fun upsertTranscripts(transcripts: List<TranscriptEntity>) {
+            this.transcripts.update { current ->
+                current + transcripts.associateBy { it.chunkId }
+            }
+        }
+
+        override suspend fun deleteByIds(chunkIds: List<Long>) {
+            val idSet = chunkIds.toSet()
+            chunks.update { list -> list.filterNot { it.id in idSet } }
+            transcripts.update { map -> map.filterKeys { it !in idSet } }
+        }
+
+        fun deleteByMediaId(mediaId: String) {
+            val targetIds = chunks.value.filter { it.mediaId == mediaId }.map { it.id }.toSet()
+            chunks.update { list -> list.filterNot { it.mediaId == mediaId } }
+            transcripts.update { map -> map.filterKeys { it !in targetIds } }
+        }
+    }
+
+    private class RecordingAnalysisRepository : AnalysisRepository {
+        val requestedAnalyses = mutableListOf<Pair<MediaId, Set<AnalysisStage>>>()
+
+        override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = flowOf(emptyMap())
+        override fun observeWaveform(id: MediaId): Flow<Waveform?> = flowOf(null)
+        override fun observeChunks(id: MediaId): Flow<List<Chunk>> = flowOf(emptyList())
+        override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> = flowOf(emptyMap())
+
+        override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) {
+            requestedAnalyses += id to stages
+        }
+
+        override suspend fun resegment(id: MediaId, params: SegmentationParams) = Unit
+        override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) = Unit
+        override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) = Unit
+    }
+
     class TestContentProvider : ContentProvider() {
         data class Entry(
             val displayName: String,
             val sizeBytes: Long?,
             val bytes: ByteArray,
             val mimeType: String,
+        )
+
+        data class ChildRow(
+            val documentId: String,
+            val displayName: String,
+            val mimeType: String,
+            val sizeBytes: Long?,
         )
 
         override fun onCreate(): Boolean = true
@@ -578,6 +997,21 @@ class DefaultLibraryRepositoryTest {
             selectionArgs: Array<out String>?,
             sortOrder: String?,
         ): Cursor? {
+            treeChildren[uri]?.let { rows ->
+                val cursor = MatrixCursor(
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_SIZE,
+                    ),
+                )
+                for (row in rows) {
+                    cursor.addRow(arrayOf<Any?>(row.documentId, row.displayName, row.mimeType, row.sizeBytes))
+                }
+                return cursor
+            }
+
             val entry = entries[uri] ?: return null
             val cursor = MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE))
             cursor.addRow(arrayOf<Any?>(entry.displayName, entry.sizeBytes))
@@ -602,9 +1036,11 @@ class DefaultLibraryRepositoryTest {
         companion object {
             const val AUTHORITY = "com.miuraken.chunkflow.test.provider"
             val entries = mutableMapOf<Uri, Entry>()
+            val treeChildren = mutableMapOf<Uri, List<ChildRow>>()
 
             fun reset() {
                 entries.clear()
+                treeChildren.clear()
             }
         }
     }
