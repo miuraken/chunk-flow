@@ -107,6 +107,8 @@ private fun Project.configureUnitTests() {
         add("testImplementation", libs.lib("junit4"))
     }
     tasks.withType<Test>().configureEach {
+        // まだテストや @PreviewTest がないモジュールでもタスクが失敗しないようにする（Gradle 9 対応）
+        failOnNoDiscoveredTests.set(false)
         // 端末やロケールに依存しないよう、テストの既定のロケールとタイムゾーンを固定する
         systemProperty("user.language", "ja")
         systemProperty("user.country", "JP")

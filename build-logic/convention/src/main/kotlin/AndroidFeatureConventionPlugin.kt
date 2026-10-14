@@ -18,9 +18,17 @@ class AndroidFeatureConventionPlugin : Plugin<Project> {
             dependencies {
                 add("implementation", project(":core:model"))
                 add("implementation", project(":core:designsystem"))
+                add("implementation", project(":core:data"))
+                add("implementation", project(":core:playback"))
+                add("implementation", project(":core:datastore"))
                 add("implementation", project(":core:testing"))
+                add("implementation", libs.lib("androidx-activity-compose"))
                 add("implementation", libs.lib("androidx-compose-material3"))
                 add("implementation", libs.lib("androidx-lifecycle-runtime-compose"))
+                add("implementation", libs.lib("androidx-lifecycle-viewmodel-compose"))
+                add("implementation", libs.lib("androidx-hilt-lifecycle-viewmodel-compose"))
+                add("implementation", libs.lib("androidx-hilt-navigation-compose"))
+                add("testImplementation", libs.lib("kotlinx-coroutines-test"))
             }
         }
     }

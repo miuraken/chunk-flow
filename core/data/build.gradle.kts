@@ -18,4 +18,10 @@ dependencies {
     implementation(project(":core:media"))
     implementation(project(":core:drive"))
     implementation(project(":core:audio"))
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.media3.common)
+    implementation(libs.androidx.media3.inspector)
+
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
 }

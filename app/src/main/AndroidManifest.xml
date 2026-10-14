@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   権限とエクスポートするコンポーネントは §8.2 の一覧を超えない（CI の .github/scripts/check_manifest.py で確認する）。
-  Phase 0 では権限は不要なので宣言しない。必要になった時点で、§8.2 の一覧の中から加える。
+  M1（§7.2.6、§8.2）: バックグラウンド再生・メディア通知・WakeLock に必要な権限を宣言する。
+  PlaybackService（MediaSessionService）と MediaButtonReceiver（再生再開用）のコンポーネント宣言は、
+  実装を持つ :core:playback モジュールの core/playback/src/main/AndroidManifest.xml に置き、マニフェストマージで統合する。
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".ChunkFlowApplication"
@@ -22,6 +29,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- media3-session 1.11.1 が持ち込む BluetoothValidationActivity（BLUETOOTH_PRIVILEGED 保護）を
+             §8.2 / ADR 0004 のエクスポート一覧に合わせて取り除く -->
+        <activity
+            android:name="androidx.media3.session.BluetoothValidationActivity"
+            tools:ignore="MissingClass"
+            tools:node="remove" />
     </application>
 
 </manifest>
