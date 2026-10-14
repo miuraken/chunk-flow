@@ -2,5 +2,18 @@
 <resources>
     <string name="player_title">プレイヤー</string>
     <string name="player_back">戻る</string>
-    <string name="player_placeholder">プレイヤー画面（雛形）</string>
+    <string name="player_play">再生</string>
+    <string name="player_pause">一時停止</string>
+    <string name="player_seek_back_label">-%1$d秒</string>
+    <string name="player_seek_forward_label">+%1$d秒</string>
+    <string name="player_seek_back_cd">%1$d 秒巻き戻す</string>
+    <string name="player_seek_forward_cd">%1$d 秒早送りする</string>
+    <string name="player_seek_slider_cd">再生位置</string>
+    <string name="player_speed_section_title">再生速度</string>
+    <string name="player_speed_decrease_cd">再生速度を 0.05 倍下げる</string>
+    <string name="player_speed_increase_cd">再生速度を 0.05 倍上げる</string>
+    <string name="player_speed_slider_cd">再生速度スライダー</string>
+    <string name="player_error_source_missing">音声ファイルが見つかりません。同じ音声を取り込み直すと復元されます。</string>
+    <string name="player_error_decoder">音声ファイルのデコードに失敗しました。</string>
+    <string name="player_error_unknown">再生中にエラーが発生しました。</string>
 </resources>

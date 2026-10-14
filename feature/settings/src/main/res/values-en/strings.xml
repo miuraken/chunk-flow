@@ -2,5 +2,30 @@
 <resources>
     <string name="settings_title">Settings</string>
     <string name="settings_back">Back</string>
-    <string name="settings_placeholder">Settings screen (placeholder)</string>
+    <string name="settings_section_playback">Playback</string>
+    <string name="settings_seek_back_label">Seek back duration</string>
+    <string name="settings_seek_forward_label">Seek forward duration</string>
+    <string name="settings_seconds_format">%1$ds</string>
+    <string name="settings_default_speed_label">Default playback speed</string>
+    <string name="settings_section_language">Default Language Pair</string>
+    <string name="settings_target_language_label">Target language</string>
+    <string name="settings_base_language_label">Base / explanation language</string>
+    <string name="settings_base_language_none">None (single language)</string>
+    <string name="settings_section_script">Chinese Character Script</string>
+    <string name="settings_chinese_script_label">Mandarin Chinese (zh) script</string>
+    <string name="settings_cantonese_script_label">Cantonese (yue) script</string>
+    <string name="settings_script_hans">Simplified (Hans)</string>
+    <string name="settings_script_hant">Traditional (Hant)</string>
+    <string name="settings_lang_en">English (EN)</string>
+    <string name="settings_lang_ja">Japanese (JA)</string>
+    <string name="settings_lang_ko">Korean (KO)</string>
+    <string name="settings_lang_zh">Chinese (ZH)</string>
+    <string name="settings_lang_yue">Cantonese (YUE)</string>
+    <string name="settings_lang_hi">Hindi (HI)</string>
+    <string name="settings_lang_vi">Vietnamese (VI)</string>
+    <string name="settings_lang_ru">Russian (RU)</string>
+    <string name="settings_lang_es">Spanish (ES)</string>
+    <string name="settings_lang_de">German (DE)</string>
+    <string name="settings_lang_el">Greek (EL)</string>
+    <string name="settings_lang_id">Indonesian (ID)</string>
 </resources>
