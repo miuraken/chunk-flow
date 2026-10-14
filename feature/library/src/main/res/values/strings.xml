@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_title">ライブラリ</string>
+    <string name="library_open_settings">設定</string>
+    <string name="library_empty">教材がまだありません。</string>
+    <string name="library_open_placeholder">プレイヤーを開く（仮）</string>
+</resources>

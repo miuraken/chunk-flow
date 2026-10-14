@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="player_title">プレイヤー</string>
+    <string name="player_back">戻る</string>
+    <string name="player_placeholder">プレイヤー画面（雛形）</string>
+</resources>
