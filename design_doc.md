@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| Status | Draft v0.4 |
+| Status | Draft v0.5 |
 | Last updated | 2026-10-14 |
 | Owner | miuraken |
 | リポジトリ | https://github.com/miuraken/chunk-flow |
@@ -17,6 +17,7 @@
 | v0.2 | v0.1 をレビューして全面改訂 |
 | v0.3 | 個人利用に決定。文字起こしを GPU 搭載 PC 上の Whisper で生成し、Google Drive 経由で取り込む方式に変更。教材ごとに異なる言語ペアに対応 |
 | v0.4 | PC ツールの対応環境（macOS: Apple Silicon、Linux / Windows 11: NVIDIA）、Drive との手動でのやり取り（監視モードは廃止）、Drive のフォルダ構成（文字起こしは `<コース>/transcription/`）、想定する言語と言語ごとの対策（中国語は簡体字が既定で繁体字も表示可、広東語は口語の表記）、教材の想定（BGM なし、2〜30 分）、minSdk 34 の維持、アプリ名（Chunk Flow）と applicationId、Drive の手動同期（同期ボタン）、自動バックアップによる DB と設定のバックアップを決定 |
+| v0.5 | 複数チャンクのリピート、拡大波形の既定範囲（前後 2 分）を反映。Android Studio と Android CLI を使った UI の確認・修正の進め方（§10.5）を追加 |
 
 本書は、人間と AI エージェントの双方が参照する設計の単一の情報源です。重要な判断は ADR（`docs/adr/`）に切り出し、本書には結論と理由の要約を残します。v0.1 からの変更点は[付録 A](#付録-a-v01-からの主な変更点) にまとめています。
 
@@ -66,8 +67,8 @@
 ### 1.3 Goals
 
 - **G1 即時再生**: ローカルや Google Drive から取り込んだ音声を待たずに再生でき、解析が再生を妨げない。
-- **G2 チャンク単位の操作**: 発話単位のチャンク（PC の文字起こし、または端末内の無音検出で作る）ごとに、移動・リピート・自動ポーズができる。
-- **G3 波形表示**: 全体の波形とチャンク境界を表示し、波形上で直接シークや範囲指定ができる。
+- **G2 チャンク単位の操作**: 発話単位のチャンク（PC の文字起こし、または端末内の無音検出で作る）ごとに、移動・リピート・自動ポーズができる。リピートは複数のチャンクの指定も可能。チャンク以外でも、巻き戻し・早送り（既定 3 秒 / 5 秒）などの操作ができる。
+- **G3 波形表示**: 全体の波形の下に、現在再生している周辺前後2分間の波形をチャンク境界とともに表示し、波形上で直接シークや範囲指定ができる。
 - **G4 スクリプトと言語**: PC で作った文字起こし（チャンクの区切り・テキスト・言語）を取り込み、再生位置と同期して表示する。言語の判定結果を使った再生モード（学習言語のみ再生、瞬間作文モードなど）を提供する。
 - **G5 ながら学習**: 画面オフでも、イヤホン・ロック画面・通知から主要な操作（再生 / 停止、前 / 次のチャンク）ができる。
 - **G6 標準準拠**: Media3 / Material 3 / Jetpack の標準部品を優先し、保守性と OS との親和性を高める。
@@ -121,12 +122,12 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | F3.3 | 巻き戻し / 早送り（既定 3 秒 / 5 秒、設定で変更可） | P0 | M1 |
 | F3.4 | イヤホン・通知・アプリ内の前 / 次ボタン → 前 / 次のチャンク | P0 | M2 |
 | F4.1 | 全体波形とチャンク境界の表示、タップ / ドラッグでシーク | P0 | M2 |
-| F4.2 | 拡大波形（ピンチズーム、再生位置への追従） | P1 | M2 |
+| F4.2 | 拡大波形（全体波形の下に、再生位置の前後 2 分をチャンク境界とともに表示。ピンチで範囲を変更、再生位置に追従） | P0 | M2 |
 | F5.1 | 端末内の無音検出による自動チャンク分割（文字起こしファイルがない教材向け） | P0 | M2 |
 | F5.2 | 分割パラメータの調整と即時再分割 | P1 | M2 |
 | F5.3 | チャンクの手動編集（分割・結合・境界のドラッグ） | P1 | M4 |
 | F5.4 | チャンクの出どころの切り替え（文字起こしファイル / 端末内の自動分割） | P1 | M2 |
-| F6.1 | チャンク移動（前 / 次 / 頭出し）とチャンクリピート（N 回 / 無限） | P0 | M2 |
+| F6.1 | チャンク移動（前 / 次 / 頭出し）とチャンクリピート（1 つ、または連続する複数のチャンク。N 回 / 無限） | P0 | M2 |
 | F6.2 | A-B リピート（A / B ボタン、または波形上で範囲を選択） | P0 | M2 |
 | F6.3 | 自動ポーズ（固定秒数 / チャンク長 × 係数） | P0 | M2 |
 | F6.4 | 言語フィルタ再生（学習言語のみ / 母語のみ） | P1 | M3 |
@@ -194,9 +195,10 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | Drive の同期 | Google Play 開発者サービスの認可（`play-services-auth` の `AuthorizationClient`）、OkHttp | Drive API は REST で直接呼ぶ（クライアントライブラリは大きいので使わない。§7.1） |
 | PC ツール | Python 3.12 以上、uv、ffmpeg、faster-whisper（NVIDIA）/ mlx-whisper（Apple Silicon）、Silero VAD、OpenCC（中国語の字体の変換）、jsonschema、pytest | 環境ごとにエンジンを選ぶ（§7.4.4） |
 | ビルド | Gradle Kotlin DSL、Version Catalog、convention plugins（`build-logic/`） | |
-| テスト | JUnit、kotlinx-coroutines-test、Robolectric、`media3-test-utils`、Compose UI Test、（Turbine、Roborazzi） | 括弧内は導入審査の対象 |
+| テスト | JUnit、kotlinx-coroutines-test、Robolectric、`media3-test-utils`、Compose UI Test、Compose Preview Screenshot Testing、（Turbine、Roborazzi） | 括弧内は導入審査の対象。スクリーンショットテストは §10.5 |
 | 静的解析 | Android Lint、Spotless + ktlint。PC ツールは Ruff | |
 | CI | GitHub Actions | |
+| 開発ツール | Android Studio（Quail 2 以降）、Android CLI | エージェントによる UI の確認に使う（§10.5） |
 
 確認時点（2026-10-14）の最新安定版: Media3 1.11.1、Compose Material3 1.4.0、Navigation 3 1.2.0、Material3 Adaptive 1.3.0。実際に使うバージョンは Phase 0 で `gradle/libs.versions.toml` に固定します。
 
@@ -442,6 +444,8 @@ enum class AnalysisError { UNSUPPORTED_FORMAT, DECODE_FAILED, IO }
 sealed interface LoopMode {
     data object Off : LoopMode
     data class SingleChunk(val chunkId: ChunkId, val times: Int?) : LoopMode  // times = null は無限
+    /** 連続する複数のチャンク（first から last まで）をまとめてリピートする */
+    data class ChunkRange(val firstChunkId: ChunkId, val lastChunkId: ChunkId, val times: Int?) : LoopMode
     data class AbRange(val startMs: Long, val endMs: Long) : LoopMode {
         init { require(startMs < endMs) }
     }
@@ -729,10 +733,11 @@ PlaybackService : MediaSessionService
 | --- | --- | --- |
 | A-B リピート | B に到達 | A へシークする |
 | チャンクリピート（N 回 / 無限） | チャンクの終端 | 回数を数えて開始位置へシークする。N 回終えたら次へ進み、モードを解除する |
+| 範囲リピート（複数のチャンク、N 回 / 無限） | 範囲の最後のチャンクの終端 | 範囲の最初のチャンクの開始位置へシークする。回数の扱いはチャンクリピートと同じ。自動ポーズは範囲内の各チャンクの終端に入る |
 | 自動ポーズ | チャンクの終端（`AutoPauseScope` に該当するチャンクのみ） | 一時停止し、ポーズ長が過ぎたら再生を再開する。途中でユーザーが操作したらタイマーを取り消す |
 | 言語フィルタ | チャンクの終端 | 次の対象言語のチャンクの開始位置へシークする |
 
-- **組み合わせの優先順位**: A-B > チャンクリピート > 言語フィルタ。自動ポーズは各終端での動作の前に適用する（リピートの間にもポーズが入るので、リピーティング練習になる）。
+- **組み合わせの優先順位**: A-B > チャンクリピート / 範囲リピート > 言語フィルタ。自動ポーズは各終端での動作の前に適用する（リピートの間にもポーズが入るので、リピーティング練習になる）。
 - ユーザーによる手動のシークは常に優先し、言語フィルタは次の境界から適用する。
 - チャンクがまだない間は、チャンクを前提とするモードを無効化する（A-B リピートはチャンクがなくても使える）。
 - 自動ポーズの再開タイマーは Service 側で持ち、`PlaybackStatus.autoPauseEndsAtMs` として UI に公開する（カウントダウン表示用）。
@@ -1003,7 +1008,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 - `Modifier.drawWithCache` で、波形のバーの Path を（表示範囲、幅、データ）をキーにキャッシュする。
 - 再生ヘッドは別のレイヤーに描く。再生中だけ `withFrameNanos` のループで描画フェーズだけを無効化し、再コンポーズはしない。位置は `PositionProvider` から読む。
 - 拡大波形は再生位置を中心に追従する。表示範囲の 3 倍の幅を描画済みにしておき、`graphicsLayer { translationX = ... }` で平行移動して、はみ出すときだけ Path を作り直す。
-- ジェスチャー: タップ = シーク、横ドラッグ = スクラブ、ピンチ = ズーム（2 秒〜全体）、長押し＋ドラッグ = A-B の範囲選択。
+- ジェスチャー: タップ = シーク、横ドラッグ = スクラブ、ピンチ = 拡大波形の表示範囲の変更（既定は再生位置の前後 2 分。2 秒〜全体）、長押し＋ドラッグ = A-B の範囲選択。
 - 画面端の横ドラッグはシステムの「戻る」ジェスチャーに取られるため、波形の操作領域に `Modifier.systemGestureExclusion()` を付ける（除外できるのは各辺で縦 200dp まで）か、ドラッグ用のハンドルを画面端から離して配置する。
 - アクセシビリティ: `progressBarRangeInfo` と `customActions`（前 / 次のチャンク、巻き戻し）を付ける。
 
@@ -1017,6 +1022,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 - **ブラインドモード**: テキストを伏せておき、タップで一時的に表示する（聞き取りの練習用）。学習言語の行だけを伏せることもできる（母語の文を見て、学習言語で言ってみる練習に使う）。
 - **文字起こしがない教材**: チャンクの時刻だけを表示し、「PC で文字起こしを作って取り込むと、スクリプトが表示されます」という案内と、文字起こしファイルを選ぶボタンを表示する。
 - 言語を判定できなかったチャンク（`Transcript.language` が `null`）は「?」と表示し、長押しのメニューから修正できる（F7.3）。
+- **範囲リピートの指定**（F6.1）: 行の長押しメニューの「ここから範囲を選ぶ」で選択モードに入り、終わりの行をタップして、連続する複数のチャンクを選ぶ。選んだ範囲はスクリプト一覧と拡大波形の両方で強調する。
 
 #### 7.5.6 アダプティブ対応・テーマ・システム要件
 
@@ -1074,7 +1080,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 | 単体（JVM） | `core:audio`（分割・波形の縮約・リサンプラ）、`core:transcript`（Chunk Flow JSON / SRT / WebVTT / LRC の解析・検証・チャンクへの変換）、Repository、ViewModel | JUnit、kotlinx-coroutines-test、Turbine。合成信号（トーンバースト + 無音 + ノイズ / BGM）で期待する境界との誤差 ±10ms 以内を検証する |
 | 再生ロジック | LearningPlayer、ChunkScheduler（ループの行き過ぎ、自動ポーズの長さ、前 / 次の再割り当て、言語フィルタ） | `media3-test-utils`（`TestExoPlayerBuilder` + `FakeClock`）と Robolectric で、時間を決定的に進めて検証する |
 | 結合（実機 / エミュレータ） | 各形式のデコード、解析上の時刻と再生位置の一致、Room のマイグレーション、取り込みから再生まで、文字起こしの再取り込み（手動修正の引き継ぎ） | AndroidX Test、`MigrationTestHelper` |
-| UI | 画面の状態（解析中・完了・エラー・文字起こしなし、ライト / ダーク、スマートフォン / タブレット）、多言語の表示（日本語・中国語の簡体字 / 繁体字・韓国語・ヒンディー語・ロシア語・ギリシャ語・ベトナム語など） | Compose UI テスト、スクリーンショットテスト（Roborazzi など） |
+| UI | 画面の状態（解析中・完了・エラー・文字起こしなし、ライト / ダーク、スマートフォン / タブレット）、多言語の表示（日本語・中国語の簡体字 / 繁体字・韓国語・ヒンディー語・ロシア語・ギリシャ語・ベトナム語など） | Compose UI テスト、スクリーンショットテスト（Compose Preview Screenshot Testing。§10.5） |
 | PC ツール | `tools/transcriber` のチャンクの整形、言語の平滑化、JSON の出力 | pytest（純粋な関数と、モックにしたエンジン）、Ruff |
 | 契約 | `docs/format/` の JSON Schema とサンプル | アプリのパーサが正しいサンプルをすべて読め、不正なサンプル（`docs/format/examples/invalid/`）をすべて拒否すること。PC ツールの出力が Schema に合格すること |
 | 手動（Pixel 実機） | Bluetooth イヤホンでの操作、ロック画面、通話による中断、30 分と 60 分の音声、電池消費、Drive からの取り込み | チェックリスト（`docs/manual-test.md`） |
@@ -1101,7 +1107,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 
 ### 10.1 進め方
 
-- **事前準備**（済）: リポジトリは GitHub の `miuraken/chunk-flow` です（ローカルのディレクトリは `gogaku-player/`。親ディレクトリは別プロジェクトのリポジトリなので、独立させています）。ブランチや worktree で並行作業するためと、親ディレクトリのエージェント用ルールが混ざらないようにするためです。
+- **事前準備**（済）: リポジトリは GitHub の `miuraken/chunk-flow` です。親ディレクトリは別プロジェクトのリポジトリなので、独立させています。ブランチや worktree で並行作業するためと、親ディレクトリのエージェント用ルールが混ざらないようにするためです。
 - **Phase 0** は lead が単独で基盤（ビルド、モジュールの骨格、契約、Fake、CI）を作ります。並行開発はその後に始めます。
 - 並行作業はエージェントごとに別のブランチ / worktree で行い、lead が統合します。マイルストーンの最後にまとめるのではなく、機能単位で小さくマージします。
 - 設計の判断は ADR（`docs/adr/NNNN-タイトル.md`）に、スパイクの結果は `docs/spikes/` に記録します。
@@ -1115,8 +1121,8 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 | `playback` | 取り込み・ライブラリ・Drive の同期・再生・学習モード、スパイク S2 | `core/playback/`、`core/drive/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` | 担当モジュールのビルド・テスト |
 | `audio-analysis` | デコード・波形・特徴量・分割・解析 Worker、スパイク S3 | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md` | 同上 |
 | `transcriber` | PC ツール、文字起こしファイルの解析・取り込み、スパイク S1 | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md` | 同上 + PC ツールの `uv run`（pytest、Ruff、評価用の文字起こし） |
-| `ui` | 画面・波形 Composable・テーマ | `feature/`、`core/designsystem/` | 同上 + スクリーンショットテスト |
-| `qa` | レビュー、テストの追加、実機テスト | 各モジュールのテストディレクトリ（新しいテストファイルの追加のみ。既存ファイルの修正は担当者に依頼する）、`docs/manual-test.md` | すべてのチェック、adb |
+| `ui` | 画面・波形 Composable・テーマ | `feature/`、`core/designsystem/` | 同上 + スクリーンショットテスト、Android CLI の `studio render-compose-preview`・`screen capture`・`layout`・`run`（§10.5） |
+| `qa` | レビュー、テストの追加、実機テスト | 各モジュールのテストディレクトリ（新しいテストファイルの追加のみ。既存ファイルの修正は担当者に依頼する）、`docs/manual-test.md` | すべてのチェック、adb、Android CLI（Journeys を含む） |
 
 - 実装を担当するエージェントにも、担当モジュールのビルドとテストの実行を許可します（v0.1 では qa だけがコマンドを実行でき、実装者が自分で検証できませんでした）。コマンドは `./gradlew :<module>:<task>`（PC ツールは `uv run --directory tools/transcriber <コマンド>`）の形に限定します。
 - Gradle ファイルは lead だけが変更します。依存の追加が必要になったら、理由（ライセンス・サイズ・代替案）を添えて lead に依頼します。PC ツールの `pyproject.toml` と `uv.lock` は transcriber が変更してよいですが、依存を追加するときは同じく lead の承認を得ます。
@@ -1135,8 +1141,46 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 - 担当モジュールのビルド・単体テスト・Lint が通る。
 - 新しく公開する API に KDoc があり、主要なロジックにテストがある。
 - 新しい依存は lead の承認済み（ライセンスと脆弱性を確認済み）。
-- UI を変更した場合は、スクリーンショット（またはプレビュー）を更新している。
+- UI を変更した場合は、§10.5.1 の状態と表示条件のプレビューがあり、スクリーンショットの基準画像を更新している（見た目が変わる更新は人間の承認済み）。報告に変更した画面の画像を添えている。
 - 秘密情報や実際の教材の音声をコミットしていない。
+
+### 10.5 UI / UX の確認と修正（Android Studio との連携）
+
+UI は、エージェントが実装と一次確認を行い、人間が Android Studio と実機で確認・修正する流れで進めます。エージェントは IDE の画面を直接見られないため、**プレビューを画像（PNG）とセマンティクスツリー（JSON）として取り出して確認**します。
+
+#### 10.5.1 前提: プレビューできる UI の書き方
+
+- 画面は「状態を受け取って描くだけの Composable」（例: `PlayerScreen(state: PlayerUiState, onEvent: (PlayerEvent) -> Unit)`）と、ViewModel をつなぐ薄い Route（`PlayerRoute`）に分ける。プレビューとテストは前者だけを使う。
+- 各画面と主要な部品（波形、スクリプトの行、操作部、ミニプレイヤー）に `@Preview` を付ける。状態は `core:testing` のプレビュー用フィクスチャ（`PreviewParameterProvider`）から渡す。
+- **確認する状態の一覧**（フィクスチャとして用意する）: ライブラリが空 / 複数のコース、解析中 / 完了 / エラー、文字起こしなし、ja-ko、ja-zh（簡体字）、en-yue（繁体字・口語）、en-hi（デーヴァナーガリー）、en-ru、en-vi、長い文、言語が「?」のチャンク、自動ポーズのカウントダウン中、ブラインドモード、同期中 / 同期の失敗。
+- **確認する表示条件**は、独自のマルチプレビュー注釈（例: `@ChunkFlowPreviews`）にまとめる: ライト / ダーク（`@PreviewLightDark`）、文字サイズ（`@PreviewFontScale`。最大 2.0 倍）、画面サイズ（`@PreviewScreenSizes`。スマートフォン・折りたたみ・タブレット）、UI 言語（日本語 / 英語）。
+- プレビューは本番と同じテーマ（`core:designsystem`）で描く。ダイナミックカラーはプレビューでは固定の配色にする（画像の比較が安定するように）。
+
+#### 10.5.2 エージェントによる確認
+
+| 手段 | 使い方 | 主な用途 |
+| --- | --- | --- |
+| スクリーンショットテスト（Compose Preview Screenshot Testing） | `@PreviewTest` を付けたプレビューから、Gradle のタスク（`updateDebugScreenshotTest` / `validateDebugScreenshotTest`）で画像を生成・比較する。Android Studio がなくても動く | 実装後の自己確認、変更による見た目の差の検出（CI でも実行） |
+| Android CLI の `android studio render-compose-preview` | 起動中の Android Studio に接続して、指定したプレビューを PNG に描画し、`--print-semantics` でセマンティクスツリーを JSON で出す | 作業中の素早い確認、テキスト・タップ領域・説明文（TalkBack）の確認 |
+| Android CLI の `android screen capture` / `android layout` | エミュレータや実機で動いているアプリの画面を撮り、UI の階層を JSON で取り出す（`android run` でインストールと起動） | 画面遷移、再生中の表示、プレビューでは再現できない状態の確認 |
+| Journeys（Android CLI） | 自然言語で書いた操作手順（例: 取り込み → 再生 → チャンクのリピート）をデバイスで実行する | 主要な操作の流れの回帰確認（M2 以降に評価して採否を決める） |
+
+- エージェントは、生成した画像とセマンティクスを自分で見て、崩れ（はみ出し、重なり、切れた文字、字形の誤り、48dp 未満のタップ領域、説明文のないボタン）を直してから報告する。報告には、変更した画面の画像（ライト / ダーク、文字サイズ 2.0 倍、タブレットを含む）を添える。
+- `render-compose-preview` は Android Studio が開いているプロジェクトを使うため、統合用の作業ツリー（`main`）で使う。別の worktree で作業するエージェントは、スクリーンショットテストの Gradle タスクを使う。
+- スクリーンショットテストのプラグインは確認時点で alpha 版。Phase 0 で導入を試し、問題があれば Roborazzi に切り替える（ADR に記録する）。基準画像はリポジトリに含める。
+
+#### 10.5.3 人間による確認と修正
+
+- **Android Studio**: Compose プレビュー（インタラクティブモード、アニメーションのプレビュー）、Compose UI Check（プレビュー上でアクセシビリティと画面サイズの問題を検出）、Layout Inspector（再コンポーズの回数を見て、再生位置の更新で画面全体が再コンポーズされていないことを確かめる。§6.2）、スクリーンショットテストの差分ビューア。
+- **実機（Pixel）**: Live Edit で、コードの変更を実行中のアプリにすぐ反映させながら調整する。画面のミラーリングで Android Studio から操作する。イヤホン・ロック画面・通知など、実機でしか確かめられない操作は `docs/manual-test.md` のチェックリストで確認する。
+- **修正の戻し方**: 人間が Android Studio で直接直した場合は、そのままコミットし、ui エージェントがスクリーンショットの基準画像とプレビューを更新する。言葉で伝える場合は、画面・状態・画像を添えて `docs/ui-feedback/` に書き（またはチャットで伝え）、ui エージェントが直す。
+- **基準画像の更新は人間が承認する**: 見た目の変更を伴う基準画像の更新は、差分画像を人間が確かめてからマージする（エージェントが変更を「正」として黙って上書きしないようにする）。
+
+#### 10.5.4 準備（人間）
+
+- Android Studio を `render-compose-preview` に対応した版（Quail 2 以降）に更新する（確認時点で入っているのは 2025.1）。スクリーンショットテストの IDE 統合（差分ビューアなど）を使うには、AGP 9 以上と対応する版の Android Studio が必要。
+- Android CLI を入れ、`android init` でエージェント用のスキルを入れる。利用状況の収集を止める場合は `~/.androidrc` に `--no-metrics` を書く。
+- エミュレータ（スマートフォンとタブレット）を用意する（`android emulator create`）。
 
 ---
 
@@ -1146,6 +1190,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 Phase 0  基盤と技術検証（基盤は lead、スパイクは各担当）
   ├─ Gradle マルチモジュールの骨格、Version Catalog、convention plugins、CI
   ├─ core:model と主要インターフェースの確定、Fake 実装、DI、画面遷移の骨格、AGENTS.md
+  ├─ UI 確認の仕組み（プレビュー用のフィクスチャ、マルチプレビュー注釈、スクリーンショットテスト、Android CLI）
   ├─ 文字起こしの形式 v1（JSON Schema とサンプル）の確定（lead）
   └─ スパイク: S1 PC の文字起こしパイプラインの試作（transcriber）。実際の教材（ja-ko、ja-zh、en-yue、en-hi など）での
                   チャンクごとの言語判定の精度、文字体系の確認の効果、文単位のチャンクの質、
@@ -1213,12 +1258,13 @@ M4  編集と仕上げ
 1. Google Cloud のプロジェクトの作成、Drive API の有効化、OAuth の同意画面と Android 用の OAuth クライアント（`com.miuraken.chunkflow` と署名鍵の SHA-1）の登録。S2 の試作では開発用の署名鍵で登録する。
 2. リリース用の署名鍵の作成と保管（リポジトリの外）。
 3. S1 と M3 の評価に使う実際の教材（各言語ペアで数本ずつ）の用意。
+4. Android Studio の更新、Android CLI の導入、エミュレータの用意（§10.5.4）。
 
 ---
 
 ## 付録 A: v0.1 からの主な変更点
 
-| # | 項目 | v0.1 | 現行（v0.3） | 理由 |
+| # | 項目 | v0.1 | 現行 | 理由 |
 | --- | --- | --- | --- | --- |
 | 1 | 画面の状態 | `PlayerUiState` で Loading と Ready を排他的に表現 | 再生・解析の段階・データを独立した状態として組み合わせる | 解析中も再生したい。文字起こしを待つ間、操作できなくなる |
 | 2 | 再生位置 | `Ready.currentPositionMs` に保持 | UiState から分離し、描画フェーズで読む | 位置の更新ごとに画面全体が再コンポーズされるのを避ける |
