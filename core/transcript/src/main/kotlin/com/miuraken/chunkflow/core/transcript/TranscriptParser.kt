@@ -63,6 +63,7 @@ enum class TranscriptError {
  * @property languages 言語ペア。SRT などでは `null`。
  * @property generator 文字起こしの出どころ。
  * @property segments 開始時刻の順に並び、重ならないセグメント。
+ * @property createdAt 生成日時（RFC 3339 文字列）。同じ音声の JSON が複数あるときに新しい方を選ぶのに使う（§7.4.6）。
  */
 data class TranscriptDocument(
     val audioSha256: String?,
@@ -71,6 +72,7 @@ data class TranscriptDocument(
     val languages: LanguagePair?,
     val generator: EngineId,
     val segments: List<TranscriptSegment>,
+    val createdAt: String? = null,
 )
 
 /**
