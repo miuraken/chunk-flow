@@ -52,6 +52,7 @@ class ExoTimingProbe(
     private val file: File,
     private val realtime: Boolean,
     private val expectedClicksS: List<Double>,
+    private val hideMp3Header: Boolean = false,
 ) {
     private val lock = Any()
     private var output: ProbeOutput? = null
@@ -71,14 +72,16 @@ class ExoTimingProbe(
     /** 再生して結果を JSON で返す（メインスレッド以外から呼ぶ）。 */
     fun run(timeoutMs: Long): JSONObject {
         val out = JSONObject()
-        out.put("test", if (realtime) "exoplayer-realtime" else "exoplayer-fast")
+        out.put("test", (if (realtime) "exoplayer-realtime" else "exoplayer-fast") + if (hideMp3Header) "-hidden" else "")
         out.put("file", file.parentFile?.name + "/" + file.name)
         val main = Handler(Looper.getMainLooper())
         val done = CountDownLatch(1)
         var player: ExoPlayer? = null
         val start = SystemClock.elapsedRealtime()
         main.post {
-            val p = ExoPlayer.Builder(context, renderersFactory()).build()
+            val builder = ExoPlayer.Builder(context, renderersFactory())
+            if (hideMp3Header) builder.setMediaSourceFactory(HiddenHeaderMedia.mediaSourceFactory(context))
+            val p = builder.build()
             player = p
             p.addAnalyticsListener(object : AnalyticsListener {
                 override fun onAudioDecoderInitialized(
