@@ -46,3 +46,16 @@ Phase 0 の基盤づくり（ブランチ `agent/lead/phase0-foundation`）に�
 - `build.gradle.kts` は Gradle ファイルなので lead が置く（convention plugin の `chunkflow.android.application` を使い、
   必要な依存（Media3 など）を Version Catalog から加える）。ソースコードと報告（`docs/spikes/`）は各担当が書く。
 - 本体のモジュールからスパイクへは依存しない。スパイクは本体の `core:*` に依存してよい。
+
+### 追記（2026-10-14）: スパイクのモジュールの雛形
+
+この例外の範囲として、lead が次を置いた（ブランチ `agent/lead/spike-modules`）。
+
+| モジュール | 置いたもの | 依存 |
+| --- | --- | --- |
+| `spikes/playback`（S2、playback） | `build.gradle.kts`、空の `SpikeActivity`、マニフェスト、アイコンと文字列のリソース | core:model、activity-compose、material3、Media3 の common / exoplayer / session。`androidTestImplementation` に media3-test-utils |
+| `spikes/audio`（S3、audio-analysis） | 同上 | core:model、core:audio、activity-compose、material3、Media3 の common / inspector（`MediaExtractorCompat`）/ exoplayer |
+
+- `build.gradle.kts` 以外（ソース、マニフェスト、リソース）は、以後は各担当が自由に書き換える（雛形は契約ではない）。
+- 依存を足すときは、AGENTS.md §8 の手順で lead に依頼する（Robolectric、media3-test-utils-robolectric など）。
+- スパイクのマニフェストは本体の権限の制約の外（ADR 0004）。

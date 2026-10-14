@@ -109,7 +109,10 @@ def check(path: Path, debug: bool) -> list[str]:
 
 
 def find_manifests() -> list[Path]:
-    """app/build の下のマージ後のマニフェストを探す。"""
+    """app/build の下のマージ後のマニフェストを探す。
+
+    対象は本体のアプリ（:app）だけ。スパイクのアプリ（spikes/*）は本体の権限とエクスポートの制約の外なので調べない（ADR 0004）。
+    """
     base = ROOT / "app" / "build" / "intermediates"
     return sorted(p for p in base.glob("merged_manifest*/**/AndroidManifest.xml") if p.is_file())
 
