@@ -18,9 +18,13 @@ import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.transcript.ChunkFlowTranscriptParser
+import com.miuraken.chunkflow.core.transcript.ChunkFlowTranscriptSerializer
+import com.miuraken.chunkflow.core.transcript.CompositeTranscriptParser
 import com.miuraken.chunkflow.core.transcript.TranscriptChunkConverter
 import com.miuraken.chunkflow.core.transcript.TranscriptDocument
 import com.miuraken.chunkflow.core.transcript.TranscriptError
@@ -30,6 +34,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.text.Normalizer
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
@@ -61,7 +66,7 @@ data class BatchTranscriptImportSummary(
 )
 
 /**
- * 文字起こしファイル（`chunkflow-transcript` JSON など）を検証し、既存の教材に対応付けて保存するインターフェース（§6.4、§7.4.6、§8.1）。
+ * 文字起こしファイル（`chunkflow-transcript` JSON、SRT、WebVTT、LRC）を検証し、既存の教材に対応付けて保存するインターフェース（§6.4、§7.4.6、§8.1）。
  */
 interface TranscriptImporter {
     /**
@@ -83,7 +88,7 @@ interface TranscriptImporter {
  * [TranscriptImporter] の本番実装（§6.4、§7.4.6、§8.1、§8.2）。
  *
  * - `content://` スキームのみを受け付け、ストリーム読み込み中に `20MB + 1` バイトで打ち切ることで OOM を防ぐ（§8.1）。
- * - [TranscriptParser] による検証を通過した後にのみ、原本ファイルの保存と DB トランザクションを実行する（§8.2）。
+ * - [TranscriptParser]（既定は [CompositeTranscriptParser]）による検証を通過した後にのみ、原本ファイルの保存と DB トランザクションを実行する（§8.2）。
  * - 再取り込み時は [ChunkDao.replaceChunksTransaction] により手動修正済み（`userEdited = true`）の文字起こしを引き継ぐ（§6.4、§7.4.6）。
  */
 @Singleton
@@ -94,7 +99,7 @@ class DefaultTranscriptImporter(
     private val itemStateDao: ItemStateDao,
     private val libraryMediaFileResolver: LibraryMediaFileResolver,
     @Dispatcher(ChunkFlowDispatchers.IO) private val ioDispatcher: CoroutineDispatcher,
-    private val transcriptParser: TranscriptParser = ChunkFlowTranscriptParser(),
+    private val transcriptParser: TranscriptParser = CompositeTranscriptParser(),
     private val clock: () -> Long = System::currentTimeMillis,
 ) : TranscriptImporter {
 
@@ -115,7 +120,7 @@ class DefaultTranscriptImporter(
         itemStateDao = itemStateDao,
         libraryMediaFileResolver = libraryMediaFileResolver,
         ioDispatcher = ioDispatcher,
-        transcriptParser = ChunkFlowTranscriptParser(),
+        transcriptParser = CompositeTranscriptParser(),
         clock = System::currentTimeMillis,
     )
 
@@ -187,7 +192,11 @@ class DefaultTranscriptImporter(
 
             is TranscriptParseResult.Ok -> {
                 val doc = parseResult.document
-                val createdAtStr = doc.createdAt ?: ChunkFlowTranscriptParser.extractCreatedAt(bytes)
+                val createdAtStr = doc.createdAt ?: if (doc.audioSha256 != null) {
+                    ChunkFlowTranscriptParser.extractCreatedAt(bytes)
+                } else {
+                    null
+                }
                 val createdAtEpochMs = ChunkFlowTranscriptParser.parseCreatedAtEpochMs(createdAtStr)
                 ReadAndParseOutcome.Parsed(
                     bytes = bytes,
@@ -204,15 +213,34 @@ class DefaultTranscriptImporter(
     private suspend fun attachParsedTranscript(candidate: ReadAndParseOutcome.Parsed): TranscriptImportResult {
         val document = candidate.document
         val mediaItem = findMatchingMediaItem(document, candidate.displayName)
-            ?: return TranscriptImportResult.NoMatchingAudio(document.audioFileName)
+            ?: return TranscriptImportResult.NoMatchingAudio(
+                document.audioFileName ?: candidate.displayName?.let(::extractBaseFileName),
+            )
 
         val mediaId = MediaId(mediaItem.id)
         val durationMismatch = document.durationMs?.let { docDuration ->
             abs(mediaItem.durationMs - docDuration) >= DURATION_MISMATCH_THRESHOLD_MS
         } ?: false
 
+        val rawBytesToSave = if (document.audioSha256 != null) {
+            candidate.bytes
+        } else {
+            runCatching {
+                ChunkFlowTranscriptSerializer(clock = clock).serializeToBytes(
+                    document = document,
+                    sha256 = mediaItem.sha256,
+                    fileName = mediaItem.title,
+                    durationMs = mediaItem.durationMs,
+                    languages = LanguagePair(
+                        target = LanguageTag(mediaItem.targetLang),
+                        base = mediaItem.baseLang?.let(::LanguageTag),
+                    ),
+                )
+            }.getOrDefault(candidate.bytes)
+        }
+
         // 原本ファイルを filesDir/media/<MediaId>.transcript.chunkflow.json に保存する（§6.4）
-        if (!writeRawTranscriptFile(mediaId, candidate.bytes)) {
+        if (!writeRawTranscriptFile(mediaId, rawBytesToSave)) {
             return TranscriptImportResult.Invalid(TranscriptError.SCHEMA_VIOLATION)
         }
 
@@ -295,14 +323,20 @@ class DefaultTranscriptImporter(
             return mediaItemDao.getBySha256(sha256)
         }
 
-        val candidateName = (document.audioFileName ?: displayName)
-            ?.let(::extractBaseFileName)
-            ?.takeIf { it.isNotEmpty() }
-            ?: return null
+        val candidateStems = listOfNotNull(displayName, document.audioFileName)
+            .map(::extractBaseFileName)
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (candidateStems.isEmpty()) return null
 
         val allItems = mediaItemDao.observeAll().first()
         return allItems.firstOrNull { item ->
-            extractBaseFileName(item.title).equals(candidateName, ignoreCase = true)
+            val itemTitleNfc = normalizeNfc(item.title.trim())
+            val itemStem = extractBaseFileName(item.title)
+            candidateStems.any { stem ->
+                itemStem.equals(stem, ignoreCase = true) ||
+                    itemTitleNfc.equals(stem, ignoreCase = true)
+            }
         }
     }
 
@@ -429,7 +463,8 @@ class DefaultTranscriptImporter(
         if (!sha.isNullOrBlank()) {
             return "sha256:$sha"
         }
-        val baseName = (document.audioFileName ?: displayName)?.let(::extractBaseFileName)
+        val baseName = (displayName ?: document.audioFileName)?.let(::extractBaseFileName)
+            ?.ifBlank { document.audioFileName?.let(::extractBaseFileName) }
         if (!baseName.isNullOrBlank()) {
             return "name:${baseName.lowercase()}"
         }
@@ -475,8 +510,11 @@ class DefaultTranscriptImporter(
         private const val ALGORITHM_VERSION: Int = 1
 
         internal fun extractBaseFileName(rawName: String): String {
-            val fileName = rawName.substringAfterLast('/').substringAfterLast('\\').trim()
+            val fileName = normalizeNfc(rawName.substringAfterLast('/').substringAfterLast('\\').trim())
             val withoutTranscriptSuffix = when {
+                fileName.endsWith(".transcript.chunkflow.json", ignoreCase = true) ->
+                    fileName.dropLast(".transcript.chunkflow.json".length)
+
                 fileName.endsWith(".chunkflow.json", ignoreCase = true) ->
                     fileName.dropLast(".chunkflow.json".length)
 
@@ -485,10 +523,17 @@ class DefaultTranscriptImporter(
 
                 else -> fileName
             }
-            return withoutTranscriptSuffix.replace(
-                Regex("\\.(json|srt|vtt|lrc|mp3|m4a|mp4|ogg|opus|flac|wav|aac)$", RegexOption.IGNORE_CASE),
+            val stripped = withoutTranscriptSuffix.replace(
+                Regex("\\.(json|srt|vtt|webvtt|lrc|mp3|m4a|mp4|ogg|opus|flac|wav|aac)$", RegexOption.IGNORE_CASE),
                 "",
             ).trim()
+            return normalizeNfc(stripped)
+        }
+
+        private fun normalizeNfc(value: String): String = if (Normalizer.isNormalized(value, Normalizer.Form.NFC)) {
+            value
+        } else {
+            Normalizer.normalize(value, Normalizer.Form.NFC)
         }
     }
 }
