@@ -3,17 +3,24 @@ package com.miuraken.chunkflow.feature.library
 import android.net.StubUri
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
+import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
+import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
+import com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository
 import com.miuraken.chunkflow.core.testing.fake.FakeLibraryRepository
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
+import com.miuraken.chunkflow.core.transcript.TranscriptError
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.collect
@@ -94,6 +101,79 @@ class LibraryViewModelTest {
 
         viewModel.onEvent(LibraryEvent.DismissImportStatus)
         assertEquals(LibraryImportUiState.Idle, viewModel.uiState.value.importState)
+    }
+
+    @Test
+    fun `ImportTranscriptUri_紐付けと未取り込み音声案内とエラーを反映する`() = runTest {
+        val item = SampleMaterials.jaKo.item
+        val repo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val fakeUri = StubUri.create()
+        repo.importTranscriptResult = {
+            TranscriptImportResult.Attached(mediaId = item.id, chunkCount = 6, durationMismatch = false)
+        }
+        viewModel.onEvent(LibraryEvent.ImportTranscriptUri(fakeUri))
+        assertEquals(
+            TranscriptImportUiState.Attached(mediaId = item.id, chunkCount = 6, durationMismatch = false),
+            viewModel.uiState.value.transcriptImportState,
+        )
+
+        repo.importTranscriptResult = {
+            TranscriptImportResult.NoMatchingAudio(audioFileName = "lesson01.mp3")
+        }
+        viewModel.onEvent(LibraryEvent.ImportTranscriptUri(fakeUri))
+        assertEquals(
+            TranscriptImportUiState.NoMatchingAudio(audioFileName = "lesson01.mp3"),
+            viewModel.uiState.value.transcriptImportState,
+        )
+
+        repo.importTranscriptResult = {
+            TranscriptImportResult.Invalid(error = TranscriptError.SCHEMA_VIOLATION)
+        }
+        viewModel.onEvent(LibraryEvent.ImportTranscriptUri(fakeUri))
+        assertEquals(
+            TranscriptImportUiState.Invalid(error = TranscriptError.SCHEMA_VIOLATION),
+            viewModel.uiState.value.transcriptImportState,
+        )
+
+        viewModel.onEvent(LibraryEvent.DismissImportStatus)
+        assertEquals(TranscriptImportUiState.Idle, viewModel.uiState.value.transcriptImportState)
+    }
+
+    @Test
+    fun `ディレクトリ構成と解析要約_フォルダ単位でグループ化し展開と折りたたみを切り替えられる`() = runTest {
+        val sampleKo = SampleMaterials.jaKo
+        val sampleZh = SampleMaterials.jaZh
+        val repo = FakeLibraryRepository(initialItems = listOf(sampleKo.item, sampleZh.item))
+        val playback = FakePlaybackController()
+        val analysis = FakeAnalysisRepository().apply {
+            put(sampleKo)
+            update(sampleZh.item.id) { entry ->
+                entry.copy(status = mapOf(AnalysisStage.FEATURES to StageStatus.Running(0.4f)))
+            }
+        }
+        val viewModel = LibraryViewModel(repo, playback, analysis)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val state = viewModel.uiState.value
+        assertEquals(2, state.directories.size)
+        val koItemModel = state.items.first { it.item.id == sampleKo.item.id }
+        assertEquals(sampleKo.chunks.size, koItemModel.chunkCount)
+        assertTrue(koItemModel.hasTranscript)
+        assertFalse(koItemModel.isAnalyzing)
+
+        val zhItemModel = state.items.first { it.item.id == sampleZh.item.id }
+        assertTrue(zhItemModel.isAnalyzing)
+
+        val firstDirName = state.directories.first().name
+        assertTrue(state.directories.first().isExpanded)
+        viewModel.onEvent(LibraryEvent.ToggleDirectory(firstDirName))
+        assertFalse(viewModel.uiState.value.directories.first().isExpanded)
+        viewModel.onEvent(LibraryEvent.ToggleDirectory(firstDirName))
+        assertTrue(viewModel.uiState.value.directories.first().isExpanded)
     }
 
     @Test

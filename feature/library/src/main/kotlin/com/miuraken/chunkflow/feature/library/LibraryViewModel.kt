@@ -3,37 +3,58 @@ package com.miuraken.chunkflow.feature.library
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
+import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
+import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.Chunk
+import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.Transcript
+import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.playback.PlaybackController
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
+import com.miuraken.chunkflow.core.transcript.TranscriptError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * ライブラリ一覧の各教材の UI 表示モデル（F2.1、F2.2）。
+ * ライブラリ一覧の各教材の UI 表示モデル（F2.1、F2.2、F7.1）。
  *
  * @property item 教材のメタデータ。
  * @property positionMs 前回のレジューム再生位置（ミリ秒）。
  * @property speed 前回の再生速度（0.5..2.0）。
+ * @property chunkCount チャンク数（解析前・未取得の場合は 0）。
+ * @property hasTranscript 文字起こしが紐付いているかどうか。
+ * @property isAnalyzing 端末内解析を実行中かどうか。
  */
 data class LibraryItemUiModel(
     val item: AudioItem,
     val positionMs: Long = 0L,
     val speed: Float = 1.0f,
+    val chunkCount: Int = 0,
+    val hasTranscript: Boolean = false,
+    val isAnalyzing: Boolean = false,
 ) {
     /** 再生進捗の割合（0.0..1.0）。 */
     val progressFraction: Float
@@ -42,10 +63,35 @@ data class LibraryItemUiModel(
         } else {
             0f
         }
+
+    /** ディレクトリ構成における対応文字起こし JSON の相対パス案内。 */
+    val transcriptRelativePath: String
+        get() = "transcription/${item.title}.chunkflow.json"
 }
 
 /**
- * 音声取り込みの UI 状態（F1.1）。
+ * ディレクトリ（フォルダ）単位の教材グループ表示モデル。
+ *
+ * @property name ディレクトリ名（未分類の場合は `null`）。
+ * @property items このディレクトリ内の教材一覧。
+ * @property isExpanded 展開中かどうか。
+ */
+data class LibraryDirectoryUiModel(
+    val name: String?,
+    val items: List<LibraryItemUiModel>,
+    val isExpanded: Boolean = true,
+) {
+    /** ディレクトリ配下の `transcription/` サブフォルダの対応パス案内。 */
+    val transcriptionPathHint: String
+        get() = if (name != null) {
+            "$name/transcription/*.chunkflow.json"
+        } else {
+            "transcription/*.chunkflow.json"
+        }
+}
+
+/**
+ * 音声・文字起こし一括取り込みの UI 状態（F1.1、F7.1）。
  */
 sealed interface LibraryImportUiState {
     /** 取り込みを行っていない。 */
@@ -63,8 +109,13 @@ sealed interface LibraryImportUiState {
      *
      * @property addedCount 取り込んだ教材数。
      * @property duplicates 重複していた音声の数。
+     * @property transcriptsAttached 紐付けた文字起こしの数。
      */
-    data class Done(val addedCount: Int, val duplicates: Int) : LibraryImportUiState
+    data class Done(
+        val addedCount: Int,
+        val duplicates: Int,
+        val transcriptsAttached: Int = 0,
+    ) : LibraryImportUiState
 
     /**
      * 取り込みに失敗した。
@@ -72,6 +123,41 @@ sealed interface LibraryImportUiState {
      * @property error 失敗の種別。
      */
     data class Error(val error: ImportError) : LibraryImportUiState
+}
+
+/**
+ * 文字起こし JSON 単体取り込みの UI 状態（F7.1、§7.1）。
+ */
+sealed interface TranscriptImportUiState {
+    /** 取り込みを行っていない。 */
+    data object Idle : TranscriptImportUiState
+
+    /**
+     * 既存の教材に文字起こしを紐付けた。
+     *
+     * @property mediaId 紐付けた教材の ID。
+     * @property chunkCount 作成したチャンクの数。
+     * @property durationMismatch 教材の長さと JSON の `durationMs` に 0.5 秒以上の差があるか。
+     */
+    data class Attached(
+        val mediaId: MediaId,
+        val chunkCount: Int,
+        val durationMismatch: Boolean,
+    ) : TranscriptImportUiState
+
+    /**
+     * 対応する音声がまだ取り込まれていない。
+     *
+     * @property audioFileName JSON に書かれた音声ファイル名。
+     */
+    data class NoMatchingAudio(val audioFileName: String?) : TranscriptImportUiState
+
+    /**
+     * 文字起こしファイルが不正。
+     *
+     * @property error 失敗の種別。
+     */
+    data class Invalid(val error: TranscriptError) : TranscriptImportUiState
 }
 
 /**
@@ -90,30 +176,63 @@ data class MiniPlayerUiState(
 )
 
 /**
- * ライブラリ画面の状態（F1.1、F2.1、F2.2、§7.5.1）。
+ * ライブラリ画面の状態（F1.1、F2.1、F2.2、F7.1、§7.5.1）。
  *
- * @property items 教材の一覧（レジューム位置・速度を含む）。
- * @property importState 音声取り込みの進捗・エラー状態。
+ * @property items 教材の一覧（レジューム位置・速度・チャンク数を含む）。
+ * @property importState 音声・フォルダ取り込みの進捗・エラー状態。
+ * @property transcriptImportState 文字起こし単体取り込みの結果状態。
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
  * @property pendingDeleteItem 削除確認ダイアログで対象になっている教材（表示中でなければ `null`）。
+ * @property selectedDirectoryName フォルダ指定で選択されたディレクトリ名。
+ * @property collapsedDirectories 折りたたまれているディレクトリ名の集合。
  */
 data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
+    val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
-)
+    val selectedDirectoryName: String? = null,
+    val collapsedDirectories: Set<String?> = emptySet(),
+) {
+    /** ディレクトリ（フォルダ）単位にグループ化した教材一覧。 */
+    val directories: List<LibraryDirectoryUiModel>
+        get() = items
+            .groupBy { it.item.course ?: selectedDirectoryName }
+            .map { (dirName, dirItems) ->
+                LibraryDirectoryUiModel(
+                    name = dirName,
+                    items = dirItems,
+                    isExpanded = dirName !in collapsedDirectories,
+                )
+            }
+}
 
 /** ライブラリ画面のイベント。 */
 sealed interface LibraryEvent {
-    /** SAF ピッカーを開いて音声ファイルを取り込む。 */
+    /** SAF フォルダピッカー（OpenDocumentTree）を開いてディレクトリ単位で取り込む。 */
+    data object RequestImportDirectory : LibraryEvent
+
+    /** SAF ファイルピッカーを開いて音声・文字起こしファイルを取り込む。 */
     data object RequestImport : LibraryEvent
+
+    /** SAF ファイルピッカーを開いて文字起こし JSON ファイルを単体で取り込む。 */
+    data object RequestImportTranscript : LibraryEvent
+
+    /** 指定されたフォルダ（ディレクトリ）名と配下の URI 一覧を取り込む。 */
+    data class ImportDirectory(val directoryName: String?, val uris: List<Uri>) : LibraryEvent
 
     /** SAF で選択された URI の一覧を取り込む。 */
     data class ImportUris(val uris: List<Uri>) : LibraryEvent
 
+    /** SAF で選択された文字起こし JSON URI を単体で取り込む。 */
+    data class ImportTranscriptUri(val uri: Uri) : LibraryEvent
+
     /** 取り込み完了・エラーのバナーを閉じる。 */
     data object DismissImportStatus : LibraryEvent
+
+    /** ディレクトリ（フォルダ）セクションの展開・折りたたみを切り替える。 */
+    data class ToggleDirectory(val directoryName: String?) : LibraryEvent
 
     /** 教材を開いてプレイヤー画面へ遷移する。 */
     data class OpenItem(val id: MediaId) : LibraryEvent
@@ -134,33 +253,105 @@ sealed interface LibraryEvent {
     data object ToggleMiniPlayerPlayPause : LibraryEvent
 }
 
+private data class ItemAnalysisSummary(
+    val chunkCount: Int = 0,
+    val hasTranscript: Boolean = false,
+    val isAnalyzing: Boolean = false,
+)
+
+private object EmptyAnalysisRepository : AnalysisRepository {
+    override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = flowOf(emptyMap())
+    override fun observeWaveform(id: MediaId): Flow<Waveform?> = flowOf(null)
+    override fun observeChunks(id: MediaId): Flow<List<Chunk>> = flowOf(emptyList())
+    override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> = flowOf(emptyMap())
+    override fun observeAvailableChunkOrigins(id: MediaId): Flow<Set<ChunkOrigin>> = flowOf(emptySet())
+    override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) = Unit
+    override suspend fun resegment(id: MediaId, params: SegmentationParams) = Unit
+    override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) = Unit
+    override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) = Unit
+}
+
 /**
- * ライブラリ画面の ViewModel（F1.1、F2.1、F2.2、§7.5.1）。
+ * ライブラリ画面の ViewModel（F1.1、F2.1、F2.2、F7.1、§7.5.1）。
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val playbackController: PlaybackController,
+    private val analysisRepository: AnalysisRepository,
 ) : ViewModel() {
 
+    constructor(
+        libraryRepository: LibraryRepository,
+        playbackController: PlaybackController,
+    ) : this(
+        libraryRepository = libraryRepository,
+        playbackController = playbackController,
+        analysisRepository = EmptyAnalysisRepository,
+    )
+
     private val importState = MutableStateFlow<LibraryImportUiState>(LibraryImportUiState.Idle)
+    private val transcriptImportState =
+        MutableStateFlow<TranscriptImportUiState>(TranscriptImportUiState.Idle)
     private val pendingDeleteItem = MutableStateFlow<AudioItem?>(null)
+    private val selectedDirectoryName = MutableStateFlow<String?>(null)
+    private val collapsedDirectories = MutableStateFlow<Set<String?>>(emptySet())
     private var importJob: Job? = null
+
+    private val analysisSummaries: Flow<Map<MediaId, ItemAnalysisSummary>> =
+        libraryRepository.observeItems().flatMapLatest { items ->
+            if (items.isEmpty()) {
+                flowOf(emptyMap())
+            } else {
+                val perItemFlows = items.map { item ->
+                    combine(
+                        analysisRepository.observeChunks(item.id),
+                        analysisRepository.observeTranscripts(item.id),
+                        analysisRepository.observeStatus(item.id),
+                    ) { chunks, transcripts, statusMap ->
+                        item.id to ItemAnalysisSummary(
+                            chunkCount = chunks.size,
+                            hasTranscript = transcripts.isNotEmpty() ||
+                                chunks.any { it.origin == ChunkOrigin.IMPORTED },
+                            isAnalyzing = statusMap.values.any { it is StageStatus.Running },
+                        )
+                    }
+                }
+                combine(perItemFlows) { pairs -> pairs.toMap() }
+            }
+        }
 
     /** ライブラリ画面の UI 状態。 */
     val uiState: StateFlow<LibraryUiState> = combine(
-        libraryRepository.observeItems(),
-        libraryRepository.observeItemStates(),
+        combine(
+            libraryRepository.observeItems(),
+            libraryRepository.observeItemStates(),
+            analysisSummaries,
+        ) { items, itemStates, summaries ->
+            Triple(items, itemStates, summaries)
+        },
         playbackController.status,
-        importState,
-        pendingDeleteItem,
-    ) { items, itemStates, playbackStatus, currentImportState, deleteTarget ->
+        combine(
+            importState,
+            transcriptImportState,
+            pendingDeleteItem,
+        ) { currentImportState, currentTranscriptState, deleteTarget ->
+            Triple(currentImportState, currentTranscriptState, deleteTarget)
+        },
+        selectedDirectoryName,
+        collapsedDirectories,
+    ) { (items, itemStates, summaries), playbackStatus, (currentImportState, currentTranscriptState, deleteTarget), dirName, collapsed ->
         buildUiState(
             items = items,
             itemStates = itemStates,
+            summaries = summaries,
             playbackStatus = playbackStatus,
             importState = currentImportState,
+            transcriptImportState = currentTranscriptState,
             pendingDeleteItem = deleteTarget,
+            selectedDirectoryName = dirName,
+            collapsedDirectories = collapsed,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -171,10 +362,30 @@ class LibraryViewModel @Inject constructor(
     /** 画面からのイベントを処理する。 */
     fun onEvent(event: LibraryEvent) {
         when (event) {
+            is LibraryEvent.ImportDirectory -> {
+                if (!event.directoryName.isNullOrBlank()) {
+                    selectedDirectoryName.value = event.directoryName
+                }
+                importUris(event.uris)
+            }
+
             is LibraryEvent.ImportUris -> importUris(event.uris)
+
+            is LibraryEvent.ImportTranscriptUri -> importTranscriptUri(event.uri)
 
             LibraryEvent.DismissImportStatus -> {
                 importState.value = LibraryImportUiState.Idle
+                transcriptImportState.value = TranscriptImportUiState.Idle
+            }
+
+            is LibraryEvent.ToggleDirectory -> {
+                collapsedDirectories.update { current ->
+                    if (event.directoryName in current) {
+                        current - event.directoryName
+                    } else {
+                        current + event.directoryName
+                    }
+                }
             }
 
             is LibraryEvent.RequestDelete -> {
@@ -189,7 +400,9 @@ class LibraryViewModel @Inject constructor(
 
             LibraryEvent.ToggleMiniPlayerPlayPause -> toggleMiniPlayerPlayPause()
 
+            LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
+            LibraryEvent.RequestImportTranscript,
             is LibraryEvent.OpenItem,
             LibraryEvent.OpenSettings,
             -> Unit
@@ -198,6 +411,7 @@ class LibraryViewModel @Inject constructor(
 
     private fun importUris(uris: List<Uri>) {
         if (uris.isEmpty()) return
+        transcriptImportState.value = TranscriptImportUiState.Idle
         importJob?.cancel()
         importJob = viewModelScope.launch {
             libraryRepository.import(uris).collect { progress ->
@@ -207,10 +421,33 @@ class LibraryViewModel @Inject constructor(
                     is ImportProgress.Done -> LibraryImportUiState.Done(
                         addedCount = progress.mediaIds.size,
                         duplicates = progress.duplicates,
+                        transcriptsAttached = progress.transcriptsAttached,
                     )
 
                     is ImportProgress.Failed -> LibraryImportUiState.Error(progress.error)
                 }
+            }
+        }
+    }
+
+    private fun importTranscriptUri(uri: Uri) {
+        importState.value = LibraryImportUiState.Idle
+        viewModelScope.launch {
+            val result = libraryRepository.importTranscript(uri)
+            transcriptImportState.value = when (result) {
+                is TranscriptImportResult.Attached -> TranscriptImportUiState.Attached(
+                    mediaId = result.mediaId,
+                    chunkCount = result.chunkCount,
+                    durationMismatch = result.durationMismatch,
+                )
+
+                is TranscriptImportResult.NoMatchingAudio -> TranscriptImportUiState.NoMatchingAudio(
+                    audioFileName = result.audioFileName,
+                )
+
+                is TranscriptImportResult.Invalid -> TranscriptImportUiState.Invalid(
+                    error = result.error,
+                )
             }
         }
     }
@@ -250,16 +487,24 @@ class LibraryViewModel @Inject constructor(
     private fun buildUiState(
         items: List<AudioItem>,
         itemStates: Map<MediaId, ItemState>,
+        summaries: Map<MediaId, ItemAnalysisSummary>,
         playbackStatus: PlaybackStatus,
         importState: LibraryImportUiState,
+        transcriptImportState: TranscriptImportUiState,
         pendingDeleteItem: AudioItem?,
+        selectedDirectoryName: String?,
+        collapsedDirectories: Set<String?>,
     ): LibraryUiState {
         val uiItems = items.map { audioItem ->
             val state = itemStates[audioItem.id]
+            val summary = summaries[audioItem.id]
             LibraryItemUiModel(
                 item = audioItem,
                 positionMs = state?.positionMs ?: 0L,
                 speed = state?.speed ?: 1.0f,
+                chunkCount = summary?.chunkCount ?: 0,
+                hasTranscript = summary?.hasTranscript ?: false,
+                isAnalyzing = summary?.isAnalyzing ?: false,
             )
         }
         val activeMediaId = playbackStatus.mediaId
@@ -285,8 +530,11 @@ class LibraryViewModel @Inject constructor(
         return LibraryUiState(
             items = uiItems,
             importState = importState,
+            transcriptImportState = transcriptImportState,
             miniPlayer = miniPlayer,
             pendingDeleteItem = pendingDeleteItem,
+            selectedDirectoryName = selectedDirectoryName,
+            collapsedDirectories = collapsedDirectories,
         )
     }
 }

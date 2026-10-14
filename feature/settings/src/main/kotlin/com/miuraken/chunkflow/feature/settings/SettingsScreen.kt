@@ -26,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -40,12 +41,15 @@ import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
+import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.SegmentationParams
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
- * 設定画面の Route（F9.1、F3.2、F3.3）。
+ * 設定画面の Route（F9.1、F3.2、F3.3、F5.2、F6.3）。
  */
 @Composable
 fun SettingsRoute(
@@ -105,6 +109,12 @@ fun SettingsScreen(
                 seekBackMs = state.seekBackMs,
                 seekForwardMs = state.seekForwardMs,
                 defaultSpeed = state.defaultSpeed,
+                defaultAutoPause = state.defaultAutoPause,
+                onEvent = onEvent,
+            )
+
+            SegmentationDefaultsSection(
+                params = state.defaultSegmentationParams,
                 onEvent = onEvent,
             )
 
@@ -131,6 +141,7 @@ private fun PlaybackSettingsSection(
     seekBackMs: Long,
     seekForwardMs: Long,
     defaultSpeed: Float,
+    defaultAutoPause: AutoPause,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_playback)) {
@@ -236,6 +247,104 @@ private fun PlaybackSettingsSection(
                         selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     ),
                 )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = stringResource(R.string.settings_default_auto_pause_label),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium,
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            SettingsUiState.AUTO_PAUSE_OPTIONS.forEach { option ->
+                FilterChip(
+                    selected = defaultAutoPause == option,
+                    onClick = { onEvent(SettingsEvent.SetDefaultAutoPause(option)) },
+                    label = { Text(text = autoPauseLabel(option)) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SegmentationDefaultsSection(
+    params: SegmentationParams,
+    onEvent: (SettingsEvent) -> Unit,
+) {
+    SettingsCard(title = stringResource(R.string.settings_section_segmentation)) {
+        Text(
+            text = stringResource(R.string.settings_segmentation_min_silence, params.minSilenceMs),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Slider(
+            value = params.minSilenceMs.toFloat().coerceIn(150f, 1_000f),
+            onValueChange = { value ->
+                val rounded = ((value / 50f).roundToInt() * 50).coerceIn(150, 1_000)
+                onEvent(
+                    SettingsEvent.SetDefaultSegmentationParams(
+                        params.copy(minSilenceMs = rounded),
+                    ),
+                )
+            },
+            valueRange = 150f..1_000f,
+            steps = 16,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Text(
+            text = stringResource(R.string.settings_segmentation_pre_padding, params.prePaddingMs),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Slider(
+            value = params.prePaddingMs.toFloat().coerceIn(0f, 400f),
+            onValueChange = { value ->
+                val rounded = ((value / 25f).roundToInt() * 25).coerceIn(0, 400)
+                onEvent(
+                    SettingsEvent.SetDefaultSegmentationParams(
+                        params.copy(prePaddingMs = rounded),
+                    ),
+                )
+            },
+            valueRange = 0f..400f,
+            steps = 15,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Text(
+            text = stringResource(R.string.settings_segmentation_post_padding, params.postPaddingMs),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Slider(
+            value = params.postPaddingMs.toFloat().coerceIn(0f, 400f),
+            onValueChange = { value ->
+                val rounded = ((value / 25f).roundToInt() * 25).coerceIn(0, 400)
+                onEvent(
+                    SettingsEvent.SetDefaultSegmentationParams(
+                        params.copy(postPaddingMs = rounded),
+                    ),
+                )
+            },
+            valueRange = 0f..400f,
+            steps = 15,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = { onEvent(SettingsEvent.ResetDefaultSegmentationParams) }) {
+                Text(text = stringResource(R.string.settings_segmentation_reset))
             }
         }
     }
@@ -389,6 +498,13 @@ private fun SettingsCard(
             content()
         }
     }
+}
+
+@Composable
+private fun autoPauseLabel(autoPause: AutoPause): String = when (autoPause) {
+    AutoPause.Off -> stringResource(R.string.settings_auto_pause_off)
+    is AutoPause.Fixed -> stringResource(R.string.settings_auto_pause_fixed, autoPause.pauseMs / 1_000f)
+    is AutoPause.Proportional -> stringResource(R.string.settings_auto_pause_proportional, autoPause.factor)
 }
 
 @Composable

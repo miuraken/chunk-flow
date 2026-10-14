@@ -4,6 +4,8 @@
     <string name="player_back">戻る</string>
     <string name="player_play">再生</string>
     <string name="player_pause">一時停止</string>
+    <string name="player_prev_chunk_cd">前のチャンクへ</string>
+    <string name="player_next_chunk_cd">次のチャンクへ</string>
     <string name="player_seek_back_label">-%1$d秒</string>
     <string name="player_seek_forward_label">+%1$d秒</string>
     <string name="player_seek_back_cd">%1$d 秒巻き戻す</string>
@@ -16,4 +18,64 @@
     <string name="player_error_source_missing">音声ファイルが見つかりません。同じ音声を取り込み直すと復元されます。</string>
     <string name="player_error_decoder">音声ファイルのデコードに失敗しました。</string>
     <string name="player_error_unknown">再生中にエラーが発生しました。</string>
+
+    <!-- 波形 (F4.1, F4.2, §7.5.4) -->
+    <string name="player_waveform_overview_label">全体波形</string>
+    <string name="player_waveform_zoomed_label">拡大波形</string>
+    <string name="player_waveform_overview_cd">全体波形シークバー</string>
+    <string name="player_waveform_zoomed_cd">拡大波形（ドラッグでシーク、ピンチでズーム、長押しドラッグで A-B 範囲選択）</string>
+    <string name="player_waveform_analyzing">波形を解析中…</string>
+    <string name="player_waveform_analyzing_percent">波形を解析中… %1$d%%</string>
+    <string name="player_waveform_preparing">波形データを準備しています…</string>
+    <string name="player_waveform_analysis_failed">波形の解析に失敗しました。</string>
+    <string name="player_waveform_zoom_window">表示幅: %1$s</string>
+
+    <!-- スクリプト一覧 (F7.1, F7.2, F6.1, §7.5.5) -->
+    <string name="player_return_to_current">現在位置へ戻る</string>
+    <string name="player_blind_masked_hint">タップしてスクリプトを表示</string>
+    <string name="player_chunk_repeat_3">このチャンクをリピート（3回）</string>
+    <string name="player_chunk_repeat_infinite">このチャンクを無限リピート</string>
+    <string name="player_chunk_range_select_start">ここから範囲リピートを選択</string>
+    <string name="player_chunk_range_selecting_banner">範囲リピートの終点チャンクをタップしてください</string>
+    <string name="player_chunk_range_cancel">キャンセル</string>
+    <string name="player_no_transcript_banner">PC で文字起こしを作って取り込むと、スクリプトが表示されます</string>
+    <string name="player_pick_transcript_json">文字起こしJSONを選ぶ</string>
+    <string name="player_chunk_number_format">チャンク #%1$d</string>
+    <string name="player_transcript_attached">%1$d チャンクの文字起こしを取り込みました</string>
+    <string name="player_transcript_attached_mismatch">%1$d チャンクを取り込みました（音声の長さと差があります）</string>
+    <string name="player_transcript_no_matching_audio">対応する音声が見つかりませんでした</string>
+    <string name="player_transcript_invalid">文字起こしファイルの形式が正しくありません</string>
+    <string name="player_dismiss_banner">閉じる</string>
+
+    <!-- 学習コントロール (F5.2, F5.4, F6.1, F6.2, F6.3, F7.2) -->
+    <string name="player_chip_repeat_off">リピート: OFF</string>
+    <string name="player_chip_repeat_single_3">1チャンク×3</string>
+    <string name="player_chip_repeat_single_inf">1チャンク∞</string>
+    <string name="player_chip_repeat_range">範囲リピート</string>
+    <string name="player_chip_repeat_ab">A-B リピート</string>
+    <string name="player_ab_set_a">[A] 始点</string>
+    <string name="player_ab_set_b">[B] 終点</string>
+    <string name="player_ab_clear">解除</string>
+
+    <string name="player_chip_autopause_off">自動ポーズ: OFF</string>
+    <string name="player_chip_autopause_fixed">ポーズ %1$d秒</string>
+    <string name="player_chip_autopause_prop">ポーズ ×%1$s</string>
+    <string name="player_autopause_active_banner">自動ポーズ中（発話練習） 残り %1$s秒</string>
+    <string name="player_autopause_resume_now">再開</string>
+
+    <string name="player_chip_blind_off">ブラインド: OFF</string>
+    <string name="player_chip_blind_target">学習言語を隠す</string>
+    <string name="player_chip_blind_all">すべて隠す</string>
+
+    <string name="player_chip_source_imported">区切り: 文字起こし</string>
+    <string name="player_chip_source_auto">区切り: 自動分割</string>
+    <string name="player_chip_resegment">分割調整</string>
+
+    <string name="player_resegment_sheet_title">自動チャンク分割の調整</string>
+    <string name="player_resegment_min_silence">無音区間の最小長: %1$d ms</string>
+    <string name="player_resegment_pre_padding">発話前の余白: %1$d ms</string>
+    <string name="player_resegment_post_padding">発話後の余白: %1$d ms</string>
+    <string name="player_resegment_threshold">無音判定の感度（閾値比）: %1$s</string>
+    <string name="player_resegment_apply">この設定で再分割する</string>
+    <string name="player_sheet_close">閉じる</string>
 </resources>

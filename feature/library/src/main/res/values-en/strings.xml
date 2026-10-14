@@ -1,20 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="PluralsCandidate">
     <string name="library_title">Library</string>
     <string name="library_open_settings">Settings</string>
-    <string name="library_import_button">Import</string>
+    <string name="library_import_directory_button">Select folder</string>
+    <string name="library_import_button">Import files</string>
+    <string name="library_import_transcript_button">Add transcript</string>
+    <string name="library_directory_structure_hint">Pairs audio files in the selected folder with transcription/&lt;audio&gt;.chunkflow.json</string>
+    <string name="library_directory_uncategorized">Uncategorized folder</string>
+    <string name="library_directory_item_count">%1$d items</string>
+    <string name="library_directory_expand">Expand folder</string>
+    <string name="library_directory_collapse">Collapse folder</string>
     <string name="library_empty">No materials yet.</string>
-    <string name="library_empty_hint">Select audio files from your device or Google Drive to start learning.</string>
-    <string name="library_empty_import_action">Import audio files</string>
-    <string name="library_importing">Importing audio files…</string>
+    <string name="library_empty_hint">Select a study folder (directory) or choose audio and transcript (.chunkflow.json) files to start learning.</string>
+    <string name="library_empty_import_directory_action">Select folder (directory)</string>
+    <string name="library_empty_import_action">Select audio / transcript files</string>
+    <string name="library_importing">Importing files…</string>
     <string name="library_import_done">Imported: %1$d (skipped duplicates: %2$d)</string>
-    <string name="library_import_error_unsupported">Unsupported file format (supports MP3, M4A, Ogg, FLAC, WAV).</string>
+    <string name="library_import_done_with_transcripts">Imported: %1$d (duplicates: %2$d, transcripts attached: %3$d)</string>
+    <string name="library_import_error_unsupported">Unsupported file format (supports MP3, M4A, Ogg, FLAC, WAV, JSON).</string>
     <string name="library_import_error_too_large">The file exceeds the maximum allowed size.</string>
     <string name="library_import_error_no_space">Not enough storage space on the device.</string>
     <string name="library_import_error_io">Failed to read the selected file.</string>
     <string name="library_import_error_cancelled">Import was cancelled.</string>
+    <string name="library_transcript_attached">Attached transcript (%1$d chunks)</string>
+    <string name="library_transcript_attached_mismatch">Attached transcript (%1$d chunks; audio duration differs)</string>
+    <string name="library_transcript_no_matching_audio">Matching audio is not imported yet (%1$s). Import the audio file first.</string>
+    <string name="library_transcript_no_matching_audio_unknown">Matching audio is not imported yet. Import the audio file first.</string>
+    <string name="library_transcript_invalid">The transcript file format is invalid.</string>
     <string name="library_dismiss_banner">Dismiss</string>
     <string name="library_item_resume_position">Resume %1$s / %2$s</string>
+    <string name="library_item_chunk_count">%1$d chunks</string>
+    <string name="library_item_analyzing">Analyzing…</string>
+    <string name="library_item_transcript_ready">Transcript attached</string>
     <string name="library_delete_content_description">Delete %1$s</string>
     <string name="library_delete_dialog_title">Delete material?</string>
     <string name="library_delete_dialog_message">“%1$s” will be removed from your library along with its audio and progress.</string>
