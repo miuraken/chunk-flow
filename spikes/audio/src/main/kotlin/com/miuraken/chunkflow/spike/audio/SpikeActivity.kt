@@ -30,6 +30,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONObject
 
 /**
@@ -51,6 +52,7 @@ class SpikeActivity : ComponentActivity() {
     private val main = Handler(Looper.getMainLooper())
     private val log = mutableStateListOf<String>()
     private val status = mutableStateOf("待機中")
+    private val pending = AtomicInteger(0)
 
     private val root: File by lazy { File(getExternalFilesDir(null), "s3").apply { mkdirs() } }
     private val resultsFile: File by lazy { File(getExternalFilesDir(null), "s3_results.jsonl") }
@@ -97,6 +99,8 @@ class SpikeActivity : ComponentActivity() {
     }
 
     private fun enqueue(cmd: String, target: File, kind: ExtractorKind, repeat: Int) {
+        // 計測中は凍結されないようにフォアグラウンドサービスを動かす（MeasureService の説明を参照）
+        if (pending.getAndIncrement() == 0) MeasureService.start(this)
         worker.execute {
             repeat(repeat) {
                 when (cmd) {
@@ -122,6 +126,7 @@ class SpikeActivity : ComponentActivity() {
                 }
             }
             setStatus("完了: $cmd ${target.name}")
+            if (pending.decrementAndGet() == 0) MeasureService.stop(this)
         }
     }
 
