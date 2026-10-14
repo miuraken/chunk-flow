@@ -34,7 +34,7 @@ def main() -> None:
         if not r["test"].startswith("decode"):
             continue
         c = r.get("clicks", {})
-        print(f"| {r['file']} | {r['extractor']} | {r['test']} | {r.get('wallMs')} | {r.get('threadCpuMs')} | "
+        print(f"| {r['file']} | {r['extractor']} | {r['test']} | {r.get('wallMs')} | {r.get('threadCpuMs', r.get('codecThreadCpuMs'))} | "
               f"{r.get('pipelineMs', '-')} | {r.get('speedX', '-')} | {r.get('javaHeapExtraMb')} | "
               f"{r.get('nativeHeapExtraMb')} | {r.get('pssExtraMb')} | {r.get('encoderDelay', '-')} | "
               f"{_clk(c.get('countRaw'))} | {_clk(c.get('countTrimDelay'))} | {_clk(c.get('pts'))} | "

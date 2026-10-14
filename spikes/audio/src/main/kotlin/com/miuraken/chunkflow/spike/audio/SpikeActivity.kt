@@ -42,7 +42,8 @@ import org.json.JSONObject
  * `adb shell am start -n com.miuraken.chunkflow.spike.audio/.SpikeActivity --es cmd suite --es path 30min --ei repeat 2`
  *
  * cmd: `decode`（抽出 + デコード + 解析）、`decodeonly`（デコードだけ）、`exo`（ExoPlayer・高速）、
- * `exort`（ExoPlayer・等速）、`suite`（フォルダ内の全ファイルで decode×2 種の抽出器・decodeonly・exo）。
+ * `exort`（ExoPlayer・等速）、`decodeasync`（非同期モードのデコード + 解析）、
+ * `speed`（同期・非同期・ExoPlayer の速度の比較）、`suite`（フォルダ内の全ファイルで decode×2 種の抽出器・decodeonly・exo）。
  * extractor: `platform` / `compat`。
  */
 class SpikeActivity : ComponentActivity() {
@@ -109,6 +110,12 @@ class SpikeActivity : ComponentActivity() {
 
                     "exort" -> record(ExoTimingProbe(this, target, true, ClickMatch.loadExpected(target)).run(TIMEOUT_MS))
 
+                    "decodeasync" -> record(
+                        AsyncDecodeBenchmark(this, target, kind, ClickMatch.loadExpected(target)).run(TIMEOUT_MS),
+                    )
+
+                    "speed" -> speed(target)
+
                     "suite" -> suite(target)
 
                     else -> append("不明なコマンド: $cmd")
@@ -125,6 +132,18 @@ class SpikeActivity : ComponentActivity() {
             record(DecodeBenchmark(this, f, ExtractorKind.PLATFORM, true, expected).run())
             record(DecodeBenchmark(this, f, ExtractorKind.COMPAT, true, expected).run())
             record(DecodeBenchmark(this, f, ExtractorKind.PLATFORM, false, expected).run())
+            record(ExoTimingProbe(this, f, false, expected).run(TIMEOUT_MS))
+        }
+    }
+
+    /** 速度の比較: 同期モード・非同期モード（2 種の抽出器）・ExoPlayer（高速）。[target] はファイルかフォルダ。 */
+    private fun speed(target: File) {
+        val files = if (target.isDirectory) audioFiles(target) else listOf(target)
+        for (f in files) {
+            val expected = ClickMatch.loadExpected(f)
+            record(DecodeBenchmark(this, f, ExtractorKind.PLATFORM, true, expected).run())
+            record(AsyncDecodeBenchmark(this, f, ExtractorKind.PLATFORM, expected).run(TIMEOUT_MS))
+            record(AsyncDecodeBenchmark(this, f, ExtractorKind.COMPAT, expected).run(TIMEOUT_MS))
             record(ExoTimingProbe(this, f, false, expected).run(TIMEOUT_MS))
         }
     }
