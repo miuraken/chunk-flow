@@ -11,19 +11,30 @@ import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
+import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
+import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
+import com.miuraken.chunkflow.core.drive.DriveBytesDownloadResult
+import com.miuraken.chunkflow.core.drive.DriveCourseFiles
+import com.miuraken.chunkflow.core.drive.DriveDownloadResult
+import com.miuraken.chunkflow.core.drive.DriveError
+import com.miuraken.chunkflow.core.drive.DriveListResult
+import com.miuraken.chunkflow.core.drive.DriveRemoteFile
+import com.miuraken.chunkflow.core.drive.DriveSyncClient
+import com.miuraken.chunkflow.core.drive.DriveUploadResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.DriveFileKind
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -34,6 +45,7 @@ import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.testing.fake.FakeTranscriptParser
+import com.miuraken.chunkflow.core.transcript.ChunkFlowTranscriptParser
 import com.miuraken.chunkflow.core.transcript.TranscriptDocument
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import com.miuraken.chunkflow.core.transcript.TranscriptParseResult
@@ -75,6 +87,8 @@ class DefaultLibraryRepositoryTest {
     private lateinit var itemStateDao: InMemoryItemStateDao
     private lateinit var mediaItemDao: InMemoryMediaItemDao
     private lateinit var chunkDao: InMemoryChunkDao
+    private lateinit var driveFileDao: InMemoryDriveFileDao
+    private lateinit var driveSyncClient: FakeDriveSyncClient
     private lateinit var analysisRepository: RecordingAnalysisRepository
     private lateinit var transcriptParser: FakeTranscriptParser
     private lateinit var settingsRepository: TestUserSettingsRepository
@@ -108,10 +122,13 @@ class DefaultLibraryRepositoryTest {
 
         itemStateDao = InMemoryItemStateDao()
         chunkDao = InMemoryChunkDao()
+        driveFileDao = InMemoryDriveFileDao()
+        driveSyncClient = FakeDriveSyncClient()
         mediaItemDao = InMemoryMediaItemDao(
             onCascadeDelete = { mediaId ->
                 itemStateDao.deleteByMediaId(mediaId)
                 chunkDao.deleteByMediaId(mediaId)
+                driveFileDao.deleteByMediaId(mediaId)
             },
         )
         analysisRepository = RecordingAnalysisRepository()
@@ -136,6 +153,8 @@ class DefaultLibraryRepositoryTest {
         audioFormatInspector = AudioFormatInspector { file -> inspectHandler(file) },
         mediaFileLocator = mediaFileLocator,
         chunkDao = chunkDao,
+        driveFileDao = driveFileDao,
+        driveSyncClient = driveSyncClient,
         analysisRepository = analysisRepository,
         transcriptParser = transcriptParser,
         clock = { currentEpochMs },
@@ -826,6 +845,346 @@ class DefaultLibraryRepositoryTest {
     }
 
     private fun sha256Hex(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    @Test
+    fun `updateItemMetadata_コース名と言語ペアがサニタイズされて更新される`() = runTest {
+        val audioBytes = "metadata-update-audio".encodeToByteArray()
+        val uri = registerContent(
+            id = "meta1",
+            displayName = "dialogue.mp3",
+            sizeBytes = audioBytes.size.toLong(),
+            bytes = audioBytes,
+        )
+        val repo = createRepository()
+        val done = repo.import(listOf(uri)).toList().last() as ImportProgress.Done
+        val mediaId = done.mediaIds.single()
+
+        repo.updateItemMetadata(
+            id = mediaId,
+            course = "  path/to/Business_Chinese  ",
+            languages = LanguagePair(LanguageTag("zh"), LanguageTag("en")),
+        )
+
+        val updated = repo.observeItem(mediaId).first()
+        assertNotNull(updated)
+        assertEquals("Business_Chinese", updated.course)
+        assertEquals(LanguagePair(LanguageTag("zh"), LanguageTag("en")), updated.languagePair)
+    }
+
+    @Test
+    fun `import_SRTやVTTやLRCの文字起こしファイルもファイル名ステム一致で紐付けられる`() = runTest {
+        val audioBytes = "srt-matching-audio".encodeToByteArray()
+        val audioUri = registerContent(
+            id = "srt_audio",
+            displayName = "unit05.mp3",
+            sizeBytes = audioBytes.size.toLong(),
+            bytes = audioBytes,
+        )
+        val srtBytes = "1\n00:00:01,000 --> 00:00:03,000\nBonjour\n".encodeToByteArray()
+        val srtUri = registerContent(
+            id = "srt_sub",
+            displayName = "unit05.srt",
+            sizeBytes = srtBytes.size.toLong(),
+            bytes = srtBytes,
+            mimeType = "application/x-subrip",
+        )
+
+        // SRT は audioSha256 と languages が null
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = null,
+                    audioFileName = null,
+                    durationMs = null,
+                    languages = null,
+                    generator = EngineId("srt-import"),
+                    segments = listOf(
+                        TranscriptSegment(
+                            startMs = 1_000L,
+                            endMs = 3_000L,
+                            language = null,
+                            languageConfidence = null,
+                            text = "Bonjour",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val repo = createRepository()
+        val done = repo.import(listOf(audioUri, srtUri)).toList().last() as ImportProgress.Done
+        assertEquals(1, done.mediaIds.size)
+        assertEquals(1, done.transcriptsAttached)
+
+        val mediaId = done.mediaIds.single()
+        val importedChunks = chunkDao.getByMediaIdAndOrigin(mediaId.value, ChunkOrigin.IMPORTED.name)
+        assertEquals(1, importedChunks.size)
+        assertEquals(850L, importedChunks.single().startMs)
+        assertEquals(3_200L, importedChunks.single().endMs)
+        assertTrue(mediaFileLocator.transcriptFileFor(mediaId, "srt").exists())
+    }
+
+    @Test
+    fun `exportLocalTranscriptJson_Roomの文字起こしからスキーマ準拠のJSONを書き出しDriveへアップロードする`() = runTest {
+        val audioBytes = "export-json-audio".encodeToByteArray()
+        val audioUri = registerContent(
+            id = "exp_audio",
+            displayName = "lesson_export.mp3",
+            sizeBytes = audioBytes.size.toLong(),
+            bytes = audioBytes,
+        )
+        val repo = createRepository()
+        val done = repo.import(listOf(audioUri)).toList().last() as ImportProgress.Done
+        val mediaId = done.mediaIds.single()
+        repo.updateItemMetadata(
+            id = mediaId,
+            course = "CourseZ",
+            languages = LanguagePair(LanguageTag("zh"), LanguageTag("ja")),
+        )
+
+        // 端末内文字起こし（AUTO チャンク + TranscriptEntity）を模擬
+        val insertedChunks = chunkDao.replaceChunksTransaction(
+            mediaId = mediaId.value,
+            origin = ChunkOrigin.AUTO.name,
+            newChunks = listOf(
+                ChunkEntity(id = 0L, mediaId = mediaId.value, startMs = 500L, endMs = 2_500L, origin = ChunkOrigin.AUTO.name),
+            ),
+            newTranscriptsByIndex = mapOf(
+                0 to TranscriptEntity(
+                    chunkId = 0L,
+                    text = "你好",
+                    language = "zh",
+                    languageConfidence = 0.95f,
+                    engine = "sherpa-onnx-sensevoice",
+                    userEdited = true,
+                    createdAt = currentEpochMs,
+                ),
+            ),
+        )
+        assertEquals(1, insertedChunks.size)
+
+        val exported = repo.exportLocalTranscriptJson(mediaId)
+        assertTrue(exported)
+
+        val localJsonFile = mediaFileLocator.transcriptFileFor(mediaId, "chunkflow.json")
+        assertTrue(localJsonFile.exists())
+
+        // 生成された JSON が本物の ChunkFlowTranscriptParser の全検証（段階 1〜4）を通過することを確認
+        val realParser = ChunkFlowTranscriptParser()
+        val parseResult = realParser.parse(localJsonFile.readBytes(), "lesson_export.chunkflow.json")
+        assertTrue(parseResult is TranscriptParseResult.Ok, "Exported JSON must pass ChunkFlowTranscriptParser: $parseResult")
+        val doc = parseResult.document
+        assertEquals(sha256Hex(audioBytes), doc.audioSha256)
+        assertEquals(1, doc.segments.size)
+        assertEquals("你好", doc.segments.single().text)
+
+        // Drive へのアップロードも実行され、drive_file に記録されていること
+        assertEquals(1, driveSyncClient.uploadedFiles.size)
+        val uploaded = driveSyncClient.uploadedFiles.single()
+        assertEquals("CourseZ", uploaded.first)
+        assertEquals("lesson_export.chunkflow.json", uploaded.second)
+        val driveRecords = driveFileDao.getByMediaId(mediaId.value)
+        assertEquals(1, driveRecords.size)
+        assertEquals(DriveFileKind.TRANSCRIPT.name, driveRecords.single().kind)
+    }
+
+    @Test
+    fun `syncFromDrive_新規音声とJSONをダウンロードしローカルで生成済みの文字起こしをDriveへ自動アップロードする`() = runTest {
+        // 1. 事前にローカルで端末内文字起こし済みの教材を 1 件用意する
+        val localAudioBytes = "local-only-audio".encodeToByteArray()
+        val localUri = registerContent(
+            id = "local_1",
+            displayName = "local_ep1.mp3",
+            sizeBytes = localAudioBytes.size.toLong(),
+            bytes = localAudioBytes,
+        )
+        val repo = createRepository()
+        val importDone = repo.import(listOf(localUri)).toList().last() as ImportProgress.Done
+        val localMediaId = importDone.mediaIds.single()
+        repo.updateItemMetadata(
+            id = localMediaId,
+            course = "HSK5",
+            languages = LanguagePair(LanguageTag("zh"), LanguageTag("ja")),
+        )
+        chunkDao.replaceChunksTransaction(
+            mediaId = localMediaId.value,
+            origin = ChunkOrigin.AUTO.name,
+            newChunks = listOf(
+                ChunkEntity(id = 0L, mediaId = localMediaId.value, startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+            newTranscriptsByIndex = mapOf(
+                0 to TranscriptEntity(
+                    chunkId = 0L,
+                    text = "ローカル文字起こし",
+                    language = "ja",
+                    languageConfidence = 1.0f,
+                    engine = "sherpa-onnx",
+                    userEdited = true,
+                    createdAt = currentEpochMs,
+                ),
+            ),
+        )
+
+        // 2. Drive 上のコースと新規音声・新規文字起こしを設定する
+        val remoteAudioBytes = "remote-drive-audio-payload".encodeToByteArray()
+        val remoteAudioSha = sha256Hex(remoteAudioBytes)
+        val remoteTranscriptBytes = "{\"format\":\"chunkflow-transcript\",\"version\":1}".encodeToByteArray()
+
+        driveSyncClient.coursesResult = DriveListResult.Success(
+            listOf(
+                DriveCourseFiles(
+                    courseName = "HSK5",
+                    audioFiles = listOf(
+                        DriveRemoteFile(
+                            id = "drive-audio-1",
+                            name = "remote_ep2.mp3",
+                            mimeType = "audio/mpeg",
+                            sizeBytes = remoteAudioBytes.size.toLong(),
+                            modifiedTimeEpochMs = 1_700_000_100_000L,
+                            sha256Checksum = remoteAudioSha,
+                        ),
+                    ),
+                    transcriptFiles = listOf(
+                        DriveRemoteFile(
+                            id = "drive-json-1",
+                            name = "remote_ep2.chunkflow.json",
+                            mimeType = "application/json",
+                            sizeBytes = remoteTranscriptBytes.size.toLong(),
+                            modifiedTimeEpochMs = 1_700_000_200_000L,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        driveSyncClient.audioPayloads["drive-audio-1"] = remoteAudioBytes
+        driveSyncClient.transcriptPayloads["drive-json-1"] = remoteTranscriptBytes
+
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = remoteAudioSha,
+                    audioFileName = "remote_ep2.mp3",
+                    durationMs = 120_000L,
+                    languages = LanguagePair(LanguageTag("zh"), LanguageTag("ja")),
+                    generator = EngineId("pc-faster-whisper"),
+                    segments = listOf(
+                        TranscriptSegment(
+                            startMs = 1_000L,
+                            endMs = 4_000L,
+                            language = LanguageTag("zh"),
+                            languageConfidence = 0.9f,
+                            text = "ドライブからの文字起こし",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val syncEvents = repo.syncFromDrive().toList()
+        assertEquals(SyncProgress.Listing, syncEvents.first())
+        val syncDone = syncEvents.last() as SyncProgress.Done
+        assertEquals(1, syncDone.newAudio)
+        assertEquals(1, syncDone.newTranscripts)
+        assertEquals(0, syncDone.failed)
+        assertEquals(1, syncDone.uploadedTranscripts)
+
+        // ローカルの local_ep1 が Drive の HSK5/transcription/local_ep1.chunkflow.json にアップロードされたこと
+        assertEquals(1, driveSyncClient.uploadedFiles.size)
+        assertEquals("HSK5", driveSyncClient.uploadedFiles.single().first)
+        assertEquals("local_ep1.chunkflow.json", driveSyncClient.uploadedFiles.single().second)
+
+        // 2 回目の同期では変更がないため再ダウンロード・再アップロードされないこと
+        val secondSyncDone = repo.syncFromDrive().toList().last() as SyncProgress.Done
+        assertEquals(0, secondSyncDone.newAudio)
+        assertEquals(0, secondSyncDone.newTranscripts)
+        assertEquals(0, secondSyncDone.failed)
+        assertEquals(0, secondSyncDone.uploadedTranscripts)
+    }
+
+    private class InMemoryDriveFileDao : DriveFileDao {
+        private val records = MutableStateFlow<Map<String, DriveFileEntity>>(emptyMap())
+
+        override suspend fun getAll(): List<DriveFileEntity> = records.value.values.toList()
+
+        override suspend fun getById(driveFileId: String): DriveFileEntity? = records.value[driveFileId]
+
+        override suspend fun getByMediaId(mediaId: String): List<DriveFileEntity> = records.value.values.filter { it.mediaId == mediaId }
+
+        override suspend fun upsert(file: DriveFileEntity) {
+            records.update { it + (file.driveFileId to file) }
+        }
+
+        override suspend fun upsertAll(files: List<DriveFileEntity>) {
+            records.update { current -> current + files.associateBy { it.driveFileId } }
+        }
+
+        override suspend fun deleteById(driveFileId: String) {
+            records.update { it - driveFileId }
+        }
+
+        fun deleteByMediaId(mediaId: String) {
+            records.update { current -> current.filterValues { it.mediaId != mediaId } }
+        }
+    }
+
+    private class FakeDriveSyncClient : DriveSyncClient {
+        var coursesResult: DriveListResult = DriveListResult.Failure(DriveError.AUTH)
+        val audioPayloads = mutableMapOf<String, ByteArray>()
+        val transcriptPayloads = mutableMapOf<String, ByteArray>()
+        val uploadedFiles = mutableListOf<Triple<String, String, ByteArray>>()
+        private var uploadCounter = 1
+
+        override suspend fun listChunkFlowCourses(): DriveListResult = coursesResult
+
+        override suspend fun downloadToFile(
+            fileId: String,
+            destFile: File,
+            maxSizeBytes: Long,
+            onProgress: ((Long) -> Unit)?,
+        ): DriveDownloadResult {
+            val bytes = audioPayloads[fileId] ?: return DriveDownloadResult.Failure(DriveError.NETWORK)
+            if (bytes.size.toLong() > maxSizeBytes) {
+                return DriveDownloadResult.Failure(DriveError.TOO_LARGE)
+            }
+            destFile.parentFile?.mkdirs()
+            destFile.writeBytes(bytes)
+            val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            return DriveDownloadResult.Success(bytes.size.toLong(), sha)
+        }
+
+        override suspend fun downloadBytes(
+            fileId: String,
+            maxSizeBytes: Long,
+        ): DriveBytesDownloadResult {
+            val bytes = transcriptPayloads[fileId] ?: return DriveBytesDownloadResult.Failure(DriveError.NETWORK)
+            if (bytes.size.toLong() > maxSizeBytes) {
+                return DriveBytesDownloadResult.Failure(DriveError.TOO_LARGE)
+            }
+            return DriveBytesDownloadResult.Success(bytes)
+        }
+
+        override suspend fun uploadTranscriptJson(
+            courseName: String,
+            fileName: String,
+            jsonBytes: ByteArray,
+        ): DriveUploadResult {
+            uploadedFiles += Triple(courseName, fileName, jsonBytes)
+            val id = "uploaded-drive-file-${uploadCounter++}"
+            return DriveUploadResult.Success(
+                DriveRemoteFile(
+                    id = id,
+                    name = fileName,
+                    mimeType = "application/json",
+                    sizeBytes = jsonBytes.size.toLong(),
+                    modifiedTimeEpochMs = System.currentTimeMillis() + 10_000L,
+                ),
+            )
+        }
+    }
 
     private class InMemoryMediaItemDao(
         private val onCascadeDelete: (String) -> Unit,

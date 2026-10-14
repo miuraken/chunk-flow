@@ -191,6 +191,8 @@ class PlaybackControllerTest {
 
         assertEquals(4_000L, controller.position.currentPositionMs())
         assertEquals(chunk2.id, controller.status.value.currentChunkId)
+        assertTrue(analysisRepository.lookaheadCalls.contains(mediaId1 to chunk1.id))
+        assertTrue(analysisRepository.lookaheadCalls.contains(mediaId1 to chunk2.id))
 
         controller.release()
     }
@@ -482,6 +484,7 @@ class PlaybackControllerTest {
     private class InMemoryAnalysisRepository : AnalysisRepository {
         val chunksByMedia = MutableStateFlow<Map<MediaId, List<Chunk>>>(emptyMap())
         val transcriptsByMedia = MutableStateFlow<Map<MediaId, Map<ChunkId, Transcript>>>(emptyMap())
+        val lookaheadCalls = mutableListOf<Pair<MediaId, ChunkId?>>()
 
         override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = flowOf(emptyMap())
         override fun observeWaveform(id: MediaId): Flow<Waveform?> = flowOf(null)
@@ -491,6 +494,9 @@ class PlaybackControllerTest {
         override suspend fun resegment(id: MediaId, params: SegmentationParams) {}
         override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) {}
         override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) {}
+        override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
+            lookaheadCalls += id to currentChunkId
+        }
     }
 
     private class InMemoryUserSettingsRepository : UserSettingsRepository {
