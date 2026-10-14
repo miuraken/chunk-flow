@@ -61,3 +61,6 @@ __pycache__/
 
 # ---- ログ ----
 *.log
+
+# 手元の評価用の教材（著作物。コミットしない。AGENTS.md §10）
+/sample_files/
