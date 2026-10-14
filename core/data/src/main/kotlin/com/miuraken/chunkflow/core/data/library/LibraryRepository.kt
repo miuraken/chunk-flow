@@ -2,14 +2,15 @@ package com.miuraken.chunkflow.core.data.library
 
 import android.net.Uri
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import kotlinx.coroutines.flow.Flow
 
 /**
- * ライブラリ（取り込んだ教材）の単一の情報源（§6.3、§7.1）。
+ * ライブラリ（取り込んだ教材）と教材ごとの再生・学習状態（[ItemState]）の単一の情報源（§6.3、§6.4、§7.1）。
  *
- * 実装は playback が書く（`core/data` の `library` パッケージ）。宣言は Phase 0 で lead が置いた契約（ADR 0003）。
+ * 実装は playback が書く（`core/data` の `library` パッケージ）。宣言は lead が管理する契約（ADR 0003）。
  */
 interface LibraryRepository {
     /** すべての教材を購読する。 */
@@ -17,6 +18,27 @@ interface LibraryRepository {
 
     /** 教材 1 件を購読する。削除されたら `null` を流す。 */
     fun observeItem(id: MediaId): Flow<AudioItem?>
+
+    /** すべての教材の再生・学習状態（F2.1 進捗表示、F2.2 レジューム）を購読する。 */
+    fun observeItemStates(): Flow<Map<MediaId, ItemState>>
+
+    /** 教材 1 件の再生・学習状態を購読する。まだ状態がなければ `null` を流す。 */
+    fun observeItemState(id: MediaId): Flow<ItemState?>
+
+    /** 教材の再生・学習状態を保存（追加または更新）する。 */
+    suspend fun upsertItemState(state: ItemState)
+
+    /**
+     * 教材の再生位置と速度を更新する（§7.2.5: 再生中は 5 秒ごと、および一時停止・停止・切り替え時）。
+     *
+     * まだ [ItemState] の行がない教材の場合は既定値で作って位置・速度を設定する。
+     */
+    suspend fun updatePlaybackPosition(
+        id: MediaId,
+        positionMs: Long,
+        speed: Float,
+        updatedAtEpochMs: Long,
+    )
 
     /**
      * 音声と文字起こしファイルをまとめて取り込む（名前と SHA-256 で対応付ける）。
@@ -31,7 +53,7 @@ interface LibraryRepository {
     /** Drive の `ChunkFlow/` フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
     fun syncFromDrive(): Flow<SyncProgress>
 
-    /** 教材を削除する（音声・解析結果・文字起こしを含む）。 */
+    /** 教材を削除する（音声・解析結果・文字起こし・状態を含む）。 */
     suspend fun delete(id: MediaId)
 }
 

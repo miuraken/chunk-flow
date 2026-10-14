@@ -11,8 +11,10 @@ dependencies {
     api(project(":core:model"))
     api(project(":core:playback"))
     api(project(":core:data"))
+    api(project(":core:datastore"))
     api(project(":core:transcript"))
     api(platform(libs.androidx.compose.bom))
     // PreviewParameterProvider を公開 API で使う
     api(libs.androidx.compose.ui.tooling.preview)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
