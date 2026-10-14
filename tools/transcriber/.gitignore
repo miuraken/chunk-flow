@@ -1,0 +1,26 @@
+# 仮想環境とキャッシュ
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 作業用（合成音声、計測の出力、モデル）。実際の教材や生成物はコミットしない
+.work/
+models/
+*.safetensors
+*.npz
+*.bin
+*.onnx
+
+# 生成した音声と文字起こし
+*.mp3
+*.m4a
+*.wav
+*.aiff
+*.flac
+*.ogg
+*.opus
+transcription/
+*.chunkflow.json
+*.tmp
