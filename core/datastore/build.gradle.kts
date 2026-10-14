@@ -1,6 +1,7 @@
 // DataStore（アプリ設定）
 plugins {
     alias(libs.plugins.chunkflow.android.library)
+    alias(libs.plugins.chunkflow.hilt)
 }
 
 android {
@@ -9,5 +10,7 @@ android {
 
 dependencies {
     api(project(":core:model"))
+    api(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.datastore.preferences)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
