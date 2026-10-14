@@ -2,6 +2,7 @@ package com.miuraken.chunkflow.core.playback
 
 import android.content.Context
 import android.net.Uri
+import android.os.PowerManager
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -9,18 +10,26 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
+import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
+import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PracticeSettings
+import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.Transcript
+import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.playback.di.PlaybackMainDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
@@ -32,10 +41,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -45,8 +56,10 @@ import kotlinx.coroutines.withContext
  * [PlaybackController] の本番実装（§6.3、§7.2.1〜§7.2.5）。
  *
  * - [LearningPlayer]（内側は [PlaybackPlayerFactory] で構成した ExoPlayer）を管理し、UI と [PlaybackService] で共有する。
+ * - 内側の Player が [ExoPlayer] の場合は [ChunkScheduler] を接続し、`PlayerMessage` によるチャンク境界制御・
+ *   リピート・自動ポーズ・言語フィルタおよび [PlaybackStatus.currentChunkId] / [PlaybackStatus.autoPauseEndsAtMs] の更新を行う（§7.2.4、ADR 0007）。
  * - `open(mediaId)` で [LibraryRepository] から [AudioItem] と [ItemState] を取得し、ローカル音声ファイルの有無を検証した上で
- *   前回の位置・速度で再生準備を行う（ファイルが欠損している場合は [PlaybackError.SOURCE_MISSING] を設定する）。
+ *   前回の位置・速度・学習モードで再生準備を行う（ファイルが欠損している場合は [PlaybackError.SOURCE_MISSING] を設定する）。
  * - 再生中は 5 秒ごと、および一時停止・停止・教材切り替え・速度変更時に [LibraryRepository.updatePlaybackPosition] で
  *   レジューム位置と速度を Room に保存する（§7.2.5）。
  */
@@ -59,6 +72,7 @@ class MediaControllerPlaybackController(
     private val practiceController: PracticeController,
     private val mediaFileLocator: MediaFileLocator,
     @PlaybackMainDispatcher private val mainDispatcher: CoroutineDispatcher,
+    private val analysisRepository: AnalysisRepository = NoOpAnalysisRepository,
     private val rawPlayerFactory: () -> Player = { PlaybackPlayerFactory.createExoPlayer(context) },
     private val clock: () -> Long = System::currentTimeMillis,
 ) : PlaybackController {
@@ -67,6 +81,7 @@ class MediaControllerPlaybackController(
     constructor(
         @ApplicationContext context: Context,
         libraryRepository: LibraryRepository,
+        analysisRepository: AnalysisRepository,
         userSettingsRepository: UserSettingsRepository,
         practiceController: PracticeController,
         mediaFileLocator: MediaFileLocator,
@@ -78,17 +93,21 @@ class MediaControllerPlaybackController(
         practiceController = practiceController,
         mediaFileLocator = mediaFileLocator,
         mainDispatcher = mainDispatcher,
+        analysisRepository = analysisRepository,
         rawPlayerFactory = { PlaybackPlayerFactory.createExoPlayer(context) },
         clock = System::currentTimeMillis,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
     private var periodicSaveJob: Job? = null
+    private var chunkObservationJob: Job? = null
 
     private var currentChunks: List<Chunk> = emptyList()
     private var activeChunkSource: ChunkOrigin = ChunkOrigin.AUTO
     private var learningPlayerInstance: LearningPlayer? = null
     private var rawPlayerInstance: Player? = null
+    internal var chunkScheduler: ChunkScheduler? = null
+        private set
 
     private val _player = MutableStateFlow<Player?>(null)
     override val player: StateFlow<Player?> = _player.asStateFlow()
@@ -124,9 +143,35 @@ class MediaControllerPlaybackController(
         val learning = LearningPlayer(inner) {
             currentChunks.map { it.startMs }
         }
+        learning.chunks = currentChunks
         learning.addListener(ControllerPlayerListener())
         rawPlayerInstance = inner
         learningPlayerInstance = learning
+
+        if (inner is ExoPlayer) {
+            val scheduler = ChunkScheduler(
+                exoPlayer = inner,
+                practiceController = practiceController,
+                analysisRepository = analysisRepository,
+                libraryRepository = libraryRepository,
+                powerManager = context.getSystemService(PowerManager::class.java),
+                mainLooper = inner.applicationLooper,
+                mainDispatcher = mainDispatcher,
+                onStateChanged = { chunkId, autoPauseEndsAt ->
+                    _status.update {
+                        it.copy(
+                            currentChunkId = chunkId,
+                            autoPauseEndsAtMs = autoPauseEndsAt,
+                        )
+                    }
+                },
+            )
+            chunkScheduler = scheduler
+            learning.onUserPlayWhenReadyCommand = {
+                scheduler.onUserPlayPauseCommand()
+            }
+        }
+
         _player.value = learning
         return learning
     }
@@ -149,6 +194,7 @@ class MediaControllerPlaybackController(
 
         val item = libraryRepository.observeItem(mediaId).first()
         if (item == null) {
+            stopObservingChunks()
             _status.update {
                 it.copy(
                     mediaId = mediaId,
@@ -164,6 +210,7 @@ class MediaControllerPlaybackController(
 
         val audioFile = mediaFileLocator.resolveAudioFile(mediaId, item.mimeType)
         if (audioFile == null || !audioFile.exists()) {
+            stopObservingChunks()
             learningPlayerInstance?.let { lp ->
                 lp.stop()
                 lp.clearMediaItems()
@@ -188,7 +235,7 @@ class MediaControllerPlaybackController(
         val initialPositionMs = (savedState?.positionMs ?: 0L)
             .coerceIn(0L, item.durationMs.coerceAtLeast(0L))
 
-        // 保存済みの学習モード（オートポーズ・言語フィルタ・チャンク種別）を復元する（ループは常に Off）
+        // 保存済みの学習モード（オートポーズ・言語フィルタ・チャンク種別）を復元する（ループは常に Off、§7.2.5）
         if (savedState != null) {
             activeChunkSource = savedState.chunkSource
             practiceController.setSettings(
@@ -201,7 +248,12 @@ class MediaControllerPlaybackController(
             )
         } else {
             activeChunkSource = ChunkOrigin.AUTO
-            practiceController.setSettings(PracticeSettings())
+            practiceController.setSettings(
+                PracticeSettings(
+                    loop = LoopMode.Off,
+                    autoPause = userSettings.defaultAutoPause,
+                ),
+            )
         }
 
         val lp = getOrCreateLearningPlayer()
@@ -209,18 +261,25 @@ class MediaControllerPlaybackController(
         lp.seekBackIncrementMs = userSettings.seekBackMs.coerceAtLeast(1_000L)
         lp.seekForwardIncrementMs = userSettings.seekForwardMs.coerceAtLeast(1_000L)
 
+        // チャンク一覧を取得して LearningPlayer と ChunkScheduler に反映する
+        val initialChunks = analysisRepository.observeChunks(mediaId).first().sortedBy { it.startMs }
+        currentChunks = initialChunks
+        lp.chunks = initialChunks
+        observeActiveMediaChunks(mediaId, item.languagePair)
+
         val mediaItem = buildMediaItem(item, audioFile)
         lp.setMediaItem(mediaItem, initialPositionMs)
         lp.setPlaybackSpeed(initialSpeed)
         lp.prepare()
+        chunkScheduler?.setChunks(initialChunks)
 
         _status.value = PlaybackStatus(
             mediaId = mediaId,
             isPlaying = lp.isPlaying,
             durationMs = item.durationMs,
             speed = initialSpeed,
-            currentChunkId = findChunkAt(initialPositionMs)?.id,
-            autoPauseEndsAtMs = null,
+            currentChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(initialPositionMs)?.id,
+            autoPauseEndsAtMs = chunkScheduler?.autoPauseEndsAtMs?.value,
             error = null,
         )
     }
@@ -228,6 +287,7 @@ class MediaControllerPlaybackController(
     override fun seekToChunk(chunkId: ChunkId) {
         scope.launch {
             val targetChunk = currentChunks.firstOrNull { it.id == chunkId } ?: return@launch
+            chunkScheduler?.cancelAutoPause()
             learningPlayerInstance?.seekTo(targetChunk.startMs)
             _status.update {
                 it.copy(
@@ -294,6 +354,7 @@ class MediaControllerPlaybackController(
 
         val audioFile = mediaFileLocator.resolveAudioFile(resumeItem.id, resumeItem.mimeType)
         if (audioFile == null || !audioFile.exists()) {
+            stopObservingChunks()
             _status.update {
                 it.copy(
                     mediaId = resumeItem.id,
@@ -312,9 +373,34 @@ class MediaControllerPlaybackController(
         val resumePositionMs = (savedState?.positionMs ?: 0L)
             .coerceIn(0L, resumeItem.durationMs.coerceAtLeast(0L))
 
+        if (savedState != null) {
+            activeChunkSource = savedState.chunkSource
+            practiceController.setSettings(
+                PracticeSettings(
+                    loop = LoopMode.Off,
+                    autoPause = savedState.autoPause,
+                    autoPauseScope = savedState.autoPauseScope,
+                    languageFilter = savedState.languageFilter,
+                ),
+            )
+        } else {
+            activeChunkSource = ChunkOrigin.AUTO
+            practiceController.setSettings(
+                PracticeSettings(
+                    loop = LoopMode.Off,
+                    autoPause = userSettings.defaultAutoPause,
+                ),
+            )
+        }
+
         val lp = getOrCreateLearningPlayer()
         lp.knownDurationMs = resumeItem.durationMs
         lp.setPlaybackSpeed(resumeSpeed)
+
+        val initialChunks = analysisRepository.observeChunks(resumeItem.id).first().sortedBy { it.startMs }
+        currentChunks = initialChunks
+        lp.chunks = initialChunks
+        observeActiveMediaChunks(resumeItem.id, resumeItem.languagePair)
 
         _status.value = PlaybackStatus(
             mediaId = resumeItem.id,
@@ -348,11 +434,40 @@ class MediaControllerPlaybackController(
     internal fun release() {
         periodicSaveJob?.cancel()
         periodicSaveJob = null
+        chunkObservationJob?.cancel()
+        chunkObservationJob = null
+        chunkScheduler?.release()
+        chunkScheduler = null
         learningPlayerInstance?.release()
         learningPlayerInstance = null
         rawPlayerInstance = null
         _player.value = null
         scope.cancel()
+    }
+
+    private fun observeActiveMediaChunks(mediaId: MediaId, initialLanguagePair: LanguagePair?) {
+        chunkObservationJob?.cancel()
+        chunkScheduler?.bindMedia(mediaId, initialLanguagePair)
+        chunkObservationJob = scope.launch {
+            analysisRepository.observeChunks(mediaId).collect { chunks ->
+                val sorted = chunks.sortedBy { it.startMs }
+                currentChunks = sorted
+                learningPlayerInstance?.chunks = sorted
+                val pos = learningPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: 0L
+                val updatedChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(pos)?.id
+                _status.update {
+                    it.copy(currentChunkId = updatedChunkId)
+                }
+            }
+        }
+    }
+
+    private fun stopObservingChunks() {
+        chunkObservationJob?.cancel()
+        chunkObservationJob = null
+        currentChunks = emptyList()
+        learningPlayerInstance?.chunks = emptyList()
+        chunkScheduler?.bindMedia(null)
     }
 
     private fun startPeriodicPositionSave() {
@@ -404,7 +519,8 @@ class MediaControllerPlaybackController(
             .build()
     }
 
-    private fun findChunkAt(positionMs: Long): Chunk? = currentChunks.lastOrNull { it.startMs <= positionMs }
+    private fun findChunkAt(positionMs: Long): Chunk? = currentChunks.firstOrNull { positionMs in it.startMs until it.endMs }
+        ?: currentChunks.lastOrNull { it.startMs <= positionMs }
 
     private inner class ControllerPlayerListener : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -412,7 +528,8 @@ class MediaControllerPlaybackController(
             _status.update {
                 it.copy(
                     isPlaying = isPlaying,
-                    currentChunkId = findChunkAt(pos)?.id,
+                    currentChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(pos)?.id,
+                    autoPauseEndsAtMs = chunkScheduler?.autoPauseEndsAtMs?.value,
                 )
             }
             if (isPlaying) {
@@ -430,7 +547,8 @@ class MediaControllerPlaybackController(
             val pos = newPosition.positionMs.coerceAtLeast(0L)
             _status.update {
                 it.copy(
-                    currentChunkId = findChunkAt(pos)?.id,
+                    currentChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(pos)?.id,
+                    autoPauseEndsAtMs = chunkScheduler?.autoPauseEndsAtMs?.value,
                 )
             }
         }
@@ -461,6 +579,17 @@ class MediaControllerPlaybackController(
                 )
             }
         }
+    }
+
+    private object NoOpAnalysisRepository : AnalysisRepository {
+        override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = flowOf(emptyMap())
+        override fun observeWaveform(id: MediaId): Flow<Waveform?> = flowOf(null)
+        override fun observeChunks(id: MediaId): Flow<List<Chunk>> = flowOf(emptyList())
+        override fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>> = flowOf(emptyMap())
+        override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) = Unit
+        override suspend fun resegment(id: MediaId, params: SegmentationParams) = Unit
+        override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) = Unit
+        override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) = Unit
     }
 
     companion object {
