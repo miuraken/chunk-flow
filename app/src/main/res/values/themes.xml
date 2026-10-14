@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 画面は Compose（core:designsystem の ChunkFlowTheme）で描く。ここではウィンドウの既定だけを決める。 -->
+    <style name="Theme.ChunkFlow" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
