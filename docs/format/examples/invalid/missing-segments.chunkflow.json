@@ -1,0 +1,19 @@
+{
+  "format": "chunkflow-transcript",
+  "version": 1,
+  "audio": {
+    "fileName": "lesson01.mp3",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000c0ffef",
+    "durationMs": 30000
+  },
+  "languages": {
+    "target": "ko",
+    "base": "ja"
+  },
+  "generator": {
+    "tool": "chunkflow-transcribe 0.1.0",
+    "engine": "faster-whisper 1.1.1",
+    "model": "large-v3-turbo",
+    "createdAt": "2026-10-14T12:00:00Z"
+  }
+}

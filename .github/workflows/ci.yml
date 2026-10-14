@@ -1,0 +1,109 @@
+# Chunk Flow の CI（設計書 §9、AGENTS.md §11）。
+# ローカルで同じ確認をするコマンドは各ステップのコメントを参照。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ADR 0001: Gradle を動かす JDK（ローカルの Android Studio の JBR と同じメジャーバージョン）
+  JAVA_VERSION: "25"
+
+jobs:
+  android:
+    name: Android（spotless / lint / 単体テスト / assemble / マニフェスト）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      # gradle-wrapper.jar のチェックサムの検証を含む
+      - uses: gradle/actions/setup-gradle@v4
+      # ローカル: ./gradlew spotlessCheck lint testDebugUnitTest assembleDebug
+      - name: spotlessCheck lint testDebugUnitTest assembleDebug
+        run: ./gradlew --console=plain spotlessCheck lint testDebugUnitTest assembleDebug
+      # ローカル: ./gradlew :app:processDebugMainManifest :app:processReleaseMainManifest && python3 .github/scripts/check_manifest.py
+      - name: マージ後のマニフェストの権限とエクスポートの確認（§8.2）
+        run: |
+          ./gradlew --console=plain :app:processDebugMainManifest :app:processReleaseMainManifest
+          python3 .github/scripts/check_manifest.py
+      - name: レポートを保存
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            **/build/reports/
+            **/build/test-results/
+          retention-days: 7
+
+  screenshot:
+    # 基準画像は Apple Silicon の macOS で作るため、同じ環境で比較する（ADR 0002）
+    name: スクリーンショットテスト（validateDebugScreenshotTest）
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@v4
+      # ローカル: ./gradlew validateDebugScreenshotTest
+      - name: validateDebugScreenshotTest
+        run: ./gradlew --console=plain validateDebugScreenshotTest
+      - name: 差分のレポートを保存
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-reports
+          path: "**/build/reports/screenshotTest/"
+          retention-days: 7
+
+  format:
+    name: 文字起こしの形式（JSON Schema とサンプル）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # ローカル: uv run --no-project --with jsonschema python .github/scripts/validate_transcript_examples.py
+      - name: サンプルの検証
+        run: uv run --no-project --python 3.12 --with jsonschema python .github/scripts/validate_transcript_examples.py
+
+  transcriber:
+    name: PC ツール（ruff / pytest）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: tools/transcriber があるか
+        id: exists
+        run: |
+          if [ -f tools/transcriber/pyproject.toml ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: astral-sh/setup-uv@v5
+        if: steps.exists.outputs.found == 'true'
+      # ローカル: uv run --directory tools/transcriber ruff check && uv run --directory tools/transcriber pytest
+      - name: ruff check
+        if: steps.exists.outputs.found == 'true'
+        run: uv run --directory tools/transcriber ruff check
+      - name: pytest（GPU なし。エンジンはモック）
+        if: steps.exists.outputs.found == 'true'
+        run: uv run --directory tools/transcriber pytest

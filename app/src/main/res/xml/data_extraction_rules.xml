@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自動バックアップと端末間の移行の対象（§8.2、F2.4）。DB（Room の -wal / -shm を含む）と DataStore だけを含め、
+  filesDir/media/（音声・文字起こしの原本）と filesDir/analysis/（解析ファイル）は含めない（大容量かつ著作物のため）。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="database" path="." />
+        <include domain="file" path="datastore/" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="." />
+        <include domain="file" path="datastore/" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,40 @@
+package com.miuraken.chunkflow.navigation
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.navigation3.runtime.entryProvider
+import androidx.navigation3.runtime.rememberNavBackStack
+import androidx.navigation3.ui.NavDisplay
+import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.feature.library.LibraryRoute
+import com.miuraken.chunkflow.feature.player.PlayerRoute
+import com.miuraken.chunkflow.feature.settings.SettingsRoute
+
+/**
+ * アプリの画面遷移（Navigation 3）。ライブラリ → プレイヤー / 設定。
+ *
+ * 予測型「戻る」は NavDisplay が扱う（§7.5.6）。大画面の 2 ペイン表示（material3-adaptive）は M4 で加える。
+ */
+@Composable
+fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
+    val backStack = rememberNavBackStack(LibraryKey)
+    NavDisplay(
+        backStack = backStack,
+        modifier = modifier,
+        onBack = { backStack.removeLastOrNull() },
+        entryProvider = entryProvider {
+            entry<LibraryKey> {
+                LibraryRoute(
+                    onOpenPlayer = { id -> backStack.add(PlayerKey(id.value)) },
+                    onOpenSettings = { backStack.add(SettingsKey) },
+                )
+            }
+            entry<PlayerKey> { key ->
+                PlayerRoute(mediaId = MediaId(key.mediaId), onBack = { backStack.removeLastOrNull() })
+            }
+            entry<SettingsKey> {
+                SettingsRoute(onBack = { backStack.removeLastOrNull() })
+            }
+        },
+    )
+}

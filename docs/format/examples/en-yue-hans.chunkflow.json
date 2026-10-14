@@ -1,0 +1,91 @@
+{
+  "format": "chunkflow-transcript",
+  "version": 1,
+  "audio": {
+    "fileName": "unit01.m4a",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000c0fff1",
+    "durationMs": 30000
+  },
+  "languages": {
+    "target": "yue",
+    "base": "en"
+  },
+  "generator": {
+    "tool": "chunkflow-transcribe 0.1.0",
+    "engine": "faster-whisper 1.1.1",
+    "model": "large-v3",
+    "createdAt": "2026-10-14T12:00:00Z",
+    "modelRepo": "mlx-community/whisper-large-v3-mlx",
+    "modelRevision": "0123456789abcdef0123456789abcdef01234567",
+    "vad": {
+      "name": "silero-vad",
+      "version": "6.2.3",
+      "mergeGapMs": 100
+    }
+  },
+  "segments": [
+    {
+      "startMs": 900,
+      "endMs": 2800,
+      "lang": "en",
+      "langProb": 0.99,
+      "text": "Let's listen to the dialogue."
+    },
+    {
+      "startMs": 3500,
+      "endMs": 5600,
+      "lang": "yue",
+      "langProb": 0.91,
+      "text": "你食咗飯未呀？",
+      "textVariants": {
+        "Hans": "你食咗饭未呀？"
+      },
+      "words": [
+        {
+          "startMs": 3500,
+          "endMs": 3900,
+          "text": "你",
+          "prob": 0.9
+        },
+        {
+          "startMs": 3900,
+          "endMs": 4500,
+          "text": "食咗",
+          "prob": 0.88
+        },
+        {
+          "startMs": 4500,
+          "endMs": 5000,
+          "text": "飯",
+          "prob": 0.9
+        },
+        {
+          "startMs": 5000,
+          "endMs": 5600,
+          "text": "未呀？",
+          "prob": 0.87
+        }
+      ]
+    },
+    {
+      "startMs": 6200,
+      "endMs": 8400,
+      "lang": "yue",
+      "langProb": 0.89,
+      "text": "佢哋喺度傾緊偈。",
+      "textVariants": {
+        "Hans": "佢哋喺度倾紧偈。"
+      }
+    },
+    {
+      "startMs": 9100,
+      "endMs": 10900,
+      "lang": "yue",
+      "langProb": 0.9,
+      "text": "呢度係邊度？",
+      "textVariants": {
+        "Hans": "呢度系边度？"
+      }
+    }
+  ]
+}

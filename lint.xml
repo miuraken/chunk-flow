@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Android Lint の設定（§9: 新しい警告はエラー扱い。warningsAsErrors は build-logic で設定）。 -->
+<lint>
+    <!-- 依存のバージョンの更新は lead が Version Catalog で管理する（ネットワークや日付で結果が変わる検査は使わない） -->
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="NewerVersionAvailable" severity="ignore" />
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <issue id="OldTargetApi" severity="ignore" />
+</lint>
