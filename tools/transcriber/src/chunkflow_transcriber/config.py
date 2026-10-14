@@ -21,6 +21,8 @@ from .segmenter import ShapingParams
 from .smoothing import SmoothingParams
 
 DEFAULT_MODEL = "large-v3-turbo"
+# 広東語（yue）を含むコースの既定（§7.4.5。S1: turbo は広東語を普通話の書き言葉で書いた）
+DEFAULT_MODEL_CANTONESE = "large-v3"
 COURSE_CONFIG_NAME = "chunkflow.toml"
 PC_CONFIG_PATH = Path("~/.config/chunkflow-transcribe/config.toml")
 
@@ -92,12 +94,26 @@ class CourseConfig:
 
     target: str | None = None
     base: str | None = None
-    model: str = DEFAULT_MODEL
-    detect_model: str | None = None  # None なら `model` と同じ
+    model: str | None = None  # None なら `effective_model` の既定
+    detect_model: str | None = None  # None なら `effective_model` と同じ
     prompts: dict[str, str] = field(default_factory=dict)
     vad: VadParams = field(default_factory=VadParams)
     shaping: ShapingParams = field(default_factory=ShapingParams)
     smoothing: SmoothingParams = field(default_factory=SmoothingParams)
+
+    @property
+    def effective_model(self) -> str:
+        """文字起こしに使うモデル。指定がなければ、広東語を含むコースは large-v3、ほかは turbo。"""
+        if self.model:
+            return self.model
+        if "yue" in (self.target, self.base):
+            return DEFAULT_MODEL_CANTONESE
+        return DEFAULT_MODEL
+
+    @property
+    def effective_detect_model(self) -> str:
+        """言語判定に使うモデル（指定がなければ文字起こしと同じ）。"""
+        return self.detect_model or self.effective_model
 
     @property
     def pair(self) -> tuple[str, str] | None:
@@ -166,7 +182,7 @@ def parse_course_config(data: dict[str, Any]) -> CourseConfig:
         cfg,
         target=_normalize_lang(langs.get("target"), "[languages] target"),
         base=_normalize_lang(langs.get("base"), "[languages] base"),
-        model=str(model.get("name", cfg.model)),
+        model=str(model["name"]) if model.get("name") else None,
         detect_model=model.get("detect"),
         prompts=prompts,
         vad=_dataclass_from(VadParams, cfg.vad, data.get("vad", {}), "[vad]"),

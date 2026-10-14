@@ -171,6 +171,9 @@ def test_process_file_writes_valid_json(tmp_path: Path) -> None:
     assert data["audio"]["durationMs"] == 16000
     assert data["generator"]["engine"] == "fake-engine 1.0"
     assert data["generator"]["tool"].startswith("chunkflow-transcribe ")
+    assert data["generator"]["modelRepo"] == "fake/repo"
+    assert data["generator"]["vad"]["name"] == "silero-vad"
+    assert data["generator"]["vad"]["mergeGapMs"] == 100
     assert outcome.summary["segments"] == len(data["segments"])
     # 音声は変更しない。書き込むのは transcription/ だけ
     assert audio_path.read_bytes() == b"not really audio"

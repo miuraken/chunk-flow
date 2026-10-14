@@ -74,7 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--target", help="学習する言語（例: ko、zh、yue）")
     ap.add_argument("--base", help="解説の言語（例: ja、en）。省略すると単一言語の教材")
-    ap.add_argument("--model", help="文字起こしのモデル（既定: large-v3-turbo）")
+    ap.add_argument(
+        "--model", help="文字起こしのモデル（既定: large-v3-turbo。広東語を含むコースは large-v3）"
+    )
     ap.add_argument("--detect-model", help="言語判定のモデル（既定: --model と同じ）")
     ap.add_argument("--engine", choices=["auto", "mlx", "faster-whisper"], help="エンジン")
     ap.add_argument("--force", action="store_true", help="JSON があっても作り直す")
@@ -163,8 +165,8 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 log.info("古い版（%s）で作った JSON を作り直します: %s", prev, out.name)
             try:
-                transcriber = get_engine(cfg.model)
-                detector = get_engine(cfg.detect_model or cfg.model)
+                transcriber = get_engine(cfg.effective_model)
+                detector = get_engine(cfg.effective_detect_model)
                 outcome = process_file(
                     audio,
                     course_dir,

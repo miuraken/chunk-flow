@@ -39,7 +39,7 @@ MINI_SCHEMA = {
                     "startMs": {"type": "integer", "minimum": 0},
                     "endMs": {"type": "integer", "minimum": 1},
                     "lang": {"type": ["string", "null"]},
-                    "langProb": {"type": "number", "minimum": 0, "maximum": 1},
+                    "langProb": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
                     "text": {"type": "string", "minLength": 1},
                     "textVariants": {
                         "type": "object",
@@ -79,6 +79,7 @@ def doc() -> dict:
         engine=INFO,
         segments=sample_segments(),
         created_at=datetime(2026, 10, 14, 12, 0, 0, tzinfo=UTC),
+        vad={"name": "silero-vad", "version": "6.2.3", "mergeGapMs": 100},
     )
 
 
@@ -93,6 +94,9 @@ def test_build_document_shape() -> None:
         "engine": "mlx-whisper 0.4.3",
         "model": "large-v3-turbo",
         "createdAt": "2026-10-14T12:00:00Z",
+        "modelRepo": "repo",
+        "modelRevision": "0" * 40,
+        "vad": {"name": "silero-vad", "version": "6.2.3", "mergeGapMs": 100},
     }
     s = d["segments"]
     assert s[0] == {
@@ -105,6 +109,8 @@ def test_build_document_shape() -> None:
     assert s[1]["textVariants"] == {"Hant": "你們好，歡迎來到北京。"}
     assert s[1]["words"][0] == {"startMs": 2500, "endMs": 3000, "text": "你们好，", "prob": 0.95}
     assert s[2]["lang"] is None
+    # lang が null なら langProb も null（docs/format/README.md「langProb の意味と値」）
+    assert s[2]["langProb"] is None
     assert check_document(d) == []
     assert schema_errors(d, MINI_SCHEMA) == []
 

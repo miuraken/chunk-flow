@@ -85,7 +85,7 @@ target = "yue"   # 学習する言語（Whisper の言語コード。zh-HK な�
 base = "en"      # 解説の言語。省略すると単一言語の教材（言語の判定を省く）
 
 [model]
-name = "large-v3"            # 既定は large-v3-turbo
+# name = "large-v3-turbo"    # 既定は large-v3-turbo。広東語（yue）を含むコースは large-v3
 # detect = "large-v3-turbo"  # 言語の判定に別のモデルを使う場合
 
 [hints.yue]

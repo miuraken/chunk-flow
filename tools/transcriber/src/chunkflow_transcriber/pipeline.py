@@ -27,7 +27,7 @@ from .output import build_document, write_atomic
 from .script_check import ScriptCheck, check_script
 from .segmenter import normalize_text, shape_sentences, words_text
 from .smoothing import smooth_languages
-from .vad import SpeechDetector, find_candidate_chunks, recognition_window
+from .vad import SpeechDetector, find_candidate_chunks, recognition_window, vad_info
 
 log = logging.getLogger(__name__)
 
@@ -343,6 +343,7 @@ def process_file(
         engine=engine_info,
         segments=result.segments,
         created_at=created_at,
+        vad=vad_info(cfg.vad),
     )
     write_atomic(doc, out_path, course_dir, schema)
     return FileOutcome(

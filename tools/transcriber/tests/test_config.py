@@ -31,9 +31,28 @@ def test_course_config_normalizes_tags() -> None:
 
 def test_course_config_defaults() -> None:
     cfg = parse_course_config({})
-    assert cfg.model == DEFAULT_MODEL
+    assert cfg.model is None
+    assert cfg.effective_model == DEFAULT_MODEL
     assert cfg.pair is None
     assert cfg.detect_model is None
+
+
+def test_cantonese_course_defaults_to_large_v3() -> None:
+    assert parse_course_config({"languages": {"target": "yue", "base": "en"}}).effective_model == (
+        "large-v3"
+    )
+    assert parse_course_config({"languages": {"target": "en", "base": "yue"}}).effective_model == (
+        "large-v3"
+    )
+    # 明示した指定が優先する
+    cfg = parse_course_config(
+        {"languages": {"target": "yue", "base": "en"}, "model": {"name": "large-v3-turbo"}}
+    )
+    assert cfg.effective_model == "large-v3-turbo"
+    assert cfg.effective_detect_model == "large-v3-turbo"
+    assert parse_course_config({"languages": {"target": "zh", "base": "en"}}).effective_model == (
+        DEFAULT_MODEL
+    )
 
 
 def test_single_language_course_has_no_pair() -> None:

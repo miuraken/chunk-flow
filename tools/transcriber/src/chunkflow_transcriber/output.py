@@ -64,9 +64,8 @@ def segment_to_json(seg: Segment) -> dict[str, Any]:
         "endMs": int(seg.end_ms),
         "lang": to_bcp47(seg.lang) if seg.lang else None,
     }
-    lp = _round(seg.lang_prob)
-    if lp is not None:
-        d["langProb"] = lp
+    # langProb は「lang に書いた言語の、2 言語の中での確率」。lang が null なら null（docs/format/README.md）
+    d["langProb"] = _round(seg.lang_prob) if seg.lang else None
     d["text"] = _nfc(seg.text)
     if seg.variants:
         d["textVariants"] = {k: _nfc(v) for k, v in sorted(seg.variants.items())}
@@ -97,23 +96,32 @@ def build_document(
     engine: EngineInfo,
     segments: Sequence[Segment],
     created_at: datetime | None = None,
+    vad: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """§7.4.3 の形式の辞書を作る（純粋な関数。`created_at` を渡せば決定的）。"""
     ts = (created_at or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
     languages: dict[str, str] = {"target": to_bcp47(target)}
     if base:
         languages["base"] = to_bcp47(base)
+    generator: dict[str, Any] = {
+        "tool": tool,
+        "engine": engine.engine,
+        "model": engine.model,
+        "createdAt": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    # 任意の項目（docs/format/README.md「generator の任意の項目」。調査用）
+    if engine.model_repo:
+        generator["modelRepo"] = engine.model_repo[:200]
+    if engine.model_revision:
+        generator["modelRevision"] = engine.model_revision[:200]
+    if vad:
+        generator["vad"] = dict(vad)
     return {
         "format": FORMAT_NAME,
         "version": FORMAT_VERSION,
         "audio": {"fileName": _nfc(audio_name), "sha256": sha256, "durationMs": int(duration_ms)},
         "languages": languages,
-        "generator": {
-            "tool": tool,
-            "engine": engine.engine,
-            "model": engine.model,
-            "createdAt": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        },
+        "generator": generator,
         "segments": [segment_to_json(s) for s in segments],
     }
 

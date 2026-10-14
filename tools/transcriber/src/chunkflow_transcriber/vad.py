@@ -217,6 +217,22 @@ def recognition_window(
     return min(start, c.start_ms), max(end, c.end_ms)
 
 
+def vad_info(params: VadParams) -> dict[str, object]:
+    """`generator.vad` に記録する VAD の名前・版・主なパラメータ。"""
+    return {
+        "name": "silero-vad",
+        "version": "6.2.3",
+        "runtime": "onnxruntime",
+        "modelSha256": SILERO_ONNX_SHA256,
+        "threshold": params.threshold,
+        "minSpeechMs": params.min_speech_ms,
+        "minSilenceMs": params.min_silence_ms,
+        "speechPadMs": params.speech_pad_ms,
+        "mergeGapMs": params.merge_gap_ms,
+        "maxChunkMs": params.max_chunk_ms,
+    }
+
+
 def silero_detector(cache_dir: Path | None = None) -> SpeechDetector:
     """Silero VAD を使う `SpeechDetector` を作る（モデルはここで用意する）。"""
     vad = SileroVad(ensure_silero_model(cache_dir))
