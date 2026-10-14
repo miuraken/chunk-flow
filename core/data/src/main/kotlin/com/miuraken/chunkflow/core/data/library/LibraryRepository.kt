@@ -5,8 +5,10 @@ import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * ライブラリ（取り込んだ教材）と教材ごとの再生・学習状態（[ItemState]）の単一の情報源（§6.3、§6.4、§7.1）。
@@ -67,6 +69,29 @@ interface LibraryRepository {
      * @return 書き出しに成功した場合は `true`、書き出す文字起こしがない場合は `false`。
      */
     suspend fun exportLocalTranscriptJson(id: MediaId): Boolean = false
+
+    /**
+     * バックアップからの復元後など、DB に項目があるが `filesDir/media/` に音声ファイルが存在しない教材 ID の集合を購読する（F2.4）。
+     */
+    fun observeMissingAudioIds(): Flow<Set<MediaId>> = flowOf(emptySet())
+
+    /**
+     * 現在のチャンクと文字起こしを指定した形式（SRT / LRC / TXT）の文字列に変換して返す（F7.5）。
+     *
+     * @return 書き出し文字列。対象の教材やチャンクが存在しない場合は `null`。
+     */
+    suspend fun exportTranscriptText(id: MediaId, format: TranscriptExportFormat): String? = null
+
+    /**
+     * 現在のチャンクと文字起こしを指定した形式（SRT / LRC / TXT）で SAF の `content://` [targetUri] に書き出す（F7.5）。
+     *
+     * @return 書き出しに成功した場合は `true`。
+     */
+    suspend fun writeExportedTranscriptToUri(
+        id: MediaId,
+        format: TranscriptExportFormat,
+        targetUri: Uri,
+    ): Boolean = false
 
     /** 教材を削除する（音声・解析結果・文字起こし・状態を含む）。 */
     suspend fun delete(id: MediaId)

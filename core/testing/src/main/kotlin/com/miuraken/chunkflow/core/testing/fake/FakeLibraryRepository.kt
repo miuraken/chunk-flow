@@ -9,6 +9,7 @@ import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -54,6 +55,18 @@ class FakeLibraryRepository(
 
     /** [exportLocalTranscriptJson] で書き出しが要求された教材 ID の一覧。 */
     val exportedTranscriptIds: MutableList<MediaId> = mutableListOf()
+
+    /** 音声ファイルが欠損している教材 ID の集合（F2.4 バックアップ復元後の状態再現用）。 */
+    val missingAudioIds: MutableStateFlow<Set<MediaId>> = MutableStateFlow(emptySet())
+
+    /** [exportTranscriptText] が返す形式別の文字列マップ（F7.5）。 */
+    val exportedTranscriptTexts: MutableMap<Pair<MediaId, TranscriptExportFormat>, String> = mutableMapOf()
+
+    /** [writeExportedTranscriptToUri] が返す結果（F7.5）。 */
+    var writeExportedTranscriptResult: Boolean = true
+
+    /** [writeExportedTranscriptToUri] の呼び出し履歴（F7.5）。 */
+    val writtenTranscriptExports: MutableList<Triple<MediaId, TranscriptExportFormat, Uri>> = mutableListOf()
 
     override fun observeItems(): Flow<List<AudioItem>> = items
 
@@ -119,8 +132,22 @@ class FakeLibraryRepository(
         return exportTranscriptResult
     }
 
+    override fun observeMissingAudioIds(): Flow<Set<MediaId>> = missingAudioIds
+
+    override suspend fun exportTranscriptText(id: MediaId, format: TranscriptExportFormat): String? = exportedTranscriptTexts[id to format]
+
+    override suspend fun writeExportedTranscriptToUri(
+        id: MediaId,
+        format: TranscriptExportFormat,
+        targetUri: Uri,
+    ): Boolean {
+        writtenTranscriptExports += Triple(id, format, targetUri)
+        return writeExportedTranscriptResult
+    }
+
     override suspend fun delete(id: MediaId) {
         items.update { list -> list.filterNot { it.id == id } }
         itemStates.update { current -> current - id }
+        missingAudioIds.update { current -> current - id }
     }
 }

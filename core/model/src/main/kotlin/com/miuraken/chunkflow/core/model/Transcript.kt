@@ -32,3 +32,15 @@ data class Transcript(
  * @property confidence 単語の確率（0..1）。提供されない場合は `null`。
  */
 data class WordTiming(val startMs: Long, val endMs: Long, val text: String, val confidence: Float?)
+
+/** 文字起こしの書き出し形式（F7.5）。 */
+enum class TranscriptExportFormat {
+    /** SubRip 字幕形式（`.srt`）。 */
+    SRT,
+
+    /** LRC 歌詞・字幕形式（`.lrc`）。 */
+    LRC,
+
+    /** プレーンテキスト形式（`.txt`）。 */
+    TXT,
+}

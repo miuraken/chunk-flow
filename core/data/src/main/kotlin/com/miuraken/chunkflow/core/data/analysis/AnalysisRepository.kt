@@ -1,6 +1,7 @@
 package com.miuraken.chunkflow.core.data.analysis
 
 import com.miuraken.chunkflow.core.model.AnalysisStage
+import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -77,4 +78,45 @@ interface AnalysisRepository {
      * 現在再生中のチャンク位置 [currentChunkId] を通知し、その先 3 チャンク分の先読み簡易文字起こし（§7.4.5）を要求する。
      */
     suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) = Unit
+
+    /** 指定した教材のブックマーク一覧を時刻の昇順で購読する（F8.1）。 */
+    fun observeBookmarks(id: MediaId): Flow<List<Bookmark>> = flowOf(emptyList())
+
+    /**
+     * 指定したチャンク `[startMs, endMs)` 内のブックマークをトグルする（F8.1）。
+     *
+     * @return ブックマークが追加された場合は `true`、既存のブックマークが削除された場合は `false`。
+     */
+    suspend fun toggleChunkBookmark(id: MediaId, chunkId: ChunkId, note: String = ""): Boolean = false
+
+    /**
+     * チャンクの文字起こしテキストを手動で修正し、`user_edited = true` として保存する（F7.4）。
+     */
+    suspend fun updateChunkText(id: MediaId, chunkId: ChunkId, text: String) = Unit
+
+    /**
+     * 指定した時刻 [splitPositionMs] でチャンクを 2 つに分割し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
+     *
+     * @return 分割が成立した場合は `true`、範囲外や最小チャンク長未満などで分割できない場合は `false`。
+     */
+    suspend fun splitChunk(id: MediaId, chunkId: ChunkId, splitPositionMs: Long): Boolean = false
+
+    /**
+     * 指定したチャンクと直後のチャンクを結合し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
+     *
+     * @return 結合が成立した場合は `true`、直後のチャンクが存在しない等で結合できない場合は `false`。
+     */
+    suspend fun mergeWithNextChunk(id: MediaId, chunkId: ChunkId): Boolean = false
+
+    /**
+     * チャンクの開始・終了境界を [newStartMs] / [newEndMs] に移動し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
+     *
+     * @return 境界移動が成立した場合は `true`、隣接チャンクとの整合性や最小チャンク長を満たさない場合は `false`。
+     */
+    suspend fun moveChunkBoundary(
+        id: MediaId,
+        chunkId: ChunkId,
+        newStartMs: Long,
+        newEndMs: Long,
+    ): Boolean = false
 }

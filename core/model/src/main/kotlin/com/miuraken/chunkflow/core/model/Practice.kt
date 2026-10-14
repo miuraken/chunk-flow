@@ -84,10 +84,12 @@ enum class LanguageFilter {
  * @property autoPause 自動ポーズの設定。
  * @property autoPauseScope 自動ポーズを入れるチャンクの範囲。
  * @property languageFilter 言語フィルタ。
+ * @property bookmarksOnly ブックマークしたチャンクだけを再生するフィルタ（F8.1）。
  */
 data class PracticeSettings(
     val loop: LoopMode = LoopMode.Off,
     val autoPause: AutoPause = AutoPause.Off,
     val autoPauseScope: AutoPauseScope = AutoPauseScope.ALL_CHUNKS,
     val languageFilter: LanguageFilter = LanguageFilter.ALL,
+    val bookmarksOnly: Boolean = false,
 )

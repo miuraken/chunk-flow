@@ -2,9 +2,11 @@ package com.miuraken.chunkflow.core.testing.fake
 
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
+import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
@@ -35,6 +37,7 @@ class FakeAnalysisRepository : AnalysisRepository {
      * @property availableOrigins 利用可能なチャンク出どころの明示指定（`null` の場合は [chunks] および [chunksByOrigin] から算出）。
      * @property chunksByOrigin 出どころ別のチャンク一覧（[setChunkSource] で切り替えを再現したい場合に設定する）。
      * @property lookaheadStatus 端末上の先読み簡易文字起こし状態（F6.2）。
+     * @property bookmarks ブックマーク一覧（F8.1）。
      */
     data class Entry(
         val status: Map<AnalysisStage, StageStatus> = emptyMap(),
@@ -44,9 +47,12 @@ class FakeAnalysisRepository : AnalysisRepository {
         val availableOrigins: Set<ChunkOrigin>? = null,
         val chunksByOrigin: Map<ChunkOrigin, List<Chunk>> = emptyMap(),
         val lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
+        val bookmarks: List<Bookmark> = emptyList(),
     )
 
     private val entries = MutableStateFlow<Map<MediaId, Entry>>(emptyMap())
+    private var nextBookmarkId = 1L
+    private var nextManualChunkId = 10_000L
 
     /** [requestAnalysis] の呼び出し（呼ばれた順）。 */
     val requestedAnalyses: MutableList<Pair<MediaId, Set<AnalysisStage>>> = mutableListOf()
@@ -93,6 +99,10 @@ class FakeAnalysisRepository : AnalysisRepository {
     }
 
     override fun observeLookaheadStatus(id: MediaId): Flow<LookaheadTranscriptionStatus> = entries.map { it[id]?.lookaheadStatus ?: LookaheadTranscriptionStatus() }
+
+    override fun observeBookmarks(id: MediaId): Flow<List<Bookmark>> = entries.map { map ->
+        map[id]?.bookmarks.orEmpty().sortedWith(compareBy<Bookmark> { it.positionMs }.thenBy { it.id })
+    }
 
     override suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>) {
         requestedAnalyses += id to stages
@@ -161,5 +171,180 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
         lookaheadTriggers += id to currentChunkId
+    }
+
+    override suspend fun toggleChunkBookmark(id: MediaId, chunkId: ChunkId, note: String): Boolean {
+        var added = false
+        update(id) { entry ->
+            val targetChunk = entry.chunks.firstOrNull { it.id == chunkId } ?: return@update entry
+            val matching = entry.bookmarks.filter { it.positionMs in targetChunk.startMs until targetChunk.endMs }
+            val nextBookmarks = if (matching.isNotEmpty()) {
+                added = false
+                entry.bookmarks.filterNot { it.positionMs in targetChunk.startMs until targetChunk.endMs }
+            } else {
+                added = true
+                entry.bookmarks + Bookmark(
+                    id = nextBookmarkId++,
+                    mediaId = id,
+                    positionMs = targetChunk.startMs,
+                    note = note,
+                )
+            }
+            entry.copy(bookmarks = nextBookmarks)
+        }
+        return added
+    }
+
+    override suspend fun updateChunkText(id: MediaId, chunkId: ChunkId, text: String) {
+        update(id) { entry ->
+            val existing = entry.transcripts[chunkId]
+            val updated = if (existing != null) {
+                existing.copy(
+                    text = text,
+                    textVariants = emptyMap(),
+                    words = emptyList(),
+                    userEdited = true,
+                )
+            } else {
+                Transcript(
+                    chunkId = chunkId,
+                    text = text,
+                    language = null,
+                    languageConfidence = null,
+                    engine = EngineId("manual"),
+                    userEdited = true,
+                )
+            }
+            entry.copy(transcripts = entry.transcripts + (chunkId to updated))
+        }
+    }
+
+    override suspend fun splitChunk(id: MediaId, chunkId: ChunkId, splitPositionMs: Long): Boolean {
+        var success = false
+        update(id) { entry ->
+            val idx = entry.chunks.indexOfFirst { it.id == chunkId }
+            if (idx < 0) return@update entry
+            val target = entry.chunks[idx]
+            if (splitPositionMs <= target.startMs || splitPositionMs >= target.endMs) {
+                return@update entry
+            }
+            success = true
+            val first = target.copy(endMs = splitPositionMs, origin = ChunkOrigin.MANUAL)
+            val second = Chunk(
+                id = ChunkId(nextManualChunkId++),
+                startMs = splitPositionMs,
+                endMs = target.endMs,
+                origin = ChunkOrigin.MANUAL,
+            )
+            val manualChunks = entry.chunks.flatMapIndexed { index, chunk ->
+                if (index == idx) {
+                    listOf(first, second)
+                } else {
+                    listOf(chunk.copy(origin = ChunkOrigin.MANUAL))
+                }
+            }
+            chunkSources[id] = ChunkOrigin.MANUAL
+            entry.copy(
+                chunks = manualChunks,
+                chunksByOrigin = entry.chunksByOrigin + (ChunkOrigin.MANUAL to manualChunks),
+            )
+        }
+        return success
+    }
+
+    override suspend fun mergeWithNextChunk(id: MediaId, chunkId: ChunkId): Boolean {
+        var success = false
+        update(id) { entry ->
+            val idx = entry.chunks.indexOfFirst { it.id == chunkId }
+            if (idx < 0 || idx + 1 >= entry.chunks.size) return@update entry
+            val current = entry.chunks[idx]
+            val next = entry.chunks[idx + 1]
+            success = true
+
+            val merged = current.copy(endMs = next.endMs, origin = ChunkOrigin.MANUAL)
+            val manualChunks = buildList {
+                for (i in entry.chunks.indices) {
+                    when (i) {
+                        idx -> add(merged)
+                        idx + 1 -> Unit
+                        else -> add(entry.chunks[i].copy(origin = ChunkOrigin.MANUAL))
+                    }
+                }
+            }
+            val currentTranscript = entry.transcripts[current.id]
+            val nextTranscript = entry.transcripts[next.id]
+            val updatedTranscripts = entry.transcripts.toMutableMap().apply {
+                remove(next.id)
+                if (currentTranscript != null && nextTranscript != null) {
+                    val combinedText = listOf(currentTranscript.text, nextTranscript.text)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                    put(
+                        current.id,
+                        currentTranscript.copy(
+                            text = combinedText,
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                            userEdited = true,
+                        ),
+                    )
+                } else if (currentTranscript == null && nextTranscript != null) {
+                    put(current.id, nextTranscript.copy(chunkId = current.id, userEdited = true))
+                }
+            }
+            chunkSources[id] = ChunkOrigin.MANUAL
+            entry.copy(
+                chunks = manualChunks,
+                transcripts = updatedTranscripts,
+                chunksByOrigin = entry.chunksByOrigin + (ChunkOrigin.MANUAL to manualChunks),
+            )
+        }
+        return success
+    }
+
+    override suspend fun moveChunkBoundary(
+        id: MediaId,
+        chunkId: ChunkId,
+        newStartMs: Long,
+        newEndMs: Long,
+    ): Boolean {
+        var success = false
+        update(id) { entry ->
+            val idx = entry.chunks.indexOfFirst { it.id == chunkId }
+            if (idx < 0 || newStartMs < 0L || newStartMs >= newEndMs) return@update entry
+            val current = entry.chunks[idx]
+            val prev = entry.chunks.getOrNull(idx - 1)
+            val next = entry.chunks.getOrNull(idx + 1)
+
+            if (prev != null && newStartMs <= prev.startMs) return@update entry
+            if (next != null && newEndMs >= next.endMs) return@update entry
+            success = true
+
+            val manualChunks = entry.chunks.mapIndexed { i, chunk ->
+                when (i) {
+                    idx - 1 -> if (chunk.endMs == current.startMs || newStartMs < chunk.endMs) {
+                        chunk.copy(endMs = newStartMs, origin = ChunkOrigin.MANUAL)
+                    } else {
+                        chunk.copy(origin = ChunkOrigin.MANUAL)
+                    }
+
+                    idx -> chunk.copy(startMs = newStartMs, endMs = newEndMs, origin = ChunkOrigin.MANUAL)
+
+                    idx + 1 -> if (chunk.startMs == current.endMs || newEndMs > chunk.startMs) {
+                        chunk.copy(startMs = newEndMs, origin = ChunkOrigin.MANUAL)
+                    } else {
+                        chunk.copy(origin = ChunkOrigin.MANUAL)
+                    }
+
+                    else -> chunk.copy(origin = ChunkOrigin.MANUAL)
+                }
+            }
+            chunkSources[id] = ChunkOrigin.MANUAL
+            entry.copy(
+                chunks = manualChunks,
+                chunksByOrigin = entry.chunksByOrigin + (ChunkOrigin.MANUAL to manualChunks),
+            )
+        }
+        return success
     }
 }
