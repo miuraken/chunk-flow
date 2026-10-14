@@ -1,0 +1,2 @@
+# テスト音源の生成物（testdata/generate_testdata.py が作る。コミットしない）
+testdata/out/
