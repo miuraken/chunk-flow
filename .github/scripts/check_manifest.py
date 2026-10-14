@@ -5,6 +5,8 @@
     python3 .github/scripts/check_manifest.py            # app/build の下のマージ後のマニフェストをすべて調べる
     python3 .github/scripts/check_manifest.py <AndroidManifest.xml> ...
 
+パスに debug を含むマニフェストはデバッグビルドとして扱い、DEBUG_ONLY_ALLOWED_EXPORTED も許す。
+
 標準ライブラリだけで動く（CI とローカルの両方で使う）。一覧を変えるときは ADR に理由を書く（AGENTS.md §10）。
 """
 
@@ -44,8 +46,14 @@ ALLOWED_EXPORTED = [
 # android.permission.DUMP（signature|privileged。shell とシステムだけが持つ）で保護された、AndroidX の診断用の受信機。
 # 他のアプリからは呼べないため、エクスポートの一覧の対象外として許容する（ADR 0001）。
 DUMP_PROTECTED_ALLOWED = {
-    "androidx.profileinstaller.ProfileInstallerReceiver",
+    "androidx.profileinstaller.ProfileInstallReceiver",
     "androidx.work.impl.diagnostics.DiagnosticsReceiver",
+}
+
+# デバッグビルドにだけ入る、Compose のプレビューを端末で表示するための Activity（ui-tooling。debugImplementation）。
+# Android Studio の「プレビューを端末で実行」に使う。リリースビルドには入らないことを、リリースのマニフェストで確かめる（ADR 0004）。
+DEBUG_ONLY_ALLOWED_EXPORTED = {
+    ("activity", "androidx.compose.ui.tooling.PreviewActivity"),
 }
 
 COMPONENT_TAGS = ("activity", "activity-alias", "service", "receiver", "provider")
@@ -60,8 +68,13 @@ def full_name(name: str, package: str) -> str:
     return name
 
 
-def check(path: Path) -> list[str]:
-    """1 つのマニフェストを調べ、問題の一覧を返す。"""
+def is_debug_manifest(path: Path) -> bool:
+    """マージ後のマニフェストのパス（.../merged_manifest/<variant>/...）からデバッグビルドかどうかを判定する。"""
+    return any(part == "debug" or part.endswith("Debug") for part in path.parts)
+
+
+def check(path: Path, debug: bool) -> list[str]:
+    """1 つのマニフェストを調べ、問題の一覧を返す。debug が True なら DEBUG_ONLY_ALLOWED_EXPORTED も許す。"""
     problems: list[str] = []
     root = ET.parse(path).getroot()
     package = root.get("package", APPLICATION_ID)
@@ -89,6 +102,8 @@ def check(path: Path) -> list[str]:
                 permission = el.get(f"{ANDROID}permission")
                 if name in DUMP_PROTECTED_ALLOWED and permission == "android.permission.DUMP":
                     continue
+                if debug and (tag, name) in DEBUG_ONLY_ALLOWED_EXPORTED:
+                    continue
                 problems.append(f"許可されていないエクスポート: <{tag}> {name}（permission={permission}）")
     return problems
 
@@ -109,7 +124,7 @@ def main(argv: list[str]) -> int:
         return 2
     failed = False
     for path in manifests:
-        problems = check(path)
+        problems = check(path, is_debug_manifest(path))
         rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
         if problems:
             failed = True
