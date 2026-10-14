@@ -1,7 +1,9 @@
 package com.miuraken.chunkflow.core.media.di
 
+import com.miuraken.chunkflow.core.media.AndroidSpeechRecognizerChunkTranscriber
 import com.miuraken.chunkflow.core.media.AudioStreamDecoder
 import com.miuraken.chunkflow.core.media.MediaCodecAudioStreamDecoder
+import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -9,7 +11,7 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 /**
- * `core:media` の [AudioStreamDecoder] を Hilt に束縛するモジュール（§7.3.1）。
+ * `core:media` の [AudioStreamDecoder] および [OnDeviceChunkTranscriber] を Hilt に束縛するモジュール（§7.3.1、F6.2）。
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -21,4 +23,11 @@ abstract class MediaModule {
     abstract fun bindsAudioStreamDecoder(
         impl: MediaCodecAudioStreamDecoder,
     ): AudioStreamDecoder
+
+    /** [AndroidSpeechRecognizerChunkTranscriber] を [OnDeviceChunkTranscriber] として束縛する。 */
+    @Binds
+    @Singleton
+    abstract fun bindsOnDeviceChunkTranscriber(
+        impl: AndroidSpeechRecognizerChunkTranscriber,
+    ): OnDeviceChunkTranscriber
 }
