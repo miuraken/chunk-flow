@@ -103,6 +103,7 @@ class MediaControllerPlaybackController(
     private var chunkObservationJob: Job? = null
 
     private var currentChunks: List<Chunk> = emptyList()
+    private var lastLookaheadTarget: Pair<MediaId, ChunkId?>? = null
     private var activeChunkSource: ChunkOrigin = ChunkOrigin.AUTO
     private var learningPlayerInstance: LearningPlayer? = null
     private var rawPlayerInstance: Player? = null
@@ -164,6 +165,7 @@ class MediaControllerPlaybackController(
                             autoPauseEndsAtMs = autoPauseEndsAt,
                         )
                     }
+                    notifyLookaheadIfChanged(_status.value.mediaId, chunkId)
                 },
             )
             chunkScheduler = scheduler
@@ -273,15 +275,17 @@ class MediaControllerPlaybackController(
         lp.prepare()
         chunkScheduler?.setChunks(initialChunks)
 
+        val initialChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(initialPositionMs)?.id
         _status.value = PlaybackStatus(
             mediaId = mediaId,
             isPlaying = lp.isPlaying,
             durationMs = item.durationMs,
             speed = initialSpeed,
-            currentChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(initialPositionMs)?.id,
+            currentChunkId = initialChunkId,
             autoPauseEndsAtMs = chunkScheduler?.autoPauseEndsAtMs?.value,
             error = null,
         )
+        notifyLookaheadIfChanged(mediaId, initialChunkId, force = true)
     }
 
     override fun seekToChunk(chunkId: ChunkId) {
@@ -295,6 +299,7 @@ class MediaControllerPlaybackController(
                     autoPauseEndsAtMs = null,
                 )
             }
+            notifyLookaheadIfChanged(_status.value.mediaId, chunkId)
         }
     }
 
@@ -402,15 +407,17 @@ class MediaControllerPlaybackController(
         lp.chunks = initialChunks
         observeActiveMediaChunks(resumeItem.id, resumeItem.languagePair)
 
+        val resumeChunkId = findChunkAt(resumePositionMs)?.id
         _status.value = PlaybackStatus(
             mediaId = resumeItem.id,
             isPlaying = false,
             durationMs = resumeItem.durationMs,
             speed = resumeSpeed,
-            currentChunkId = findChunkAt(resumePositionMs)?.id,
+            currentChunkId = resumeChunkId,
             autoPauseEndsAtMs = null,
             error = null,
         )
+        notifyLookaheadIfChanged(resumeItem.id, resumeChunkId, force = true)
 
         val mediaItem = buildMediaItem(resumeItem, audioFile)
         MediaSession.MediaItemsWithStartPosition(
@@ -458,6 +465,7 @@ class MediaControllerPlaybackController(
                 _status.update {
                     it.copy(currentChunkId = updatedChunkId)
                 }
+                notifyLookaheadIfChanged(mediaId, updatedChunkId)
             }
         }
     }
@@ -466,8 +474,23 @@ class MediaControllerPlaybackController(
         chunkObservationJob?.cancel()
         chunkObservationJob = null
         currentChunks = emptyList()
+        lastLookaheadTarget = null
         learningPlayerInstance?.chunks = emptyList()
         chunkScheduler?.bindMedia(null)
+    }
+
+    private fun notifyLookaheadIfChanged(
+        mediaId: MediaId?,
+        chunkId: ChunkId?,
+        force: Boolean = false,
+    ) {
+        val targetMediaId = mediaId ?: return
+        val key = targetMediaId to chunkId
+        if (!force && lastLookaheadTarget == key) return
+        lastLookaheadTarget = key
+        scope.launch {
+            analysisRepository.triggerLookaheadAt(targetMediaId, chunkId)
+        }
     }
 
     private fun startPeriodicPositionSave() {
@@ -545,12 +568,14 @@ class MediaControllerPlaybackController(
             reason: Int,
         ) {
             val pos = newPosition.positionMs.coerceAtLeast(0L)
+            val updatedChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(pos)?.id
             _status.update {
                 it.copy(
-                    currentChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(pos)?.id,
+                    currentChunkId = updatedChunkId,
                     autoPauseEndsAtMs = chunkScheduler?.autoPauseEndsAtMs?.value,
                 )
             }
+            notifyLookaheadIfChanged(_status.value.mediaId, updatedChunkId)
         }
 
         override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
