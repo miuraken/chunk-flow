@@ -41,6 +41,7 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.transcript.TranscriptDocument
 import com.miuraken.chunkflow.core.transcript.TranscriptError
@@ -57,6 +58,7 @@ import java.text.Normalizer
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -68,11 +70,14 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 
 /**
@@ -141,6 +146,8 @@ class DefaultLibraryRepository(
         clock = System::currentTimeMillis,
         usableSpaceBytesProvider = { defaultUsableSpaceBytes(context) },
     )
+
+    private val audioFileStateVersion = MutableStateFlow(0L)
 
     override fun observeItems(): Flow<List<AudioItem>> = mediaItemDao.observeAll().map { entities ->
         entities.map(MediaItemEntity::toExternalModel)
@@ -697,11 +704,71 @@ class DefaultLibraryRepository(
         )
     }.flowOn(ioDispatcher)
 
+    override fun observeMissingAudioIds(): Flow<Set<MediaId>> = combine(
+        mediaItemDao.observeAll(),
+        audioFileStateVersion,
+    ) { entities, _ ->
+        entities.mapNotNullTo(linkedSetOf()) { entity ->
+            val mediaId = MediaId(entity.id)
+            val file = mediaFileLocator.resolveAudioFile(mediaId, entity.mimeType)
+            if (file == null || !file.exists()) mediaId else null
+        }
+    }
+
+    override suspend fun exportTranscriptText(
+        id: MediaId,
+        format: TranscriptExportFormat,
+    ): String? = withContext(ioDispatcher) {
+        val analysisChunks = analysisRepository.observeChunks(id).first().sortedBy { it.startMs }
+        val analysisTranscripts = analysisRepository.observeTranscripts(id).first()
+        val pairsFromAnalysis = analysisChunks.mapNotNull { chunk ->
+            val transcript = analysisTranscripts[chunk.id] ?: return@mapNotNull null
+            if (transcript.text.isBlank()) null else chunk to transcript
+        }
+        val pairs: List<Pair<Chunk, Transcript>> = if (pairsFromAnalysis.isNotEmpty()) {
+            pairsFromAnalysis
+        } else {
+            loadActiveChunkTranscriptPairs(id.value).map { (chunkEntity, transcriptEntity) ->
+                chunkEntity.toExternalModel() to transcriptEntity.toExternalModel()
+            }
+        }
+        if (pairs.isEmpty()) return@withContext null
+        formatTranscriptExport(pairs, format)
+    }
+
+    override suspend fun writeExportedTranscriptToUri(
+        id: MediaId,
+        format: TranscriptExportFormat,
+        targetUri: Uri,
+    ): Boolean = withContext(ioDispatcher) {
+        if (targetUri.scheme != ContentResolver.SCHEME_CONTENT) {
+            return@withContext false
+        }
+        val exportedText = exportTranscriptText(id, format) ?: return@withContext false
+        try {
+            val outputStream = context.contentResolver.openOutputStream(targetUri, "wt")
+                ?: context.contentResolver.openOutputStream(targetUri)
+                ?: return@withContext false
+            outputStream.use { out ->
+                out.write(exportedText.toByteArray(Charsets.UTF_8))
+                out.flush()
+            }
+            true
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: SecurityException) {
+            false
+        } catch (_: IOException) {
+            false
+        }
+    }
+
     override suspend fun delete(id: MediaId) {
         withContext(ioDispatcher) {
             // DB の CASCADE 削除（chunks / transcripts / item_state / drive_sync_records）を実行した上で実ファイルを消す
             mediaItemDao.deleteById(id.value)
             mediaFileLocator.deleteMediaFiles(id)
+            audioFileStateVersion.update { it + 1L }
         }
     }
 
@@ -778,6 +845,7 @@ class DefaultLibraryRepository(
                 tempFile.delete()
                 return SingleImportOutcome.Failed(ImportError.IO)
             }
+            audioFileStateVersion.update { it + 1L }
             return SingleImportOutcome.Duplicate(
                 mediaId = existingId,
                 reattachedAudioFile = true,
@@ -826,6 +894,7 @@ class DefaultLibraryRepository(
         )
         mediaItemDao.upsert(entity)
         itemStateDao.upsert(initialState)
+        audioFileStateVersion.update { it + 1L }
         return SingleImportOutcome.Imported(newMediaId)
     }
 
@@ -1414,6 +1483,7 @@ class DefaultLibraryRepository(
                 tempFile.delete()
                 return SingleImportOutcome.Failed(ImportError.IO)
             }
+            audioFileStateVersion.update { it + 1L }
             return SingleImportOutcome.Duplicate(
                 mediaId = existingId,
                 reattachedAudioFile = true,
@@ -1462,6 +1532,7 @@ class DefaultLibraryRepository(
         )
         mediaItemDao.upsert(entity)
         itemStateDao.upsert(initialState)
+        audioFileStateVersion.update { it + 1L }
         return SingleImportOutcome.Imported(newMediaId)
     }
 
@@ -1675,6 +1746,66 @@ class DefaultLibraryRepository(
         moveOrCopyTempFile(tempFile, targetFile)
     } catch (_: IOException) {
         false
+    }
+
+    private fun formatTranscriptExport(
+        pairs: List<Pair<Chunk, Transcript>>,
+        format: TranscriptExportFormat,
+    ): String = when (format) {
+        TranscriptExportFormat.SRT -> {
+            pairs.mapIndexed { index, (chunk, transcript) ->
+                val seq = index + 1
+                val start = formatSrtTimestamp(chunk.startMs)
+                val end = formatSrtTimestamp(chunk.endMs)
+                val text = transcript.text.trim()
+                "$seq\n$start --> $end\n$text"
+            }.joinToString("\n\n")
+        }
+
+        TranscriptExportFormat.LRC -> {
+            pairs.joinToString("\n") { (chunk, transcript) ->
+                val tag = formatLrcTimestamp(chunk.startMs)
+                val text = transcript.text.trim().replace("\r\n", " ").replace('\n', ' ')
+                "[$tag]$text"
+            }
+        }
+
+        TranscriptExportFormat.TXT -> {
+            pairs.joinToString("\n") { (chunk, transcript) ->
+                val timeTag = formatTxtTimestamp(chunk.startMs)
+                val lang = transcript.language?.value?.takeIf { it.isNotBlank() }
+                val text = transcript.text.trim().replace("\r\n", " ").replace('\n', ' ')
+                if (lang != null) {
+                    "[$timeTag] [${lang.uppercase(Locale.ROOT)}] $text"
+                } else {
+                    "[$timeTag] $text"
+                }
+            }
+        }
+    }
+
+    private fun formatSrtTimestamp(ms: Long): String {
+        val clamped = ms.coerceAtLeast(0L)
+        val hours = clamped / 3_600_000L
+        val minutes = (clamped % 3_600_000L) / 60_000L
+        val seconds = (clamped % 60_000L) / 1_000L
+        val millis = clamped % 1_000L
+        return String.format(Locale.ROOT, "%02d:%02d:%02d,%03d", hours, minutes, seconds, millis)
+    }
+
+    private fun formatLrcTimestamp(ms: Long): String {
+        val clamped = ms.coerceAtLeast(0L)
+        val totalMinutes = clamped / 60_000L
+        val seconds = (clamped % 60_000L) / 1_000L
+        val centiseconds = (clamped % 1_000L) / 10L
+        return String.format(Locale.ROOT, "%02d:%02d.%02d", totalMinutes, seconds, centiseconds)
+    }
+
+    private fun formatTxtTimestamp(ms: Long): String {
+        val clamped = ms.coerceAtLeast(0L)
+        val totalMinutes = clamped / 60_000L
+        val seconds = (clamped % 60_000L) / 1_000L
+        return String.format(Locale.ROOT, "%02d:%02d", totalMinutes, seconds)
     }
 
     private fun mapDriveErrorToSyncError(error: DriveError): SyncError = when (error) {
