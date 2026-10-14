@@ -52,7 +52,8 @@
       "startMs": 3200,
       "endMs": 5800,
       "lang": "es",
-      "text": "Está a la derecha."
+      "text": "Está a la derecha.",
+      "langProb": 1.0
     }
   ]
 }

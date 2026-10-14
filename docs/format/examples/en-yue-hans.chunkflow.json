@@ -14,7 +14,14 @@
     "tool": "chunkflow-transcribe 0.1.0",
     "engine": "faster-whisper 1.1.1",
     "model": "large-v3",
-    "createdAt": "2026-10-14T12:00:00Z"
+    "createdAt": "2026-10-14T12:00:00Z",
+    "modelRepo": "mlx-community/whisper-large-v3-mlx",
+    "modelRevision": "0123456789abcdef0123456789abcdef01234567",
+    "vad": {
+      "name": "silero-vad",
+      "version": "6.2.3",
+      "mergeGapMs": 100
+    }
   },
   "segments": [
     {

@@ -47,6 +47,31 @@ JSON Schema だけでは表せない規則です。`.github/scripts/validate_tra
 - `text` の字体: 中国語（`zh`）は簡体字、広東語（`yue`）は香港式の繁体字の口語。もう一方の字体は `textVariants`（`Hans` / `Hant`）に入れる。単語には `textVariants` を持たせない。
 - `lang` と `langProb` は、判定した場合は常に書く（省略は「判定していない」の意味で `null` と同じに扱う）。
 - 単一言語の教材では `languages.base` を省略する（`null` も可）。
+- `words[].text` は前後の空白を除いて書く（Whisper の単語は先頭に空白が付くことがある）。読み手は念のため前後の空白を除いて扱う。
+
+### `langProb` の意味と値（transcriber からの確認への回答。2026-10-14）
+
+`langProb` は「`lang` に書いた言語の、言語ペアの 2 言語の中での確率」です（判定の段階で最も確率の高かった言語の確率ではない）。
+
+| 場合 | `lang` | `langProb` |
+| --- | --- | --- |
+| 判定できた（通常） | 判定した言語 | その言語の確率（0〜1） |
+| 判定できなかった | `null` | **`null`**（または省略）。読み手は `lang` が `null` のとき `langProb` を無視する |
+| 文字体系の確認（§7.4.4 の手順 5）で、もう一方の言語を採った | 採った言語 | 採った言語の確率をそのまま書く。**0.5 未満になってよい**（許容する）。読み手は `langProb` が 0.5 以上だと仮定しない |
+| 単一言語の教材（判定を省いた） | `languages.target` | **1.0 または省略** |
+
+- 確率を言語ペアの外の言語に配分しない（2 言語の確率の和で割って正規化した値を書く）。§7.4.5 の `zh` と `yue` の合算の例外では、合算した後の値を書く。
+
+### `generator` の任意の項目
+
+`generator` には、必須の `tool` / `engine` / `model` / `createdAt` に加えて、次の任意の項目を書いてよい（読み手は調査用に保存するだけで、動作には使わない）。
+Schema は `generator` の知らない項目を拒否しないが、下の 3 つは型を Schema に書いてある。
+
+| 項目 | 型 | 内容 |
+| --- | --- | --- |
+| `modelRepo` | 文字列（200 文字以内） | モデルの取得元（例: `mlx-community/whisper-large-v3-mlx`） |
+| `modelRevision` | 文字列（200 文字以内） | モデルのリビジョン（コミットハッシュなど） |
+| `vad` | オブジェクト | VAD の名前・版・主なパラメータ（例: `{"name": "silero-vad", "version": "6.2.3", "mergeGapMs": 100}`）。中身は自由 |
 
 ## 正しいサンプル
 
@@ -54,9 +79,9 @@ JSON Schema だけでは表せない規則です。`.github/scripts/validate_tra
 | --- | --- |
 | `ja-ko` | 日本語で学ぶ韓国語。words なし |
 | `ja-zh-hant` | 日本語で学ぶ中国語。簡体字の本文 + `Hant`、words あり |
-| `en-yue-hans` | 英語で学ぶ広東語。香港式の繁体字の口語 + `Hans`、words あり |
+| `en-yue-hans` | 英語で学ぶ広東語。香港式の繁体字の口語 + `Hans`、words あり、`generator` の任意の項目（`modelRepo` / `modelRevision` / `vad`）あり |
 | `en-hi` / `en-ru` / `en-vi` / `en-el` | デーヴァナーガリー / キリル文字 / ベトナム語の声調記号（NFC）/ ギリシャ文字 |
-| `es-single-language` | 単一言語（`base` を省略）。words あり、`langProb` なし |
+| `es-single-language` | 単一言語（`base` を省略）。words あり、`langProb` は省略と 1.0 |
 | `minimal-null-and-unknown-fields` | `base: null`、`lang` の省略と `null`、知らないフィールド（前方互換）、セグメントが接している |
 | `empty-segments` | セグメントが 0 件（無音だけの音声など） |
 
