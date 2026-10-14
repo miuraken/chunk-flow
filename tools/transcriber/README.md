@@ -93,7 +93,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"   # 書き起こし�
 
 # 以下は必要なときだけ（既定値は src/chunkflow_transcriber/config.py などを参照）
 [vad]
-merge_gap_ms = 300
+merge_gap_ms = 100
 [chunking]
 max_ms = 15000
 [smoothing]
