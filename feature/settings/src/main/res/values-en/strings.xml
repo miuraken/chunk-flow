@@ -7,6 +7,15 @@
     <string name="settings_seek_forward_label">Seek forward duration</string>
     <string name="settings_seconds_format">%1$ds</string>
     <string name="settings_default_speed_label">Default playback speed</string>
+    <string name="settings_default_auto_pause_label">Default auto-pause</string>
+    <string name="settings_auto_pause_off">OFF</string>
+    <string name="settings_auto_pause_fixed">Fixed %1$.1fs</string>
+    <string name="settings_auto_pause_proportional">Chunk × %1$.1f</string>
+    <string name="settings_section_segmentation">Default Auto-Segmentation</string>
+    <string name="settings_segmentation_min_silence">Min silence duration: %1$d ms</string>
+    <string name="settings_segmentation_pre_padding">Pre-padding: %1$d ms</string>
+    <string name="settings_segmentation_post_padding">Post-padding: %1$d ms</string>
+    <string name="settings_segmentation_reset">Reset to defaults</string>
     <string name="settings_section_language">Default Language Pair</string>
     <string name="settings_target_language_label">Target language</string>
     <string name="settings_base_language_label">Base / explanation language</string>

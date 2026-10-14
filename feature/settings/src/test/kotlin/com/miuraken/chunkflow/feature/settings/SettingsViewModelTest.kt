@@ -1,9 +1,11 @@
 package com.miuraken.chunkflow.feature.settings
 
+import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -52,6 +54,27 @@ class SettingsViewModelTest {
         assertEquals(ItemState.MIN_SPEED, viewModel.uiState.value.defaultSpeed)
         viewModel.onEvent(SettingsEvent.SetDefaultSpeed(2.5f))
         assertEquals(ItemState.MAX_SPEED, viewModel.uiState.value.defaultSpeed)
+    }
+
+    @Test
+    fun `既定の自動ポーズと自動チャンク分割パラメータの変更およびリセットが機能する`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val viewModel = SettingsViewModel(repo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(1_500)))
+        assertEquals(AutoPause.Fixed(1_500), viewModel.uiState.value.defaultAutoPause)
+
+        val customParams = SegmentationParams(
+            minSilenceMs = 500,
+            prePaddingMs = 200,
+            postPaddingMs = 250,
+        )
+        viewModel.onEvent(SettingsEvent.SetDefaultSegmentationParams(customParams))
+        assertEquals(customParams, viewModel.uiState.value.defaultSegmentationParams)
+
+        viewModel.onEvent(SettingsEvent.ResetDefaultSegmentationParams)
+        assertEquals(SegmentationParams(), viewModel.uiState.value.defaultSegmentationParams)
     }
 
     @Test

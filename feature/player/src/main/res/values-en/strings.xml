@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="PluralsCandidate">
     <string name="player_title">Player</string>
     <string name="player_back">Back</string>
     <string name="player_play">Play</string>
     <string name="player_pause">Pause</string>
+    <string name="player_prev_chunk_cd">Previous chunk</string>
+    <string name="player_next_chunk_cd">Next chunk</string>
     <string name="player_seek_back_label">-%1$ds</string>
     <string name="player_seek_forward_label">+%1$ds</string>
     <string name="player_seek_back_cd">Seek back (%1$ds)</string>
@@ -16,4 +18,64 @@
     <string name="player_error_source_missing">Audio file not found. Re-import the same audio file to restore playback.</string>
     <string name="player_error_decoder">Failed to decode the audio file.</string>
     <string name="player_error_unknown">An error occurred during playback.</string>
+
+    <!-- Waveform (F4.1, F4.2, §7.5.4) -->
+    <string name="player_waveform_overview_label">Overview</string>
+    <string name="player_waveform_zoomed_label">Zoomed</string>
+    <string name="player_waveform_overview_cd">Overview waveform seek bar</string>
+    <string name="player_waveform_zoomed_cd">Zoomed waveform (drag to scrub, pinch to zoom, long-press drag for A-B loop)</string>
+    <string name="player_waveform_analyzing">Analyzing waveform…</string>
+    <string name="player_waveform_analyzing_percent">Analyzing waveform… %1$d%%</string>
+    <string name="player_waveform_preparing">Preparing waveform…</string>
+    <string name="player_waveform_analysis_failed">Failed to analyze waveform.</string>
+    <string name="player_waveform_zoom_window">Window: %1$s</string>
+
+    <!-- Transcript list (F7.1, F7.2, F6.1, §7.5.5) -->
+    <string name="player_return_to_current">Back to current</string>
+    <string name="player_blind_masked_hint">Tap to reveal transcript</string>
+    <string name="player_chunk_repeat_3">Repeat this chunk (3x)</string>
+    <string name="player_chunk_repeat_infinite">Repeat this chunk (∞)</string>
+    <string name="player_chunk_range_select_start">Select repeat range from here</string>
+    <string name="player_chunk_range_selecting_banner">Tap the ending chunk for range repeat</string>
+    <string name="player_chunk_range_cancel">Cancel</string>
+    <string name="player_no_transcript_banner">Import a transcript JSON generated on your PC to view synchronized scripts.</string>
+    <string name="player_pick_transcript_json">Choose transcript JSON</string>
+    <string name="player_chunk_number_format">Chunk #%1$d</string>
+    <string name="player_transcript_attached">Attached transcript (%1$d chunks)</string>
+    <string name="player_transcript_attached_mismatch">Attached %1$d chunks (duration differs from audio)</string>
+    <string name="player_transcript_no_matching_audio">No matching audio found for this transcript</string>
+    <string name="player_transcript_invalid">Invalid transcript file format</string>
+    <string name="player_dismiss_banner">Dismiss</string>
+
+    <!-- Practice controls (F5.2, F5.4, F6.1, F6.2, F6.3, F7.2) -->
+    <string name="player_chip_repeat_off">Repeat: OFF</string>
+    <string name="player_chip_repeat_single_3">1 Chunk ×3</string>
+    <string name="player_chip_repeat_single_inf">1 Chunk ∞</string>
+    <string name="player_chip_repeat_range">Range Repeat</string>
+    <string name="player_chip_repeat_ab">A-B Repeat</string>
+    <string name="player_ab_set_a">[A] Start</string>
+    <string name="player_ab_set_b">[B] End</string>
+    <string name="player_ab_clear">Clear</string>
+
+    <string name="player_chip_autopause_off">Auto-pause: OFF</string>
+    <string name="player_chip_autopause_fixed">Pause %1$ds</string>
+    <string name="player_chip_autopause_prop">Pause ×%1$s</string>
+    <string name="player_autopause_active_banner">Auto-pausing (practice) %1$ss left</string>
+    <string name="player_autopause_resume_now">Resume</string>
+
+    <string name="player_chip_blind_off">Blind: OFF</string>
+    <string name="player_chip_blind_target">Hide Target</string>
+    <string name="player_chip_blind_all">Hide All</string>
+
+    <string name="player_chip_source_imported">Chunks: Transcript</string>
+    <string name="player_chip_source_auto">Chunks: Auto VAD</string>
+    <string name="player_chip_resegment">Resegment</string>
+
+    <string name="player_resegment_sheet_title">Adjust Auto-Segmentation</string>
+    <string name="player_resegment_min_silence">Min silence duration: %1$d ms</string>
+    <string name="player_resegment_pre_padding">Pre-speech padding: %1$d ms</string>
+    <string name="player_resegment_post_padding">Post-speech padding: %1$d ms</string>
+    <string name="player_resegment_threshold">Silence threshold ratio: %1$s</string>
+    <string name="player_resegment_apply">Resegment now</string>
+    <string name="player_sheet_close">Close</string>
 </resources>

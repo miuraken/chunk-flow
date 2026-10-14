@@ -3,10 +3,12 @@ package com.miuraken.chunkflow.feature.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
+import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -18,7 +20,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * 設定画面の UI 状態（F9.1、F3.2、F3.3）。
+ * 設定画面の UI 状態（F9.1、F3.2、F3.3、F5.2、F6.3）。
  *
  * @property settings 現在のユーザー設定。
  */
@@ -49,6 +51,14 @@ data class SettingsUiState(
     val seekForwardMs: Long
         get() = settings.seekForwardMs
 
+    /** 既定の自動ポーズ設定。 */
+    val defaultAutoPause: AutoPause
+        get() = settings.defaultAutoPause
+
+    /** 端末内の自動チャンク分割の既定パラメータ。 */
+    val defaultSegmentationParams: SegmentationParams
+        get() = settings.defaultSegmentationParams
+
     companion object {
         /** 巻き戻し秒数の選択肢（ミリ秒）。 */
         val SEEK_BACK_OPTIONS_MS: List<Long> = listOf(1_000L, 2_000L, 3_000L, 5_000L, 10_000L)
@@ -58,6 +68,15 @@ data class SettingsUiState(
 
         /** 既定の再生速度のプリセット一覧。 */
         val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+
+        /** 既定の自動ポーズの選択肢。 */
+        val AUTO_PAUSE_OPTIONS: List<AutoPause> = listOf(
+            AutoPause.Off,
+            AutoPause.Fixed(1_500L),
+            AutoPause.Fixed(3_000L),
+            AutoPause.Proportional(factor = 1.0f),
+            AutoPause.Proportional(factor = 1.5f),
+        )
 
         /** 主な対象言語の一覧（§1.2、F9.1）。 */
         val SUPPORTED_LANGUAGES: List<LanguageTag> = listOf(
@@ -91,6 +110,15 @@ sealed interface SettingsEvent {
     /** 既定の再生速度を変更する。 */
     data class SetDefaultSpeed(val speed: Float) : SettingsEvent
 
+    /** 既定の自動ポーズを変更する。 */
+    data class SetDefaultAutoPause(val autoPause: AutoPause) : SettingsEvent
+
+    /** 自動チャンク分割の既定パラメータを変更する。 */
+    data class SetDefaultSegmentationParams(val params: SegmentationParams) : SettingsEvent
+
+    /** 自動チャンク分割の既定パラメータを初期値に戻す。 */
+    data object ResetDefaultSegmentationParams : SettingsEvent
+
     /** 既定の学習言語（target）を変更する。 */
     data class SetTargetLanguage(val language: LanguageTag) : SettingsEvent
 
@@ -105,7 +133,7 @@ sealed interface SettingsEvent {
 }
 
 /**
- * 設定画面の ViewModel（F9.1、F3.2、F3.3）。
+ * 設定画面の ViewModel（F9.1、F3.2、F3.3、F5.2、F6.3）。
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -144,6 +172,31 @@ class SettingsViewModel @Inject constructor(
                     .coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
                 viewModelScope.launch {
                     userSettingsRepository.setDefaultSpeed(rounded)
+                }
+            }
+
+            is SettingsEvent.SetDefaultAutoPause -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setDefaultAutoPause(event.autoPause)
+                }
+            }
+
+            is SettingsEvent.SetDefaultSegmentationParams -> {
+                val minSilence = event.params.minSilenceMs.coerceIn(100, 1_500)
+                val sanitized = event.params.copy(
+                    minSilenceMs = minSilence,
+                    mergeGapMs = event.params.mergeGapMs.coerceAtLeast(minSilence),
+                    prePaddingMs = event.params.prePaddingMs.coerceIn(0, 500),
+                    postPaddingMs = event.params.postPaddingMs.coerceIn(0, 500),
+                )
+                viewModelScope.launch {
+                    userSettingsRepository.setDefaultSegmentationParams(sanitized)
+                }
+            }
+
+            SettingsEvent.ResetDefaultSegmentationParams -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setDefaultSegmentationParams(SegmentationParams())
                 }
             }
 

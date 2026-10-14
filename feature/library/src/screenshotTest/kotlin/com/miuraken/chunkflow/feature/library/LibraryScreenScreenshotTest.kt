@@ -28,6 +28,9 @@ fun LibraryScreenPopulatedScreenshot() {
             item = item,
             positionMs = if (index == 0) 12_000L else 0L,
             speed = if (index == 0) 1.25f else 1.0f,
+            chunkCount = if (index == 0) 6 else 0,
+            hasTranscript = index == 0,
+            isAnalyzing = index == 1,
         )
     }
     val first = SampleLibraries.multipleCourses.first()

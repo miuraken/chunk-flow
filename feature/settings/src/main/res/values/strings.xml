@@ -7,6 +7,15 @@
     <string name="settings_seek_forward_label">早送り秒数</string>
     <string name="settings_seconds_format">%1$d秒</string>
     <string name="settings_default_speed_label">既定の再生速度</string>
+    <string name="settings_default_auto_pause_label">既定の自動ポーズ</string>
+    <string name="settings_auto_pause_off">OFF</string>
+    <string name="settings_auto_pause_fixed">固定 %1$.1f 秒</string>
+    <string name="settings_auto_pause_proportional">チャンク長 × %1$.1f</string>
+    <string name="settings_section_segmentation">自動チャンク分割の既定値</string>
+    <string name="settings_segmentation_min_silence">無音とみなす長さ: %1$d ms</string>
+    <string name="settings_segmentation_pre_padding">前の余白: %1$d ms</string>
+    <string name="settings_segmentation_post_padding">後ろの余白: %1$d ms</string>
+    <string name="settings_segmentation_reset">既定値に戻す</string>
     <string name="settings_section_language">既定の言語ペア</string>
     <string name="settings_target_language_label">学習言語（Target）</string>
     <string name="settings_base_language_label">母語・解説の言語（Base）</string>
