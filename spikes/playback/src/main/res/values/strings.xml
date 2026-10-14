@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name" translatable="false">Spike S2 Playback</string>
-    <string name="spike_placeholder">スパイクの雛形（ソースは担当者が書く）</string>
 </resources>

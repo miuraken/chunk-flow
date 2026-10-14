@@ -2,8 +2,14 @@
 <!--
   スパイク（技術検証）用のアプリ。本体の権限とエクスポートの制約（§8.2、check_manifest.py）の対象外（ADR 0004）。
   検証に必要な権限・サービスは担当者が加える。
+  S2: MediaSessionService（自動ポーズ・前 / 次の再割り当て）と、自動ポーズ中の PARTIAL_WAKE_LOCK のための権限。
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="false"
@@ -15,12 +21,30 @@
 
         <activity
             android:name=".SpikeActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".MeasureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- システムのメディア操作（通知・ロック画面・イヤホン）から接続されるため exported にする。
+             接続の制限（カスタムコマンドを信頼できるコントローラに限る）は本体で MediaSession.Callback で行う（§8.1） -->
+        <service
+            android:name=".service.SpikePlaybackService"
+            android:exported="true"
+            tools:ignore="ExportedService"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>
