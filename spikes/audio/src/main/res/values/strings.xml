@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name" translatable="false">Spike S3 Audio</string>
-    <string name="spike_placeholder">スパイクの雛形（ソースは担当者が書く）</string>
+    <string name="spike_title">S3: デコード速度と時間軸の計測</string>
+    <string name="run_suite">%1$s のすべてを計測</string>
 </resources>
