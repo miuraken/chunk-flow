@@ -48,6 +48,7 @@ interface SampleExtractor : AutoCloseable {
     /** 抽出器を作る。 */
     companion object {
         /** [kind] の抽出器で [path] を開く。 */
+        @OptIn(UnstableApi::class)
         fun open(kind: ExtractorKind, context: Context, path: String): SampleExtractor = when (kind) {
             ExtractorKind.PLATFORM -> PlatformExtractor(path)
             ExtractorKind.COMPAT -> CompatExtractor(MediaExtractorCompat(context), path)
