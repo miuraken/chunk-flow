@@ -7,6 +7,8 @@ import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
+import com.miuraken.chunkflow.core.data.library.SyncError
+import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
@@ -14,6 +16,8 @@ import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -126,7 +130,7 @@ sealed interface LibraryImportUiState {
 }
 
 /**
- * 文字起こし JSON 単体取り込みの UI 状態（F7.1、§7.1）。
+ * 文字起こし JSON / 字幕単体取り込みの UI 状態（F7.1、F1.4、§7.1）。
  */
 sealed interface TranscriptImportUiState {
     /** 取り込みを行っていない。 */
@@ -161,6 +165,47 @@ sealed interface TranscriptImportUiState {
 }
 
 /**
+ * Google Drive 同期の UI 状態（F1.5、§7.1）。
+ */
+sealed interface DriveSyncUiState {
+    /** 同期を行っていない。 */
+    data object Idle : DriveSyncUiState
+
+    /** Drive のファイル一覧を取得中。 */
+    data object Listing : DriveSyncUiState
+
+    /**
+     * ダウンロード中。
+     *
+     * @property done 完了したファイル数。
+     * @property total 対象の総ファイル数。
+     */
+    data class Downloading(val done: Int, val total: Int) : DriveSyncUiState
+
+    /**
+     * 同期が完了した。
+     *
+     * @property newAudio 追加した音声数。
+     * @property newTranscripts 追加・更新した文字起こし数。
+     * @property failed 失敗したファイル数。
+     * @property uploadedTranscripts Drive へアップロード（書き戻し）したローカル文字起こし数。
+     */
+    data class Done(
+        val newAudio: Int,
+        val newTranscripts: Int,
+        val failed: Int,
+        val uploadedTranscripts: Int = 0,
+    ) : DriveSyncUiState
+
+    /**
+     * 同期に失敗した。
+     *
+     * @property error 失敗の種別。
+     */
+    data class Error(val error: SyncError) : DriveSyncUiState
+}
+
+/**
  * ライブラリ画面下部のミニプレイヤーの状態（§7.5.1）。
  *
  * @property mediaId 現在開いている教材の ID。
@@ -176,13 +221,15 @@ data class MiniPlayerUiState(
 )
 
 /**
- * ライブラリ画面の状態（F1.1、F2.1、F2.2、F7.1、§7.5.1）。
+ * ライブラリ画面の状態（F1.1〜F2.3、F7.1、§7.5.1）。
  *
  * @property items 教材の一覧（レジューム位置・速度・チャンク数を含む）。
  * @property importState 音声・フォルダ取り込みの進捗・エラー状態。
  * @property transcriptImportState 文字起こし単体取り込みの結果状態。
+ * @property syncState Google Drive 同期の進捗・エラー状態。
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
  * @property pendingDeleteItem 削除確認ダイアログで対象になっている教材（表示中でなければ `null`）。
+ * @property pendingEditItem コース・言語ペア編集ダイアログで対象になっている教材（表示中でなければ `null`）。
  * @property selectedDirectoryName フォルダ指定で選択されたディレクトリ名。
  * @property collapsedDirectories 折りたたまれているディレクトリ名の集合。
  */
@@ -190,8 +237,10 @@ data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
     val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
+    val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
+    val pendingEditItem: AudioItem? = null,
     val selectedDirectoryName: String? = null,
     val collapsedDirectories: Set<String?> = emptySet(),
 ) {
@@ -216,7 +265,7 @@ sealed interface LibraryEvent {
     /** SAF ファイルピッカーを開いて音声・文字起こしファイルを取り込む。 */
     data object RequestImport : LibraryEvent
 
-    /** SAF ファイルピッカーを開いて文字起こし JSON ファイルを単体で取り込む。 */
+    /** SAF ファイルピッカーを開いて文字起こし・字幕ファイルを単体で取り込む。 */
     data object RequestImportTranscript : LibraryEvent
 
     /** 指定されたフォルダ（ディレクトリ）名と配下の URI 一覧を取り込む。 */
@@ -225,11 +274,17 @@ sealed interface LibraryEvent {
     /** SAF で選択された URI の一覧を取り込む。 */
     data class ImportUris(val uris: List<Uri>) : LibraryEvent
 
-    /** SAF で選択された文字起こし JSON URI を単体で取り込む。 */
+    /** SAF で選択された文字起こし・字幕 URI を単体で取り込む。 */
     data class ImportTranscriptUri(val uri: Uri) : LibraryEvent
 
-    /** 取り込み完了・エラーのバナーを閉じる。 */
+    /** Google Drive の `ChunkFlow/` フォルダと同期する（F1.5）。 */
+    data object SyncFromDrive : LibraryEvent
+
+    /** 取り込み・同期の完了・エラーバナーを閉じる。 */
     data object DismissImportStatus : LibraryEvent
+
+    /** Google Drive 同期バナーを閉じる。 */
+    data object DismissSyncStatus : LibraryEvent
 
     /** ディレクトリ（フォルダ）セクションの展開・折りたたみを切り替える。 */
     data class ToggleDirectory(val directoryName: String?) : LibraryEvent
@@ -239,6 +294,19 @@ sealed interface LibraryEvent {
 
     /** 設定画面を開く。 */
     data object OpenSettings : LibraryEvent
+
+    /** 教材のコース名・言語ペア編集ダイアログを開く（F2.3）。 */
+    data class RequestEditMetadata(val item: AudioItem) : LibraryEvent
+
+    /** 教材のコース名・言語ペアの編集を確定して保存する（F2.3）。 */
+    data class ConfirmEditMetadata(
+        val id: MediaId,
+        val course: String?,
+        val languages: LanguagePair,
+    ) : LibraryEvent
+
+    /** 教材のコース名・言語ペア編集ダイアログをキャンセルする。 */
+    data object CancelEditMetadata : LibraryEvent
 
     /** 教材の削除確認ダイアログを開く。 */
     data class RequestDelete(val item: AudioItem) : LibraryEvent
@@ -259,6 +327,14 @@ private data class ItemAnalysisSummary(
     val isAnalyzing: Boolean = false,
 )
 
+private data class DialogAndImportSnapshot(
+    val importState: LibraryImportUiState = LibraryImportUiState.Idle,
+    val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
+    val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
+    val pendingDeleteItem: AudioItem? = null,
+    val pendingEditItem: AudioItem? = null,
+)
+
 private object EmptyAnalysisRepository : AnalysisRepository {
     override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = flowOf(emptyMap())
     override fun observeWaveform(id: MediaId): Flow<Waveform?> = flowOf(null)
@@ -272,7 +348,7 @@ private object EmptyAnalysisRepository : AnalysisRepository {
 }
 
 /**
- * ライブラリ画面の ViewModel（F1.1、F2.1、F2.2、F7.1、§7.5.1）。
+ * ライブラリ画面の ViewModel（F1.1〜F2.3、F7.1、§7.5.1）。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -294,10 +370,13 @@ class LibraryViewModel @Inject constructor(
     private val importState = MutableStateFlow<LibraryImportUiState>(LibraryImportUiState.Idle)
     private val transcriptImportState =
         MutableStateFlow<TranscriptImportUiState>(TranscriptImportUiState.Idle)
+    private val syncState = MutableStateFlow<DriveSyncUiState>(DriveSyncUiState.Idle)
     private val pendingDeleteItem = MutableStateFlow<AudioItem?>(null)
+    private val pendingEditItem = MutableStateFlow<AudioItem?>(null)
     private val selectedDirectoryName = MutableStateFlow<String?>(null)
     private val collapsedDirectories = MutableStateFlow<Set<String?>>(emptySet())
     private var importJob: Job? = null
+    private var syncJob: Job? = null
 
     private val analysisSummaries: Flow<Map<MediaId, ItemAnalysisSummary>> =
         libraryRepository.observeItems().flatMapLatest { items ->
@@ -322,6 +401,22 @@ class LibraryViewModel @Inject constructor(
             }
         }
 
+    private val dialogAndImportFlow: Flow<DialogAndImportSnapshot> = combine(
+        importState,
+        transcriptImportState,
+        syncState,
+        pendingDeleteItem,
+        pendingEditItem,
+    ) { currentImport, currentTranscript, currentSync, deleteTarget, editTarget ->
+        DialogAndImportSnapshot(
+            importState = currentImport,
+            transcriptImportState = currentTranscript,
+            syncState = currentSync,
+            pendingDeleteItem = deleteTarget,
+            pendingEditItem = editTarget,
+        )
+    }
+
     /** ライブラリ画面の UI 状態。 */
     val uiState: StateFlow<LibraryUiState> = combine(
         combine(
@@ -332,24 +427,16 @@ class LibraryViewModel @Inject constructor(
             Triple(items, itemStates, summaries)
         },
         playbackController.status,
-        combine(
-            importState,
-            transcriptImportState,
-            pendingDeleteItem,
-        ) { currentImportState, currentTranscriptState, deleteTarget ->
-            Triple(currentImportState, currentTranscriptState, deleteTarget)
-        },
+        dialogAndImportFlow,
         selectedDirectoryName,
         collapsedDirectories,
-    ) { (items, itemStates, summaries), playbackStatus, (currentImportState, currentTranscriptState, deleteTarget), dirName, collapsed ->
+    ) { (items, itemStates, summaries), playbackStatus, dialogAndImport, dirName, collapsed ->
         buildUiState(
             items = items,
             itemStates = itemStates,
             summaries = summaries,
             playbackStatus = playbackStatus,
-            importState = currentImportState,
-            transcriptImportState = currentTranscriptState,
-            pendingDeleteItem = deleteTarget,
+            dialogAndImport = dialogAndImport,
             selectedDirectoryName = dirName,
             collapsedDirectories = collapsed,
         )
@@ -373,9 +460,16 @@ class LibraryViewModel @Inject constructor(
 
             is LibraryEvent.ImportTranscriptUri -> importTranscriptUri(event.uri)
 
+            LibraryEvent.SyncFromDrive -> syncFromDrive()
+
             LibraryEvent.DismissImportStatus -> {
                 importState.value = LibraryImportUiState.Idle
                 transcriptImportState.value = TranscriptImportUiState.Idle
+                syncState.value = DriveSyncUiState.Idle
+            }
+
+            LibraryEvent.DismissSyncStatus -> {
+                syncState.value = DriveSyncUiState.Idle
             }
 
             is LibraryEvent.ToggleDirectory -> {
@@ -386,6 +480,31 @@ class LibraryViewModel @Inject constructor(
                         current + event.directoryName
                     }
                 }
+            }
+
+            is LibraryEvent.RequestEditMetadata -> {
+                pendingEditItem.value = event.item
+            }
+
+            is LibraryEvent.ConfirmEditMetadata -> {
+                pendingEditItem.value = null
+                val normalizedCourse = event.course?.trim()?.ifBlank { null }
+                val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
+                val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
+                viewModelScope.launch {
+                    libraryRepository.updateItemMetadata(
+                        id = event.id,
+                        course = normalizedCourse,
+                        languages = LanguagePair(
+                            target = LanguageTag(normalizedTarget),
+                            base = normalizedBase?.let { LanguageTag(it) },
+                        ),
+                    )
+                }
+            }
+
+            LibraryEvent.CancelEditMetadata -> {
+                pendingEditItem.value = null
             }
 
             is LibraryEvent.RequestDelete -> {
@@ -452,6 +571,31 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    private fun syncFromDrive() {
+        syncJob?.cancel()
+        syncJob = viewModelScope.launch {
+            libraryRepository.syncFromDrive().collect { progress ->
+                syncState.value = when (progress) {
+                    SyncProgress.Listing -> DriveSyncUiState.Listing
+
+                    is SyncProgress.Downloading -> DriveSyncUiState.Downloading(
+                        done = progress.done,
+                        total = progress.total,
+                    )
+
+                    is SyncProgress.Done -> DriveSyncUiState.Done(
+                        newAudio = progress.newAudio,
+                        newTranscripts = progress.newTranscripts,
+                        failed = progress.failed,
+                        uploadedTranscripts = progress.uploadedTranscripts,
+                    )
+
+                    is SyncProgress.Failed -> DriveSyncUiState.Error(progress.error)
+                }
+            }
+        }
+    }
+
     private fun confirmDelete() {
         val target = pendingDeleteItem.value ?: return
         pendingDeleteItem.value = null
@@ -489,9 +633,7 @@ class LibraryViewModel @Inject constructor(
         itemStates: Map<MediaId, ItemState>,
         summaries: Map<MediaId, ItemAnalysisSummary>,
         playbackStatus: PlaybackStatus,
-        importState: LibraryImportUiState,
-        transcriptImportState: TranscriptImportUiState,
-        pendingDeleteItem: AudioItem?,
+        dialogAndImport: DialogAndImportSnapshot,
         selectedDirectoryName: String?,
         collapsedDirectories: Set<String?>,
     ): LibraryUiState {
@@ -529,10 +671,12 @@ class LibraryViewModel @Inject constructor(
         }
         return LibraryUiState(
             items = uiItems,
-            importState = importState,
-            transcriptImportState = transcriptImportState,
+            importState = dialogAndImport.importState,
+            transcriptImportState = dialogAndImport.transcriptImportState,
+            syncState = dialogAndImport.syncState,
             miniPlayer = miniPlayer,
-            pendingDeleteItem = pendingDeleteItem,
+            pendingDeleteItem = dialogAndImport.pendingDeleteItem,
+            pendingEditItem = dialogAndImport.pendingEditItem,
             selectedDirectoryName = selectedDirectoryName,
             collapsedDirectories = collapsedDirectories,
         )

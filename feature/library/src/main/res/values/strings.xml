@@ -40,4 +40,24 @@
     <string name="library_mini_player_play">再生</string>
     <string name="library_mini_player_pause">一時停止</string>
     <string name="library_mini_player_open">プレイヤー画面を開く: %1$s</string>
+    <!-- M3: Google Drive 同期・コース/言語ペア編集 -->
+    <string name="library_drive_sync_button">Drive 同期</string>
+    <string name="library_drive_sync_listing">Google Drive のファイル一覧を取得中…</string>
+    <string name="library_drive_sync_downloading">Google Drive と同期中… (%1$d/%2$d)</string>
+    <string name="library_drive_sync_done">Drive 同期完了: 音声 %1$d 件・文字起こし %2$d 件を追加</string>
+    <string name="library_drive_sync_done_with_uploads">Drive 同期完了: 音声 %1$d 件・文字起こし %2$d 件を追加（Drive へ %3$d 件書き戻し）</string>
+    <string name="library_drive_sync_error_not_authorized">Google Drive の認可が必要です。アカウント連携を確認してください。</string>
+    <string name="library_drive_sync_error_network">ネットワークエラーにより Google Drive と同期できませんでした。</string>
+    <string name="library_drive_sync_error_folder_not_found">Google Drive に ChunkFlow/ フォルダが見つかりません。</string>
+    <string name="library_drive_sync_error_no_space">端末の空き容量が不足しているため同期できませんでした。</string>
+    <string name="library_drive_sync_error_io">同期ファイルの読み書きに失敗しました。</string>
+    <string name="library_drive_sync_error_cancelled">Google Drive 同期をキャンセルしました。</string>
+    <string name="library_edit_metadata_cd">コース名と言語ペアを編集</string>
+    <string name="library_edit_metadata_title">コース・言語ペアの編集</string>
+    <string name="library_edit_course_label">コース名（フォルダ名）</string>
+    <string name="library_edit_target_lang_label">学習言語コード（例: ko, zh, yue, id, en）</string>
+    <string name="library_edit_base_lang_label">母語・解説言語コード（単一言語なら空欄、例: ja, en）</string>
+    <string name="library_edit_base_lang_none">単一言語（なし）</string>
+    <string name="library_edit_save">保存</string>
+    <string name="library_edit_cancel">キャンセル</string>
 </resources>

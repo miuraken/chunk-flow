@@ -30,6 +30,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,6 +63,7 @@ import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
 import java.util.Locale as JavaLocale
@@ -74,13 +76,14 @@ import kotlinx.coroutines.launch
 private const val AUTO_FOLLOW_RESUME_DELAY_MS: Long = 5_000L
 
 /**
- * 再生位置に同期したチャンク / スクリプト一覧（F7.1、F7.2、F6.1、§7.5.5）。
+ * 再生位置に同期したチャンク / スクリプト一覧（F7.1、F7.2、F7.3、F1.4、F6.1、§7.5.5）。
  *
  * - `LazyColumn` の `key` にチャンク ID を指定し、現在のチャンク（[activeChunkIndex]）を背景色と左端バーで強調する。
  * - 現在のチャンクが変わったら自動スクロールで追従し、手動スクロール後 5 秒間は追従を止めて「現在位置へ戻る」ボタンを表示する。
  * - 各行に言語タグと言語設定（[chineseScript] / [cantoneseScript]）から作った `LocaleList` を適用する。
  * - ブラインドモード（[blindMode]）では対象行をマスクし、タップで一時表示できる。
- * - 長押しメニューから単一チャンクリピート（3 回 / 無限）および複数チャンク範囲リピートを設定できる。
+ * - 言語バッジのタップまたは長押しメニューからチャンクの言語ラベル（学習言語 / 母語 / 未判定 `?`）を手動修正できる（F7.3）。
+ * - 未判定言語のチャンクがある場合は一括で学習言語に設定するチップを表示する（F1.4）。
  */
 @Composable
 fun TranscriptList(
@@ -99,6 +102,12 @@ fun TranscriptList(
     onPickTranscriptJson: () -> Unit,
     onDismissTranscriptBanner: () -> Unit,
     modifier: Modifier = Modifier,
+    lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
+    localTranscriptExported: Boolean = false,
+    onUpdateChunkLanguage: (ChunkId, LanguageTag?) -> Unit = { _, _ -> },
+    onBulkSetUnknownLanguage: (LanguageTag) -> Unit = {},
+    onSetLookaheadEnabled: (Boolean) -> Unit = {},
+    onExportLocalTranscriptJson: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -141,6 +150,12 @@ fun TranscriptList(
     }
 
     val hasAnyTranscript = remember(chunks) { chunks.any { it.text != null } }
+    val hasUnknownLanguageChunks = remember(chunks) {
+        chunks.any { chunk ->
+            chunk.text != null &&
+                (chunk.language == null || chunk.language.value.isBlank() || chunk.language.value == "und")
+        }
+    }
     val loopHighlightedIds = remember(loopMode, chunks) {
         resolveLoopChunkIds(loopMode, chunks)
     }
@@ -152,6 +167,40 @@ fun TranscriptList(
                     banner = banner,
                     onDismiss = onDismissTranscriptBanner,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+
+            if (lookaheadStatus.enabled || localTranscriptExported) {
+                LookaheadAndExportBanner(
+                    lookaheadStatus = lookaheadStatus,
+                    localTranscriptExported = localTranscriptExported,
+                    totalChunkCount = chunks.size,
+                    onToggleLookahead = { onSetLookaheadEnabled(!lookaheadStatus.enabled) },
+                    onExportLocalTranscriptJson = onExportLocalTranscriptJson,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                )
+            }
+
+            if (hasUnknownLanguageChunks && languagePair != null) {
+                val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
+                AssistChip(
+                    onClick = { onBulkSetUnknownLanguage(languagePair.target) },
+                    label = {
+                        Text(
+                            text = stringResource(
+                                R.string.player_bulk_set_unknown_target,
+                                targetCode,
+                            ),
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Translate,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                 )
             }
 
@@ -233,6 +282,9 @@ fun TranscriptList(
                         onStartRangeSelection = {
                             rangeSelectionStartChunkId = chunk.id
                         },
+                        onUpdateLanguage = { newLang ->
+                            onUpdateChunkLanguage(chunk.id, newLang)
+                        },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                 }
@@ -269,6 +321,63 @@ fun TranscriptList(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(12.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LookaheadAndExportBanner(
+    lookaheadStatus: LookaheadTranscriptionStatus,
+    localTranscriptExported: Boolean,
+    totalChunkCount: Int,
+    onToggleLookahead: () -> Unit,
+    onExportLocalTranscriptJson: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val totalCount = if (lookaheadStatus.totalTargetCount > 0) {
+        lookaheadStatus.totalTargetCount
+    } else {
+        totalChunkCount
+    }
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (lookaheadStatus.enabled) {
+            FilterChip(
+                selected = true,
+                onClick = onToggleLookahead,
+                label = {
+                    Text(
+                        text = stringResource(
+                            R.string.player_lookahead_chip_on,
+                            lookaheadStatus.completedCount,
+                            totalCount,
+                        ),
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Bolt,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+            )
+        }
+        if (localTranscriptExported) {
+            AssistChip(
+                onClick = onExportLocalTranscriptJson,
+                label = { Text(text = stringResource(R.string.player_lookahead_exported_badge)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
             )
         }
     }
@@ -348,8 +457,10 @@ private fun TranscriptChunkRow(
     onRepeatSingle3: () -> Unit,
     onRepeatSingleInfinite: () -> Unit,
     onStartRangeSelection: () -> Unit,
+    onUpdateLanguage: (LanguageTag?) -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    var badgeMenuExpanded by remember { mutableStateOf(false) }
     val colorScheme = MaterialTheme.colorScheme
     val rowBackground = when {
         isActive -> colorScheme.primaryContainer.copy(alpha = 0.36f)
@@ -417,10 +528,28 @@ private fun TranscriptChunkRow(
             Spacer(modifier = Modifier.width(6.dp))
 
             if (displayText != null) {
-                ChunkLanguageBadge(
-                    language = chunk.language,
-                    languagePair = languagePair,
-                )
+                Box {
+                    ChunkLanguageBadge(
+                        language = chunk.language,
+                        languagePair = languagePair,
+                        modifier = Modifier.clickable {
+                            if (languagePair != null) {
+                                badgeMenuExpanded = true
+                            }
+                        },
+                    )
+                    if (languagePair != null) {
+                        LanguageSelectionMenu(
+                            expanded = badgeMenuExpanded,
+                            languagePair = languagePair,
+                            onDismiss = { badgeMenuExpanded = false },
+                            onSelectLanguage = { newLang ->
+                                badgeMenuExpanded = false
+                                onUpdateLanguage(newLang)
+                            },
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.width(8.dp))
                 if (isMasked) {
                     Surface(
@@ -504,7 +633,79 @@ private fun TranscriptChunkRow(
                     onStartRangeSelection()
                 },
             )
+            if (languagePair != null && displayText != null) {
+                HorizontalDivider()
+                val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(
+                                R.string.player_chunk_set_lang_target,
+                                targetCode,
+                            ),
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onUpdateLanguage(languagePair.target)
+                    },
+                )
+                languagePair.base?.let { baseLang ->
+                    val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = stringResource(
+                                    R.string.player_chunk_set_lang_base,
+                                    baseCode,
+                                ),
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onUpdateLanguage(baseLang)
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(R.string.player_chunk_set_lang_unknown)) },
+                    onClick = {
+                        menuExpanded = false
+                        onUpdateLanguage(null)
+                    },
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun LanguageSelectionMenu(
+    expanded: Boolean,
+    languagePair: LanguagePair,
+    onDismiss: () -> Unit,
+    onSelectLanguage: (LanguageTag?) -> Unit,
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+    ) {
+        val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
+        DropdownMenuItem(
+            text = { Text(text = stringResource(R.string.player_chunk_set_lang_target, targetCode)) },
+            onClick = { onSelectLanguage(languagePair.target) },
+        )
+        languagePair.base?.let { baseLang ->
+            val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_set_lang_base, baseCode)) },
+                onClick = { onSelectLanguage(baseLang) },
+            )
+        }
+        DropdownMenuItem(
+            text = { Text(text = stringResource(R.string.player_chunk_set_lang_unknown)) },
+            onClick = { onSelectLanguage(null) },
+        )
     }
 }
 
@@ -518,22 +719,23 @@ internal fun ChunkLanguageBadge(
     modifier: Modifier = Modifier,
 ) {
     val colorScheme = MaterialTheme.colorScheme
-    val isTarget = language != null && languagePair != null && language == languagePair.target
-    val isBase = language != null && languagePair?.base != null && language == languagePair.base
+    val normalizedValue = language?.value?.trim()?.takeUnless { it.equals("und", ignoreCase = true) }
+    val isTarget = normalizedValue != null && languagePair != null && language == languagePair.target
+    val isBase = normalizedValue != null && languagePair?.base != null && language == languagePair.base
 
     val containerColor = when {
         isTarget -> colorScheme.primaryContainer
         isBase -> colorScheme.tertiaryContainer
-        language != null -> colorScheme.secondaryContainer
+        normalizedValue != null -> colorScheme.secondaryContainer
         else -> colorScheme.surfaceVariant
     }
     val contentColor = when {
         isTarget -> colorScheme.onPrimaryContainer
         isBase -> colorScheme.onTertiaryContainer
-        language != null -> colorScheme.onSecondaryContainer
+        normalizedValue != null -> colorScheme.onSecondaryContainer
         else -> colorScheme.onSurfaceVariant
     }
-    val badgeText = language?.value?.uppercase(JavaLocale.ROOT)?.ifBlank { "?" } ?: "?"
+    val badgeText = normalizedValue?.uppercase(JavaLocale.ROOT)?.ifBlank { "?" } ?: "?"
 
     Surface(
         modifier = modifier.clip(RoundedCornerShape(4.dp)),

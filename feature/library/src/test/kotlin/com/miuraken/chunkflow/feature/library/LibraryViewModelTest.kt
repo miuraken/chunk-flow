@@ -3,9 +3,13 @@ package com.miuraken.chunkflow.feature.library
 import android.net.StubUri
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
+import com.miuraken.chunkflow.core.data.library.SyncError
+import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
 import com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository
@@ -228,5 +232,72 @@ class LibraryViewModelTest {
 
         viewModel.onEvent(LibraryEvent.ToggleMiniPlayerPlayPause)
         assertEquals(false, viewModel.uiState.value.miniPlayer?.isPlaying)
+    }
+
+    @Test
+    fun `SyncFromDrive_一覧取得から進捗と完了と失敗まで反映しバナー消去でIdleに戻る`() = runTest {
+        val repo = FakeLibraryRepository()
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        repo.syncResult = { flowOf(SyncProgress.Listing) }
+        viewModel.onEvent(LibraryEvent.SyncFromDrive)
+        assertEquals(DriveSyncUiState.Listing, viewModel.uiState.value.syncState)
+
+        repo.syncResult = { flowOf(SyncProgress.Downloading(done = 1, total = 3)) }
+        viewModel.onEvent(LibraryEvent.SyncFromDrive)
+        assertEquals(
+            DriveSyncUiState.Downloading(done = 1, total = 3),
+            viewModel.uiState.value.syncState,
+        )
+
+        repo.syncResult = {
+            flowOf(SyncProgress.Done(newAudio = 2, newTranscripts = 1, failed = 0, uploadedTranscripts = 1))
+        }
+        viewModel.onEvent(LibraryEvent.SyncFromDrive)
+        assertEquals(
+            DriveSyncUiState.Done(newAudio = 2, newTranscripts = 1, failed = 0, uploadedTranscripts = 1),
+            viewModel.uiState.value.syncState,
+        )
+
+        repo.syncResult = { flowOf(SyncProgress.Failed(SyncError.NOT_AUTHORIZED)) }
+        viewModel.onEvent(LibraryEvent.SyncFromDrive)
+        assertEquals(
+            DriveSyncUiState.Error(SyncError.NOT_AUTHORIZED),
+            viewModel.uiState.value.syncState,
+        )
+
+        viewModel.onEvent(LibraryEvent.DismissSyncStatus)
+        assertEquals(DriveSyncUiState.Idle, viewModel.uiState.value.syncState)
+    }
+
+    @Test
+    fun `メタデータ編集_コース名と言語ペアを更新しキャンセルもできる`() = runTest {
+        val item = SampleMaterials.jaKo.item
+        val repo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(LibraryEvent.RequestEditMetadata(item))
+        assertEquals(item, viewModel.uiState.value.pendingEditItem)
+
+        viewModel.onEvent(LibraryEvent.CancelEditMetadata)
+        assertNull(viewModel.uiState.value.pendingEditItem)
+
+        viewModel.onEvent(LibraryEvent.RequestEditMetadata(item))
+        val expectedLanguages = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+        viewModel.onEvent(
+            LibraryEvent.ConfirmEditMetadata(
+                id = item.id,
+                course = "中級韓国語講座",
+                languages = expectedLanguages,
+            ),
+        )
+        assertNull(viewModel.uiState.value.pendingEditItem)
+        val updated = viewModel.uiState.value.items.first().item
+        assertEquals("中級韓国語講座", updated.course)
+        assertEquals(expectedLanguages, updated.languagePair)
     }
 }

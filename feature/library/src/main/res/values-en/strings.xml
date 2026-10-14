@@ -40,4 +40,24 @@
     <string name="library_mini_player_play">Play</string>
     <string name="library_mini_player_pause">Pause</string>
     <string name="library_mini_player_open">Open player: %1$s</string>
+    <!-- M3: Google Drive sync & course/language metadata editing -->
+    <string name="library_drive_sync_button">Drive sync</string>
+    <string name="library_drive_sync_listing">Listing files in Google Drive…</string>
+    <string name="library_drive_sync_downloading">Syncing with Google Drive… (%1$d/%2$d)</string>
+    <string name="library_drive_sync_done">Drive sync complete: +%1$d audio, +%2$d transcripts</string>
+    <string name="library_drive_sync_done_with_uploads">Drive sync complete: +%1$d audio, +%2$d transcripts (uploaded %3$d to Drive)</string>
+    <string name="library_drive_sync_error_not_authorized">Google Drive authorization is required.</string>
+    <string name="library_drive_sync_error_network">Network error while syncing with Google Drive.</string>
+    <string name="library_drive_sync_error_folder_not_found">ChunkFlow/ folder was not found in Google Drive.</string>
+    <string name="library_drive_sync_error_no_space">Not enough storage space to complete Drive sync.</string>
+    <string name="library_drive_sync_error_io">Failed to read or write synced files.</string>
+    <string name="library_drive_sync_error_cancelled">Google Drive sync was cancelled.</string>
+    <string name="library_edit_metadata_cd">Edit course and language pair</string>
+    <string name="library_edit_metadata_title">Edit course &amp; languages</string>
+    <string name="library_edit_course_label">Course (folder) name</string>
+    <string name="library_edit_target_lang_label">Target language tag (e.g. ko, zh, yue, id, en)</string>
+    <string name="library_edit_base_lang_label">Base language tag (leave blank for single-language, e.g. ja, en)</string>
+    <string name="library_edit_base_lang_none">Single-lang (none)</string>
+    <string name="library_edit_save">Save</string>
+    <string name="library_edit_cancel">Cancel</string>
 </resources>
