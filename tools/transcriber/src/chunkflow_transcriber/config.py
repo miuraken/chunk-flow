@@ -70,7 +70,9 @@ class VadParams:
     - `min_speech_ms`: これより短い発話は捨てる（「はい」「네」を残すため短めにする）
     - `min_silence_ms`: これより短い無音は発話の区切りにしない
     - `speech_pad_ms`: 発話の前後に付ける余白（VAD の出力）
-    - `merge_gap_ms`: これより短い無音でつながる発話区間を 1 つの候補チャンクにまとめる
+    - `merge_gap_ms`: これより短い無音でつながる発話区間を 1 つの候補チャンクにまとめる。
+      長くすると言語の切り替わりをまたいでまとめてしまう（S1 の合成音声で 300ms では 0.3 秒の間で
+      つながり、言語の混ざったチャンクが訳されて書かれた）。同じ言語の短い区間は文単位の整形でつなぐ
     - `max_chunk_ms`: 候補チャンクの長さの上限（長すぎる区間は分ける。Whisper の窓は 30 秒）
     - `recognition_pad_ms`: 認識のためにチャンクの前後に足す音声（隣の発話には食い込まない）
     """
@@ -79,7 +81,7 @@ class VadParams:
     min_speech_ms: int = 150
     min_silence_ms: int = 150
     speech_pad_ms: int = 30
-    merge_gap_ms: int = 300
+    merge_gap_ms: int = 100
     max_chunk_ms: int = 25_000
     recognition_pad_ms: int = 200
 

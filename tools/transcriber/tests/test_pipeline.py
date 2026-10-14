@@ -175,3 +175,27 @@ def test_process_file_writes_valid_json(tmp_path: Path) -> None:
     # 音声は変更しない。書き込むのは transcription/ だけ
     assert audio_path.read_bytes() == b"not really audio"
     assert sorted(p.name for p in course.iterdir()) == ["lesson01.mp3", "transcription"]
+
+
+def test_to_segments_clamps_to_chunk_bounds() -> None:
+    from chunkflow_transcriber.engine.base import EngineSegment, EngineWord
+    from chunkflow_transcriber.pipeline import to_segments
+
+    # 認識の窓は 800ms から（余白 200ms）。Whisper が単語を窓の先頭（0 秒）に置いても、
+    # VAD のチャンクの開始（1000ms）より前にはしない
+    es = EngineSegment(
+        0.0, 1.5, " Hello there", (EngineWord(0.0, 0.6, " Hello"), EngineWord(0.7, 1.5, " there"))
+    )
+    out = to_segments([es], 800, (1000, 2200), "en", 0.9, "en")
+    assert out[0].start_ms == 1000
+    assert out[0].words[0].start_ms == 1000
+    assert out[0].end_ms == 2200
+
+
+def test_hallucination_is_dropped() -> None:
+    from chunkflow_transcriber.engine.base import EngineSegment
+    from chunkflow_transcriber.pipeline import is_hallucination
+
+    assert is_hallucination(EngineSegment(0, 1, "a a a a", compression_ratio=3.0))
+    assert is_hallucination(EngineSegment(0, 1, "x", avg_logprob=-1.5, no_speech_prob=0.9))
+    assert not is_hallucination(EngineSegment(0, 1, "x", avg_logprob=-0.3, no_speech_prob=0.9))

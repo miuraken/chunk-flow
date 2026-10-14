@@ -74,17 +74,36 @@ def to_bcp47(code: str) -> str:
     return "jv" if c == "jw" else c
 
 
+# 互いに取り違えやすい近い言語。言語ペアにもう一方が含まれないときは、その確率を足して比べる。
+# S1: large-v3-turbo は広東語の音声に `yue` の確率をほぼ 0 と返し、`zh` を返す（large-v3 も `zh` が
+# 大半）。en-yue の教材で `yue` と `en` だけを比べると、広東語の発話を `en` と判定してしまう。
+RELATED_LANGUAGES: dict[str, tuple[str, ...]] = {
+    "yue": ("zh",),
+    "zh": ("yue",),
+}
+
+
+def _pair_prob(probs: Mapping[str, float], lang: str, other: str, merge_related: bool) -> float:
+    p = max(0.0, float(probs.get(lang, 0.0)))
+    if merge_related:
+        for rel in RELATED_LANGUAGES.get(lang, ()):
+            if rel != other:
+                p += max(0.0, float(probs.get(rel, 0.0)))
+    return p
+
+
 def restrict_to_pair(
-    probs: Mapping[str, float], pair: tuple[str, str]
+    probs: Mapping[str, float], pair: tuple[str, str], merge_related: bool = True
 ) -> tuple[str | None, float, dict[str, float]]:
     """全言語の確率を言語ペアの 2 言語に絞り、正規化して比べる（§7.4.5）。
 
-    戻り値は（確率の高い方の言語、その確率、2 言語の正規化した確率）。どちらの確率も 0 または
-    得られない場合は（None, 0.0, {a: 0.5, b: 0.5}）を返す。
+    `merge_related` が真なら、言語ペアに含まれない近い言語（`RELATED_LANGUAGES`。広東語と普通話）の
+    確率を、ペアの側の言語に足してから比べる。戻り値は（確率の高い方の言語、その確率、2 言語の
+    正規化した確率）。どちらの確率も 0 または得られない場合は（None, 0.0, {a: 0.5, b: 0.5}）を返す。
     """
     a, b = pair
-    pa = max(0.0, float(probs.get(a, 0.0)))
-    pb = max(0.0, float(probs.get(b, 0.0)))
+    pa = _pair_prob(probs, a, b, merge_related)
+    pb = _pair_prob(probs, b, a, merge_related)
     total = pa + pb
     if total <= 0.0 or math.isnan(total):
         return None, 0.0, {a: 0.5, b: 0.5}

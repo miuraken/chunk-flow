@@ -95,15 +95,20 @@ def is_hallucination(seg: EngineSegment) -> bool:
 def to_segments(
     engine_segments: Sequence[EngineSegment],
     offset_ms: int,
-    window_end_ms: int,
+    bounds: tuple[int, int],
     lang: str | None,
     lang_prob: float | None,
     rec_lang: str,
 ) -> list[Segment]:
-    """エンジンの出力（チャンクの先頭からの秒）を、音声の先頭からのミリ秒のセグメントにする。"""
+    """エンジンの出力（渡した音声の先頭からの秒）を、音声の先頭からのミリ秒のセグメントにする。
+
+    `offset_ms` は認識に渡した音声（前後に余白を足した範囲）の開始時刻。時刻は `bounds`（VAD で求めた
+    候補チャンクの範囲）に収める。Whisper の単語の時刻は、余白の先頭に寄りやすいため。
+    """
+    lo, hi = bounds
 
     def ms(t: float) -> int:
-        return min(max(offset_ms + round(t * 1000), offset_ms), window_end_ms)
+        return min(max(offset_ms + round(t * 1000), lo), hi)
 
     out: list[Segment] = []
     for es in engine_segments:
@@ -217,7 +222,7 @@ def run_pipeline(
     # 手順 4〜5: 言語を指定した文字起こしと、文字体系の確認
     t2 = clock()
     segments: list[Segment] = []
-    for i, _c in enumerate(chunks):
+    for i, chunk in enumerate(chunks):
         r, d = records[i], decisions[i]
         a, b = windows[i]
         audio = slice_ms(samples, a, b)
@@ -247,7 +252,7 @@ def run_pipeline(
         r.rec_lang, r.script = rec_lang, check
         r.final_lang, r.final_prob = lang, prob
         r.text = _joined_text(segs)
-        segments.extend(to_segments(segs, a, b, lang, prob, rec_lang))
+        segments.extend(to_segments(segs, a, (chunk.start_ms, chunk.end_ms), lang, prob, rec_lang))
     timings["transcribe"] = clock() - t2
 
     # 手順 7: 文単位の整形 → 手順 6: 字体の変換（つないだ後のテキストで作る）と NFC

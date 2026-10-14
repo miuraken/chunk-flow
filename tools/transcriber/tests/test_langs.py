@@ -67,6 +67,28 @@ def test_restrict_to_pair_ignores_languages_outside_pair() -> None:
     assert p == pytest.approx(0.8)
 
 
+def test_restrict_to_pair_merges_mandarin_into_cantonese() -> None:
+    # turbo は広東語の音声に yue ≒ 0、zh ≒ 1 を返す。en-yue では zh を yue に足して比べる
+    probs = {"zh": 0.998, "en": 0.001, "yue": 0.0}
+    lang, p, _ = restrict_to_pair(probs, ("yue", "en"))
+    assert lang == "yue"
+    assert p > 0.99
+    lang, _, _ = restrict_to_pair(probs, ("yue", "en"), merge_related=False)
+    assert lang == "en"
+
+
+def test_restrict_to_pair_keeps_related_separate_when_both_in_pair() -> None:
+    probs = {"zh": 0.7, "yue": 0.3}
+    lang, p, _ = restrict_to_pair(probs, ("yue", "zh"))
+    assert lang == "zh"
+    assert p == pytest.approx(0.7)
+
+
+def test_restrict_to_pair_merges_cantonese_into_mandarin() -> None:
+    lang, _, _ = restrict_to_pair({"yue": 0.6, "en": 0.3, "zh": 0.1}, ("zh", "en"))
+    assert lang == "zh"
+
+
 def test_restrict_to_pair_without_probability() -> None:
     lang, p, norm = restrict_to_pair({"en": 1.0}, ("ko", "ja"))
     assert lang is None
