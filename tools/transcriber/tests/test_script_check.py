@@ -47,9 +47,20 @@ def test_mismatching_script(text: str, lang: str) -> None:
     assert not check_script(text, lang).ok
 
 
+def test_latin_letters_are_ignored_in_cjk_text_with_native_letters() -> None:
+    # 略語・外来語のラテン文字は、その言語の文字があれば数えない（「Tシャツ」「CD」）
+    assert check_script("Tシャツ", "ja").ok
+    assert check_script("これはCDプレーヤーとラジオです", "ja").ratio == 1.0
+    assert check_script("저는 DVD를 봐요", "ko").ok
+    assert check_script("我有一台iPhone", "zh").ok
+    # ラテン文字だけなら不合格のまま
+    assert not check_script("T", "ko").ok
+    assert not check_script("Thank you", "zh").ok
+
+
 def test_ratio_threshold_allows_some_foreign_letters() -> None:
-    # 日本語の文に英字が少し混ざる程度は合格（割合 0.8 以上）
-    r = check_script("これはCDプレーヤーとラジオです", "ja")
+    # ハングルが少し混ざる程度は合格（割合 0.8 以上）
+    r = check_script("これは日本語の文章で、한が少しだけ混ざっています", "ja")
     assert r.ok
     assert 0.8 <= r.ratio < 1.0
 

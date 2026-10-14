@@ -226,7 +226,9 @@ def run_pipeline(
         r, d = records[i], decisions[i]
         a, b = windows[i]
         audio = slice_ms(samples, a, b)
-        rec_lang = d.best
+        # 平滑化で判定できなくなった（null）チャンクは、平滑化の前の判定の言語で認識する
+        # （S1 の実際の教材: 前後に引かれた言語で認識すると、韓国語の発話をカタカナで書いた）
+        rec_lang = d.lang or r.raw_lang or d.best
         segs = _transcribe(transcriber, audio, rec_lang, cfg.prompts, r)
         check = check_script(_joined_text(segs), rec_lang)
         lang, prob = d.lang, d.prob
