@@ -7,6 +7,7 @@ import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.MediaId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,8 +43,17 @@ class FakeLibraryRepository(
 
     /** [syncFromDrive] が流す進捗を決める。既定はすぐに「0 件で完了」。 */
     var syncResult: () -> Flow<SyncProgress> = {
-        flowOf(SyncProgress.Listing, SyncProgress.Done(newAudio = 0, newTranscripts = 0, failed = 0))
+        flowOf(
+            SyncProgress.Listing,
+            SyncProgress.Done(newAudio = 0, newTranscripts = 0, failed = 0, uploadedTranscripts = 0),
+        )
     }
+
+    /** [exportLocalTranscriptJson] が返す結果。 */
+    var exportTranscriptResult: Boolean = true
+
+    /** [exportLocalTranscriptJson] で書き出しが要求された教材 ID の一覧。 */
+    val exportedTranscriptIds: MutableList<MediaId> = mutableListOf()
 
     override fun observeItems(): Flow<List<AudioItem>> = items
 
@@ -87,6 +97,27 @@ class FakeLibraryRepository(
     override suspend fun importTranscript(uri: Uri): TranscriptImportResult = importTranscriptResult(uri)
 
     override fun syncFromDrive(): Flow<SyncProgress> = syncResult()
+
+    override suspend fun updateItemMetadata(
+        id: MediaId,
+        course: String?,
+        languages: LanguagePair,
+    ) {
+        items.update { list ->
+            list.map { item ->
+                if (item.id == id) {
+                    item.copy(course = course, languagePair = languages)
+                } else {
+                    item
+                }
+            }
+        }
+    }
+
+    override suspend fun exportLocalTranscriptJson(id: MediaId): Boolean {
+        exportedTranscriptIds += id
+        return exportTranscriptResult
+    }
 
     override suspend fun delete(id: MediaId) {
         items.update { list -> list.filterNot { it.id == id } }

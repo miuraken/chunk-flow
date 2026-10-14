@@ -526,6 +526,25 @@ class DefaultTranscriptImporterTest {
             }
         }
 
+        override suspend fun updateCourse(id: String, course: String?) {
+            items.update { current ->
+                val existing = current[id] ?: return@update current
+                current + (id to existing.copy(course = course))
+            }
+        }
+
+        override suspend fun updateCourseAndLanguagePair(
+            id: String,
+            course: String?,
+            targetLang: String,
+            baseLang: String?,
+        ) {
+            items.update { current ->
+                val existing = current[id] ?: return@update current
+                current + (id to existing.copy(course = course, targetLang = targetLang, baseLang = baseLang))
+            }
+        }
+
         override suspend fun deleteById(id: String) {
             items.update { it - id }
         }

@@ -108,6 +108,29 @@ class ChunkFlowDatabaseRobolectricTest {
         assertEquals(listOf("手修正", "新自動2"), savedTranscripts.map { it.text })
         assertEquals(rebuiltChunks.map { it.id }, savedTranscripts.map { it.chunkId })
 
+        // M3 追加クエリ: updateCourse / updateCourseAndLanguagePair / bulkSetUnknownLanguageForMedia
+        db.mediaItemDao().updateCourse(mediaId, "updated-course")
+        assertEquals("updated-course", db.mediaItemDao().getById(mediaId)?.course)
+        db.mediaItemDao().updateCourseAndLanguagePair(mediaId, "final-course", "zh", "en")
+        val updatedMedia = db.mediaItemDao().getById(mediaId)
+        assertEquals("final-course", updatedMedia?.course)
+        assertEquals("zh", updatedMedia?.targetLang)
+        assertEquals("en", updatedMedia?.baseLang)
+
+        db.transcriptDao().upsert(
+            TranscriptEntity(
+                chunkId = rebuiltChunks[1].id,
+                text = "未設定言語",
+                language = "und",
+                engine = "whisper",
+                userEdited = false,
+            ),
+        )
+        db.transcriptDao().bulkSetUnknownLanguageForMedia(mediaId, "zh")
+        val afterBulk = db.transcriptDao().getByChunkId(rebuiltChunks[1].id)
+        assertEquals("zh", afterBulk?.language)
+        assertEquals(true, afterBulk?.userEdited)
+
         // bookmark + drive_file
         db.bookmarkDao().insert(BookmarkEntity(mediaId = mediaId, positionMs = 1_500L, note = "重要"))
         db.driveFileDao().upsert(
@@ -120,6 +143,7 @@ class ChunkFlowDatabaseRobolectricTest {
                 mediaId = mediaId,
             ),
         )
+        assertEquals(1, db.driveFileDao().getByMediaId(mediaId).size)
 
         // media_item を削除すると ON DELETE CASCADE で全テーブルの関連行が消える
         db.mediaItemDao().deleteById(mediaId)
