@@ -153,5 +153,16 @@ uv run python scripts/make_synthetic.py           # macOS の say と ffmpeg で
 uv run python scripts/evaluate.py --models large-v3-turbo large-v3
 ```
 
+### スパイク S1 の計測（実際の教材）
+
+教材は著作物なので、作業フォルダは**リポジトリの外**に置きます（スクリプトはリポジトリの中を指定すると止まります）。
+
+```sh
+uv run python scripts/eval_real.py --work ~/chunkflow-eval \
+    --course korean=/path/to/Korean_lesson_ja.mp3:ko:ja --models large-v3-turbo large-v3
+# ~/chunkflow-eval/review/<コース>.review.csv の truth の列に正しい言語を記入してから
+uv run python scripts/score_review.py ~/chunkflow-eval/review/korean.review.csv
+```
+
 生成した音声・JSON・計測結果は `.work/`（.gitignore 済み）に置き、コミットしません。実際の教材の音声や
 文字起こしもコミットしません。結果は `docs/spikes/S1-pipeline-prototype.md` にまとめています。

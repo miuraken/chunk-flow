@@ -202,3 +202,21 @@ def test_hallucination_is_dropped() -> None:
     assert is_hallucination(EngineSegment(0, 1, "a a a a", compression_ratio=3.0))
     assert is_hallucination(EngineSegment(0, 1, "x", avg_logprob=-1.5, no_speech_prob=0.9))
     assert not is_hallucination(EngineSegment(0, 1, "x", avg_logprob=-0.3, no_speech_prob=0.9))
+
+
+def test_null_after_smoothing_is_transcribed_in_raw_language() -> None:
+    # 「길어요」（0.7 秒）: 判定は ko 0.8 だが、前後の ja に引かれて null になる。
+    # 認識は平滑化の前の判定（ko）で行う（ja で認識するとカタカナで書かれる）
+    utts = [
+        Utt(0, 3000, "ja", {"ja": "長いです"}, {"ja": 0.75, "ko": 0.25}),
+        Utt(3500, 4200, "ko", {"ko": "길어요.", "ja": "キロヨ"}, {"ko": 0.8, "ja": 0.2}),
+        Utt(4700, 7700, "ja", {"ja": "と言います。"}, {"ja": 0.75, "ko": 0.25}),
+    ]
+    engine = FakeEngine(utts)
+    res = run_pipeline(
+        timeline_audio(8), CourseConfig(target="ko", base="ja"), engine, engine, fake_vad(utts)
+    )
+    r = res.records[1]
+    assert r.decision.lang is None
+    assert r.rec_lang == "ko"
+    assert [c[3] for c in engine.calls if c[0] == "transcribe"][1] == "ko"

@@ -143,6 +143,10 @@ def check_script(text: str, lang: str, min_ratio: float = DEFAULT_MIN_RATIO) -> 
 
     日本語は漢字だけでも合格にする（漢字だけの短い文がある）。中国語・広東語の文にかなが
     混ざれば不合格になる。
+
+    ラテン文字を使わない言語では、期待する文字体系の文字が 1 つでもあれば、ラテン文字は数えない
+    （S1 の実際の教材: 「Tシャツ」のような略語・外来語のラテン文字で不一致になり、誤って再認識した）。
+    ラテン文字だけのテキスト（訳して英語で書いたなど）は、これまでどおり不合格になる。
     """
     text = unicodedata.normalize("NFC", text)
     counts: dict[str, int] = {}
@@ -156,6 +160,8 @@ def check_script(text: str, lang: str, min_ratio: float = DEFAULT_MIN_RATIO) -> 
         return ScriptCheck(lang=lang, letters=0, ratio=1.0, ok=True, counts=counts)
     expected = expected_scripts(lang)
     good = sum(n for s, n in counts.items() if Script(s) in expected)
+    if Script.LATIN not in expected and good > 0:
+        letters -= counts.get(Script.LATIN.value, 0)
     ratio = good / letters
     return ScriptCheck(
         lang=lang, letters=letters, ratio=ratio, ok=ratio >= min_ratio, counts=counts
