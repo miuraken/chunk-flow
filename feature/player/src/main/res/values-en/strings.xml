@@ -38,8 +38,6 @@
     <string name="player_chunk_range_select_start">Select repeat range from here</string>
     <string name="player_chunk_range_selecting_banner">Tap the ending chunk for range repeat</string>
     <string name="player_chunk_range_cancel">Cancel</string>
-    <string name="player_no_transcript_banner">Import a transcript JSON generated on your PC to view synchronized scripts.</string>
-    <string name="player_pick_transcript_json">Choose transcript JSON</string>
     <string name="player_chunk_number_format">Chunk #%1$d</string>
     <string name="player_transcript_attached">Attached transcript (%1$d chunks)</string>
     <string name="player_transcript_attached_mismatch">Attached %1$d chunks (duration differs from audio)</string>
@@ -48,6 +46,7 @@
     <string name="player_dismiss_banner">Dismiss</string>
 
     <!-- Practice controls (F5.2, F5.4, F6.1, F6.2, F6.3, F7.2) -->
+    <string name="player_chip_repeat">Repeat</string>
     <string name="player_chip_repeat_off">Repeat: OFF</string>
     <string name="player_chip_repeat_single_3">1 Chunk ×3</string>
     <string name="player_chip_repeat_single_inf">1 Chunk ∞</string>
@@ -63,6 +62,8 @@
     <string name="player_autopause_active_banner">Auto-pausing (practice) %1$ss left</string>
     <string name="player_autopause_resume_now">Resume</string>
 
+    <string name="player_chip_show_target_lang">Show target language</string>
+    <string name="player_chip_reading">Reading</string>
     <string name="player_chip_blind_off">Blind: OFF</string>
     <string name="player_chip_blind_target">Hide Target</string>
     <string name="player_chip_blind_all">Hide All</string>
@@ -80,8 +81,12 @@
     <string name="player_sheet_close">Close</string>
     <!-- M3: Language filter, instant composition, language edit, timing offset, lookahead STT -->
     <string name="player_chip_lang_filter_all">Lang: All</string>
-    <string name="player_chip_lang_filter_target">Target only</string>
-    <string name="player_chip_lang_filter_base">Base only</string>
+    <string name="player_chip_lang_filter_target">Lang: Target only</string>
+    <string name="player_chip_lang_filter_base">Lang: Base only</string>
+    <string name="player_menu_lang_filter_all">All</string>
+    <string name="player_menu_lang_filter_target">Target only</string>
+    <string name="player_menu_lang_filter_base">Base only</string>
+    <string name="player_chip_instant_comp">Instant comp</string>
     <string name="player_chip_instant_comp_off">Instant comp: OFF</string>
     <string name="player_chip_instant_comp_on">Instant comp: ON</string>
     <string name="player_chunk_set_lang_target">Set as target (%1$s)</string>
@@ -129,7 +134,6 @@
     <string name="player_chip_repeat_checked_count">Checked Repeat (%1$d)</string>
     <string name="player_repeat_check_add">Add to sequential repeat</string>
     <string name="player_repeat_check_remove">Remove from sequential repeat</string>
-    <string name="player_start_lookahead_stt">Auto-transcribe</string>
     <string name="player_chip_phonetic_romaji_on">Romaji: ON</string>
     <string name="player_chip_phonetic_romaji_off">Romaji: OFF</string>
     <string name="player_chip_phonetic_iast_on">IAST: ON</string>
@@ -138,4 +142,14 @@
     <string name="player_chip_phonetic_pinyin_off">Pinyin: OFF</string>
     <string name="player_chip_phonetic_latin_on">Reading: ON</string>
     <string name="player_chip_phonetic_latin_off">Reading: OFF</string>
+    <string name="player_chunk_transcription_waiting">Waiting…</string>
+    <string name="player_chunk_transcription_active">Transcribing…</string>
+    <string name="player_chunk_transcription_model_unavailable">Waiting for speech model</string>
+    <string name="player_recognition_model_not_installed">The %1$s speech recognition model is not on this device. %1$s chunks get language detection only.</string>
+    <string name="player_recognition_model_downloading">Downloading the %1$s speech recognition model (may wait for Wi-Fi). Transcription starts automatically when it is ready.</string>
+    <string name="player_recognition_model_download_failed">Could not download the %1$s speech recognition model. %1$s chunks get language detection only.</string>
+    <string name="player_recognition_model_unsupported">On-device speech recognition does not support %1$s. %1$s chunks get language detection only.</string>
+    <string name="player_recognition_model_download_action">Download</string>
+    <string name="player_chunk_transcription_waiting_cd">Waiting for transcription</string>
+    <string name="player_chunk_transcription_active_cd">Transcribing</string>
 </resources>

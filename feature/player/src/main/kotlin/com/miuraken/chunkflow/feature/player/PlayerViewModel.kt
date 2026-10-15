@@ -45,10 +45,13 @@ import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.firstOrNull
@@ -59,6 +62,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * ブラインドモード（スクリプトを隠す学習モード。F7.2、§7.5.5）。
@@ -493,6 +497,9 @@ sealed interface PlayerEvent {
     /** リピートモードを変更する（F6.1、F6.2）。 */
     data class SetLoopMode(val loopMode: LoopMode) : PlayerEvent
 
+    /** 下部再生コントロールの「リピート」トグル（on / *off）を切り替える。 */
+    data object ToggleRepeat : PlayerEvent
+
     /** 自動ポーズの設定を変更する（F6.3）。 */
     data class SetAutoPause(val autoPause: AutoPause) : PlayerEvent
 
@@ -569,6 +576,9 @@ sealed interface PlayerEvent {
     /** 指定チャンク位置からの先読み簡易文字起こしを要求する。 */
     data class TriggerLookahead(val chunkId: ChunkId?) : PlayerEvent
 
+    /** [language] の端末内音声認識モデルのダウンロードを OS に要求する（モデルが未ダウンロードのとき）。 */
+    data class RequestRecognitionModelDownload(val language: LanguageTag) : PlayerEvent
+
     /** 文字起こしをローカル `.chunkflow.json` に書き出す（Drive 自動同期対象）。 */
     data object ExportLocalTranscriptJson : PlayerEvent
 
@@ -587,6 +597,9 @@ sealed interface PlayerEvent {
     /** 文字起こし取り込み結果のバナーを閉じる。 */
     data object DismissTranscriptBanner : PlayerEvent
 }
+
+/** 端末内音声認識モデルの問題が残っている間、ダウンロードの完了を OS に問い合わせる間隔。 */
+private const val RECOGNITION_MODEL_REFRESH_INTERVAL_MS: Long = 30_000L
 
 private data class AnalysisSnapshot(
     val status: Map<AnalysisStage, StageStatus> = emptyMap(),
@@ -607,6 +620,7 @@ private data class LocalUiSnapshot(
     val transcriptOffsetMs: Int = 0,
     val localTranscriptExported: Boolean = false,
     val languageOverrides: Map<ChunkId, LanguageTag?> = emptyMap(),
+    val clearingChunkIds: Set<ChunkId> = emptySet(),
 )
 
 /**
@@ -635,6 +649,7 @@ class PlayerViewModel @Inject constructor(
     private val currentMediaId = MutableStateFlow<MediaId?>(null)
     private val localUiState = MutableStateFlow(LocalUiSnapshot())
     private var lastOpenedMediaId: MediaId? = null
+
     private var lookaheadLoopJob: Job? = null
 
     /** 高頻度で変わる再生位置のプロバイダ（§6.2）。 */
@@ -741,7 +756,7 @@ class PlayerViewModel @Inject constructor(
             ) { mediaId, activeChunkId, isPlaying ->
                 Triple(mediaId, activeChunkId, isPlaying)
             }.distinctUntilChanged().collect { (mediaId, activeChunkId, isPlaying) ->
-                if (mediaId != null) {
+                if (mediaId != null && lastOpenedMediaId == mediaId) {
                     if (activeChunkId != null) {
                         analysisRepository.triggerLookaheadAt(mediaId, activeChunkId)
                     } else if (isPlaying && uiState.value.lookaheadStatus.enabled) {
@@ -754,10 +769,66 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    /** 開いている教材の言語（学習言語・母語）のうち、端末内音声認識モデルに問題がある言語。 */
+    private val currentRecognitionModelIssueLanguages: Flow<Pair<MediaId?, Set<LanguageTag>>> =
+        currentMediaId.flatMapLatest { id ->
+            if (id == null) {
+                flowOf(null to emptySet())
+            } else {
+                combine(
+                    analysisRepository.observeLookaheadStatus(id),
+                    libraryRepository.observeItem(id),
+                ) { status, item ->
+                    val pair = item?.languagePair
+                    id to status.recognitionModelIssues.keys.filter { language ->
+                        matchesLanguageRole(language, pair?.target) || matchesLanguageRole(language, pair?.base)
+                    }.toSet()
+                }
+            }
+        }.distinctUntilChanged()
+
+    init {
+        // 端末内音声認識モデルの問題（未ダウンロードなど）が解消したら、言語判定のみだったチャンクを認識し直す
+        viewModelScope.launch {
+            var previousMediaId: MediaId? = null
+            var previousLanguages: Set<LanguageTag> = emptySet()
+            currentRecognitionModelIssueLanguages.collect { (mediaId, languages) ->
+                val resolved = if (mediaId == previousMediaId) previousLanguages - languages else emptySet()
+                previousMediaId = mediaId
+                previousLanguages = languages
+                if (mediaId != null &&
+                    resolved.isNotEmpty() &&
+                    lastOpenedMediaId == mediaId &&
+                    uiState.value.lookaheadStatus.enabled
+                ) {
+                    syncLookaheadState(mediaId, true)
+                }
+            }
+        }
+
+        // 問題が残っている間は、ダウンロードの完了を検出するため定期的に OS へ問い合わせる
+        viewModelScope.launch {
+            currentRecognitionModelIssueLanguages
+                .map { (_, languages) -> languages.isNotEmpty() }
+                .distinctUntilChanged()
+                .collectLatest { hasIssues ->
+                    while (hasIssues && isActive) {
+                        delay(RECOGNITION_MODEL_REFRESH_INTERVAL_MS)
+                        analysisRepository.refreshRecognitionModelIssues()
+                    }
+                }
+        }
+    }
+
     /** 指定した教材を開いて再生準備を行う。 */
     fun open(mediaId: MediaId) {
+        val previousId = lastOpenedMediaId
+        if (previousId != null && previousId != mediaId) {
+            analysisRepository.setMediaTranscriptionSessionOpen(previousId, false)
+        }
+        analysisRepository.setMediaTranscriptionSessionOpen(mediaId, true)
         currentMediaId.value = mediaId
-        if (lastOpenedMediaId == mediaId) return
+        if (previousId == mediaId) return
         lastOpenedMediaId = mediaId
         lookaheadLoopJob?.cancel()
         lookaheadLoopJob = null
@@ -768,6 +839,25 @@ class PlayerViewModel @Inject constructor(
             if (playbackController is FakePlaybackController && savedState != null) {
                 playbackController.position.positionMs = savedState.positionMs
                 playbackController.setSpeed(savedState.speed)
+            }
+        }
+        viewModelScope.launch {
+            analysisRepository.prioritizeOpenedMediaAnalysis(mediaId)
+        }
+    }
+
+    /**
+     * 現在開いている教材ウィンドウを閉じ、待機中の先読み文字起こしキューを停止する。
+     * すでに処理中（in-flight）の 1 チャンクの文字起こしは中断せず最後まで実行して出力される。
+     */
+    fun close(mediaId: MediaId? = currentMediaId.value) {
+        val targetId = mediaId ?: lastOpenedMediaId ?: currentMediaId.value
+        lookaheadLoopJob?.cancel()
+        lookaheadLoopJob = null
+        if (targetId != null) {
+            analysisRepository.setMediaTranscriptionSessionOpen(targetId, false)
+            if (lastOpenedMediaId == targetId) {
+                lastOpenedMediaId = null
             }
         }
     }
@@ -809,7 +899,32 @@ class PlayerViewModel @Inject constructor(
                     it.copy(
                         loop = event.loopMode,
                         repeatChunkIds = if (event.loopMode is LoopMode.Off) emptySet() else it.repeatChunkIds,
+                        repeatCheckedOnly = if (event.loopMode is LoopMode.Off) false else it.repeatCheckedOnly,
                     )
+                }
+            }
+
+            PlayerEvent.ToggleRepeat -> {
+                val activeChunkId = uiState.value.activeChunkIndex
+                    ?.let { idx -> uiState.value.chunks.getOrNull(idx)?.id }
+                    ?: uiState.value.chunks.firstOrNull()?.id
+                playbackController.updatePractice { current ->
+                    val isCurrentlyOn = current.loop !is LoopMode.Off || current.repeatCheckedOnly
+                    if (isCurrentlyOn) {
+                        current.copy(
+                            loop = LoopMode.Off,
+                            repeatCheckedOnly = false,
+                        )
+                    } else if (current.repeatChunkIds.isNotEmpty()) {
+                        current.copy(repeatCheckedOnly = true)
+                    } else if (activeChunkId != null) {
+                        current.copy(
+                            loop = LoopMode.SingleChunk(chunkId = activeChunkId, times = null),
+                            repeatCheckedOnly = true,
+                        )
+                    } else {
+                        current.copy(repeatCheckedOnly = true)
+                    }
                 }
             }
 
@@ -946,44 +1061,66 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.UpdateChunkLanguage -> {
                 val id = resolveActiveMediaId() ?: return
                 localUiState.update { state ->
-                    state.copy(languageOverrides = state.languageOverrides + (event.chunkId to event.language))
+                    state.copy(
+                        languageOverrides = state.languageOverrides + (event.chunkId to event.language),
+                        clearingChunkIds = state.clearingChunkIds + event.chunkId,
+                    )
                 }
                 viewModelScope.launch {
-                    analysisRepository.updateChunkLanguage(id, event.chunkId, event.language)
-                    val hasTranscript =
-                        analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
-                    if (hasTranscript) {
-                        localUiState.update { state ->
-                            state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                    try {
+                        withContext(NonCancellable) {
+                            analysisRepository.updateChunkLanguage(id, event.chunkId, event.language)
+                            val hasTranscript =
+                                analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
+                            if (hasTranscript) {
+                                localUiState.update { state ->
+                                    state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                                }
+                            }
+                            val exported = libraryRepository.exportLocalTranscriptJson(id)
+                            if (exported) {
+                                localUiState.update { it.copy(localTranscriptExported = true) }
+                            }
                         }
-                    }
-                    if (uiState.value.lookaheadStatus.enabled) {
-                        analysisRepository.triggerLookaheadAt(id, event.chunkId)
-                    }
-                    val exported = libraryRepository.exportLocalTranscriptJson(id)
-                    if (exported) {
-                        localUiState.update { it.copy(localTranscriptExported = true) }
+                        if (lastOpenedMediaId == id && uiState.value.lookaheadStatus.enabled) {
+                            analysisRepository.triggerLookaheadAt(id, event.chunkId)
+                        }
+                    } finally {
+                        localUiState.update { state ->
+                            state.copy(clearingChunkIds = state.clearingChunkIds - event.chunkId)
+                        }
                     }
                 }
             }
 
             is PlayerEvent.RetranscribeChunk -> {
                 val id = resolveActiveMediaId() ?: return
+                localUiState.update { state ->
+                    state.copy(clearingChunkIds = state.clearingChunkIds + event.chunkId)
+                }
                 viewModelScope.launch {
-                    analysisRepository.retranscribeChunk(id, event.chunkId)
-                    val hasTranscript =
-                        analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
-                    if (hasTranscript) {
-                        localUiState.update { state ->
-                            state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                    try {
+                        withContext(NonCancellable) {
+                            analysisRepository.retranscribeChunk(id, event.chunkId)
+                            val hasTranscript =
+                                analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
+                            if (hasTranscript) {
+                                localUiState.update { state ->
+                                    state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                                }
+                            }
+                            val exported = libraryRepository.exportLocalTranscriptJson(id)
+                            if (exported) {
+                                localUiState.update { it.copy(localTranscriptExported = true) }
+                            }
                         }
-                    }
-                    if (uiState.value.lookaheadStatus.enabled) {
-                        analysisRepository.triggerLookaheadAt(id, event.chunkId)
-                    }
-                    val exported = libraryRepository.exportLocalTranscriptJson(id)
-                    if (exported) {
-                        localUiState.update { it.copy(localTranscriptExported = true) }
+                        if (lastOpenedMediaId == id && uiState.value.lookaheadStatus.enabled) {
+                            analysisRepository.triggerLookaheadAt(id, event.chunkId)
+                        }
+                    } finally {
+                        localUiState.update { state ->
+                            state.copy(clearingChunkIds = state.clearingChunkIds - event.chunkId)
+                        }
                     }
                 }
             }
@@ -991,10 +1128,12 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.UpdateChunkText -> {
                 val id = resolveActiveMediaId() ?: return
                 viewModelScope.launch {
-                    analysisRepository.updateChunkText(id, event.chunkId, event.text)
-                    val exported = libraryRepository.exportLocalTranscriptJson(id)
-                    if (exported) {
-                        localUiState.update { it.copy(localTranscriptExported = true) }
+                    withContext(NonCancellable) {
+                        analysisRepository.updateChunkText(id, event.chunkId, event.text)
+                        val exported = libraryRepository.exportLocalTranscriptJson(id)
+                        if (exported) {
+                            localUiState.update { it.copy(localTranscriptExported = true) }
+                        }
                     }
                 }
             }
@@ -1038,10 +1177,12 @@ class PlayerViewModel @Inject constructor(
                     state.copy(languageOverrides = updatedOverrides)
                 }
                 viewModelScope.launch {
-                    analysisRepository.bulkSetUnknownTranscriptLanguage(id, event.language)
-                    val exported = libraryRepository.exportLocalTranscriptJson(id)
-                    if (exported) {
-                        localUiState.update { it.copy(localTranscriptExported = true) }
+                    withContext(NonCancellable) {
+                        analysisRepository.bulkSetUnknownTranscriptLanguage(id, event.language)
+                        val exported = libraryRepository.exportLocalTranscriptJson(id)
+                        if (exported) {
+                            localUiState.update { it.copy(localTranscriptExported = true) }
+                        }
                     }
                 }
             }
@@ -1079,6 +1220,12 @@ class PlayerViewModel @Inject constructor(
                     userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
                 }
                 syncLookaheadState(id, event.enabled)
+            }
+
+            is PlayerEvent.RequestRecognitionModelDownload -> {
+                viewModelScope.launch {
+                    analysisRepository.requestRecognitionModelDownload(event.language)
+                }
             }
 
             is PlayerEvent.TriggerLookahead -> {
@@ -1157,6 +1304,7 @@ class PlayerViewModel @Inject constructor(
                     localUiState.update { state ->
                         state.copy(
                             languageOverrides = emptyMap(),
+                            clearingChunkIds = emptySet(),
                             localTranscriptExported = false,
                             transcriptImportBanner = null,
                             transcriptExportBanner = if (success) {
@@ -1173,13 +1321,12 @@ class PlayerViewModel @Inject constructor(
                 localUiState.update { it.copy(transcriptImportBanner = null) }
             }
 
-            PlayerEvent.Back -> Unit
+            PlayerEvent.Back -> close()
         }
     }
 
     override fun onCleared() {
-        lookaheadLoopJob?.cancel()
-        lookaheadLoopJob = null
+        close()
     }
 
     private fun isChunkUndetected(chunk: ChunkUi): Boolean = chunk.text.isNullOrBlank() ||
@@ -1273,11 +1420,18 @@ class PlayerViewModel @Inject constructor(
         if (player != null) {
             player.seekTo(clampedMs)
         }
+        val matchingChunk = uiState.value.chunks.firstOrNull { clampedMs >= it.startMs && clampedMs < it.endMs }
+            ?: uiState.value.chunks.firstOrNull { clampedMs in it.startMs..it.endMs }
         if (playbackController is FakePlaybackController) {
             playbackController.position.positionMs = clampedMs
-            val matchingChunk = uiState.value.chunks.firstOrNull { clampedMs in it.startMs..it.endMs }
             if (matchingChunk != null) {
                 playbackController.statusState.update { it.copy(currentChunkId = matchingChunk.id) }
+            }
+        }
+        val id = resolveActiveMediaId()
+        if (id != null && matchingChunk != null) {
+            viewModelScope.launch {
+                analysisRepository.prioritizeChunkTranscription(id, matchingChunk.id)
             }
         }
     }
@@ -1303,7 +1457,7 @@ class PlayerViewModel @Inject constructor(
         val id = resolveActiveMediaId()
         if (id != null) {
             viewModelScope.launch {
-                analysisRepository.triggerLookaheadAt(id, chunkId)
+                analysisRepository.prioritizeChunkTranscription(id, chunkId)
             }
         }
     }
@@ -1364,16 +1518,17 @@ class PlayerViewModel @Inject constructor(
             } else {
                 transcript?.language
             }
+            val isClearing = chunk.id in local.clearingChunkIds
             ChunkUi(
                 id = chunk.id,
                 startMs = chunk.startMs,
                 endMs = chunk.endMs,
-                text = transcript?.text?.takeIf { it.isNotBlank() },
+                text = if (isClearing) null else transcript?.text?.takeIf { it.isNotBlank() },
                 language = resolvedLanguage,
                 isBookmarked = isBookmarked,
                 isRepeatChecked = chunk.id in practice.repeatChunkIds,
-                textVariants = transcript?.textVariants.orEmpty(),
-                words = transcript?.words.orEmpty(),
+                textVariants = if (isClearing) emptyMap() else transcript?.textVariants.orEmpty(),
+                words = if (isClearing) emptyList() else transcript?.words.orEmpty(),
                 origin = chunk.origin,
             )
         }
@@ -1383,6 +1538,8 @@ class PlayerViewModel @Inject constructor(
         val resolvedOrigin = analysis.chunks.firstOrNull()?.origin
             ?: itemState?.chunkSource
             ?: ChunkOrigin.AUTO
+        val effectiveQueuedIds = (analysis.lookaheadStatus.queuedChunkIds + local.clearingChunkIds) -
+            setOfNotNull(analysis.lookaheadStatus.inFlightChunkId)
 
         return PlayerUiState(
             mediaId = mediaId ?: status.mediaId ?: item?.id,
@@ -1415,7 +1572,13 @@ class PlayerViewModel @Inject constructor(
             transcriptImportBanner = local.transcriptImportBanner,
             transcriptExportBanner = local.transcriptExportBanner,
             transcriptOffsetMs = local.transcriptOffsetMs,
-            lookaheadStatus = analysis.lookaheadStatus,
+            lookaheadStatus = analysis.lookaheadStatus.copy(
+                queuedChunkIds = effectiveQueuedIds,
+                recognitionModelIssues = analysis.lookaheadStatus.recognitionModelIssues.filterKeys { language ->
+                    val pair = item?.languagePair
+                    matchesLanguageRole(language, pair?.target) || matchesLanguageRole(language, pair?.base)
+                },
+            ),
             localTranscriptExported = local.localTranscriptExported,
         )
     }

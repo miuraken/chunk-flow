@@ -1,5 +1,12 @@
 package com.miuraken.chunkflow.feature.player
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -32,10 +39,8 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -58,7 +63,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -70,6 +78,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
@@ -82,6 +91,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
+import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
@@ -94,6 +104,50 @@ import kotlinx.coroutines.launch
 
 /** 手動スクロール後に自動追従を再開するまでの待機時間（5 秒、§7.5.5）。 */
 private const val AUTO_FOLLOW_RESUME_DELAY_MS: Long = 5_000L
+
+/**
+ * チャンクごとの文字起こし進捗段階。
+ */
+internal enum class ChunkTranscriptionStage {
+    /** 文字起こし待機・実行対象外。 */
+    IDLE,
+
+    /** 段階 1: 文字起こしの順番待ち（待機中）。 */
+    WAITING,
+
+    /** 段階 2: 現在文字起こしを実行中。 */
+    TRANSCRIBING,
+
+    /** 言語は判定できたが、その言語の端末内音声認識モデルが使えないため本文がない（ダウンロード待ちなど）。 */
+    MODEL_UNAVAILABLE,
+}
+
+/**
+ * チャンク [chunk] と先読み状態 [lookaheadStatus] から 2 段階の文字起こし状態を判定する。
+ *
+ * 本文がなく、チャンクの言語の音声認識モデルが使えない場合は [ChunkTranscriptionStage.MODEL_UNAVAILABLE] を返す。
+ */
+internal fun resolveChunkTranscriptionStage(
+    chunk: ChunkUi,
+    lookaheadStatus: LookaheadTranscriptionStatus,
+): ChunkTranscriptionStage {
+    if (!chunk.text.isNullOrBlank()) {
+        return ChunkTranscriptionStage.IDLE
+    }
+    if (chunk.id == lookaheadStatus.inFlightChunkId) {
+        return ChunkTranscriptionStage.TRANSCRIBING
+    }
+    val hasModelIssue = lookaheadStatus.recognitionModelIssues.keys.any { language ->
+        matchesLanguageRole(chunk.language, language)
+    }
+    if (hasModelIssue) {
+        return ChunkTranscriptionStage.MODEL_UNAVAILABLE
+    }
+    if (chunk.id in lookaheadStatus.queuedChunkIds || lookaheadStatus.enabled) {
+        return ChunkTranscriptionStage.WAITING
+    }
+    return ChunkTranscriptionStage.IDLE
+}
 
 /**
  * 単語タイムスタンプに対応する表示テキスト内の文字オフセット範囲（F7.7、§7.5.5）。
@@ -215,7 +269,7 @@ fun TranscriptList(
     onSeekToChunk: (ChunkId) -> Unit,
     onSetLoopMode: (LoopMode) -> Unit,
     onToggleRevealChunk: (ChunkId) -> Unit,
-    onPickTranscriptJson: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onPickTranscriptJson: () -> Unit,
     onDismissTranscriptBanner: () -> Unit,
     modifier: Modifier = Modifier,
     showTargetRomanization: Boolean = false,
@@ -235,6 +289,7 @@ fun TranscriptList(
     onBulkSetUnknownLanguage: (LanguageTag) -> Unit = {},
     onSetLookaheadEnabled: (Boolean) -> Unit = {},
     onExportLocalTranscriptJson: () -> Unit = {},
+    onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -277,7 +332,6 @@ fun TranscriptList(
         }
     }
 
-    val hasAnyTranscript = remember(chunks) { chunks.any { it.text != null } }
     val hasUnknownLanguageChunks = remember(chunks) {
         chunks.any { chunk ->
             chunk.text != null &&
@@ -317,6 +371,15 @@ fun TranscriptList(
                 )
             }
 
+            for ((issueLanguage, issueState) in lookaheadStatus.recognitionModelIssues) {
+                RecognitionModelIssueBanner(
+                    language = issueLanguage,
+                    state = issueState,
+                    onRequestDownload = { onRequestRecognitionModelDownload(issueLanguage) },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+
             if (hasUnknownLanguageChunks && languagePair != null) {
                 UnknownLanguageBanner(
                     languagePair = languagePair,
@@ -328,15 +391,6 @@ fun TranscriptList(
             if (rangeSelectionStartChunkId != null) {
                 RangeSelectionBanner(
                     onCancel = { rangeSelectionStartChunkId = null },
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
-
-            if (!hasAnyTranscript) {
-                NoTranscriptBannerCard(
-                    onPickTranscriptJson = onPickTranscriptJson,
-                    lookaheadEnabled = lookaheadStatus.enabled,
-                    onStartLookahead = { onSetLookaheadEnabled(true) },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
@@ -362,6 +416,10 @@ fun TranscriptList(
                         languagePair = languagePair,
                         revealedChunkIds = revealedChunkIds,
                     )
+                    val transcriptionStage = resolveChunkTranscriptionStage(
+                        chunk = chunk,
+                        lookaheadStatus = lookaheadStatus,
+                    )
 
                     TranscriptChunkRow(
                         index = index,
@@ -370,7 +428,7 @@ fun TranscriptList(
                         isActive = isActive,
                         isInLoopRange = isInLoopRange,
                         isMasked = isMasked,
-                        isLookaheadInFlight = chunk.id == lookaheadStatus.inFlightChunkId,
+                        transcriptionStage = transcriptionStage,
                         languagePair = languagePair,
                         chineseScript = chineseScript,
                         cantoneseScript = cantoneseScript,
@@ -583,6 +641,80 @@ private fun LookaheadAndExportBanner(
     }
 }
 
+/**
+ * 端末内音声認識モデルが使えない言語の案内（未ダウンロード・ダウンロード中・失敗・非対応）。
+ *
+ * 未ダウンロードと失敗のときは、OS にダウンロードを要求するボタンを出す。
+ */
+@Composable
+internal fun RecognitionModelIssueBanner(
+    language: LanguageTag,
+    state: OnDeviceRecognitionModelState,
+    onRequestDownload: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val uiLocale = LocalLocale.current.platformLocale
+    val languageName = remember(language, uiLocale) {
+        JavaLocale.forLanguageTag(language.value).getDisplayLanguage(uiLocale)
+            .takeIf { it.isNotBlank() }
+            ?: language.value
+    }
+    val message = when (state) {
+        OnDeviceRecognitionModelState.NOT_INSTALLED ->
+            stringResource(R.string.player_recognition_model_not_installed, languageName)
+
+        OnDeviceRecognitionModelState.DOWNLOADING ->
+            stringResource(R.string.player_recognition_model_downloading, languageName)
+
+        OnDeviceRecognitionModelState.DOWNLOAD_FAILED ->
+            stringResource(R.string.player_recognition_model_download_failed, languageName)
+
+        OnDeviceRecognitionModelState.UNSUPPORTED ->
+            stringResource(R.string.player_recognition_model_unsupported, languageName)
+    }
+    val canRequestDownload = state == OnDeviceRecognitionModelState.NOT_INSTALLED ||
+        state == OnDeviceRecognitionModelState.DOWNLOAD_FAILED
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(
+                start = 12.dp,
+                end = 12.dp,
+                top = 8.dp,
+                bottom = if (canRequestDownload) 0.dp else 8.dp,
+            ),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (canRequestDownload) {
+                TextButton(
+                    onClick = onRequestDownload,
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text(text = stringResource(R.string.player_recognition_model_download_action))
+                }
+            }
+        }
+    }
+}
+
 internal fun isChunkMasked(
     chunk: ChunkUi,
     blindMode: BlindMode,
@@ -641,6 +773,100 @@ private fun orderChunkRange(
     }
 }
 
+/**
+ * 文字起こしデータがない（またはクリアされた）チャンクで
+ * 「段階 1: 順番待ち（待機中）」と「段階 2: 文字起こし実行中」を視覚的に区別する 2 段階スピナー。
+ *
+ * - [ChunkTranscriptionStage.WAITING]: 点線リングがゆっくり回転（落ち着いた色）。
+ * - [ChunkTranscriptionStage.TRANSCRIBING]: 二重アークが高速で回転（プライマリ色）。
+ */
+@Composable
+internal fun ChunkTranscriptionSpinner(
+    stage: ChunkTranscriptionStage,
+    modifier: Modifier = Modifier,
+) {
+    if (stage == ChunkTranscriptionStage.IDLE || stage == ChunkTranscriptionStage.MODEL_UNAVAILABLE) return
+
+    val colorScheme = MaterialTheme.colorScheme
+    val isInspectionMode = LocalInspectionMode.current
+    val cdText = when (stage) {
+        ChunkTranscriptionStage.WAITING -> stringResource(R.string.player_chunk_transcription_waiting_cd)
+        ChunkTranscriptionStage.TRANSCRIBING -> stringResource(R.string.player_chunk_transcription_active_cd)
+        ChunkTranscriptionStage.IDLE, ChunkTranscriptionStage.MODEL_UNAVAILABLE -> ""
+    }
+
+    val angle = if (isInspectionMode) {
+        0f
+    } else {
+        val transition = rememberInfiniteTransition(label = "chunkTranscriptionSpinner")
+        val durationMs = if (stage == ChunkTranscriptionStage.TRANSCRIBING) 720 else 2400
+        val animatedAngle by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = durationMs, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "spinnerRotation",
+        )
+        animatedAngle
+    }
+
+    val waitingColor = colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+    val activeColor = colorScheme.primary
+    val activeTrackColor = colorScheme.primary.copy(alpha = 0.22f)
+
+    Canvas(
+        modifier = modifier
+            .size(16.dp)
+            .semantics { contentDescription = cdText },
+    ) {
+        val strokePx = if (stage == ChunkTranscriptionStage.TRANSCRIBING) {
+            2.2.dp.toPx()
+        } else {
+            1.6.dp.toPx()
+        }
+        when (stage) {
+            ChunkTranscriptionStage.WAITING -> {
+                // 段階1（待機中）: 6 セグメントの破線リングがゆっくり回る
+                for (segmentIndex in 0 until 6) {
+                    drawArc(
+                        color = waitingColor,
+                        startAngle = angle + segmentIndex * 60f,
+                        sweepAngle = 28f,
+                        useCenter = false,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                    )
+                }
+            }
+
+            ChunkTranscriptionStage.TRANSCRIBING -> {
+                // 段階2（文字起こし中）: 薄いトラック上に鮮やかな二重アークが高速回転する
+                drawCircle(
+                    color = activeTrackColor,
+                    style = Stroke(width = strokePx),
+                )
+                drawArc(
+                    color = activeColor,
+                    startAngle = angle,
+                    sweepAngle = 120f,
+                    useCenter = false,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
+                drawArc(
+                    color = activeColor.copy(alpha = 0.75f),
+                    startAngle = angle + 180f,
+                    sweepAngle = 70f,
+                    useCenter = false,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
+                )
+            }
+
+            ChunkTranscriptionStage.IDLE, ChunkTranscriptionStage.MODEL_UNAVAILABLE -> Unit
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TranscriptChunkRow(
@@ -650,7 +876,7 @@ private fun TranscriptChunkRow(
     isActive: Boolean,
     isInLoopRange: Boolean,
     isMasked: Boolean,
-    isLookaheadInFlight: Boolean,
+    transcriptionStage: ChunkTranscriptionStage,
     languagePair: LanguagePair?,
     chineseScript: ChineseScript,
     cantoneseScript: ChineseScript,
@@ -816,12 +1042,9 @@ private fun TranscriptChunkRow(
                     }
                 },
             )
-            if (isLookaheadInFlight) {
+            if (transcriptionStage != ChunkTranscriptionStage.IDLE && !displayText.isNullOrBlank()) {
                 Spacer(modifier = Modifier.width(4.dp))
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
-                )
+                ChunkTranscriptionSpinner(stage = transcriptionStage)
             }
             Spacer(modifier = Modifier.width(8.dp))
 
@@ -917,23 +1140,63 @@ private fun TranscriptChunkRow(
                     }
                 }
             } else {
-                // 文字起こしがないチャンク: チャンク番号と時刻範囲を表示（§7.5.5）
-                Text(
-                    text = stringResource(R.string.player_chunk_number_format, index + 1),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                    color = colorScheme.onSurface,
-                    modifier = Modifier.padding(vertical = 10.dp),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "${formatDurationMs(chunk.startMs)} - ${formatDurationMs(chunk.endMs)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colorScheme.onSurfaceVariant,
+                // 文字起こしがない（またはクリアされた）チャンク:
+                // 待機中 / 文字起こし中の2段階スピナーとステータスを表示する
+                Row(
                     modifier = Modifier
                         .weight(1f)
                         .padding(vertical = 10.dp),
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (transcriptionStage != ChunkTranscriptionStage.IDLE) {
+                        ChunkTranscriptionSpinner(stage = transcriptionStage)
+                        val stageLabel = when (transcriptionStage) {
+                            ChunkTranscriptionStage.WAITING ->
+                                stringResource(R.string.player_chunk_transcription_waiting)
+
+                            ChunkTranscriptionStage.TRANSCRIBING ->
+                                stringResource(R.string.player_chunk_transcription_active)
+
+                            ChunkTranscriptionStage.MODEL_UNAVAILABLE ->
+                                stringResource(R.string.player_chunk_transcription_model_unavailable)
+
+                            ChunkTranscriptionStage.IDLE -> ""
+                        }
+                        val stageColor = when (transcriptionStage) {
+                            ChunkTranscriptionStage.WAITING -> colorScheme.onSurfaceVariant
+                            ChunkTranscriptionStage.TRANSCRIBING -> colorScheme.primary
+                            ChunkTranscriptionStage.MODEL_UNAVAILABLE -> colorScheme.onSurfaceVariant
+                            ChunkTranscriptionStage.IDLE -> colorScheme.onSurfaceVariant
+                        }
+                        Text(
+                            text = stageLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
+                                FontWeight.SemiBold
+                            } else {
+                                FontWeight.Normal
+                            },
+                            color = stageColor,
+                        )
+                    } else {
+                        Text(
+                            text = stringResource(R.string.player_chunk_number_format, index + 1),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                            color = colorScheme.onSurface,
+                        )
+                    }
+                    // 時刻の範囲は左の開始時刻と重なる補足情報のため、幅が足りないときは省略して状態の表示を優先する
+                    Text(
+                        text = "${formatDurationMs(chunk.startMs)} - ${formatDurationMs(chunk.endMs)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
             }
 
             IconButton(
@@ -1259,72 +1522,6 @@ private fun RepeatChunkCheckbox(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun NoTranscriptBannerCard(
-    onPickTranscriptJson: () -> Unit,
-    modifier: Modifier = Modifier,
-    lookaheadEnabled: Boolean = false,
-    onStartLookahead: () -> Unit = {},
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                text = stringResource(R.string.player_no_transcript_banner),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (!lookaheadEnabled) {
-                    FilledTonalButton(
-                        onClick = onStartLookahead,
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Bolt,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.player_start_lookahead_stt),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
-                }
-                FilledTonalButton(
-                    onClick = onPickTranscriptJson,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Description,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = stringResource(R.string.player_pick_transcript_json),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun RangeSelectionBanner(
     onCancel: () -> Unit,
@@ -1501,6 +1698,96 @@ private fun TranscriptListPreview() {
                 chineseScript = ChineseScript.HANT,
                 cantoneseScript = ChineseScript.HANT,
                 transcriptImportBanner = null,
+                onSeekToChunk = {},
+                onSetLoopMode = {},
+                onToggleRevealChunk = {},
+                onPickTranscriptJson = {},
+                onDismissTranscriptBanner = {},
+            )
+        }
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun TranscriptListTranscriptionStagesPreview() {
+    val material = SampleMaterials.jaKo
+    val chunks = material.chunks.mapIndexed { index, chunk ->
+        val transcript = material.transcripts[chunk.id]
+        ChunkUi(
+            id = chunk.id,
+            startMs = chunk.startMs,
+            endMs = chunk.endMs,
+            text = if (index == 0) transcript?.text else null,
+            language = transcript?.language,
+        )
+    }
+    ChunkFlowTheme {
+        Surface {
+            TranscriptList(
+                chunks = chunks,
+                activeChunkIndex = 1,
+                languagePair = material.item.languagePair,
+                loopMode = LoopMode.Off,
+                blindMode = BlindMode.OFF,
+                revealedChunkIds = emptySet(),
+                chineseScript = ChineseScript.HANS,
+                cantoneseScript = ChineseScript.HANT,
+                transcriptImportBanner = null,
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    enabled = true,
+                    engineAvailable = true,
+                    inFlightChunkId = chunks.getOrNull(1)?.id,
+                    queuedChunkIds = chunks.drop(2).map { it.id }.toSet(),
+                    completedCount = 1,
+                    totalTargetCount = chunks.size,
+                ),
+                onSeekToChunk = {},
+                onSetLoopMode = {},
+                onToggleRevealChunk = {},
+                onPickTranscriptJson = {},
+                onDismissTranscriptBanner = {},
+            )
+        }
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun TranscriptListRecognitionModelMissingPreview() {
+    val material = SampleMaterials.jaKo
+    val koTag = material.item.languagePair.target
+    val chunks = material.chunks.map { chunk ->
+        val transcript = material.transcripts[chunk.id]
+        val isKorean = transcript?.language?.value?.startsWith(koTag.value) == true
+        ChunkUi(
+            id = chunk.id,
+            startMs = chunk.startMs,
+            endMs = chunk.endMs,
+            // 韓国語の音声認識モデルがないため、韓国語のチャンクは言語だけ判定されて本文がない状態
+            text = if (isKorean) null else transcript?.text,
+            language = transcript?.language,
+        )
+    }
+    ChunkFlowTheme {
+        Surface {
+            TranscriptList(
+                chunks = chunks,
+                activeChunkIndex = 0,
+                languagePair = material.item.languagePair,
+                loopMode = LoopMode.Off,
+                blindMode = BlindMode.OFF,
+                revealedChunkIds = emptySet(),
+                chineseScript = ChineseScript.HANS,
+                cantoneseScript = ChineseScript.HANT,
+                transcriptImportBanner = null,
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    enabled = true,
+                    engineAvailable = true,
+                    completedCount = chunks.size,
+                    totalTargetCount = chunks.size,
+                    recognitionModelIssues = mapOf(koTag to OnDeviceRecognitionModelState.NOT_INSTALLED),
+                ),
                 onSeekToChunk = {},
                 onSetLoopMode = {},
                 onToggleRevealChunk = {},

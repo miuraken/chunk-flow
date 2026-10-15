@@ -171,11 +171,22 @@ fun WaveformSection(
 
     // 描画フェーズでのみ読むフレームカウンタ（コンポーズ中には読まない）
     val frameTick = remember { mutableLongStateOf(0L) }
-    if (!isInspectionMode && isPlaying) {
-        LaunchedEffect(isPlaying) {
+    if (!isInspectionMode) {
+        LaunchedEffect(isPlaying, positionProvider) {
+            var lastPosMs = -1L
             while (isActive) {
-                withFrameNanos { frameNanos ->
-                    frameTick.longValue = frameNanos
+                if (isPlaying) {
+                    withFrameNanos { frameNanos ->
+                        frameTick.longValue = frameNanos
+                        lastPosMs = positionProvider.currentPositionMs()
+                    }
+                } else {
+                    val currentPosMs = positionProvider.currentPositionMs()
+                    if (currentPosMs != lastPosMs) {
+                        lastPosMs = currentPosMs
+                        frameTick.longValue += 1L
+                    }
+                    delay(50L)
                 }
             }
         }
@@ -233,16 +244,17 @@ fun WaveformSection(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            // 1. 全体波形ヘッダ + キャンバス
+            // 1. 全体波形ヘッダ（左上は現在の再生箇所「分:秒」、右上は全体長「分:秒」）+ キャンバス
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = stringResource(R.string.player_waveform_overview_label),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colorScheme.onSurfaceVariant,
+                WaveformOverviewPositionText(
+                    durationMs = effectiveDurationMs,
+                    isPlaying = isPlaying,
+                    positionProvider = positionProvider,
+                    scrubPositionMs = scrubPositionMs,
                 )
                 Text(
                     text = formatDurationMs(effectiveDurationMs),
@@ -560,16 +572,75 @@ private fun OverviewWaveformCanvas(
                         style = Stroke(width = 1.5.dp.toPx()),
                     )
 
-                    // 再生ヘッド
-                    val playheadX = (currentPosMs.toFloat() / durationMs.toFloat()) * size.width
-                    drawLine(
+                    // 現在位置を示すバー（太めのハンドル形状）
+                    val playheadX = ((currentPosMs.toFloat() / durationMs.toFloat()) * size.width)
+                        .coerceIn(0f, size.width)
+                    val barWidthPx = 4.dp.toPx()
+                    val barRadiusPx = 2.dp.toPx()
+                    drawRoundRect(
                         color = playheadColor,
-                        start = Offset(playheadX, 0f),
-                        end = Offset(playheadX, size.height),
-                        strokeWidth = 2.dp.toPx(),
+                        topLeft = Offset(
+                            x = (playheadX - barWidthPx * 0.5f).coerceIn(0f, (size.width - barWidthPx).coerceAtLeast(0f)),
+                            y = 0f,
+                        ),
+                        size = Size(barWidthPx, size.height),
+                        cornerRadius = CornerRadius(barRadiusPx, barRadiusPx),
+                    )
+                    val knobWidthPx = 10.dp.toPx()
+                    val knobHeightPx = 6.dp.toPx()
+                    val knobRadiusPx = 3.dp.toPx()
+                    val knobLeft = (playheadX - knobWidthPx * 0.5f)
+                        .coerceIn(0f, (size.width - knobWidthPx).coerceAtLeast(0f))
+                    drawRoundRect(
+                        color = playheadColor,
+                        topLeft = Offset(knobLeft, 0f),
+                        size = Size(knobWidthPx, knobHeightPx),
+                        cornerRadius = CornerRadius(knobRadiusPx, knobRadiusPx),
+                    )
+                    drawRoundRect(
+                        color = playheadColor,
+                        topLeft = Offset(knobLeft, (size.height - knobHeightPx).coerceAtLeast(0f)),
+                        size = Size(knobWidthPx, knobHeightPx),
+                        cornerRadius = CornerRadius(knobRadiusPx, knobRadiusPx),
                     )
                 }
             },
+    )
+}
+
+/**
+ * 全体波形の左上に現在の再生箇所（「分:秒」）を表示する子 Composable。
+ *
+ * [PositionProvider] のサンプリングをこの Composable の内部に閉じ込めることで、
+ * 再生位置の更新によって [WaveformSection] 全体が再コンポーズされるのを防ぐ（§6.2）。
+ */
+@Composable
+private fun WaveformOverviewPositionText(
+    durationMs: Long,
+    isPlaying: Boolean,
+    positionProvider: PositionProvider,
+    scrubPositionMs: Long?,
+    modifier: Modifier = Modifier,
+) {
+    val isInspectionMode = LocalInspectionMode.current
+    var sampledPositionMs by remember(positionProvider) {
+        mutableLongStateOf(positionProvider.currentPositionMs())
+    }
+    if (!isInspectionMode) {
+        LaunchedEffect(positionProvider, isPlaying) {
+            sampledPositionMs = positionProvider.currentPositionMs()
+            while (isActive) {
+                sampledPositionMs = positionProvider.currentPositionMs()
+                delay(if (isPlaying) 100L else 250L)
+            }
+        }
+    }
+    val displayPosMs = (scrubPositionMs ?: sampledPositionMs).coerceIn(0L, durationMs.coerceAtLeast(0L))
+    Text(
+        text = formatDurationMs(displayPosMs),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier,
     )
 }
 

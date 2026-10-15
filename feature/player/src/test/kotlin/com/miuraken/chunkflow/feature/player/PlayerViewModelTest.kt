@@ -536,6 +536,13 @@ class PlayerViewModelTest {
         assertEquals(setOf(thirdChunkId), viewModel.uiState.value.practice.repeatChunkIds)
         assertFalse(viewModel.uiState.value.chunks[0].isRepeatChecked)
 
+        // ToggleRepeat で repeatCheckedOnly の ON / OFF を切り替えられる
+        assertFalse(viewModel.uiState.value.practice.repeatCheckedOnly)
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertTrue(viewModel.uiState.value.practice.repeatCheckedOnly)
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertFalse(viewModel.uiState.value.practice.repeatCheckedOnly)
+
         // LoopMode.Off で repeatChunkIds もクリアされる
         viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.Off))
         assertTrue(viewModel.uiState.value.practice.repeatChunkIds.isEmpty())
@@ -828,5 +835,131 @@ class PlayerViewModelTest {
             TranscriptExportBannerState.ResetCompleted,
             viewModel.uiState.value.transcriptExportBanner,
         )
+    }
+
+    @Test
+    fun `チャンク選択と拡大波形シークで優先文字起こしが呼ばれ_2段階スピナー状態が正しく解決される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. チャンクリストでチャンクを選択 (SeekToChunk) すると prioritizeChunkTranscription が呼ばれる
+        val chunk1 = sample.chunks[1]
+        analysisRepo.prioritizedChunkRequests.clear()
+        viewModel.onEvent(PlayerEvent.SeekToChunk(chunk1.id))
+        assertTrue(analysisRepo.prioritizedChunkRequests.contains(item.id to chunk1.id))
+
+        // 2. 拡大波形でチャンク位置へシーク (SeekTo) すると該当チャンクの prioritizeChunkTranscription が呼ばれる
+        val chunk2 = sample.chunks[2]
+        analysisRepo.prioritizedChunkRequests.clear()
+        viewModel.onEvent(PlayerEvent.SeekTo(chunk2.startMs + 50L))
+        assertTrue(analysisRepo.prioritizedChunkRequests.contains(item.id to chunk2.id))
+
+        // 3. resolveChunkTranscriptionStage: 文字起こしデータがないチャンクの 2 段階スピナー状態判定
+        val c1 = ChunkId(1L)
+        val c2 = ChunkId(2L)
+        val c3 = ChunkId(3L)
+        val emptyC1 = ChunkUi(id = c1, startMs = 0L, endMs = 1_000L, text = null, language = null)
+        val emptyC2 = ChunkUi(id = c2, startMs = 1_000L, endMs = 2_000L, text = null, language = null)
+        val emptyC3 = ChunkUi(id = c3, startMs = 2_000L, endMs = 3_000L, text = null, language = null)
+        val filledC1 = emptyC1.copy(text = "こんにちは")
+
+        // 文字起こし済みのチャンクは常に IDLE
+        assertEquals(
+            ChunkTranscriptionStage.IDLE,
+            resolveChunkTranscriptionStage(
+                chunk = filledC1,
+                lookaheadStatus = com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(
+                    enabled = true,
+                    inFlightChunkId = c1,
+                    queuedChunkIds = setOf(c1),
+                ),
+            ),
+        )
+
+        // 現在文字起こし実行中 (inFlightChunkId == chunkId) のチャンクは TRANSCRIBING（第2段階）
+        assertEquals(
+            ChunkTranscriptionStage.TRANSCRIBING,
+            resolveChunkTranscriptionStage(
+                chunk = emptyC1,
+                lookaheadStatus = com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(
+                    enabled = false,
+                    inFlightChunkId = c1,
+                    queuedChunkIds = setOf(c2),
+                ),
+            ),
+        )
+
+        // キュー待ち (queuedChunkIds に含まれる) または先読み有効時の未文字起こしチャンクは WAITING（第1段階）
+        assertEquals(
+            ChunkTranscriptionStage.WAITING,
+            resolveChunkTranscriptionStage(
+                chunk = emptyC2,
+                lookaheadStatus = com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(
+                    enabled = false,
+                    inFlightChunkId = c1,
+                    queuedChunkIds = setOf(c2),
+                ),
+            ),
+        )
+        assertEquals(
+            ChunkTranscriptionStage.WAITING,
+            resolveChunkTranscriptionStage(
+                chunk = emptyC3,
+                lookaheadStatus = com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(
+                    enabled = true,
+                    inFlightChunkId = c1,
+                    queuedChunkIds = emptySet(),
+                ),
+            ),
+        )
+
+        // 先読み無効かつ実行中でもキュー待ちでもない未文字起こしチャンクは IDLE
+        assertEquals(
+            ChunkTranscriptionStage.IDLE,
+            resolveChunkTranscriptionStage(
+                chunk = emptyC3,
+                lookaheadStatus = com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(
+                    enabled = false,
+                    inFlightChunkId = null,
+                    queuedChunkIds = emptySet(),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `ファイル開閉時の優先解析と文字起こしセッション管理_openで優先解析とセッション開始が呼ばれcloseとBackでセッション終了が呼ばれる`() = runTest {
+        val sample1 = SampleMaterials.jaKo
+        val sample2 = sample1.copy(item = sample1.item.copy(id = com.miuraken.chunkflow.core.model.MediaId("sample_2")))
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(sample1.item, sample2.item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample1)
+            put(sample2)
+        }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. sample1 を開くと sample1 のセッションが open=true になり、prioritizeOpenedMediaAnalysis が呼ばれる
+        viewModel.open(sample1.item.id)
+        assertEquals(setOf(sample1.item.id), analysisRepo.openTranscriptionSessions)
+        assertEquals(listOf(sample1.item.id), analysisRepo.prioritizedMediaAnalyses)
+
+        // 2. sample2 に切り替えると sample1 が open=false になり、sample2 が open=true かつ優先解析される
+        viewModel.open(sample2.item.id)
+        assertEquals(setOf(sample2.item.id), analysisRepo.openTranscriptionSessions)
+        assertEquals(listOf(sample1.item.id, sample2.item.id), analysisRepo.prioritizedMediaAnalyses)
+
+        // 3. Back または close で現在のファイルの文字起こしセッションが閉じられる
+        viewModel.onEvent(PlayerEvent.Back)
+        assertTrue(analysisRepo.openTranscriptionSessions.isEmpty())
     }
 }

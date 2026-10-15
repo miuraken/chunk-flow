@@ -50,6 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -119,6 +120,11 @@ fun PlayerRoute(
     LaunchedEffect(mediaId) {
         viewModel.open(mediaId)
     }
+    DisposableEffect(mediaId) {
+        onDispose {
+            viewModel.close(mediaId)
+        }
+    }
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var hasRequestedAudioPermissionForMedia by remember(mediaId) { mutableStateOf(false) }
@@ -170,7 +176,10 @@ fun PlayerRoute(
         positionProvider = viewModel.positionProvider,
         onEvent = { event ->
             when {
-                event is PlayerEvent.Back -> onBack()
+                event is PlayerEvent.Back -> {
+                    viewModel.onEvent(event)
+                    onBack()
+                }
 
                 event is PlayerEvent.SetLookaheadEnabled && event.enabled -> {
                     if (ContextCompat.checkSelfPermission(
@@ -204,7 +213,7 @@ fun PlayerRoute(
 /**
  * プレイヤー画面（状態を受け取って描くだけの Composable。§6.2、§7.5.2〜§7.5.6）。
  *
- * 再生位置は [PlayerUiState] に含めず、[positionProvider] を子 Composable（[WaveformSection]・[PlayerProgressSection]・[TranscriptList]）にのみ渡す。
+ * 再生位置は [PlayerUiState] に含めず、[positionProvider] を子 Composable（[WaveformSection]・[TranscriptList]）にのみ渡す。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -305,19 +314,10 @@ fun PlayerScreen(
                             onSeekBack = { onEvent(PlayerEvent.SeekBack) },
                         )
 
-                        PlayerPracticeControlStrip(
+                        PlaybackControlStrip(
                             state = state,
-                            positionProvider = positionProvider,
                             onEvent = onEvent,
                             onOpenSpeedSheet = { showSpeedSheet = true },
-                            onOpenResegmentSheet = { showResegmentSheet = true },
-                        )
-
-                        PlayerProgressSection(
-                            durationMs = state.durationMs,
-                            isPlaying = state.isPlaying,
-                            positionProvider = positionProvider,
-                            onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
                         )
 
                         PlayerTransportControls(
@@ -335,60 +335,76 @@ fun PlayerScreen(
 
                     VerticalDivider()
 
-                    TranscriptList(
-                        chunks = state.chunks,
-                        activeChunkIndex = state.activeChunkIndex,
-                        languagePair = state.languagePair,
-                        loopMode = state.practice.loop,
-                        blindMode = state.blindMode,
-                        revealedChunkIds = state.revealedChunkIds,
-                        chineseScript = state.chineseScript,
-                        cantoneseScript = state.cantoneseScript,
-                        showTargetRomanization = state.showTargetRomanization,
-                        transcriptImportBanner = state.transcriptImportBanner,
-                        positionProvider = positionProvider,
-                        lookaheadStatus = state.lookaheadStatus,
-                        localTranscriptExported = state.localTranscriptExported,
-                        transcriptExportBanner = state.transcriptExportBanner,
-                        onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
-                        onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
-                        onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
-                        onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
-                        onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
-                        onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
-                        onPickTranscriptJson = onPickTranscriptJson,
-                        onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
-                        onUpdateChunkLanguage = { chunkId, lang ->
-                            onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
-                        },
-                        onUpdateChunkText = { chunkId, text ->
-                            onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
-                        },
-                        onRetranscribeChunk = { chunkId ->
-                            onEvent(PlayerEvent.RetranscribeChunk(chunkId))
-                        },
-                        onSplitChunk = { chunkId, splitMs ->
-                            onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
-                        },
-                        onMergeWithNextChunk = { chunkId ->
-                            onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
-                        },
-                        onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
-                            onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
-                        },
-                        onBulkSetUnknownLanguage = { lang ->
-                            onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
-                        },
-                        onSetLookaheadEnabled = { enabled ->
-                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
-                        },
-                        onExportLocalTranscriptJson = {
-                            onEvent(PlayerEvent.ExportLocalTranscriptJson)
-                        },
+                    Column(
                         modifier = Modifier
                             .weight(0.52f)
                             .fillMaxHeight(),
-                    )
+                    ) {
+                        ChunkListControlStrip(
+                            state = state,
+                            onEvent = onEvent,
+                            onOpenResegmentSheet = { showResegmentSheet = true },
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+
+                        TranscriptList(
+                            chunks = state.chunks,
+                            activeChunkIndex = state.activeChunkIndex,
+                            languagePair = state.languagePair,
+                            loopMode = state.practice.loop,
+                            blindMode = state.blindMode,
+                            revealedChunkIds = state.revealedChunkIds,
+                            chineseScript = state.chineseScript,
+                            cantoneseScript = state.cantoneseScript,
+                            showTargetRomanization = state.showTargetRomanization,
+                            transcriptImportBanner = state.transcriptImportBanner,
+                            positionProvider = positionProvider,
+                            lookaheadStatus = state.lookaheadStatus,
+                            localTranscriptExported = state.localTranscriptExported,
+                            transcriptExportBanner = state.transcriptExportBanner,
+                            onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
+                            onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
+                            onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
+                            onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
+                            onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
+                            onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
+                            onPickTranscriptJson = onPickTranscriptJson,
+                            onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
+                            onUpdateChunkLanguage = { chunkId, lang ->
+                                onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
+                            },
+                            onUpdateChunkText = { chunkId, text ->
+                                onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
+                            },
+                            onRetranscribeChunk = { chunkId ->
+                                onEvent(PlayerEvent.RetranscribeChunk(chunkId))
+                            },
+                            onSplitChunk = { chunkId, splitMs ->
+                                onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
+                            },
+                            onMergeWithNextChunk = { chunkId ->
+                                onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
+                            },
+                            onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
+                                onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
+                            },
+                            onBulkSetUnknownLanguage = { lang ->
+                                onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
+                            },
+                            onSetLookaheadEnabled = { enabled ->
+                                onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+                            },
+                            onExportLocalTranscriptJson = {
+                                onEvent(PlayerEvent.ExportLocalTranscriptJson)
+                            },
+                            onRequestRecognitionModelDownload = { language ->
+                                onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                        )
+                    }
                 }
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
@@ -430,6 +446,14 @@ fun PlayerScreen(
                         )
                     }
 
+                    // a) チャンクリストに関するボタン類（チャンクリスト上部）
+                    ChunkListControlStrip(
+                        state = state,
+                        onEvent = onEvent,
+                        onOpenResegmentSheet = { showResegmentSheet = true },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    )
+
                     TranscriptList(
                         chunks = state.chunks,
                         activeChunkIndex = state.activeChunkIndex,
@@ -480,6 +504,9 @@ fun PlayerScreen(
                         onExportLocalTranscriptJson = {
                             onEvent(PlayerEvent.ExportLocalTranscriptJson)
                         },
+                        onRequestRecognitionModelDownload = { language ->
+                            onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
@@ -496,19 +523,11 @@ fun PlayerScreen(
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            PlayerPracticeControlStrip(
+                            // b) 再生に関するボタン類（再生ボタン類のすぐ上部）
+                            PlaybackControlStrip(
                                 state = state,
-                                positionProvider = positionProvider,
                                 onEvent = onEvent,
                                 onOpenSpeedSheet = { showSpeedSheet = true },
-                                onOpenResegmentSheet = { showResegmentSheet = true },
-                            )
-
-                            PlayerProgressSection(
-                                durationMs = state.durationMs,
-                                isPlaying = state.isPlaying,
-                                positionProvider = positionProvider,
-                                onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
                             )
 
                             PlayerTransportControls(
@@ -639,70 +658,37 @@ private fun PlayerTitleMetaRow(
 }
 
 /**
- * 学習コントロールのチップ列（リピート、A-B クイック設定、自動ポーズ、瞬間作文、言語フィルタ、ブックマークのみ、ブラインドモード、先読み文字起こし、チャンク出どころ、分割調整、速度）。
+ * ON / OFF のトグルをボタンの明度で表現する [FilterChip] カラー設定。
+ *
+ * ON（`selected = true`）は明るく強調し、OFF（`selected = false`）は暗め（低明度・低不透明度）にする。
  */
 @Composable
-private fun PlayerPracticeControlStrip(
+private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
+    containerColor = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f),
+    labelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+    iconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+)
+
+/**
+ * a) チャンクリストに関するボタン列（チャンクリスト上部に配置）。
+ *
+ * 表示項目:
+ * - 「言語」（*すべて、学習言語のみ、母語のみ）
+ * - 「学習言語を表示」（*on, off）
+ * - 「読み」（on, *off）
+ * - 「分割調整」
+ */
+@Composable
+private fun ChunkListControlStrip(
     state: PlayerUiState,
-    positionProvider: PositionProvider,
     onEvent: (PlayerEvent) -> Unit,
-    onOpenSpeedSheet: () -> Unit,
     onOpenResegmentSheet: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var repeatMenuExpanded by remember { mutableStateOf(false) }
-    var autoPauseMenuExpanded by remember { mutableStateOf(false) }
-    var blindMenuExpanded by remember { mutableStateOf(false) }
     var langFilterMenuExpanded by remember { mutableStateOf(false) }
-    var pendingAbStartMs by remember { mutableStateOf<Long?>(null) }
-
-    val loop = state.practice.loop
-    val hasCheckedRepeat = state.practice.repeatChunkIds.isNotEmpty()
-    val isRepeatActive = loop !is LoopMode.Off || hasCheckedRepeat
-    val repeatLabel = when {
-        hasCheckedRepeat && loop is LoopMode.Off -> stringResource(
-            R.string.player_chip_repeat_checked_count,
-            state.practice.repeatChunkIds.size,
-        )
-
-        loop is LoopMode.Off -> stringResource(R.string.player_chip_repeat_off)
-
-        loop is LoopMode.SingleChunk -> if (loop.times != null) {
-            stringResource(R.string.player_chip_repeat_single_3)
-        } else {
-            stringResource(R.string.player_chip_repeat_single_inf)
-        }
-
-        loop is LoopMode.ChunkRange -> stringResource(R.string.player_chip_repeat_range)
-
-        loop is LoopMode.AbRange -> stringResource(R.string.player_chip_repeat_ab)
-
-        else -> stringResource(R.string.player_chip_repeat_off)
-    }
-
-    val autoPause = state.practice.autoPause
-    val autoPauseLabel = when (autoPause) {
-        AutoPause.Off -> stringResource(R.string.player_chip_autopause_off)
-
-        is AutoPause.Fixed -> stringResource(
-            R.string.player_chip_autopause_fixed,
-            (autoPause.pauseMs / 1_000L).toInt(),
-        )
-
-        is AutoPause.Proportional -> stringResource(
-            R.string.player_chip_autopause_prop,
-            String.format(Locale.ROOT, "%.1f", autoPause.factor),
-        )
-    }
-
-    val isInstantCompositionOn =
-        state.practice.autoPauseScope == AutoPauseScope.AFTER_BASE_LANGUAGE &&
-            state.practice.autoPause !is AutoPause.Off
-    val instantCompositionLabel = if (isInstantCompositionOn) {
-        stringResource(R.string.player_chip_instant_comp_on)
-    } else {
-        stringResource(R.string.player_chip_instant_comp_off)
-    }
 
     val languageFilter = state.practice.languageFilter
     val languageFilterLabel = when (languageFilter) {
@@ -711,14 +697,9 @@ private fun PlayerPracticeControlStrip(
         LanguageFilter.BASE_ONLY -> stringResource(R.string.player_chip_lang_filter_base)
     }
 
-    val blindLabel = when (state.blindMode) {
-        BlindMode.OFF -> stringResource(R.string.player_chip_blind_off)
-        BlindMode.HIDE_TARGET_ONLY -> stringResource(R.string.player_chip_blind_target)
-        BlindMode.HIDE_ALL -> stringResource(R.string.player_chip_blind_all)
-    }
-
-    val activeChunkId = state.activeChunkIndex?.let { state.chunks.getOrNull(it)?.id }
-        ?: state.chunks.firstOrNull()?.id
+    val isShowTargetLangOn = state.blindMode == BlindMode.OFF
+    val isReadingOn = state.showTargetRomanization
+    val toggleColors = brightnessToggleChipColors()
 
     Row(
         modifier = modifier
@@ -727,397 +708,116 @@ private fun PlayerPracticeControlStrip(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 1. リピートチップ + メニュー
+        // 1. 「言語」（*すべて、学習言語のみ、母語のみ）
         Column {
             FilterChip(
-                selected = isRepeatActive,
-                onClick = { repeatMenuExpanded = true },
-                label = { Text(text = repeatLabel, maxLines = 1) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Repeat,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
+                selected = languageFilter != LanguageFilter.ALL,
+                onClick = { langFilterMenuExpanded = true },
+                label = { Text(text = languageFilterLabel, maxLines = 1) },
             )
             DropdownMenu(
-                expanded = repeatMenuExpanded,
-                onDismissRequest = { repeatMenuExpanded = false },
+                expanded = langFilterMenuExpanded,
+                onDismissRequest = { langFilterMenuExpanded = false },
             ) {
                 DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chip_repeat_off)) },
+                    text = { Text(text = stringResource(R.string.player_menu_lang_filter_all)) },
                     onClick = {
-                        repeatMenuExpanded = false
-                        pendingAbStartMs = null
-                        onEvent(PlayerEvent.SetLoopMode(LoopMode.Off))
+                        langFilterMenuExpanded = false
+                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.ALL))
                     },
                 )
-                if (activeChunkId != null) {
-                    DropdownMenuItem(
-                        text = { Text(text = stringResource(R.string.player_chip_repeat_single_3)) },
-                        onClick = {
-                            repeatMenuExpanded = false
-                            onEvent(PlayerEvent.SetLoopMode(LoopMode.SingleChunk(activeChunkId, times = 3)))
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(text = stringResource(R.string.player_chip_repeat_single_inf)) },
-                        onClick = {
-                            repeatMenuExpanded = false
-                            onEvent(PlayerEvent.SetLoopMode(LoopMode.SingleChunk(activeChunkId, times = null)))
-                        },
-                    )
-                }
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(R.string.player_menu_lang_filter_target)) },
+                    onClick = {
+                        langFilterMenuExpanded = false
+                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(text = stringResource(R.string.player_menu_lang_filter_base)) },
+                    onClick = {
+                        langFilterMenuExpanded = false
+                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
+                    },
+                )
             }
         }
 
-        // A-B クイック設定チップ ([A] / [B] / 解除, F6.2)
+        // 2. 「学習言語を表示」（*on, off）
         FilterChip(
-            selected = pendingAbStartMs != null || loop is LoopMode.AbRange,
+            selected = isShowTargetLangOn,
             onClick = {
-                val nowMs = positionProvider.currentPositionMs().coerceAtLeast(0L)
-                pendingAbStartMs = nowMs
-                if (loop is LoopMode.AbRange && nowMs < loop.endMs) {
-                    onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(nowMs, loop.endMs)))
+                val nextBlindMode = if (isShowTargetLangOn) {
+                    BlindMode.HIDE_TARGET_ONLY
+                } else {
+                    BlindMode.OFF
                 }
+                onEvent(PlayerEvent.SetBlindMode(nextBlindMode))
             },
-            label = { Text(text = stringResource(R.string.player_ab_set_a), maxLines = 1) },
+            label = {
+                Text(
+                    text = stringResource(R.string.player_chip_show_target_lang),
+                    fontWeight = if (isShowTargetLangOn) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            },
+            colors = toggleColors,
         )
+
+        // 3. 「読み」（on, *off）
         FilterChip(
-            selected = loop is LoopMode.AbRange,
+            selected = isReadingOn,
             onClick = {
-                val nowMs = positionProvider.currentPositionMs().coerceAtLeast(0L)
-                val startCandidate = pendingAbStartMs
-                    ?: (loop as? LoopMode.AbRange)?.startMs
-                    ?: 0L
-                val minMs = min(startCandidate, nowMs)
-                val maxMs = max(startCandidate, nowMs)
-                val effectiveEndMs = if (maxMs > minMs) {
-                    maxMs
-                } else {
-                    (minMs + 2_000L).coerceAtMost(max(minMs + 500L, state.durationMs))
-                }
-                pendingAbStartMs = null
-                onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(minMs, effectiveEndMs)))
+                onEvent(PlayerEvent.SetShowTargetRomanization(!isReadingOn))
             },
-            label = { Text(text = stringResource(R.string.player_ab_set_b), maxLines = 1) },
-        )
-        if (isRepeatActive) {
-            FilterChip(
-                selected = false,
-                onClick = {
-                    pendingAbStartMs = null
-                    onEvent(PlayerEvent.SetLoopMode(LoopMode.Off))
-                },
-                label = { Text(text = stringResource(R.string.player_ab_clear), maxLines = 1) },
-            )
-        }
-
-        // 2. 自動ポーズチップ (F6.3)
-        Column {
-            FilterChip(
-                selected = autoPause !is AutoPause.Off,
-                onClick = { autoPauseMenuExpanded = true },
-                label = { Text(text = autoPauseLabel, maxLines = 1) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Timer,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
-            DropdownMenu(
-                expanded = autoPauseMenuExpanded,
-                onDismissRequest = { autoPauseMenuExpanded = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chip_autopause_off)) },
-                    onClick = {
-                        autoPauseMenuExpanded = false
-                        onEvent(PlayerEvent.SetAutoPause(AutoPause.Off))
-                    },
-                )
-                listOf(2_000L, 3_000L, 5_000L).forEach { pauseMs ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = stringResource(
-                                    R.string.player_chip_autopause_fixed,
-                                    (pauseMs / 1_000L).toInt(),
-                                ),
-                            )
-                        },
-                        onClick = {
-                            autoPauseMenuExpanded = false
-                            onEvent(PlayerEvent.SetAutoPause(AutoPause.Fixed(pauseMs)))
-                        },
-                    )
-                }
-                listOf(1.0f, 1.5f).forEach { factor ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = stringResource(
-                                    R.string.player_chip_autopause_prop,
-                                    String.format(Locale.ROOT, "%.1f", factor),
-                                ),
-                            )
-                        },
-                        onClick = {
-                            autoPauseMenuExpanded = false
-                            onEvent(PlayerEvent.SetAutoPause(AutoPause.Proportional(factor = factor)))
-                        },
-                    )
-                }
-            }
-        }
-
-        // 3. 瞬間作文モードチップ (F6.5: 母語チャンクの後だけ自動ポーズ)
-        if (state.languagePair?.base != null) {
-            FilterChip(
-                selected = isInstantCompositionOn,
-                onClick = { onEvent(PlayerEvent.ToggleInstantComposition) },
-                label = { Text(text = instantCompositionLabel, maxLines = 1) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Bolt,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
-        }
-
-        // 4. 言語フィルタチップ (F6.4)
-        if (state.languagePair?.base != null) {
-            val langPalette = chunkFlowLanguagePalette()
-            val langFilterColors = when (languageFilter) {
-                LanguageFilter.TARGET_ONLY -> FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = langPalette.targetBadgeContainer,
-                    selectedLabelColor = langPalette.onTargetBadgeContainer,
-                    selectedLeadingIconColor = langPalette.onTargetBadgeContainer,
-                )
-
-                LanguageFilter.BASE_ONLY -> FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = langPalette.baseBadgeContainer,
-                    selectedLabelColor = langPalette.onBaseBadgeContainer,
-                    selectedLeadingIconColor = langPalette.onBaseBadgeContainer,
-                )
-
-                LanguageFilter.ALL -> FilterChipDefaults.filterChipColors()
-            }
-            Column {
-                FilterChip(
-                    selected = languageFilter != LanguageFilter.ALL,
-                    onClick = { langFilterMenuExpanded = true },
-                    label = { Text(text = languageFilterLabel, maxLines = 1) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Translate,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    },
-                    colors = langFilterColors,
-                )
-                DropdownMenu(
-                    expanded = langFilterMenuExpanded,
-                    onDismissRequest = { langFilterMenuExpanded = false },
-                ) {
-                    DropdownMenuItem(
-                        text = { Text(text = stringResource(R.string.player_chip_lang_filter_all)) },
-                        onClick = {
-                            langFilterMenuExpanded = false
-                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.ALL))
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(text = stringResource(R.string.player_chip_lang_filter_target)) },
-                        onClick = {
-                            langFilterMenuExpanded = false
-                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(text = stringResource(R.string.player_chip_lang_filter_base)) },
-                        onClick = {
-                            langFilterMenuExpanded = false
-                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
-                        },
-                    )
-                }
-            }
-        }
-
-        // 4b. ブックマークのみ再生チップ (F8.1)
-        FilterChip(
-            selected = state.practice.bookmarksOnly,
-            onClick = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
-            label = { Text(text = stringResource(R.string.player_chip_bookmarks_only), maxLines = 1) },
-            leadingIcon = {
-                Icon(
-                    imageVector = if (state.practice.bookmarksOnly) {
-                        ChunkFlowIcons.Bookmark
-                    } else {
-                        ChunkFlowIcons.BookmarkBorder
-                    },
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
+            label = {
+                Text(
+                    text = stringResource(R.string.player_chip_reading),
+                    fontWeight = if (isReadingOn) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
                 )
             },
+            colors = toggleColors,
         )
 
-        // 5. ブラインドモードチップ (F7.2)
-        Column {
-            FilterChip(
-                selected = state.blindMode != BlindMode.OFF,
-                onClick = { blindMenuExpanded = true },
-                label = { Text(text = blindLabel, maxLines = 1) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = if (state.blindMode == BlindMode.OFF) {
-                            ChunkFlowIcons.Visibility
-                        } else {
-                            ChunkFlowIcons.VisibilityOff
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
-            DropdownMenu(
-                expanded = blindMenuExpanded,
-                onDismissRequest = { blindMenuExpanded = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chip_blind_off)) },
-                    onClick = {
-                        blindMenuExpanded = false
-                        onEvent(PlayerEvent.SetBlindMode(BlindMode.OFF))
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chip_blind_target)) },
-                    onClick = {
-                        blindMenuExpanded = false
-                        onEvent(PlayerEvent.SetBlindMode(BlindMode.HIDE_TARGET_ONLY))
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chip_blind_all)) },
-                    onClick = {
-                        blindMenuExpanded = false
-                        onEvent(PlayerEvent.SetBlindMode(BlindMode.HIDE_ALL))
-                    },
-                )
-            }
-        }
-
-        // 5b. 学習言語の読み方ガイド（ローマ字 / IAST / Pinyin 等）トグルチップ
-        state.targetPhoneticGuideKind?.let { guideKind ->
-            val phoneticChipLabel = when (guideKind) {
-                PhoneticGuideKind.ROMAJI -> if (state.showTargetRomanization) {
-                    stringResource(R.string.player_chip_phonetic_romaji_on)
-                } else {
-                    stringResource(R.string.player_chip_phonetic_romaji_off)
-                }
-
-                PhoneticGuideKind.IAST -> if (state.showTargetRomanization) {
-                    stringResource(R.string.player_chip_phonetic_iast_on)
-                } else {
-                    stringResource(R.string.player_chip_phonetic_iast_off)
-                }
-
-                PhoneticGuideKind.PINYIN -> if (state.showTargetRomanization) {
-                    stringResource(R.string.player_chip_phonetic_pinyin_on)
-                } else {
-                    stringResource(R.string.player_chip_phonetic_pinyin_off)
-                }
-
-                PhoneticGuideKind.LATIN_TRANSLITERATION -> if (state.showTargetRomanization) {
-                    stringResource(R.string.player_chip_phonetic_latin_on)
-                } else {
-                    stringResource(R.string.player_chip_phonetic_latin_off)
-                }
-            }
-            FilterChip(
-                selected = state.showTargetRomanization,
-                onClick = {
-                    onEvent(PlayerEvent.SetShowTargetRomanization(!state.showTargetRomanization))
-                },
-                label = { Text(text = phoneticChipLabel, maxLines = 1) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Translate,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
-        }
-
-        // 6. 端末内の先読み簡易文字起こしトグルチップ (F6.2)
-        val lookahead = state.lookaheadStatus
-        val lookaheadTotal = if (lookahead.totalTargetCount > 0) {
-            lookahead.totalTargetCount
-        } else {
-            state.chunks.size
-        }
-        val lookaheadLabel = if (lookahead.enabled) {
-            stringResource(R.string.player_lookahead_chip_on, lookahead.completedCount, lookaheadTotal)
-        } else {
-            stringResource(R.string.player_lookahead_chip_off)
-        }
-        FilterChip(
-            selected = lookahead.enabled,
-            onClick = { onEvent(PlayerEvent.SetLookaheadEnabled(!lookahead.enabled)) },
-            label = { Text(text = lookaheadLabel, maxLines = 1) },
-            leadingIcon = {
-                Icon(
-                    imageVector = ChunkFlowIcons.Bolt,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-            },
-        )
-
-        // 7. チャンク出どころ切り替えチップ (F5.4)
-        val canSwitchOrigin = state.availableChunkOrigins.contains(ChunkOrigin.IMPORTED) &&
-            state.availableChunkOrigins.contains(ChunkOrigin.AUTO)
-        if (canSwitchOrigin || state.availableChunkOrigins.isNotEmpty()) {
-            val isImported = state.chunkSource == ChunkOrigin.IMPORTED
-            val sourceLabel = if (isImported) {
-                stringResource(R.string.player_chip_source_imported)
-            } else {
-                stringResource(R.string.player_chip_source_auto)
-            }
-            FilterChip(
-                selected = isImported,
-                onClick = {
-                    val nextOrigin = if (isImported) ChunkOrigin.AUTO else ChunkOrigin.IMPORTED
-                    onEvent(PlayerEvent.SetChunkSource(nextOrigin))
-                },
-                label = { Text(text = sourceLabel, maxLines = 1) },
-            )
-        }
-
-        // 8. 分割調整・時刻ずれ補正チップ (F5.2, F7.6)
+        // 4. 「分割調整」
         FilterChip(
             selected = state.transcriptOffsetMs != 0,
             onClick = onOpenResegmentSheet,
             label = { Text(text = stringResource(R.string.player_chip_resegment), maxLines = 1) },
-            leadingIcon = {
-                Icon(
-                    imageVector = ChunkFlowIcons.Tune,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-            },
         )
+    }
+}
 
-        // 9. 再生速度チップ (F3.2)
+/**
+ * b) 再生に関するボタン列（下部の再生ボタン類のすぐ上部に配置）。
+ *
+ * 表示項目:
+ * - 「1.00x」（再生速度）
+ * - 「リピート」（on, *off）
+ * - 「瞬間作文」（on, *off）
+ */
+@Composable
+private fun PlaybackControlStrip(
+    state: PlayerUiState,
+    onEvent: (PlayerEvent) -> Unit,
+    onOpenSpeedSheet: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val isRepeatOn = state.practice.loop !is LoopMode.Off || state.practice.repeatCheckedOnly
+    val isInstantCompositionOn =
+        state.practice.autoPauseScope == AutoPauseScope.AFTER_BASE_LANGUAGE &&
+            state.practice.autoPause !is AutoPause.Off
+    val toggleColors = brightnessToggleChipColors()
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 1. 「1.00x」（再生速度）
         FilterChip(
             selected = abs(state.speed - 1.0f) >= 0.01f,
             onClick = onOpenSpeedSheet,
@@ -1128,6 +828,34 @@ private fun PlayerPracticeControlStrip(
                     maxLines = 1,
                 )
             },
+        )
+
+        // 2. 「リピート」（on, *off）
+        FilterChip(
+            selected = isRepeatOn,
+            onClick = { onEvent(PlayerEvent.ToggleRepeat) },
+            label = {
+                Text(
+                    text = stringResource(R.string.player_chip_repeat),
+                    fontWeight = if (isRepeatOn) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            },
+            colors = toggleColors,
+        )
+
+        // 3. 「瞬間作文」（on, *off）
+        FilterChip(
+            selected = isInstantCompositionOn,
+            onClick = { onEvent(PlayerEvent.ToggleInstantComposition) },
+            label = {
+                Text(
+                    text = stringResource(R.string.player_chip_instant_comp),
+                    fontWeight = if (isInstantCompositionOn) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            },
+            colors = toggleColors,
         )
     }
 }
@@ -1209,90 +937,6 @@ private fun PlayerErrorBanner(
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         )
-    }
-}
-
-/**
- * 再生位置とシークバーを表示する子 Composable（§6.2）。
- *
- * [PositionProvider] のサンプリングをこの Composable の内部に閉じ込めることで、
- * 再生位置の更新によって [PlayerScreen] 全体が再コンポーズされるのを防ぐ。
- */
-@Composable
-private fun PlayerProgressSection(
-    durationMs: Long,
-    isPlaying: Boolean,
-    positionProvider: PositionProvider,
-    onSeekTo: (Long) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val isInspectionMode = LocalInspectionMode.current
-    var sampledPositionMs by remember(positionProvider) {
-        mutableLongStateOf(positionProvider.currentPositionMs())
-    }
-    var isDragging by remember { mutableStateOf(false) }
-    var dragPositionMs by remember { mutableLongStateOf(0L) }
-
-    if (!isInspectionMode) {
-        LaunchedEffect(positionProvider, isPlaying) {
-            sampledPositionMs = positionProvider.currentPositionMs()
-            while (isActive) {
-                sampledPositionMs = positionProvider.currentPositionMs()
-                delay(if (isPlaying) 50L else 200L)
-            }
-        }
-    }
-
-    val safeDurationMs = durationMs.coerceAtLeast(0L)
-    val displayPositionMs = if (isDragging) {
-        dragPositionMs
-    } else if (safeDurationMs > 0L) {
-        sampledPositionMs.coerceIn(0L, safeDurationMs)
-    } else {
-        sampledPositionMs.coerceAtLeast(0L)
-    }
-    val sliderFraction = if (safeDurationMs > 0L) {
-        (displayPositionMs.toFloat() / safeDurationMs.toFloat()).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-    val sliderDescription = stringResource(R.string.player_seek_slider_cd)
-
-    Column(modifier = modifier.fillMaxWidth()) {
-        Slider(
-            value = sliderFraction,
-            onValueChange = { fraction ->
-                isDragging = true
-                dragPositionMs = (fraction * safeDurationMs).roundToLong()
-            },
-            onValueChangeFinished = {
-                if (isDragging) {
-                    isDragging = false
-                    sampledPositionMs = dragPositionMs
-                    onSeekTo(dragPositionMs)
-                }
-            },
-            enabled = safeDurationMs > 0L,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(28.dp)
-                .semantics { contentDescription = sliderDescription },
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = formatDurationMs(displayPositionMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = formatDurationMs(safeDurationMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }
 
@@ -1573,46 +1217,6 @@ private fun ResegmentSheetContent(
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // 文字起こしの時刻ずれ補正 (F7.6)
-        Text(
-            text = stringResource(R.string.player_offset_section_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            text = stringResource(R.string.player_offset_current_value, formattedOffset),
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf(-50, -10, 10, 50).forEach { delta ->
-                val label = if (delta > 0) "+${delta}ms" else "${delta}ms"
-                OutlinedButton(
-                    onClick = { onAdjustTranscriptOffset(delta) },
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                ) {
-                    Text(text = label, style = MaterialTheme.typography.labelMedium)
-                }
-            }
-        }
-        FilledTonalButton(
-            onClick = onAutoAlignTranscriptOffset,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Bolt,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(text = stringResource(R.string.player_offset_auto_align))
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
         // 文字起こしファイル (F1.3, F1.4, F7.5)
         Text(
             text = stringResource(R.string.player_export_section_title),
@@ -1698,6 +1302,46 @@ private fun ResegmentSheetContent(
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(text = stringResource(R.string.player_transcript_reset_button))
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        // 文字起こしの時刻ずれ補正 (F7.6)
+        Text(
+            text = stringResource(R.string.player_offset_section_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = stringResource(R.string.player_offset_current_value, formattedOffset),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf(-50, -10, 10, 50).forEach { delta ->
+                val label = if (delta > 0) "+${delta}ms" else "${delta}ms"
+                OutlinedButton(
+                    onClick = { onAdjustTranscriptOffset(delta) },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                ) {
+                    Text(text = label, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+        FilledTonalButton(
+            onClick = onAutoAlignTranscriptOffset,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Bolt,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = stringResource(R.string.player_offset_auto_align))
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
