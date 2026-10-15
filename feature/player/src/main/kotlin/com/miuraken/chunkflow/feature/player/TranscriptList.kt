@@ -32,6 +32,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
@@ -166,6 +167,29 @@ internal fun findActiveWordRange(
 ): WordCharRange? = ranges.firstOrNull { positionMs >= it.startMs && positionMs < it.endMs }
 
 /**
+ * 言語バッジをタップしたときに切り替える次の言語タグを返す（F7.3）。
+ *
+ * - 未検出（`null` / 空 / `"und"`）のとき: 学習言語（[LanguagePair.target]）を返す。
+ * - 学習言語のとき: 母語（[LanguagePair.base] が異なり存在すれば母語、なければ学習言語）を返す。
+ * - 母語またはその他の言語のとき: 学習言語を返す。
+ */
+internal fun nextToggledChunkLanguage(
+    currentLanguage: LanguageTag?,
+    languagePair: LanguagePair?,
+): LanguageTag? {
+    val target = languagePair?.target?.takeIf { it.value.isNotBlank() } ?: return null
+    val base = languagePair.base
+        ?.takeIf { it.value.isNotBlank() && !matchesLanguageRole(it, target) }
+    val currentCode = currentLanguage?.value?.trim()
+        ?.takeUnless { it.isEmpty() || it.equals("und", ignoreCase = true) }
+    return when {
+        currentCode == null -> target
+        matchesLanguageRole(currentLanguage, target) -> base ?: target
+        else -> target
+    }
+}
+
+/**
  * 再生位置に同期したチャンク / スクリプト一覧（F5.3、F7.1〜F7.7、F8.1、§7.5.5）。
  *
  * - `LazyColumn` の `key` にチャンク ID を指定し、現在のチャンク（[activeChunkIndex]）を背景色と左端バーで強調する。
@@ -293,24 +317,9 @@ fun TranscriptList(
             }
 
             if (hasUnknownLanguageChunks && languagePair != null) {
-                val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
-                AssistChip(
-                    onClick = { onBulkSetUnknownLanguage(languagePair.target) },
-                    label = {
-                        Text(
-                            text = stringResource(
-                                R.string.player_bulk_set_unknown_target,
-                                targetCode,
-                            ),
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Translate,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    },
+                UnknownLanguageBanner(
+                    languagePair = languagePair,
+                    onBulkSetUnknownLanguage = onBulkSetUnknownLanguage,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                 )
             }
@@ -360,6 +369,7 @@ fun TranscriptList(
                         isActive = isActive,
                         isInLoopRange = isInLoopRange,
                         isMasked = isMasked,
+                        isLookaheadInFlight = chunk.id == lookaheadStatus.inFlightChunkId,
                         languagePair = languagePair,
                         chineseScript = chineseScript,
                         cantoneseScript = cantoneseScript,
@@ -589,7 +599,7 @@ internal fun isChunkMasked(
             if (languagePair == null) {
                 true
             } else {
-                chunk.language == languagePair.target
+                matchesLanguageRole(chunk.language, languagePair.target)
             }
         }
     }
@@ -640,6 +650,7 @@ private fun TranscriptChunkRow(
     isActive: Boolean,
     isInLoopRange: Boolean,
     isMasked: Boolean,
+    isLookaheadInFlight: Boolean,
     languagePair: LanguagePair?,
     chineseScript: ChineseScript,
     cantoneseScript: ChineseScript,
@@ -659,16 +670,10 @@ private fun TranscriptChunkRow(
     onMoveChunkBoundary: (Long, Long) -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    var badgeMenuExpanded by remember { mutableStateOf(false) }
     val colorScheme = MaterialTheme.colorScheme
     val langPalette = chunkFlowLanguagePalette()
-    val normalizedLang = chunk.language?.value?.trim()?.takeUnless { it.equals("und", ignoreCase = true) }
-    val isTargetLang = normalizedLang != null &&
-        languagePair != null &&
-        normalizedLang.equals(languagePair.target.value.trim(), ignoreCase = true)
-    val isBaseLang = normalizedLang != null &&
-        languagePair?.base != null &&
-        normalizedLang.equals(languagePair.base?.value?.trim(), ignoreCase = true)
+    val isTargetLang = matchesLanguageRole(chunk.language, languagePair?.target)
+    val isBaseLang = matchesLanguageRole(chunk.language, languagePair?.base)
 
     val rowBackground = when {
         isActive -> when {
@@ -793,30 +798,26 @@ private fun TranscriptChunkRow(
 
             Spacer(modifier = Modifier.width(6.dp))
 
-            if (displayText != null) {
-                Box {
-                    ChunkLanguageBadge(
-                        language = chunk.language,
-                        languagePair = languagePair,
-                        modifier = Modifier.clickable {
-                            if (languagePair != null) {
-                                badgeMenuExpanded = true
-                            }
-                        },
-                    )
-                    if (languagePair != null) {
-                        LanguageSelectionMenu(
-                            expanded = badgeMenuExpanded,
-                            languagePair = languagePair,
-                            onDismiss = { badgeMenuExpanded = false },
-                            onSelectLanguage = { newLang ->
-                                badgeMenuExpanded = false
-                                onUpdateLanguage(newLang)
-                            },
-                        )
+            ChunkLanguageBadge(
+                language = chunk.language,
+                languagePair = languagePair,
+                modifier = Modifier.clickable(enabled = languagePair != null) {
+                    val nextLang = nextToggledChunkLanguage(chunk.language, languagePair)
+                    if (nextLang != null) {
+                        onUpdateLanguage(nextLang)
                     }
-                }
-                Spacer(modifier = Modifier.width(8.dp))
+                },
+            )
+            if (isLookaheadInFlight) {
+                Spacer(modifier = Modifier.width(4.dp))
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp,
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+
+            if (!displayText.isNullOrBlank()) {
                 if (isMasked) {
                     Surface(
                         color = colorScheme.surfaceContainerHighest,
@@ -1052,7 +1053,7 @@ private fun TranscriptChunkRow(
                     onMoveChunkBoundary(chunk.startMs, chunk.endMs + 100L)
                 },
             )
-            if (languagePair != null && displayText != null) {
+            if (languagePair != null) {
                 HorizontalDivider()
                 val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
                 DropdownMenuItem(
@@ -1098,38 +1099,74 @@ private fun TranscriptChunkRow(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LanguageSelectionMenu(
-    expanded: Boolean,
+private fun UnknownLanguageBanner(
     languagePair: LanguagePair,
-    onDismiss: () -> Unit,
-    onSelectLanguage: (LanguageTag?) -> Unit,
+    onBulkSetUnknownLanguage: (LanguageTag) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismiss,
+    val langPalette = chunkFlowLanguagePalette()
+    val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
+    FlowRow(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
-        DropdownMenuItem(
-            text = { Text(text = stringResource(R.string.player_chunk_set_lang_target, targetCode)) },
-            onClick = { onSelectLanguage(languagePair.target) },
+        AssistChip(
+            onClick = { onBulkSetUnknownLanguage(languagePair.target) },
+            label = {
+                Text(
+                    text = stringResource(
+                        R.string.player_bulk_set_unknown_target,
+                        targetCode,
+                    ),
+                )
+            },
+            leadingIcon = {
+                Icon(
+                    imageVector = ChunkFlowIcons.Translate,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+            },
+            colors = AssistChipDefaults.assistChipColors(
+                containerColor = langPalette.targetBadgeContainer,
+                labelColor = langPalette.onTargetBadgeContainer,
+                leadingIconContentColor = langPalette.onTargetBadgeContainer,
+            ),
         )
         languagePair.base?.let { baseLang ->
             val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
-            DropdownMenuItem(
-                text = { Text(text = stringResource(R.string.player_chunk_set_lang_base, baseCode)) },
-                onClick = { onSelectLanguage(baseLang) },
+            AssistChip(
+                onClick = { onBulkSetUnknownLanguage(baseLang) },
+                label = {
+                    Text(
+                        text = stringResource(
+                            R.string.player_bulk_set_unknown_base,
+                            baseCode,
+                        ),
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Translate,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = langPalette.baseBadgeContainer,
+                    labelColor = langPalette.onBaseBadgeContainer,
+                    leadingIconContentColor = langPalette.onBaseBadgeContainer,
+                ),
             )
         }
-        DropdownMenuItem(
-            text = { Text(text = stringResource(R.string.player_chunk_set_lang_unknown)) },
-            onClick = { onSelectLanguage(null) },
-        )
     }
 }
 
 /**
- * 言語コードバッジ（§7.5.5: 色とテキストの両方で役割を示し、未判定は `?`）。
+ * 言語コードバッジ（§7.5.5: 色とテキストの両方で役割を示し、未検出は `-`）。
  */
 @Composable
 internal fun ChunkLanguageBadge(
@@ -1139,13 +1176,11 @@ internal fun ChunkLanguageBadge(
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val langPalette = chunkFlowLanguagePalette()
-    val normalizedValue = language?.value?.trim()?.takeUnless { it.equals("und", ignoreCase = true) }
-    val isTarget = normalizedValue != null &&
-        languagePair != null &&
-        normalizedValue.equals(languagePair.target.value.trim(), ignoreCase = true)
-    val isBase = normalizedValue != null &&
-        languagePair?.base != null &&
-        normalizedValue.equals(languagePair.base?.value?.trim(), ignoreCase = true)
+    val normalizedValue = language?.value?.trim()?.takeUnless {
+        it.isEmpty() || it.equals("und", ignoreCase = true)
+    }
+    val isTarget = matchesLanguageRole(language, languagePair?.target)
+    val isBase = matchesLanguageRole(language, languagePair?.base)
 
     val containerColor = when {
         isTarget -> langPalette.targetBadgeContainer
@@ -1159,7 +1194,7 @@ internal fun ChunkLanguageBadge(
         normalizedValue != null -> colorScheme.onSecondaryContainer
         else -> colorScheme.onSurfaceVariant
     }
-    val badgeText = normalizedValue?.uppercase(JavaLocale.ROOT)?.ifBlank { "?" } ?: "?"
+    val badgeText = normalizedValue?.uppercase(JavaLocale.ROOT)?.ifBlank { "-" } ?: "-"
 
     Surface(
         modifier = modifier.clip(RoundedCornerShape(4.dp)),

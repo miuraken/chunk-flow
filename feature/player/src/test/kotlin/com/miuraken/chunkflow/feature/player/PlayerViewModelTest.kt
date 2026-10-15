@@ -8,6 +8,7 @@ import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
+import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
@@ -334,10 +335,14 @@ class PlayerViewModelTest {
         assertEquals(-120, viewModel.uiState.value.transcriptOffsetMs)
         assertEquals(-120, analysisRepo.transcriptOffsets[item.id])
 
-        // 先読み文字起こしの有効化と現在チャンク変更時のトリガー
+        // 既定で先読み文字起こしが有効（UserSettings.lookaheadTranscriptionEnabled = true）であり、OFF/ON 切り替えと現在チャンク変更時のトリガーが機能する
+        assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(false))
         assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertFalse(settingsRepo.state.value.lookaheadTranscriptionEnabled)
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
         assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertTrue(settingsRepo.state.value.lookaheadTranscriptionEnabled)
 
         val thirdChunkId = sample.chunks[2].id
         playback.statusState.value = playback.statusState.value.copy(currentChunkId = thirdChunkId)
@@ -640,5 +645,50 @@ class PlayerViewModelTest {
         val countAfterDisable = analysisRepo.lookaheadTriggers.size
         advanceTimeBy(1_000L)
         assertEquals(countAfterDisable, analysisRepo.lookaheadTriggers.size)
+    }
+
+    @Test
+    fun `言語バッジトグルと未文字起こしチャンクの言語変更および再音声認識トリガーが機能する`() = runTest {
+        val pair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+
+        // 1. nextToggledChunkLanguage: 未検出 (null / "und") -> 学習言語 (ko) -> 母語 (ja) -> 学習言語 (ko)
+        assertEquals(LanguageTag("ko"), nextToggledChunkLanguage(null, pair))
+        assertEquals(LanguageTag("ko"), nextToggledChunkLanguage(LanguageTag("und"), pair))
+        assertEquals(LanguageTag("ja"), nextToggledChunkLanguage(LanguageTag("ko"), pair))
+        assertEquals(LanguageTag("ja"), nextToggledChunkLanguage(LanguageTag("ko-KR"), pair))
+        assertEquals(LanguageTag("ko"), nextToggledChunkLanguage(LanguageTag("ja"), pair))
+        assertEquals(LanguageTag("ko"), nextToggledChunkLanguage(LanguageTag("ja-JP"), pair))
+
+        // 2. matchesLanguageRole: 主言語サブタグ一致（ja-JP == ja, ko-KR == ko）
+        assertTrue(matchesLanguageRole(LanguageTag("ko-KR"), LanguageTag("ko")))
+        assertTrue(matchesLanguageRole(LanguageTag("ja-JP"), LanguageTag("ja")))
+        assertFalse(matchesLanguageRole(LanguageTag("und"), LanguageTag("ko")))
+        assertFalse(matchesLanguageRole(null, LanguageTag("ko")))
+
+        // 3. 未文字起こしチャンクに対して UpdateChunkLanguage を呼ぶと、言語タグが更新され先読み音声認識がトリガーされる
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository(UserSettings(lookaheadTranscriptionEnabled = false))
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            update(item.id) { entry -> entry.copy(transcripts = emptyMap()) }
+        }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val secondChunkId = sample.chunks[1].id
+        assertNull(viewModel.uiState.value.chunks[1].text)
+        assertNull(viewModel.uiState.value.chunks[1].language)
+
+        // 先読み有効化してチャンク 1 の言語を ko に変更
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        analysisRepo.lookaheadTriggers.clear()
+        viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(secondChunkId, LanguageTag("ko")))
+        assertEquals(LanguageTag("ko"), viewModel.uiState.value.chunks[1].language)
+        assertNull(viewModel.uiState.value.chunks[1].text)
+        assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to secondChunkId))
     }
 }

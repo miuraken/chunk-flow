@@ -33,6 +33,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -72,6 +73,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
@@ -117,11 +119,29 @@ fun PlayerRoute(
     }
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var hasRequestedAudioPermissionForMedia by remember(mediaId) { mutableStateOf(false) }
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { isGranted ->
         if (isGranted) {
+            val activeChunkId = state.activeChunkIndex
+                ?.let { idx -> state.chunks.getOrNull(idx)?.id }
+                ?: state.chunks.firstOrNull()?.id
             viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+            viewModel.onEvent(PlayerEvent.TriggerLookahead(activeChunkId))
+        }
+    }
+
+    LaunchedEffect(mediaId, state.lookaheadStatus.enabled) {
+        if (state.lookaheadStatus.enabled && !hasRequestedAudioPermissionForMedia) {
+            hasRequestedAudioPermissionForMedia = true
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
         }
     }
     val transcriptPickerLauncher = rememberLauncherForActivityResult(
@@ -541,22 +561,52 @@ private fun PlayerTitleMetaRow(
     languagePair: LanguagePair?,
 ) {
     if (languagePair == null && course == null) return
+    val langPalette = chunkFlowLanguagePalette()
     Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         languagePair?.let { pair ->
             val targetText = pair.target.value.uppercase(Locale.ROOT)
-            val badgeText = pair.base?.value?.uppercase(Locale.ROOT)?.let { baseText ->
-                "$baseText → $targetText"
-            } ?: targetText
-            Text(
-                text = badgeText,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-            )
+            val baseText = pair.base?.value?.uppercase(Locale.ROOT)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (baseText != null) {
+                    Surface(
+                        color = langPalette.baseBadgeContainer,
+                        contentColor = langPalette.onBaseBadgeContainer,
+                        shape = MaterialTheme.shapes.extraSmall,
+                    ) {
+                        Text(
+                            text = baseText,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
+                    Text(
+                        text = "→",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    color = langPalette.targetBadgeContainer,
+                    contentColor = langPalette.onTargetBadgeContainer,
+                    shape = MaterialTheme.shapes.extraSmall,
+                ) {
+                    Text(
+                        text = targetText,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                    )
+                }
+            }
         }
         course?.let { courseName ->
             Text(
@@ -824,6 +874,22 @@ private fun PlayerPracticeControlStrip(
 
         // 4. 言語フィルタチップ (F6.4)
         if (state.languagePair?.base != null) {
+            val langPalette = chunkFlowLanguagePalette()
+            val langFilterColors = when (languageFilter) {
+                LanguageFilter.TARGET_ONLY -> FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = langPalette.targetBadgeContainer,
+                    selectedLabelColor = langPalette.onTargetBadgeContainer,
+                    selectedLeadingIconColor = langPalette.onTargetBadgeContainer,
+                )
+
+                LanguageFilter.BASE_ONLY -> FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = langPalette.baseBadgeContainer,
+                    selectedLabelColor = langPalette.onBaseBadgeContainer,
+                    selectedLeadingIconColor = langPalette.onBaseBadgeContainer,
+                )
+
+                LanguageFilter.ALL -> FilterChipDefaults.filterChipColors()
+            }
             Column {
                 FilterChip(
                     selected = languageFilter != LanguageFilter.ALL,
@@ -836,6 +902,7 @@ private fun PlayerPracticeControlStrip(
                             modifier = Modifier.size(16.dp),
                         )
                     },
+                    colors = langFilterColors,
                 )
                 DropdownMenu(
                     expanded = langFilterMenuExpanded,

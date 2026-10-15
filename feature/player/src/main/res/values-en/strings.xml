@@ -86,8 +86,9 @@
     <string name="player_chip_instant_comp_on">Instant comp: ON</string>
     <string name="player_chunk_set_lang_target">Set as target (%1$s)</string>
     <string name="player_chunk_set_lang_base">Set as base (%1$s)</string>
-    <string name="player_chunk_set_lang_unknown">Reset language (?)</string>
+    <string name="player_chunk_set_lang_unknown">Reset language (-)</string>
     <string name="player_bulk_set_unknown_target">Set all unknown languages to target (%1$s)</string>
+    <string name="player_bulk_set_unknown_base">Set all unknown languages to base (%1$s)</string>
     <string name="player_offset_section_title">Transcript timing offset</string>
     <string name="player_offset_current_value">Current offset: %1$s ms</string>
     <string name="player_offset_auto_align">Auto-align to speech onset</string>

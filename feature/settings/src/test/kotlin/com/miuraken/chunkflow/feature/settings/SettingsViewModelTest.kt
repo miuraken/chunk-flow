@@ -206,4 +206,25 @@ class SettingsViewModelTest {
         viewModel.onEvent(SettingsEvent.SetShowTargetRomanization(false))
         assertFalse(viewModel.uiState.value.showTargetRomanization)
     }
+
+    @Test
+    fun `先読み文字起こし設定_既定で有効でありON_OFF切り替えがRepositoryとUiStateに反映される`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val viewModel = SettingsViewModel(repo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 既定値は ON (true)
+        assertTrue(viewModel.uiState.value.lookaheadTranscriptionEnabled)
+        assertTrue(repo.state.value.lookaheadTranscriptionEnabled)
+
+        // OFF に切り替え
+        viewModel.onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(false))
+        assertFalse(viewModel.uiState.value.lookaheadTranscriptionEnabled)
+        assertFalse(repo.state.value.lookaheadTranscriptionEnabled)
+
+        // ON に戻す
+        viewModel.onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(true))
+        assertTrue(viewModel.uiState.value.lookaheadTranscriptionEnabled)
+        assertTrue(repo.state.value.lookaheadTranscriptionEnabled)
+    }
 }

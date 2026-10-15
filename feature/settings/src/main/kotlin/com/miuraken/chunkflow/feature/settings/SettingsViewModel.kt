@@ -86,6 +86,10 @@ data class SettingsUiState(
     val defaultAutoPause: AutoPause
         get() = settings.defaultAutoPause
 
+    /** 端末内の先読み簡易文字起こしを既定で有効にするかどうか（既定は `true`）。 */
+    val lookaheadTranscriptionEnabled: Boolean
+        get() = settings.lookaheadTranscriptionEnabled
+
     /** 端末内の自動チャンク分割の既定パラメータ。 */
     val defaultSegmentationParams: SegmentationParams
         get() = settings.defaultSegmentationParams
@@ -236,6 +240,9 @@ sealed interface SettingsEvent {
 
     /** 学習言語の読み方ガイド（ローマ字 / IAST / Pinyin 等）の表示 ON / OFF を切り替える。 */
     data class SetShowTargetRomanization(val enabled: Boolean) : SettingsEvent
+
+    /** 端末内の先読み簡易文字起こしの ON / OFF を切り替える。 */
+    data class SetLookaheadTranscriptionEnabled(val enabled: Boolean) : SettingsEvent
 }
 
 /**
@@ -349,6 +356,12 @@ class SettingsViewModel @Inject constructor(
             is SettingsEvent.SetShowTargetRomanization -> {
                 viewModelScope.launch {
                     userSettingsRepository.setShowTargetRomanization(event.enabled)
+                }
+            }
+
+            is SettingsEvent.SetLookaheadTranscriptionEnabled -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
                 }
             }
 

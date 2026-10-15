@@ -11,6 +11,8 @@
     <string name="settings_auto_pause_off">OFF</string>
     <string name="settings_auto_pause_fixed">固定 %1$.1f 秒</string>
     <string name="settings_auto_pause_proportional">チャンク長 × %1$.1f</string>
+    <string name="settings_lookahead_transcription_label">先読み文字起こし</string>
+    <string name="settings_lookahead_transcription_hint">再生中に未検出のチャンクを端末内で自動的に音声認識・言語検出します</string>
     <string name="settings_section_segmentation">自動チャンク分割の既定値</string>
     <string name="settings_segmentation_min_silence">無音とみなす長さ: %1$d ms</string>
     <string name="settings_segmentation_pre_padding">前の余白: %1$d ms</string>
