@@ -43,4 +43,7 @@ interface UserSettingsRepository {
 
     /** 設定画面やダイアログの言語選択肢として表示する言語のセットを更新する。 */
     suspend fun setEnabledLanguages(languages: Set<LanguageTag>) = Unit
+
+    /** 対象言語にアルファベットによる読み方（ローマ字・Pinyin・IAST 等）を付加して表示するかどうかを更新する。 */
+    suspend fun setShowTargetRomanization(enabled: Boolean) = Unit
 }
