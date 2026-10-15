@@ -458,4 +458,227 @@ class OnDeviceSpeechTranscriberTest {
         )
         assertNull(result)
     }
+
+    @Test
+    fun `transcribeChunk_同一チャンクと同一言語の再呼び出し時はattemptRunnerを再実行せずキャッシュ結果を即座に返す`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dummyFile = tempFolder.newFile("cached_single.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        var decodeCallCount = 0
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                decodeCallCount += 1
+                val samples = FloatArray(outputSampleRate) { 0.3f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(outputSampleRate, 1, samples.size.toLong(), samples.size.toLong(), 1_000L, 0, 0, "audio/wav")
+            }
+        }
+
+        val runnerCalls = mutableListOf<String>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag
+                SpeechRecognitionAttemptResult(text = "안녕하세요", confidence = 0.93f)
+            },
+        )
+
+        val first = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_000L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+        )
+        assertNotNull(first)
+        assertEquals("안녕하세요", first.text)
+        assertEquals(LanguageTag("ko"), first.language)
+        assertEquals(listOf("ko-KR"), runnerCalls)
+        assertEquals(1, decodeCallCount)
+
+        // 同じチャンク・同じ言語で再度呼び出すとデコードも SpeechRecognizer も走らずキャッシュが返る
+        val second = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_000L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+        )
+        assertNotNull(second)
+        assertEquals("안녕하세요", second.text)
+        assertEquals(LanguageTag("ko"), second.language)
+        assertEquals(listOf("ko-KR"), runnerCalls)
+        assertEquals(1, decodeCallCount)
+    }
+
+    @Test
+    fun `transcribeChunk_短チャンクの2言語プローブ後はもう一方の単一言語指定でもattemptRunnerを呼ばずキャッシュから即座に返す`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dummyFile = tempFolder.newFile("short_probe_cache.wav").apply { writeBytes(byteArrayOf(5, 6, 7, 8)) }
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                // 1.5秒 (<= 2.4秒の短チャンク)
+                val samples = FloatArray((outputSampleRate * 1.5).toInt()) { 0.25f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(outputSampleRate, 1, samples.size.toLong(), samples.size.toLong(), 1_500L, 0, 0, "audio/wav")
+            }
+        }
+
+        val runnerCalls = mutableListOf<String>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag
+                when (bcp47Tag) {
+                    "ko-KR" -> SpeechRecognitionAttemptResult(text = "만나서 반갑습니다", confidence = 0.85f)
+                    "ja-JP" -> SpeechRecognitionAttemptResult(text = "お会いできて嬉しいです", confidence = 0.90f)
+                    else -> null
+                }
+            },
+        )
+
+        // 1. 2言語プローブ実行（ja が勝つ）
+        val initial = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_500L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        assertNotNull(initial)
+        assertEquals("お会いできて嬉しいです", initial.text)
+        assertEquals(LanguageTag("ja"), initial.language)
+        assertEquals(listOf("ko-KR", "ja-JP"), runnerCalls)
+
+        // 2. もう一方の言語 (ko) または元の言語 (ja) を単一言語指定で呼ぶと、プローブ時のキャッシュがヒットし attemptRunner は一切呼ばれない
+        val switchedToKo = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_500L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+        )
+        assertNotNull(switchedToKo)
+        assertEquals("만나서 반갑습니다", switchedToKo.text)
+        assertEquals(LanguageTag("ko"), switchedToKo.language)
+        assertEquals(listOf("ko-KR", "ja-JP"), runnerCalls)
+
+        val switchedBackToJa = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_500L,
+            languagePair = LanguagePair(target = LanguageTag("ja"), base = null),
+        )
+        assertNotNull(switchedBackToJa)
+        assertEquals("お会いできて嬉しいです", switchedBackToJa.text)
+        assertEquals(LanguageTag("ja"), switchedBackToJa.language)
+        assertEquals(listOf("ko-KR", "ja-JP"), runnerCalls)
+    }
+
+    @Test
+    fun `transcribeChunk_長チャンクで別言語へ切替時は1回だけ全体STTを実行し以降の往復トグルはキャッシュから即座に返す`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dummyFile = tempFolder.newFile("long_toggle_cache.wav").apply { writeBytes(byteArrayOf(9, 10, 11, 12)) }
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                // 4.0秒 (> 2.4秒の長チャンク = 64,000 サンプル = 128,000 bytes)
+                val samples = FloatArray(outputSampleRate * 4) { 0.25f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(outputSampleRate, 1, samples.size.toLong(), samples.size.toLong(), 4_000L, 0, 0, "audio/wav")
+            }
+        }
+
+        val runnerCalls = mutableListOf<Pair<String, Int>>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { pcmBytes, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag to pcmBytes.size
+                when {
+                    pcmBytes.size == 64_000 && bcp47Tag == "ko-KR" ->
+                        SpeechRecognitionAttemptResult(text = "소래 대화 니혼고", confidence = 0.72f)
+
+                    pcmBytes.size == 64_000 && bcp47Tag == "ja-JP" ->
+                        SpeechRecognitionAttemptResult(text = "それでは日本語という", confidence = 0.85f)
+
+                    pcmBytes.size == 128_000 && bcp47Tag == "ja-JP" ->
+                        SpeechRecognitionAttemptResult(text = "それでは日本語という言い方です", confidence = 0.92f)
+
+                    pcmBytes.size == 128_000 && bcp47Tag == "ko-KR" ->
+                        SpeechRecognitionAttemptResult(text = "안녕하세요 만나서 반갑습니다 여러분", confidence = 0.94f)
+
+                    else -> null
+                }
+            },
+        )
+
+        // 1. 初回 2言語プローブ + 勝った ja の全体STT (計3回)
+        val initial = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 4_000L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        assertNotNull(initial)
+        assertEquals("それでは日本語という言い方です", initial.text)
+        assertEquals(LanguageTag("ja"), initial.language)
+        assertEquals(3, runnerCalls.size)
+
+        // 2. ユーザーが韓国語 (ko) に手動切替 -> ko の全体STT (128,000 bytes) が 1 回だけ走る
+        val firstKo = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 4_000L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+        )
+        assertNotNull(firstKo)
+        assertEquals("안녕하세요 만나서 반갑습니다 여러분", firstKo.text)
+        assertEquals(LanguageTag("ko"), firstKo.language)
+        assertEquals(4, runnerCalls.size)
+        assertEquals("ko-KR" to 128_000, runnerCalls.last())
+
+        // 3. 以降の ja <-> ko の往復切替はすべてキャッシュヒットし attemptRunner は二度と走らない
+        val toggleBackJa = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 4_000L,
+            languagePair = LanguagePair(target = LanguageTag("ja"), base = null),
+        )
+        assertNotNull(toggleBackJa)
+        assertEquals("それでは日本語という言い方です", toggleBackJa.text)
+        assertEquals(LanguageTag("ja"), toggleBackJa.language)
+        assertEquals(4, runnerCalls.size)
+
+        val toggleAgainKo = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 4_000L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+        )
+        assertNotNull(toggleAgainKo)
+        assertEquals("안녕하세요 만나서 반갑습니다 여러분", toggleAgainKo.text)
+        assertEquals(LanguageTag("ko"), toggleAgainKo.language)
+        assertEquals(4, runnerCalls.size)
+    }
 }

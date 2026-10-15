@@ -1150,4 +1150,182 @@ class DefaultAnalysisRepositoryTest {
         assertEquals("Recognized 6000", transcripts[ChunkId(906L)]?.text)
         assertEquals("Recognized 7000", transcripts[ChunkId(907L)]?.text)
     }
+
+    @Test
+    fun `updateChunkLanguage_言語切替時に新しい単一言語で再認識してテキストと言語を更新し往復トグル時はキャッシュから即座に復元する`() = runTest {
+        val transcribeCalls = mutableListOf<LanguagePair>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult? {
+                if (languagePair != null) transcribeCalls += languagePair
+                return when (languagePair?.target?.value) {
+                    "ko" -> OnDeviceChunkTranscriptionResult(
+                        text = "안녕하세요 반갑습니다",
+                        language = LanguageTag("ko"),
+                        confidence = 0.94f,
+                    )
+
+                    "ja" -> OnDeviceChunkTranscriptionResult(
+                        text = "こんにちはよろしくお願いします",
+                        language = LanguageTag("ja"),
+                        confidence = 0.91f,
+                    )
+
+                    else -> null
+                }
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_lang_toggle_cache_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Lang Toggle Cache Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        val audioFile = mediaFileLocator.audioFileFor(mediaId, "mp3")
+        audioFile.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+
+        val chunkId = ChunkId(1001L)
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = chunkId.value,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 2_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+        // 初期状態: 日本語として認識されていたチャンク
+        transcriptDao.upsert(
+            Transcript(
+                chunkId = chunkId,
+                text = "アンニョンハセヨパンガプスミダ",
+                language = LanguageTag("ja"),
+                languageConfidence = 0.72f,
+                engine = EngineId("android-on-device-speech"),
+                userEdited = false,
+            ).toEntity(),
+        )
+
+        // 1. ja -> ko へ切替: キャッシュミスなので ko 単一言語で 1 回だけ transcribeChunk が呼ばれ、テキストと言語が更新される
+        repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ko"))
+        assertEquals(listOf(LanguagePair(target = LanguageTag("ko"), base = null)), transcribeCalls)
+        val afterKo = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(afterKo)
+        assertEquals("안녕하세요 반갑습니다", afterKo.text)
+        assertEquals(LanguageTag("ko"), afterKo.language)
+        assertTrue(afterKo.userEdited)
+
+        // 2. ko -> ja へ戻す: 切替前にキャッシュされた ja のテキストが即座に復元され、transcribeChunk は呼ばれない
+        repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ja"))
+        assertEquals(1, transcribeCalls.size)
+        val afterBackToJa = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(afterBackToJa)
+        assertEquals("アンニョンハセヨパンガプスミダ", afterBackToJa.text)
+        assertEquals(LanguageTag("ja"), afterBackToJa.language)
+
+        // 3. ja -> ko へ再度切替: ko のキャッシュがヒットして即座に復元され、transcribeChunk は呼ばれない
+        repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ko"))
+        assertEquals(1, transcribeCalls.size)
+        val afterSecondKo = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(afterSecondKo)
+        assertEquals("안녕하세요 반갑습니다", afterSecondKo.text)
+        assertEquals(LanguageTag("ko"), afterSecondKo.language)
+    }
+
+    @Test
+    fun `triggerLookaheadAt_デフォルトONで動作し言語未確定チャンクも先読み認識してキャッシュに保存する`() = runTest {
+        var transcribeCallCount = 0
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult {
+                transcribeCallCount += 1
+                return OnDeviceChunkTranscriptionResult(
+                    text = "自動認識テキスト",
+                    language = LanguageTag("ja"),
+                    confidence = 0.9f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_default_on_lookahead_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Default On Lookahead Test",
+                durationMs = 3_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        val audioFile = mediaFileLocator.audioFileFor(mediaId, "mp3")
+        audioFile.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+
+        val chunkId = ChunkId(1101L)
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = chunkId.value,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 1_500L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+        // 言語未確定 (language = null, userEdited = false) の既存レコード
+        transcriptDao.upsert(
+            Transcript(
+                chunkId = chunkId,
+                text = "仮テキスト",
+                language = null,
+                languageConfidence = null,
+                engine = EngineId("whisper"),
+                userEdited = false,
+            ).toEntity(),
+        )
+
+        // setLookaheadEnabled を呼ばなくてもデフォルトで enabled == true
+        assertTrue(repository.observeLookaheadStatus(mediaId).first().enabled)
+
+        repository.triggerLookaheadAt(mediaId, currentChunkId = chunkId)
+        assertEquals(1, transcribeCallCount)
+
+        val updated = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(updated)
+        assertEquals("自動認識テキスト", updated.text)
+        assertEquals(LanguageTag("ja"), updated.language)
+    }
 }

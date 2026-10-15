@@ -690,6 +690,32 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         attemptRunner = null,
     )
 
+    private data class ChunkAudioCacheScope(
+        val audioPath: String,
+        val lastModified: Long,
+        val startMs: Long,
+        val endMs: Long,
+    )
+
+    internal data class ChunkSttCacheKey(
+        val audioPath: String,
+        val lastModified: Long,
+        val startMs: Long,
+        val endMs: Long,
+        val normalizedLangTag: String,
+    )
+
+    private val sttCacheLock = Any()
+    private val fullChunkSttCache = object : LinkedHashMap<ChunkSttCacheKey, OnDeviceChunkTranscriptionResult>(
+        MAX_STT_CACHE_ENTRIES,
+        0.75f,
+        true,
+    ) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<ChunkSttCacheKey, OnDeviceChunkTranscriptionResult>?,
+        ): Boolean = size > MAX_STT_CACHE_ENTRIES
+    }
+
     private val recognitionMutex = Mutex()
     private var lastPipeAttemptCompletedRealtimeMs: Long = 0L
 
@@ -704,6 +730,26 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         if (!isAvailable() || startMs < 0L || endMs <= startMs || !audioFile.isFile) {
             return null
         }
+
+        val cacheScope = ChunkAudioCacheScope(
+            audioPath = audioFile.absolutePath,
+            lastModified = audioFile.lastModified(),
+            startMs = startMs,
+            endMs = endMs,
+        )
+        val targetLang = languagePair?.target
+        val baseLang = languagePair?.base?.takeIf {
+            targetLang == null || !it.value.equals(targetLang.value, ignoreCase = true)
+        }
+        if (targetLang == null || baseLang == null) {
+            val singleLang = targetLang ?: baseLang
+            val cached = getCachedSttResult(cacheScope, singleLang)
+            if (cached != null) {
+                logInfo("singleLang cacheHit startMs=$startMs endMs=$endMs lang=${singleLang?.value ?: "default"}")
+                return cached
+            }
+        }
+
         val pcmBytes = try {
             ChunkPcmExtractor.extractChunkPcm16LeBytes(
                 decoder = audioStreamDecoder,
@@ -718,10 +764,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             null
         } ?: return null
 
-        return transcribePcm16Le(
+        return transcribePcm16LeInternal(
             pcm16LeBytes = pcmBytes,
             sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
             languagePair = languagePair,
+            cacheScope = cacheScope,
         )
     }
 
@@ -729,6 +776,30 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         pcm16LeBytes: ByteArray,
         sampleRateHz: Int,
         languagePair: LanguagePair?,
+    ): OnDeviceChunkTranscriptionResult? {
+        if (!isAvailable() || pcm16LeBytes.isEmpty() || sampleRateHz <= 0) {
+            return null
+        }
+        val chunkDurationMs = ((pcm16LeBytes.size / 2).toLong() * 1_000L) / sampleRateHz.toLong()
+        val syntheticScope = ChunkAudioCacheScope(
+            audioPath = "pcm:${pcm16LeBytes.size}:${pcm16LeBytes.contentHashCode()}",
+            lastModified = sampleRateHz.toLong(),
+            startMs = 0L,
+            endMs = chunkDurationMs,
+        )
+        return transcribePcm16LeInternal(
+            pcm16LeBytes = pcm16LeBytes,
+            sampleRateHz = sampleRateHz,
+            languagePair = languagePair,
+            cacheScope = syntheticScope,
+        )
+    }
+
+    private suspend fun transcribePcm16LeInternal(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        languagePair: LanguagePair?,
+        cacheScope: ChunkAudioCacheScope,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || pcm16LeBytes.isEmpty() || sampleRateHz <= 0) {
             return null
@@ -747,6 +818,16 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
         val chunkDurationMs = ((pcm16LeBytes.size / 2).toLong() * 1_000L) / sampleRateHz.toLong()
 
+        if (targetLang == null || baseLang == null) {
+            val singleLang = targetLang ?: baseLang
+            getCachedSttResult(cacheScope, singleLang)?.let { cached ->
+                logInfo(
+                    "singleLang cacheHit chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: "default"}",
+                )
+                return cached
+            }
+        }
+
         return recognitionMutex.withLock {
             if (targetLang != null && baseLang != null) {
                 transcribeWithTwoSecondLanguageProbe(
@@ -756,9 +837,13 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     targetLang = targetLang,
                     baseLang = baseLang,
                     preferOnDevice = preferOnDevice,
+                    cacheScope = cacheScope,
                 )
             } else {
                 val singleLang = targetLang ?: baseLang
+                getCachedSttResult(cacheScope, singleLang)?.let { cached ->
+                    return@withLock cached
+                }
                 val bcp47Tag = singleLang?.value?.let(::toBcp47LocaleTag)
                     ?: toBcp47LocaleTag(Locale.getDefault().toLanguageTag())
                 val attempt = executeAttempt(
@@ -772,11 +857,13 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     logInfo(
                         "singleLang chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} chars=${attempt.text.trim().length}",
                     )
-                    OnDeviceChunkTranscriptionResult(
+                    val result = OnDeviceChunkTranscriptionResult(
                         text = attempt.text.trim(),
                         language = singleLang,
                         confidence = attempt.confidence,
                     )
+                    putCachedSttResult(cacheScope, singleLang?.value ?: bcp47Tag, result)
+                    result
                 } else {
                     logInfo(
                         "singleLang empty chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag}",
@@ -794,6 +881,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         targetLang: LanguageTag,
         baseLang: LanguageTag,
         preferOnDevice: Boolean,
+        cacheScope: ChunkAudioCacheScope,
     ): OnDeviceChunkTranscriptionResult? {
         val probeSlice = ChunkPcmExtractor.extractLeadingSpeechProbePcm(
             pcm16LeBytes = pcm16LeBytes,
@@ -803,21 +891,65 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val targetBcp47 = toBcp47LocaleTag(targetLang.value)
         val baseBcp47 = toBcp47LocaleTag(baseLang.value)
 
-        val targetProbe = executeAttempt(
-            pcm16LeBytes = probeBytes,
-            sampleRateHz = sampleRateHz,
-            bcp47LocaleTag = targetBcp47,
-            preferOnDevice = preferOnDevice,
-            isProbe = true,
-        )?.takeIf { it.text.isNotBlank() }
+        val targetProbe = if (probeSlice.isFullChunkCovered) {
+            getCachedSttResult(cacheScope, targetLang)?.let {
+                SpeechRecognitionAttemptResult(text = it.text, confidence = it.confidence)
+            } ?: executeAttempt(
+                pcm16LeBytes = probeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = targetBcp47,
+                preferOnDevice = preferOnDevice,
+                isProbe = true,
+            )?.takeIf { it.text.isNotBlank() }?.also { probe ->
+                putCachedSttResult(
+                    cacheScope = cacheScope,
+                    rawLangTag = targetLang.value,
+                    result = OnDeviceChunkTranscriptionResult(
+                        text = probe.text.trim(),
+                        language = targetLang,
+                        confidence = probe.confidence,
+                    ),
+                )
+            }
+        } else {
+            executeAttempt(
+                pcm16LeBytes = probeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = targetBcp47,
+                preferOnDevice = preferOnDevice,
+                isProbe = true,
+            )?.takeIf { it.text.isNotBlank() }
+        }
 
-        val baseProbe = executeAttempt(
-            pcm16LeBytes = probeBytes,
-            sampleRateHz = sampleRateHz,
-            bcp47LocaleTag = baseBcp47,
-            preferOnDevice = preferOnDevice,
-            isProbe = true,
-        )?.takeIf { it.text.isNotBlank() }
+        val baseProbe = if (probeSlice.isFullChunkCovered) {
+            getCachedSttResult(cacheScope, baseLang)?.let {
+                SpeechRecognitionAttemptResult(text = it.text, confidence = it.confidence)
+            } ?: executeAttempt(
+                pcm16LeBytes = probeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = baseBcp47,
+                preferOnDevice = preferOnDevice,
+                isProbe = true,
+            )?.takeIf { it.text.isNotBlank() }?.also { probe ->
+                putCachedSttResult(
+                    cacheScope = cacheScope,
+                    rawLangTag = baseLang.value,
+                    result = OnDeviceChunkTranscriptionResult(
+                        text = probe.text.trim(),
+                        language = baseLang,
+                        confidence = probe.confidence,
+                    ),
+                )
+            }
+        } else {
+            executeAttempt(
+                pcm16LeBytes = probeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = baseBcp47,
+                preferOnDevice = preferOnDevice,
+                isProbe = true,
+            )?.takeIf { it.text.isNotBlank() }
+        }
 
         if (targetProbe == null && baseProbe == null) {
             logInfo(
@@ -848,11 +980,20 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             logInfo(
                 "probe winner=${winningLang.value} chunkDurationMs=$chunkDurationMs targetLang=${targetLang.value} targetScore=$targetScore baseLang=${baseLang.value} baseScore=$baseScore fullChunkUsed=false chars=${text.length}",
             )
-            return OnDeviceChunkTranscriptionResult(
+            val result = OnDeviceChunkTranscriptionResult(
                 text = text,
                 language = winningLang,
                 confidence = winningProbe.confidence,
             )
+            putCachedSttResult(cacheScope, winningLang.value, result)
+            return result
+        }
+
+        getCachedSttResult(cacheScope, winningLang)?.let { cached ->
+            logInfo(
+                "probe winner=${winningLang.value} chunkDurationMs=$chunkDurationMs fullChunkCacheHit=true chars=${cached.text.length}",
+            )
+            return cached
         }
 
         val winningBcp47 = toBcp47LocaleTag(winningLang.value)
@@ -869,11 +1010,57 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         logInfo(
             "probe winner=${winningLang.value} chunkDurationMs=$chunkDurationMs targetLang=${targetLang.value} targetScore=$targetScore baseLang=${baseLang.value} baseScore=$baseScore fullChunkUsed=${fullAttempt != null} chars=${finalText.length}",
         )
-        return OnDeviceChunkTranscriptionResult(
+        val result = OnDeviceChunkTranscriptionResult(
             text = finalText,
             language = winningLang,
             confidence = finalAttempt.confidence,
         )
+        putCachedSttResult(cacheScope, winningLang.value, result)
+        return result
+    }
+
+    private fun normalizeLangCacheKey(rawLangTag: String?): String {
+        val tag = rawLangTag?.takeIf { it.isNotBlank() } ?: Locale.getDefault().toLanguageTag()
+        return toBcp47LocaleTag(tag).lowercase(Locale.ROOT)
+    }
+
+    private fun getCachedSttResult(
+        cacheScope: ChunkAudioCacheScope,
+        requestedLang: LanguageTag?,
+    ): OnDeviceChunkTranscriptionResult? {
+        val key = ChunkSttCacheKey(
+            audioPath = cacheScope.audioPath,
+            lastModified = cacheScope.lastModified,
+            startMs = cacheScope.startMs,
+            endMs = cacheScope.endMs,
+            normalizedLangTag = normalizeLangCacheKey(requestedLang?.value),
+        )
+        val cached = synchronized(sttCacheLock) {
+            fullChunkSttCache[key]
+        } ?: return null
+        return if (requestedLang != null && cached.language != requestedLang) {
+            cached.copy(language = requestedLang)
+        } else {
+            cached
+        }
+    }
+
+    private fun putCachedSttResult(
+        cacheScope: ChunkAudioCacheScope,
+        rawLangTag: String?,
+        result: OnDeviceChunkTranscriptionResult,
+    ) {
+        if (result.text.isBlank()) return
+        val key = ChunkSttCacheKey(
+            audioPath = cacheScope.audioPath,
+            lastModified = cacheScope.lastModified,
+            startMs = cacheScope.startMs,
+            endMs = cacheScope.endMs,
+            normalizedLangTag = normalizeLangCacheKey(rawLangTag),
+        )
+        synchronized(sttCacheLock) {
+            fullChunkSttCache[key] = result
+        }
     }
 
     private suspend fun executeAttempt(
@@ -1138,6 +1325,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         private const val PROBE_PIPE_TRAILING_SILENCE_PACE_MS: Long = 10L
         internal const val INTER_RECOGNITION_SETTLE_DELAY_MS: Long = 200L
         private const val RECOGNITION_TIMEOUT_MS: Long = 12_000L
+        private const val MAX_STT_CACHE_ENTRIES: Int = 2_048
 
         /**
          * `onResults` または `onError` コールバック時点で最終結果テキストと `onPartialResults` の保持テキストを統合する。
