@@ -72,8 +72,20 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [triggerLookaheadAt] の呼び出し履歴（呼ばれた順）。 */
     val lookaheadTriggers: MutableList<Pair<MediaId, ChunkId?>> = mutableListOf()
 
+    /** [prioritizeChunkTranscription] の呼び出し履歴（呼ばれた順）。 */
+    val prioritizedChunkRequests: MutableList<Pair<MediaId, ChunkId>> = mutableListOf()
+
     /** [retranscribeChunk] の呼び出し履歴（呼ばれた順）。 */
     val retranscribeChunkRequests: MutableList<Pair<MediaId, ChunkId>> = mutableListOf()
+
+    /** 現在プレイヤー画面で開いているとして通知されている教材 ID の集合。 */
+    val openTranscriptionSessions: MutableSet<MediaId> = mutableSetOf()
+
+    /** [setMediaTranscriptionSessionOpen] の呼び出し履歴（呼ばれた順）。 */
+    val transcriptionSessionEvents: MutableList<Pair<MediaId, Boolean>> = mutableListOf()
+
+    /** [prioritizeOpenedMediaAnalysis] の呼び出し履歴（呼ばれた順）。 */
+    val prioritizedMediaAnalyses: MutableList<MediaId> = mutableListOf()
 
     /** フィクスチャの解析結果を入れる。 */
     fun put(material: SampleMaterial) {
@@ -172,8 +184,32 @@ class FakeAnalysisRepository : AnalysisRepository {
         }
     }
 
+    override fun setMediaTranscriptionSessionOpen(id: MediaId, open: Boolean) {
+        transcriptionSessionEvents += id to open
+        if (open) {
+            openTranscriptionSessions.clear()
+            openTranscriptionSessions.add(id)
+        } else {
+            openTranscriptionSessions.remove(id)
+            update(id) { entry ->
+                entry.copy(lookaheadStatus = entry.lookaheadStatus.copy(queuedChunkIds = emptySet()))
+            }
+        }
+    }
+
+    override suspend fun prioritizeOpenedMediaAnalysis(id: MediaId) {
+        prioritizedMediaAnalyses += id
+    }
+
     override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
+        if (transcriptionSessionEvents.isNotEmpty() && id !in openTranscriptionSessions) return
         lookaheadTriggers += id to currentChunkId
+    }
+
+    override suspend fun prioritizeChunkTranscription(id: MediaId, chunkId: ChunkId) {
+        if (transcriptionSessionEvents.isNotEmpty() && id !in openTranscriptionSessions) return
+        prioritizedChunkRequests += id to chunkId
+        triggerLookaheadAt(id, chunkId)
     }
 
     override suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) {

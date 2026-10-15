@@ -26,10 +26,120 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+
+/**
+ * バックグラウンド解析実行中にユーザーが別の未解析ファイルを開いた際、
+ * 開かれたファイルの解析へ即座にデコーダ・ロックを譲るための内部例外。
+ */
+internal class AnalysisPreemptedException : Exception()
+
+/**
+ * 波形・チャンク解析パイプラインを直列化しつつ、現在開いているファイル（高優先度）の解析要求を
+ * バックグラウンドの事前解析（通常優先度）より優先させるゲート。
+ */
+internal class PriorityAnalysisPipelineGate {
+    private val stateMutex = Mutex()
+    private var isLocked = false
+    private val highPriorityQueue = ArrayDeque<CompletableDeferred<Unit>>()
+    private val lowPriorityQueue = ArrayDeque<CompletableDeferred<Unit>>()
+    private val waitingHighPriorityCount = AtomicInteger(0)
+    private val activeOpenMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
+
+    fun setMediaOpen(id: MediaId, open: Boolean) {
+        if (open) {
+            activeOpenMediaIds.add(id)
+        } else {
+            activeOpenMediaIds.remove(id)
+        }
+    }
+
+    fun isMediaOpen(id: MediaId): Boolean = activeOpenMediaIds.contains(id)
+
+    fun hasHighPriorityWaiters(): Boolean = waitingHighPriorityCount.get() > 0
+
+    fun isCurrentlyLocked(): Boolean = isLocked
+
+    suspend fun acquire(highPriority: Boolean) {
+        val waiter = CompletableDeferred<Unit>()
+        val acquiredImmediately = stateMutex.withLock {
+            if (!isLocked) {
+                isLocked = true
+                true
+            } else {
+                if (highPriority) {
+                    waitingHighPriorityCount.incrementAndGet()
+                    highPriorityQueue.addLast(waiter)
+                } else {
+                    lowPriorityQueue.addLast(waiter)
+                }
+                false
+            }
+        }
+        if (acquiredImmediately) return
+
+        try {
+            waiter.await()
+        } catch (ce: CancellationException) {
+            val shouldRelease = stateMutex.withLock {
+                val removed = if (highPriority) {
+                    val wasRemoved = highPriorityQueue.remove(waiter)
+                    if (wasRemoved) {
+                        waitingHighPriorityCount.decrementAndGet()
+                    }
+                    wasRemoved
+                } else {
+                    lowPriorityQueue.remove(waiter)
+                }
+                !removed && waiter.isCompleted
+            }
+            if (shouldRelease) {
+                release()
+            }
+            throw ce
+        }
+    }
+
+    suspend fun release() {
+        val nextToWake = stateMutex.withLock {
+            while (highPriorityQueue.isNotEmpty()) {
+                val candidate = highPriorityQueue.removeFirst()
+                waitingHighPriorityCount.decrementAndGet()
+                if (!candidate.isCancelled) {
+                    return@withLock candidate
+                }
+            }
+            while (lowPriorityQueue.isNotEmpty()) {
+                val candidate = lowPriorityQueue.removeFirst()
+                if (!candidate.isCancelled) {
+                    return@withLock candidate
+                }
+            }
+            isLocked = false
+            null
+        }
+        nextToWake?.complete(Unit)
+    }
+
+    suspend fun <T> withLock(highPriority: Boolean, block: suspend () -> T): T {
+        acquire(highPriority)
+        try {
+            return block()
+        } finally {
+            withContext(NonCancellable) {
+                release()
+            }
+        }
+    }
+}
 
 /**
  * 音声ファイルをストリーミングデコードし、波形・特徴量（`waveform.bin`, `features.bin`）と
@@ -60,15 +170,34 @@ class AnalysisWorker(
         }
         val mediaId = MediaId(rawMediaId)
         val requestedStages = parseRequestedStages(inputData.getStringArray(KEY_STAGES))
+        val explicitHighPriority = inputData.getBoolean(KEY_HIGH_PRIORITY, false)
+        var hadToWaitOrPreempt = pipelineGate.isCurrentlyLocked()
 
-        return pipelineMutex.withLock {
-            runPipeline(mediaId, requestedStages)
+        while (true) {
+            val highPriority = explicitHighPriority || pipelineGate.isMediaOpen(mediaId)
+            val outcome = pipelineGate.withLock(highPriority = highPriority) {
+                try {
+                    runPipeline(
+                        mediaId = mediaId,
+                        requestedStages = requestedStages,
+                        skipIfAlreadyDone = hadToWaitOrPreempt && !explicitHighPriority,
+                    )
+                } catch (_: AnalysisPreemptedException) {
+                    resetStagesToNotStarted(mediaId, requestedStages)
+                    null
+                }
+            }
+            if (outcome != null) {
+                return outcome
+            }
+            hadToWaitOrPreempt = true
         }
     }
 
     private suspend fun runPipeline(
         mediaId: MediaId,
         requestedStages: Set<AnalysisStage>,
+        skipIfAlreadyDone: Boolean = false,
     ): Result {
         val audioFile = mediaFileResolver.resolveAudioFile(mediaId)
         val analysisDir = resolveAnalysisDir(mediaId, audioFile)
@@ -79,6 +208,18 @@ class AnalysisWorker(
 
         val waveformFile = File(analysisDir, DefaultAnalysisRepository.WAVEFORM_FILE_NAME)
         val featuresFile = File(analysisDir, DefaultAnalysisRepository.FEATURES_FILE_NAME)
+
+        if (skipIfAlreadyDone && waveformFile.isFile && featuresFile.isFile) {
+            val existingByStage = analysisStateDao.getByMediaId(mediaId.value)
+                .mapNotNull { entity ->
+                    val stage = AnalysisStage.entries.firstOrNull { it.name == entity.stage } ?: return@mapNotNull null
+                    stage to entity.status
+                }
+                .toMap()
+            if (requestedStages.all { existingByStage[it] == "DONE" }) {
+                return Result.success()
+            }
+        }
 
         val needDecode = AnalysisStage.FEATURES in requestedStages || !featuresFile.isFile
 
@@ -111,11 +252,17 @@ class AnalysisWorker(
                 val decodeResult = audioStreamDecoder.decode(
                     file = audioFile,
                     sink = SampleSink { samples, count ->
+                        if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                            throw AnalysisPreemptedException()
+                        }
                         extractor.process(samples, count)
                     },
                     outputSampleRate = TARGET_SAMPLE_RATE_HZ,
                     expectedDurationMs = expectedDurationMs,
                     onProgress = { progress ->
+                        if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                            throw AnalysisPreemptedException()
+                        }
                         val currentMs = clock()
                         val shouldSaveWaveform = currentMs - lastCheckpointMs >= PROGRESS_SAVE_INTERVAL_MS
                         val shouldUpdateProgress = currentMs - lastProgressUpdateMs >= PROGRESS_DB_INTERVAL_MS
@@ -253,9 +400,36 @@ class AnalysisWorker(
             Result.success()
         } catch (ce: CancellationException) {
             throw ce
+        } catch (pe: AnalysisPreemptedException) {
+            throw pe
         } catch (_: Exception) {
             markStagesFailed(mediaId, requestedStages, AnalysisError.DECODE_FAILED)
             Result.failure()
+        }
+    }
+
+    private suspend fun resetStagesToNotStarted(
+        mediaId: MediaId,
+        stages: Set<AnalysisStage>,
+    ) {
+        val now = clock()
+        val existingByStage = analysisStateDao.getByMediaId(mediaId.value)
+            .associateBy { it.stage }
+        val entities = stages.mapNotNull { stage ->
+            val current = existingByStage[stage.name]
+            if (current?.status == "DONE") {
+                null
+            } else {
+                StageStatus.NotStarted.toEntity(
+                    mediaId = mediaId,
+                    stage = stage,
+                    algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                    updatedAtEpochMs = now,
+                )
+            }
+        }
+        if (entities.isNotEmpty()) {
+            analysisStateDao.upsertAll(entities)
         }
     }
 
@@ -301,6 +475,7 @@ class AnalysisWorker(
     companion object {
         const val KEY_MEDIA_ID: String = "media_id"
         const val KEY_STAGES: String = "stages"
+        const val KEY_HIGH_PRIORITY: String = "high_priority"
 
         /** 複数ファイルの解析を 1 件ずつ順番に直列実行するための WorkManager ユニークワーク名。 */
         const val SEQUENTIAL_WORK_NAME: String = "chunkflow_analysis_sequential_queue"
@@ -309,11 +484,14 @@ class AnalysisWorker(
         internal const val PROGRESS_SAVE_INTERVAL_MS: Long = 2_000L
         internal const val PROGRESS_DB_INTERVAL_MS: Long = 500L
 
-        /** 複数ファイルの解析パイプラインが同時に走らないよう直列化する Mutex（FIFO 順）。 */
-        internal val pipelineMutex: Mutex = Mutex()
+        /** 複数ファイルの解析パイプラインを直列化しつつ、開いているファイルを優先させるゲート。 */
+        internal val pipelineGate: PriorityAnalysisPipelineGate = PriorityAnalysisPipelineGate()
 
         /** WorkManager のユニークワーク名を返す。 */
         fun uniqueWorkName(mediaId: MediaId): String = "analysis_${mediaId.value}"
+
+        /** 開いているファイルの優先解析用 WorkManager ユニークワーク名を返す。 */
+        fun priorityWorkName(mediaId: MediaId): String = "analysis_priority_${mediaId.value}"
 
         /** WorkManager のタグを返す。 */
         fun tagForMedia(mediaId: MediaId): String = "analysis_tag_${mediaId.value}"

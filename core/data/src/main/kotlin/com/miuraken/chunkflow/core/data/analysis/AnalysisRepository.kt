@@ -75,9 +75,45 @@ interface AnalysisRepository {
     suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) = Unit
 
     /**
+     * [language] の端末内音声認識の言語モデルのダウンロードを OS に要求する（F6.2）。
+     *
+     * 状態は [observeLookaheadStatus] の [LookaheadTranscriptionStatus.recognitionModelIssues] で知らせる。
+     * 要求を送れた場合は `true`。
+     */
+    suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean = false
+
+    /**
+     * 端末内音声認識の言語モデルの状態を OS に問い合わせ直す（ダウンロードの完了を検出する）。
+     */
+    suspend fun refreshRecognitionModelIssues() = Unit
+
+    /**
+     * プレイヤー画面で教材 [id] のウィンドウが開いているか閉じたかを通知する。
+     *
+     * 通常は現在開いている教材のみ文字起こし作業を行い、ウィンドウを閉じた教材の待機中キューは停止する。
+     * ただし、ウィンドウを閉じた時点で既に処理中（in-flight）のチャンク文字起こしは中断せず最後まで実行して出力する。
+     */
+    fun setMediaTranscriptionSessionOpen(id: MediaId, open: Boolean) = Unit
+
+    /**
+     * プレイヤー画面で開かれた教材 [id] をアクセス済みとして記録し、未解析であれば他のファイルのバックグラウンド解析よりも
+     * 優先して波形・チャンク解析を実行する。あわせて同じフォルダ内で解析済み・未アクセスのファイルが 2 件未満であれば補充解析を予約する。
+     */
+    suspend fun prioritizeOpenedMediaAnalysis(id: MediaId) = Unit
+
+    /**
      * 現在再生中のチャンク位置 [currentChunkId] を通知し、その先 3 チャンク分の先読み簡易文字起こし（§7.4.5）を要求する。
      */
     suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) = Unit
+
+    /**
+     * ユーザーが拡大波形やチャンクリストで選択したチャンク [chunkId] の文字起こしを優先予約し、
+     * 以降の先読み文字起こしの起点もこのチャンクへ移動する。
+     * 現在実行中のチャンク文字起こしがあれば中断せず完了を待ち、その直後に [chunkId] を処理する。
+     */
+    suspend fun prioritizeChunkTranscription(id: MediaId, chunkId: ChunkId) {
+        triggerLookaheadAt(id, chunkId)
+    }
 
     /**
      * チャンク 1 件の文字起こしキャッシュを破棄し、最優先で再度オンデバイス文字起こしを実行する。
