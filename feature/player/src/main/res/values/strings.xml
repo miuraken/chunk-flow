@@ -101,6 +101,7 @@
     <string name="player_bookmark_toggle_add">ブックマークに追加</string>
     <string name="player_bookmark_toggle_remove">ブックマークを解除</string>
     <string name="player_chunk_edit_text">テキストを編集</string>
+    <string name="player_chunk_retranscribe">再度、文字起こしする</string>
     <string name="player_chunk_edit_text_dialog_title">チャンク #%1$d のテキスト編集</string>
     <string name="player_chunk_edit_text_label">文字起こし本文</string>
     <string name="player_chunk_edit_save">保存</string>

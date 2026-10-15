@@ -361,6 +361,9 @@ fun PlayerScreen(
                         onUpdateChunkText = { chunkId, text ->
                             onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
                         },
+                        onRetranscribeChunk = { chunkId ->
+                            onEvent(PlayerEvent.RetranscribeChunk(chunkId))
+                        },
                         onSplitChunk = { chunkId, splitMs ->
                             onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
                         },
@@ -451,6 +454,9 @@ fun PlayerScreen(
                         },
                         onUpdateChunkText = { chunkId, text ->
                             onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
+                        },
+                        onRetranscribeChunk = { chunkId ->
+                            onEvent(PlayerEvent.RetranscribeChunk(chunkId))
                         },
                         onSplitChunk = { chunkId, splitMs ->
                             onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))

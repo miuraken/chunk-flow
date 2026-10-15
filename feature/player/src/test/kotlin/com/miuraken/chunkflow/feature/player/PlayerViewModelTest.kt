@@ -720,4 +720,27 @@ class PlayerViewModelTest {
         assertTrue(viewModel.uiState.value.isPlaying)
         assertNull(viewModel.uiState.value.autoPauseEndsAtMs)
     }
+
+    @Test
+    fun `チャンク再文字起こし_RetranscribeChunkでretranscribeChunkとローカルJSON書き出しが呼ばれる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val targetChunkId = sample.chunks[1].id
+        analysisRepo.lookaheadTriggers.clear()
+
+        viewModel.onEvent(PlayerEvent.RetranscribeChunk(targetChunkId))
+
+        assertEquals(listOf(item.id to targetChunkId), analysisRepo.retranscribeChunkRequests)
+        assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to targetChunkId))
+        assertTrue(viewModel.uiState.value.localTranscriptExported)
+        assertTrue(item.id in libraryRepo.exportedTranscriptIds)
+    }
 }

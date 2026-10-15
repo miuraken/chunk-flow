@@ -512,6 +512,9 @@ sealed interface PlayerEvent {
     /** チャンク 1 件の文字起こし本文を手動で更新する（F7.4）。 */
     data class UpdateChunkText(val chunkId: ChunkId, val text: String) : PlayerEvent
 
+    /** 指定したチャンクの文字起こしキャッシュを破棄して強制的に再度文字起こしする。 */
+    data class RetranscribeChunk(val chunkId: ChunkId) : PlayerEvent
+
     /** 指定したチャンクを [splitPositionMs] で 2 つに分割する（F5.3）。 */
     data class SplitChunk(val chunkId: ChunkId, val splitPositionMs: Long) : PlayerEvent
 
@@ -921,6 +924,30 @@ class PlayerViewModel @Inject constructor(
                 }
                 viewModelScope.launch {
                     analysisRepository.updateChunkLanguage(id, event.chunkId, event.language)
+                    val hasTranscript =
+                        analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
+                    if (hasTranscript) {
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                        }
+                    }
+                    if (uiState.value.lookaheadStatus.enabled) {
+                        analysisRepository.triggerLookaheadAt(id, event.chunkId)
+                    }
+                    val exported = libraryRepository.exportLocalTranscriptJson(id)
+                    if (exported) {
+                        localUiState.update { it.copy(localTranscriptExported = true) }
+                    }
+                }
+            }
+
+            is PlayerEvent.RetranscribeChunk -> {
+                val id = resolveActiveMediaId() ?: return
+                localUiState.update { state ->
+                    state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                }
+                viewModelScope.launch {
+                    analysisRepository.retranscribeChunk(id, event.chunkId)
                     if (uiState.value.lookaheadStatus.enabled) {
                         analysisRepository.triggerLookaheadAt(id, event.chunkId)
                     }
