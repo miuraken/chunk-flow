@@ -271,6 +271,23 @@ class ChunkScheduler(
             val resumeAfterMs = lastAutoPausedChunkEndMs
             cancelAutoPause()
             reschedule(minBoundaryAfterMs = resumeAfterMs)
+            return
+        }
+        if (playWhenReady && _autoPauseEndsAtMs.value == null && practiceSettings.loop !is LoopMode.AbRange) {
+            val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
+            if (repeatChunks.isNotEmpty()) {
+                val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                if (repeatChunks.none { nowMs in it.startMs until it.endMs }) {
+                    val target = repeatChunks.first()
+                    seekInternal(target.startMs)
+                    updateState(chunkId = target.id, autoPauseEndsAt = null)
+                    scheduleBoundaryMessage(
+                        payload = BoundaryPayload.ChunkEnd(target),
+                        persistent = false,
+                    )
+                    return
+                }
+            }
         }
     }
 
@@ -296,6 +313,7 @@ class ChunkScheduler(
     private fun onPracticeSettingsUpdated(newSettings: PracticeSettings) {
         val oldLoop = practiceSettings.loop
         val oldAutoPause = practiceSettings.autoPause
+        val oldRepeatChunkIds = practiceSettings.repeatChunkIds
         practiceSettings = newSettings
 
         if (!isUpdatingLoopInternally && oldLoop != newSettings.loop) {
@@ -308,6 +326,24 @@ class ChunkScheduler(
             exoPlayer.play()
             reschedule(minBoundaryAfterMs = resumeAfterMs)
             return
+        }
+
+        if (newSettings.loop !is LoopMode.AbRange && oldRepeatChunkIds != newSettings.repeatChunkIds) {
+            val repeatChunks = chunks.filter { it.id in newSettings.repeatChunkIds }
+            if (repeatChunks.isNotEmpty()) {
+                val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                val isCurrentlyInSelected = repeatChunks.any { nowMs in it.startMs until it.endMs }
+                if (!isCurrentlyInSelected && _autoPauseEndsAtMs.value == null) {
+                    val target = repeatChunks.first()
+                    seekInternal(target.startMs)
+                    updateState(chunkId = target.id, autoPauseEndsAt = null)
+                    scheduleBoundaryMessage(
+                        payload = BoundaryPayload.ChunkEnd(target),
+                        persistent = false,
+                    )
+                    return
+                }
+            }
         }
 
         if (!isUpdatingLoopInternally) {
@@ -526,6 +562,26 @@ class ChunkScheduler(
             }
 
             LoopMode.Off -> Unit
+        }
+
+        // チェックボックスで選択されたチャンク（repeatChunkIds）の順次・無限リピート再生
+        val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
+        if (repeatChunks.isNotEmpty()) {
+            val nextTarget = if (chunk.id in practiceSettings.repeatChunkIds) {
+                val idx = repeatChunks.indexOfFirst { it.id == chunk.id }
+                if (idx >= 0 && idx + 1 < repeatChunks.size) {
+                    repeatChunks[idx + 1]
+                } else {
+                    repeatChunks.first()
+                }
+            } else {
+                repeatChunks.firstOrNull { it.startMs >= chunk.endMs } ?: repeatChunks.first()
+            }
+            return if (nextTarget.id != chunk.id && nextTarget.startMs == chunk.endMs) {
+                PostChunkAction.AdvanceAfter(chunk.endMs)
+            } else {
+                PostChunkAction.SeekToChunk(nextTarget)
+            }
         }
 
         // 言語フィルタ（ALL / TARGET_ONLY / BASE_ONLY）およびブックマーク連続再生（F8.1）の適用

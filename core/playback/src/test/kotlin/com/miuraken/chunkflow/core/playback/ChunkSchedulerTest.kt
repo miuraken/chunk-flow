@@ -439,6 +439,85 @@ class ChunkSchedulerTest {
         assertTrue(exoPlayer.currentPosition < 500L)
     }
 
+    @Test
+    fun `RepeatChunkIds_複数チャンクにチェックを入れると選択チャンクのみを順番に無限ループ再生し解除で通常再生へ戻る`() {
+        val chunk4 = Chunk(
+            id = ChunkId(4L),
+            startMs = 7_000L,
+            endMs = 9_000L,
+            origin = ChunkOrigin.IMPORTED,
+        )
+        scheduler.setChunks(listOf(chunk1, chunk2, chunk3, chunk4))
+
+        // 現在位置 0ms (chunk1) の状態で chunk2 と chunk4 にチェックを入れると、即座に最初の選択チャンク chunk2 へ移動する
+        practiceController.update {
+            it.copy(repeatChunkIds = setOf(chunk2.id, chunk4.id))
+        }
+        pumpLoopers()
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in chunk2.startMs..(chunk2.startMs + 200L))
+
+        exoPlayer.play()
+        // chunk2 (2000..4500) 終端で chunk3 を飛ばして chunk4 (7000..9000) へシークする
+        runUntil { scheduler.currentChunkId.value == chunk4.id }
+        pumpLoopers()
+        assertEquals(chunk4.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition >= chunk4.startMs)
+
+        // 最後の選択チャンク chunk4 (7000..9000) 終端に達すると先頭の選択チャンク chunk2 (2000..4500) へ戻る
+        runUntil { scheduler.currentChunkId.value == chunk2.id && exoPlayer.currentPosition < 3_000L }
+        pumpLoopers()
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+
+        // 2周目も chunk2 -> chunk4 へループする
+        runUntil { scheduler.currentChunkId.value == chunk4.id }
+        pumpLoopers()
+        assertEquals(chunk4.id, scheduler.currentChunkId.value)
+
+        // すべてのチェックを外すと通常再生に戻り、chunk2 終端で chunk3 へ進む
+        exoPlayer.seekTo(chunk2.startMs)
+        pumpLoopers()
+        practiceController.update {
+            it.copy(repeatChunkIds = emptySet())
+        }
+        pumpLoopers()
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+    }
+
+    @Test
+    fun `RepeatChunkIds_1つのチャンクだけチェックした場合はそのチャンクを無限ループ再生する`() {
+        scheduler.setChunks(sampleChunks)
+        practiceController.update {
+            it.copy(repeatChunkIds = setOf(chunk1.id))
+        }
+        pumpLoopers()
+
+        var seekToStartCount = 0
+        exoPlayer.addListener(
+            object : Player.Listener {
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs == chunk1.startMs) {
+                        seekToStartCount += 1
+                    }
+                }
+            },
+        )
+
+        exoPlayer.play()
+        // 3回以上ループしても解除されず無限リピートを継続すること
+        runUntil { seekToStartCount >= 3 }
+        pumpLoopers()
+        assertTrue(seekToStartCount >= 3)
+        assertEquals(chunk1.id, scheduler.currentChunkId.value)
+        assertEquals(setOf(chunk1.id), practiceController.settings.value.repeatChunkIds)
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,
