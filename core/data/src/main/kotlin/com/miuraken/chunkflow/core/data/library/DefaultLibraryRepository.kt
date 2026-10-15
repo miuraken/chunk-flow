@@ -3,6 +3,7 @@ package com.miuraken.chunkflow.core.data.library
 import android.annotation.SuppressLint
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -37,6 +38,7 @@ import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.DriveFileKind
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -51,6 +53,7 @@ import com.miuraken.chunkflow.core.transcript.TranscriptSegment
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.security.MessageDigest
@@ -59,6 +62,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.Properties
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -70,6 +74,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
@@ -191,11 +196,23 @@ class DefaultLibraryRepository(
         }
     }
 
-    override fun import(uris: List<Uri>): Flow<ImportProgress> = flow {
+    override fun import(uris: List<Uri>): Flow<ImportProgress> = import(
+        uris = uris,
+        course = null,
+        languages = null,
+    )
+
+    override fun import(
+        uris: List<Uri>,
+        course: String?,
+        languages: LanguagePair?,
+    ): Flow<ImportProgress> = flow {
         if (uris.isEmpty()) {
             emit(ImportProgress.Done(mediaIds = emptyList(), duplicates = 0, transcriptsAttached = 0))
             return@flow
         }
+
+        val explicitCourse = sanitizeCourseName(course).takeIf { it.isNotBlank() }
 
         // 1. スキームの検証と SAF フォルダ（Tree URI）の展開
         val candidates = mutableListOf<ImportCandidate>()
@@ -206,14 +223,19 @@ class DefaultLibraryRepository(
                 return@flow
             }
             if (isTreeUriSafe(uri)) {
-                candidates += expandTreeUri(uri)
+                val expanded = expandTreeUri(uri)
+                candidates += if (explicitCourse != null) {
+                    expanded.map { it.copy(course = explicitCourse) }
+                } else {
+                    expanded
+                }
             } else {
                 val meta = queryContentMetadata(uri)
-                val course = extractCourseFromDocumentUri(uri)
+                val resolvedCourse = explicitCourse ?: extractCourseFromDocumentUri(uri)
                 candidates += ImportCandidate(
                     uri = uri,
                     meta = meta,
-                    course = course,
+                    course = resolvedCourse,
                 )
             }
         }
@@ -231,6 +253,7 @@ class DefaultLibraryRepository(
         var duplicates = 0
 
         // 2. 音声ファイルの取り込みと解析ジョブの投入（§7.1 手順 1〜6）
+        // 読み込めない非対応ファイルや破損ファイルはエラーバナーを出さずに無視してスキップする
         for ((index, candidate) in audioCandidates.withIndex()) {
             currentCoroutineContext().ensureActive()
             val uri = candidate.uri
@@ -238,8 +261,7 @@ class DefaultLibraryRepository(
             val declaredSize = meta?.sizeBytes?.takeIf { it > 0L }
             if (declaredSize != null) {
                 if (declaredSize > MAX_AUDIO_SIZE_BYTES) {
-                    emit(ImportProgress.Failed(ImportError.TOO_LARGE))
-                    return@flow
+                    continue
                 }
                 if (!hasEnoughDiskSpace(declaredSize)) {
                     emit(ImportProgress.Failed(ImportError.NO_SPACE))
@@ -256,6 +278,8 @@ class DefaultLibraryRepository(
                     uri = uri,
                     meta = meta,
                     course = candidate.course,
+                    explicitCourse = explicitCourse,
+                    languages = languages,
                     tempFile = tempFile,
                     fileIndex = index,
                     totalFiles = totalAudio.coerceAtLeast(1),
@@ -289,8 +313,11 @@ class DefaultLibraryRepository(
                 }
 
                 is SingleImportOutcome.Failed -> {
-                    emit(ImportProgress.Failed(outcome.error))
-                    return@flow
+                    if (outcome.error == ImportError.NO_SPACE) {
+                        emit(ImportProgress.Failed(ImportError.NO_SPACE))
+                        return@flow
+                    }
+                    continue
                 }
             }
 
@@ -326,7 +353,13 @@ class DefaultLibraryRepository(
                     compareBy<Pair<MediaItemEntity, ParsedTranscript>> { it.second.createdAt.orEmpty() },
                 ) ?: continue
                 val latestEntity = mediaItemDao.getById(winningPair.first.id) ?: winningPair.first
-                if (attachTranscriptToMediaItem(latestEntity, winningPair.second) != null) {
+                if (
+                    attachTranscriptToMediaItem(
+                        targetEntity = latestEntity,
+                        parsed = winningPair.second,
+                        preserveEntityLanguages = languages != null,
+                    ) != null
+                ) {
                     transcriptsAttached += 1
                 }
             }
@@ -422,11 +455,43 @@ class DefaultLibraryRepository(
             }
 
             is DriveUploadResult.Failure -> {
-                // Drive 未認証やオフライン時でもローカル JSON の書き出し自体は成功として扱う
+                // REST API 未認可時はリンク済み SAF フォルダがあればそちらの transcription/ にもベストエフォートで書き出す
+                loadLinkedSyncFolderConfig()?.let { linked ->
+                    writeTranscriptJsonToSafTree(linked.treeUri, uploadFileName, jsonBytes)
+                }
             }
         }
         true
     }
+
+    override suspend fun hasLinkedSyncFolder(): Boolean = withContext(ioDispatcher) {
+        loadLinkedSyncFolderConfig() != null
+    }
+
+    override fun syncFromLinkedFolder(
+        treeUri: Uri?,
+        course: String?,
+        languages: LanguagePair?,
+    ): Flow<SyncProgress> = flow {
+        if (treeUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+            saveLinkedSyncFolderConfig(treeUri, course, languages)
+        } else if (course != null || languages != null) {
+            loadLinkedSyncFolderConfig()?.let { existing ->
+                saveLinkedSyncFolderConfig(
+                    treeUri = existing.treeUri,
+                    course = course ?: existing.course,
+                    languages = languages ?: existing.languages,
+                )
+            }
+        }
+        syncFromDrive().collect { emit(it) }
+    }.flowOn(ioDispatcher)
 
     override fun syncFromDrive(): Flow<SyncProgress> = flow {
         emit(SyncProgress.Listing)
@@ -434,6 +499,13 @@ class DefaultLibraryRepository(
             is DriveListResult.Success -> listResult.courses
 
             is DriveListResult.Failure -> {
+                if (listResult.error == DriveError.AUTH) {
+                    val linkedConfig = loadLinkedSyncFolderConfig()
+                    if (linkedConfig != null) {
+                        syncWithSafTreeUri(linkedConfig)
+                        return@flow
+                    }
+                }
                 emit(SyncProgress.Failed(mapDriveErrorToSyncError(listResult.error)))
                 return@flow
             }
@@ -776,6 +848,8 @@ class DefaultLibraryRepository(
         uri: Uri,
         meta: ContentMetadata?,
         course: String?,
+        explicitCourse: String? = null,
+        languages: LanguagePair? = null,
         tempFile: File,
         fileIndex: Int,
         totalFiles: Int,
@@ -809,8 +883,19 @@ class DefaultLibraryRepository(
         // すでに同じ SHA-256 の項目が DB にあるか調べる
         val existingEntity = mediaItemDao.getBySha256(sha256)
         if (existingEntity != null) {
-            if (existingEntity.course == null && !course.isNullOrBlank()) {
-                mediaItemDao.update(existingEntity.copy(course = course))
+            val updatedCourse = explicitCourse ?: (existingEntity.course ?: course?.takeIf { it.isNotBlank() })
+            val updatedTargetLang = languages?.target?.value ?: existingEntity.targetLang
+            val updatedBaseLang = if (languages != null) languages.base?.value else existingEntity.baseLang
+            if (updatedCourse != existingEntity.course ||
+                updatedTargetLang != existingEntity.targetLang ||
+                updatedBaseLang != existingEntity.baseLang
+            ) {
+                mediaItemDao.updateCourseAndLanguagePair(
+                    id = existingEntity.id,
+                    course = updatedCourse,
+                    targetLang = updatedTargetLang,
+                    baseLang = updatedBaseLang,
+                )
             }
             val existingMediaId = MediaId(existingEntity.id)
             val existingAudioFile = mediaFileLocator.resolveAudioFile(existingMediaId, existingEntity.mimeType)
@@ -860,6 +945,7 @@ class DefaultLibraryRepository(
         }
 
         val settings = userSettingsRepository.settings.first()
+        val effectiveLanguages = languages ?: settings.defaultLanguagePair
         val sanitizedDisplayName = sanitizeDisplayName(meta?.displayName)
             .ifBlank { DEFAULT_UNTITLED_NAME }
         val resolvedTitle = inspected.title
@@ -878,8 +964,8 @@ class DefaultLibraryRepository(
             sizeBytes = actualSizeBytes,
             sha256 = sha256,
             course = course,
-            targetLang = settings.defaultLanguagePair.target.value,
-            baseLang = settings.defaultLanguagePair.base?.value,
+            targetLang = effectiveLanguages.target.value,
+            baseLang = effectiveLanguages.base?.value,
             transcriptOffsetMs = initialOffsetMs,
             importedAt = nowMs,
             mp3HasHeader = mp3Info?.hasHeader ?: false,
@@ -1020,6 +1106,7 @@ class DefaultLibraryRepository(
     private suspend fun attachTranscriptToMediaItem(
         targetEntity: MediaItemEntity,
         parsed: ParsedTranscript,
+        preserveEntityLanguages: Boolean = false,
     ): Int? {
         val mediaId = MediaId(targetEntity.id)
         val doc = parsed.document
@@ -1056,9 +1143,9 @@ class DefaultLibraryRepository(
             preserveAllOldTranscripts = false,
         )
 
-        // JSON に言語ペアがあれば教材の言語ペアを更新する（§7.4.6）
+        // JSON に言語ペアがあれば教材の言語ペアを更新する（ただし呼び出し元で言語ペアが明示指定された場合は維持する、§7.4.6）
         val languages = doc.languages
-        if (languages != null) {
+        if (languages != null && !preserveEntityLanguages) {
             mediaItemDao.updateLanguagePair(
                 id = targetEntity.id,
                 targetLang = languages.target.value,
@@ -1808,6 +1895,381 @@ class DefaultLibraryRepository(
         return String.format(Locale.ROOT, "%02d:%02d", totalMinutes, seconds)
     }
 
+    private data class LinkedSyncFolderConfig(
+        val treeUri: Uri,
+        val course: String?,
+        val languages: LanguagePair?,
+    )
+
+    private val linkedSyncConfigFile: File
+        get() = File(context.filesDir, LINKED_SYNC_PROPERTIES_FILE_NAME)
+
+    private fun saveLinkedSyncFolderConfig(
+        treeUri: Uri,
+        course: String?,
+        languages: LanguagePair?,
+    ) {
+        runCatching {
+            val props = Properties()
+            props.setProperty("treeUri", treeUri.toString())
+            sanitizeCourseName(course).takeIf { it.isNotBlank() }?.let {
+                props.setProperty("course", it)
+            }
+            if (languages != null) {
+                props.setProperty("targetLang", languages.target.value)
+                languages.base?.value?.let { props.setProperty("baseLang", it) }
+            }
+            linkedSyncConfigFile.parentFile?.mkdirs()
+            FileOutputStream(linkedSyncConfigFile).use { out ->
+                props.store(out, "ChunkFlow Linked Sync Folder")
+            }
+        }
+    }
+
+    private fun loadLinkedSyncFolderConfig(): LinkedSyncFolderConfig? = runCatching {
+        val file = linkedSyncConfigFile
+        if (!file.isFile) return null
+        val props = Properties()
+        FileInputStream(file).use { input ->
+            props.load(input)
+        }
+        val treeUriStr = props.getProperty("treeUri")?.takeIf { it.isNotBlank() } ?: return null
+        val treeUri = Uri.parse(treeUriStr)
+        if (treeUri.scheme != ContentResolver.SCHEME_CONTENT) return null
+        val course = sanitizeCourseName(props.getProperty("course")).takeIf { it.isNotBlank() }
+        val targetLang = props.getProperty("targetLang")?.takeIf { it.isNotBlank() }
+        val baseLang = props.getProperty("baseLang")?.takeIf { it.isNotBlank() }
+        val languages = if (targetLang != null) {
+            runCatching {
+                LanguagePair(
+                    target = LanguageTag(targetLang),
+                    base = baseLang?.let(::LanguageTag),
+                )
+            }.getOrNull()
+        } else {
+            null
+        }
+        LinkedSyncFolderConfig(
+            treeUri = treeUri,
+            course = course,
+            languages = languages,
+        )
+    }.getOrNull()
+
+    private suspend fun FlowCollector<SyncProgress>.syncWithSafTreeUri(
+        config: LinkedSyncFolderConfig,
+    ) {
+        val explicitCourse = sanitizeCourseName(config.course).takeIf { it.isNotBlank() }
+        val rawCandidates = if (isTreeUriSafe(config.treeUri)) {
+            expandTreeUri(config.treeUri)
+        } else {
+            emptyList()
+        }
+        val candidates = if (explicitCourse != null) {
+            rawCandidates.map { it.copy(course = explicitCourse) }
+        } else {
+            rawCandidates
+        }
+
+        val (transcriptCandidates, audioCandidates) = candidates.partition(::isTranscriptCandidate)
+        val totalToProcess = audioCandidates.size + transcriptCandidates.size
+        var doneCount = 0
+        var newAudioCount = 0
+        var newTranscriptCount = 0
+        val batchAudioByStemAndCourse = LinkedHashMap<Pair<String?, String>, MediaId>()
+        val batchAudioByStem = LinkedHashMap<String, MediaId>()
+        val syncedTranscriptMediaIds = mutableSetOf<String>()
+
+        if (totalToProcess > 0) {
+            emit(SyncProgress.Downloading(done = 0, total = totalToProcess))
+        }
+
+        // 1. 音声ファイルの取り込み（読み込めないファイルは無視してスキップ）
+        for ((index, candidate) in audioCandidates.withIndex()) {
+            currentCoroutineContext().ensureActive()
+            val uri = candidate.uri
+            val meta = candidate.meta
+            val declaredSize = meta?.sizeBytes?.takeIf { it > 0L }
+            if (declaredSize != null) {
+                if (declaredSize > MAX_AUDIO_SIZE_BYTES) {
+                    doneCount += 1
+                    emit(SyncProgress.Downloading(done = doneCount, total = totalToProcess))
+                    continue
+                }
+                if (!hasEnoughDiskSpace(declaredSize)) {
+                    emit(SyncProgress.Failed(SyncError.NO_SPACE))
+                    return
+                }
+            }
+
+            val tempFile = mediaFileLocator.tempFileFor(UUID.randomUUID().toString())
+            val outcome = try {
+                importSingleFile(
+                    uri = uri,
+                    meta = meta,
+                    course = candidate.course,
+                    explicitCourse = explicitCourse,
+                    languages = config.languages,
+                    tempFile = tempFile,
+                    fileIndex = index,
+                    totalFiles = audioCandidates.size.coerceAtLeast(1),
+                    onProgress = {},
+                )
+            } catch (ce: CancellationException) {
+                tempFile.delete()
+                throw ce
+            }
+
+            val resolvedMediaId = when (outcome) {
+                is SingleImportOutcome.Imported -> {
+                    newAudioCount += 1
+                    analysisRepository.requestAnalysis(
+                        outcome.mediaId,
+                        setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
+                    )
+                    outcome.mediaId
+                }
+
+                is SingleImportOutcome.Duplicate -> {
+                    if (outcome.reattachedAudioFile) {
+                        newAudioCount += 1
+                        analysisRepository.requestAnalysis(
+                            outcome.mediaId,
+                            setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
+                        )
+                    }
+                    outcome.mediaId
+                }
+
+                is SingleImportOutcome.Failed -> {
+                    if (outcome.error == ImportError.NO_SPACE) {
+                        emit(SyncProgress.Failed(SyncError.NO_SPACE))
+                        return
+                    }
+                    doneCount += 1
+                    emit(SyncProgress.Downloading(done = doneCount, total = totalToProcess))
+                    continue
+                }
+            }
+
+            val stem = extractFileStem(meta?.displayName ?: uri.lastPathSegment.orEmpty())
+            if (stem.isNotEmpty()) {
+                batchAudioByStemAndCourse[candidate.course to stem] = resolvedMediaId
+                batchAudioByStem[stem] = resolvedMediaId
+            }
+
+            doneCount += 1
+            emit(SyncProgress.Downloading(done = doneCount, total = totalToProcess))
+        }
+
+        // 2. 文字起こしファイルの照合と反映
+        for (candidate in transcriptCandidates) {
+            currentCoroutineContext().ensureActive()
+            val parseOutcome = readAndParseTranscript(candidate.uri, candidate.meta)
+            val parsed = (parseOutcome as? InternalTranscriptParseOutcome.Ok)?.parsed
+            if (parsed == null) {
+                doneCount += 1
+                emit(SyncProgress.Downloading(done = doneCount, total = totalToProcess))
+                continue
+            }
+
+            val targetEntity = findMatchingMediaItem(
+                doc = parsed.document,
+                transcriptFileName = parsed.fileName,
+                course = candidate.course,
+                batchByStemAndCourse = batchAudioByStemAndCourse,
+                batchByStem = batchAudioByStem,
+            )
+            if (targetEntity == null) {
+                doneCount += 1
+                emit(SyncProgress.Downloading(done = doneCount, total = totalToProcess))
+                continue
+            }
+
+            val ext = transcriptExtensionForFileName(parsed.fileName)
+            val existingTranscriptFile = mediaFileLocator.transcriptFileFor(MediaId(targetEntity.id), ext)
+            val alreadySameContent = existingTranscriptFile.exists() &&
+                runCatching { existingTranscriptFile.readBytes().contentEquals(parsed.rawBytes) }.getOrDefault(false)
+            if (!alreadySameContent) {
+                val latestEntity = mediaItemDao.getById(targetEntity.id) ?: targetEntity
+                if (
+                    attachTranscriptToMediaItem(
+                        targetEntity = latestEntity,
+                        parsed = parsed,
+                        preserveEntityLanguages = config.languages != null,
+                    ) != null
+                ) {
+                    newTranscriptCount += 1
+                    syncedTranscriptMediaIds += latestEntity.id
+                }
+            } else {
+                syncedTranscriptMediaIds += targetEntity.id
+            }
+
+            doneCount += 1
+            emit(SyncProgress.Downloading(done = doneCount, total = totalToProcess))
+        }
+
+        // 3. ローカルで生成・編集された .chunkflow.json の SAF リンクフォルダ transcription/ への書き戻し
+        var uploadedTranscripts = 0
+        val allLocalItems = mediaItemDao.observeAll().first()
+        for (item in allLocalItems) {
+            currentCoroutineContext().ensureActive()
+            if (item.id in syncedTranscriptMediaIds) continue
+            if (explicitCourse != null && item.course != null && item.course != explicitCourse) continue
+            if (uploadLocalTranscriptToSafTreeIfNeeded(config.treeUri, item)) {
+                uploadedTranscripts += 1
+            }
+        }
+
+        emit(
+            SyncProgress.Done(
+                newAudio = newAudioCount,
+                newTranscripts = newTranscriptCount,
+                failed = 0,
+                uploadedTranscripts = uploadedTranscripts,
+            ),
+        )
+    }
+
+    private suspend fun uploadLocalTranscriptToSafTreeIfNeeded(
+        treeUri: Uri,
+        item: MediaItemEntity,
+    ): Boolean {
+        val mediaId = MediaId(item.id)
+        val existingTranscriptRecords = driveFileDao?.getByMediaId(item.id)
+            .orEmpty()
+            .filter { it.kind == DriveFileKind.TRANSCRIPT.name }
+        val latestSyncedMs = existingTranscriptRecords.maxOfOrNull { it.modifiedTime }
+
+        val localJsonFile = mediaFileLocator.transcriptFileFor(mediaId, "chunkflow.json")
+        val pairs = loadActiveChunkTranscriptPairs(item.id)
+        if (pairs.isEmpty() && !localJsonFile.exists()) {
+            return false
+        }
+
+        val hasNewerUserEdit = latestSyncedMs != null &&
+            pairs.any { (_, transcript) -> transcript.userEdited && transcript.createdAt > latestSyncedMs }
+        val hasNewerLocalFile = latestSyncedMs != null &&
+            localJsonFile.exists() &&
+            localJsonFile.lastModified() > latestSyncedMs
+        val shouldUpload = latestSyncedMs == null || hasNewerUserEdit || hasNewerLocalFile
+        if (!shouldUpload) {
+            return false
+        }
+
+        val jsonBytes = if (pairs.isNotEmpty() && (!localJsonFile.exists() || hasNewerUserEdit)) {
+            val built = buildLocalTranscriptJsonBytes(item, pairs) ?: return false
+            writeTranscriptBytesAtomically(localJsonFile, built)
+            built
+        } else if (localJsonFile.exists()) {
+            runCatching { localJsonFile.readBytes() }.getOrNull() ?: return false
+        } else {
+            val built = buildLocalTranscriptJsonBytes(item, pairs) ?: return false
+            writeTranscriptBytesAtomically(localJsonFile, built)
+            built
+        }
+
+        val uploadFileName = "${sanitizeDisplayName(item.title).ifBlank { item.id }}.chunkflow.json"
+        if (!writeTranscriptJsonToSafTree(treeUri, uploadFileName, jsonBytes)) {
+            return false
+        }
+
+        val recordedModifiedMs = max(clock(), localJsonFile.lastModified())
+        driveFileDao?.upsert(
+            DriveFileEntity(
+                driveFileId = "saf-transcript:${item.id}",
+                kind = DriveFileKind.TRANSCRIPT.name,
+                course = item.course.orEmpty(),
+                modifiedTime = recordedModifiedMs,
+                sha256 = null,
+                mediaId = item.id,
+            ),
+        )
+        return true
+    }
+
+    private fun writeTranscriptJsonToSafTree(
+        treeUri: Uri,
+        fileName: String,
+        jsonBytes: ByteArray,
+    ): Boolean = runCatching {
+        if (!isTreeUriSafe(treeUri)) return false
+        val rootDocId = DocumentsContract.getTreeDocumentId(treeUri) ?: return false
+        val rootDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId) ?: return false
+
+        val transcriptionDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = rootDocId,
+            targetName = TRANSCRIPTION_DIR_NAME,
+            requireDirectory = true,
+        ) ?: run {
+            val createdDirUri = DocumentsContract.createDocument(
+                context.contentResolver,
+                rootDocUri,
+                DocumentsContract.Document.MIME_TYPE_DIR,
+                TRANSCRIPTION_DIR_NAME,
+            ) ?: return false
+            DocumentsContract.getDocumentId(createdDirUri)
+        }
+
+        val existingFileDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = transcriptionDocId,
+            targetName = fileName,
+            requireDirectory = false,
+        )
+        val targetDocUri = if (existingFileDocId != null) {
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, existingFileDocId)
+        } else {
+            val transcriptionDirUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, transcriptionDocId)
+            DocumentsContract.createDocument(
+                context.contentResolver,
+                transcriptionDirUri,
+                "application/json",
+                fileName,
+            )
+        } ?: return false
+
+        val outStream = context.contentResolver.openOutputStream(targetDocUri, "wt")
+            ?: context.contentResolver.openOutputStream(targetDocUri)
+            ?: return false
+        outStream.use { out ->
+            out.write(jsonBytes)
+            out.flush()
+        }
+        true
+    }.getOrDefault(false)
+
+    private fun findChildDocumentIdByName(
+        treeUri: Uri,
+        parentDocId: String,
+        targetName: String,
+        requireDirectory: Boolean,
+    ): String? = runCatching {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        )
+        context.contentResolver.query(childrenUri, projection, null, null, null)?.use { c ->
+            val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            while (c.moveToNext()) {
+                val docId = if (idIdx >= 0 && !c.isNull(idIdx)) c.getString(idIdx) else continue
+                val name = if (nameIdx >= 0 && !c.isNull(nameIdx)) c.getString(nameIdx) else continue
+                val mime = if (mimeIdx >= 0 && !c.isNull(mimeIdx)) c.getString(mimeIdx) else null
+                val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                if (isDir == requireDirectory && name.equals(targetName, ignoreCase = requireDirectory)) {
+                    return docId
+                }
+            }
+        }
+        null
+    }.getOrNull()
+
     private fun mapDriveErrorToSyncError(error: DriveError): SyncError = when (error) {
         DriveError.AUTH -> SyncError.NOT_AUTHORIZED
 
@@ -1875,6 +2337,7 @@ class DefaultLibraryRepository(
         private const val MAX_TITLE_CODE_POINTS: Int = 200
         private const val DEFAULT_UNTITLED_NAME: String = "Untitled"
         private const val TRANSCRIPTION_DIR_NAME: String = "transcription"
+        private const val LINKED_SYNC_PROPERTIES_FILE_NAME: String = "drive_sync_link.properties"
         private const val MAX_TREE_DEPTH: Int = 2
         private const val MAX_EXPORT_SEGMENT_CHARS: Int = 2_000
 

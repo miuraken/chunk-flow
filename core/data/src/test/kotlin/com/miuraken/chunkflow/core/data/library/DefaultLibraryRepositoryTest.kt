@@ -121,6 +121,7 @@ class DefaultLibraryRepositoryTest {
         context = RuntimeEnvironment.getApplication()
         File(context.filesDir, "media").deleteRecursively()
         File(context.filesDir, "analysis").deleteRecursively()
+        File(context.filesDir, "drive_sync_link.properties").delete()
 
         itemStateDao = InMemoryItemStateDao()
         chunkDao = InMemoryChunkDao()
@@ -519,7 +520,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `import_サイズ上限2GBを超える場合はTOO_LARGEで失敗する`() = runTest {
+    fun `import_サイズ上限2GBを超えるファイルはスキップしてDoneを返す`() = runTest {
         val overLimitSize = DefaultLibraryRepository.MAX_AUDIO_SIZE_BYTES + 1L
         val uri = registerContent(
             id = "huge",
@@ -530,7 +531,16 @@ class DefaultLibraryRepositoryTest {
         val repo = createRepository()
         val events = repo.import(listOf(uri)).toList()
 
-        assertEquals(listOf(ImportProgress.Failed(ImportError.TOO_LARGE)), events)
+        assertEquals(
+            listOf<ImportProgress>(
+                ImportProgress.Done(
+                    mediaIds = emptyList(),
+                    duplicates = 0,
+                    transcriptsAttached = 0,
+                ),
+            ),
+            events,
+        )
         assertTrue(repo.observeItems().first().isEmpty())
     }
 
@@ -552,7 +562,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `import_非対応形式の場合は一時ファイルを削除してUNSUPPORTED_FORMATを返す`() = runTest {
+    fun `import_非対応形式の場合は一時ファイルを削除してスキップしDoneを返す`() = runTest {
         inspectHandler = { null }
         val bytes = "corrupted-or-unsupported-bytes".encodeToByteArray()
         val uri = registerContent("bad", "corrupted.mp3", bytes.size.toLong(), bytes)
@@ -561,7 +571,14 @@ class DefaultLibraryRepositoryTest {
         val events = repo.import(listOf(uri)).toList()
 
         val last = events.last()
-        assertEquals(ImportProgress.Failed(ImportError.UNSUPPORTED_FORMAT), last)
+        assertEquals(
+            ImportProgress.Done(
+                mediaIds = emptyList(),
+                duplicates = 0,
+                transcriptsAttached = 0,
+            ),
+            last,
+        )
         assertTrue(repo.observeItems().first().isEmpty())
         assertTrue(mediaFileLocator.mediaDir.listFiles().orEmpty().isEmpty())
     }
@@ -781,7 +798,7 @@ class DefaultLibraryRepositoryTest {
             bytes = bytes,
             mimeType = mimeType,
         )
-        shadowOf(context.contentResolver).registerInputStream(uri, ByteArrayInputStream(bytes))
+        shadowOf(context.contentResolver).registerInputStreamSupplier(uri) { ByteArrayInputStream(bytes) }
         return uri
     }
 
@@ -810,7 +827,7 @@ class DefaultLibraryRepositoryTest {
                 bytes = bytes,
                 mimeType = "audio/mpeg",
             )
-            shadowOf(context.contentResolver).registerInputStream(docUri, ByteArrayInputStream(bytes))
+            shadowOf(context.contentResolver).registerInputStreamSupplier(docUri) { ByteArrayInputStream(bytes) }
             rootChildren += TestContentProvider.ChildRow(
                 documentId = docId,
                 displayName = name,
@@ -837,7 +854,7 @@ class DefaultLibraryRepositoryTest {
                     bytes = bytes,
                     mimeType = "application/json",
                 )
-                shadowOf(context.contentResolver).registerInputStream(docUri, ByteArrayInputStream(bytes))
+                shadowOf(context.contentResolver).registerInputStreamSupplier(docUri) { ByteArrayInputStream(bytes) }
                 transChildren += TestContentProvider.ChildRow(
                     documentId = docId,
                     displayName = name,
@@ -1170,6 +1187,174 @@ class DefaultLibraryRepositoryTest {
 
         val fileUri = Uri.parse("file:///sdcard/out.srt")
         assertFalse(repo.writeExportedTranscriptToUri(mediaId, TranscriptExportFormat.SRT, fileUri))
+    }
+
+    @Test
+    fun `import_コース名と言語ペアを指定して取り込むとフォルダ名やJSON内の言語よりユーザー指定値が優先される`() = runTest {
+        val audioBytes = "custom-course-lang-audio".encodeToByteArray()
+        val jsonBytes = """{"createdAt":"2026-10-14T12:00:00Z"}""".encodeToByteArray()
+        val treeUri = registerTreeDirectory(
+            rootDocId = "primary:ChunkFlow/folder-name-to-override",
+            rootDisplayName = "folder-name-to-override",
+            audioFiles = listOf("ep01.mp3" to audioBytes),
+            transcriptionFiles = listOf("ep01.chunkflow.json" to jsonBytes),
+        )
+
+        // JSON 側は ko / ja だが、ユーザー指定は fr / en
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = null,
+                    audioFileName = "ep01.mp3",
+                    durationMs = 120_000L,
+                    languages = LanguagePair(LanguageTag("ko"), LanguageTag("ja")),
+                    generator = EngineId("whisper"),
+                    segments = listOf(
+                        TranscriptSegment(
+                            startMs = 500L,
+                            endMs = 2_000L,
+                            language = LanguageTag("fr"),
+                            languageConfidence = 0.99f,
+                            text = "Bonjour",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val repo = createRepository()
+        val explicitLanguages = LanguagePair(target = LanguageTag("fr"), base = LanguageTag("en"))
+        val done = repo.import(
+            uris = listOf(treeUri),
+            course = "  French_Pod_101  ",
+            languages = explicitLanguages,
+        ).toList().last() as ImportProgress.Done
+
+        assertEquals(1, done.mediaIds.size)
+        assertEquals(1, done.transcriptsAttached)
+
+        val mediaId = done.mediaIds.single()
+        val item = repo.observeItem(mediaId).first()
+        assertNotNull(item)
+        assertEquals("French_Pod_101", item.course)
+        assertEquals(explicitLanguages, item.languagePair)
+    }
+
+    @Test
+    fun `import_読み込めないファイルや非対応ファイルが混在していてもスキップして有効な音声だけを取り込む`() = runTest {
+        val validAudioBytes = "valid-batch-audio-payload".encodeToByteArray()
+        val unreadableBytes = "unreadable-pdf-or-ds-store".encodeToByteArray()
+
+        val validUri = registerContent(
+            id = "batch_valid",
+            displayName = "valid_lesson.mp3",
+            sizeBytes = validAudioBytes.size.toLong(),
+            bytes = validAudioBytes,
+        )
+        val unreadableUri = registerContent(
+            id = "batch_unreadable",
+            displayName = "notes.pdf",
+            sizeBytes = unreadableBytes.size.toLong(),
+            bytes = unreadableBytes,
+            mimeType = "application/pdf",
+        )
+        val missingStreamUri = Uri.parse("content://${TestContentProvider.AUTHORITY}/missing_stream")
+        TestContentProvider.entries[missingStreamUri] = TestContentProvider.Entry(
+            displayName = "broken.mp3",
+            sizeBytes = 128L,
+            bytes = ByteArray(0),
+            mimeType = "audio/mpeg",
+        )
+        // missingStreamUri には InputStream を登録しない（openInputStream が null -> ImportError.IO）
+
+        inspectHandler = { file ->
+            if (file.readBytes().contentEquals(validAudioBytes)) {
+                AudioFormatInfo(
+                    mimeType = "audio/mpeg",
+                    extension = "mp3",
+                    durationMs = 90_000L,
+                    sampleRateHz = 44_100,
+                )
+            } else {
+                null
+            }
+        }
+
+        val repo = createRepository()
+        val events = repo.import(listOf(unreadableUri, missingStreamUri, validUri)).toList()
+        val done = events.last() as ImportProgress.Done
+
+        assertEquals(1, done.mediaIds.size)
+        assertEquals(0, done.duplicates)
+        val item = repo.observeItem(done.mediaIds.single()).first()
+        assertNotNull(item)
+        assertEquals("valid_lesson", item.title)
+        assertEquals(1, mediaFileLocator.mediaDir.listFiles().orEmpty().size)
+    }
+
+    @Test
+    fun `syncFromLinkedFolder_DriveRESTが未認可でも登録したSAFフォルダから音声と文字起こしを同期できる`() = runTest {
+        val audioBytes = "linked-folder-audio-01".encodeToByteArray()
+        val jsonBytes = """{"createdAt":"2026-10-14T12:00:00Z"}""".encodeToByteArray()
+        val treeUri = registerTreeDirectory(
+            rootDocId = "primary:Drive/ChunkFlow/Cantonese101",
+            rootDisplayName = "Cantonese101",
+            audioFiles = listOf("dialog01.mp3" to audioBytes),
+            transcriptionFiles = listOf("dialog01.chunkflow.json" to jsonBytes),
+        )
+
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = sha256Hex(audioBytes),
+                    audioFileName = "dialog01.mp3",
+                    durationMs = 120_000L,
+                    languages = LanguagePair(LanguageTag("yue"), LanguageTag("ja")),
+                    generator = EngineId("qwen3-asr"),
+                    segments = listOf(
+                        TranscriptSegment(
+                            startMs = 500L,
+                            endMs = 2_500L,
+                            language = LanguageTag("yue"),
+                            languageConfidence = 0.96f,
+                            text = "食咗飯未呀",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val repo = createRepository()
+        assertFalse(repo.hasLinkedSyncFolder())
+
+        // driveSyncClient.coursesResult は既定で DriveListResult.Failure(DriveError.AUTH)
+        val customLangs = LanguagePair(target = LanguageTag("yue"), base = LanguageTag("en"))
+        val events = repo.syncFromLinkedFolder(
+            treeUri = treeUri,
+            course = "Cantonese_Course",
+            languages = customLangs,
+        ).toList()
+
+        assertTrue(repo.hasLinkedSyncFolder())
+        val done = events.last() as SyncProgress.Done
+        assertEquals(1, done.newAudio)
+        assertEquals(1, done.newTranscripts)
+        assertEquals(0, done.failed)
+
+        val items = repo.observeItems().first()
+        assertEquals(1, items.size)
+        val item = items.single()
+        assertEquals("Cantonese_Course", item.course)
+        assertEquals(customLangs, item.languagePair)
+
+        // 2 回目は treeUri = null で呼んでも保存済みのリンク設定で同期でき、重複ダウンロードしないこと
+        val secondDone = repo.syncFromLinkedFolder().toList().last() as SyncProgress.Done
+        assertEquals(0, secondDone.newAudio)
+        assertEquals(0, secondDone.newTranscripts)
     }
 
     private class InMemoryDriveFileDao : DriveFileDao {
