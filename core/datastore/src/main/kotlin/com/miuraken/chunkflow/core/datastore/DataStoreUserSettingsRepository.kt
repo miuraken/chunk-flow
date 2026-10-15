@@ -2,6 +2,7 @@ package com.miuraken.chunkflow.core.datastore
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
@@ -142,6 +143,12 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setShowTargetRomanization(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[KEY_SHOW_TARGET_ROMANIZATION] = enabled
+        }
+    }
+
     private fun Preferences.toUserSettings(): UserSettings {
         val defaults = UserSettings()
         val defaultSeg = defaults.defaultSegmentationParams
@@ -222,6 +229,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
                 thresholdRatio = thresholdRatio,
             ),
             enabledLanguages = enabledLanguages,
+            showTargetRomanization = this[KEY_SHOW_TARGET_ROMANIZATION] ?: defaults.showTargetRomanization,
         )
     }
 
@@ -246,6 +254,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_SEG_POST_PADDING_MS = intPreferencesKey("seg_post_padding_ms")
         val KEY_SEG_THRESHOLD_RATIO = floatPreferencesKey("seg_threshold_ratio")
         val KEY_ENABLED_LANGUAGES = stringPreferencesKey("enabled_languages")
+        val KEY_SHOW_TARGET_ROMANIZATION = booleanPreferencesKey("show_target_romanization")
 
         fun encodeAutoPause(autoPause: AutoPause): String = when (autoPause) {
             AutoPause.Off -> AUTO_PAUSE_OFF

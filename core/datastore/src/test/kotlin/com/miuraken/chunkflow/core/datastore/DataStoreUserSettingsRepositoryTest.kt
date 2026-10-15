@@ -85,6 +85,11 @@ class DataStoreUserSettingsRepositoryTest {
         val customLangs = setOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko"))
         repository.setEnabledLanguages(customLangs)
         assertEquals(customLangs, repository.settings.first().enabledLanguages)
+
+        repository.setShowTargetRomanization(true)
+        assertEquals(true, repository.settings.first().showTargetRomanization)
+        repository.setShowTargetRomanization(false)
+        assertEquals(false, repository.settings.first().showTargetRomanization)
     }
 
     @Test

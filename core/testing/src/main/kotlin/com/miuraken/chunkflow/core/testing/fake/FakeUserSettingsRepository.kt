@@ -64,4 +64,8 @@ class FakeUserSettingsRepository(
         require(languages.isNotEmpty()) { "enabledLanguages must not be empty" }
         state.update { it.copy(enabledLanguages = languages) }
     }
+
+    override suspend fun setShowTargetRomanization(enabled: Boolean) {
+        state.update { it.copy(showTargetRomanization = enabled) }
+    }
 }
