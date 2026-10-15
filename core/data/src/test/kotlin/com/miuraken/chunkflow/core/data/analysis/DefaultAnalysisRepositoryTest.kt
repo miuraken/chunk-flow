@@ -40,6 +40,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -1327,5 +1328,280 @@ class DefaultAnalysisRepositoryTest {
         assertNotNull(updated)
         assertEquals("自動認識テキスト", updated.text)
         assertEquals(LanguageTag("ja"), updated.language)
+    }
+
+    @Test
+    fun `retranscribeChunk_キャッシュを破棄してforceRefreshかつhighPriorityで再認識し手動言語設定時はその言語で再認識する`() = runTest {
+        data class CallRecord(
+            val startMs: Long,
+            val endMs: Long,
+            val languagePair: LanguagePair?,
+            val forceRefresh: Boolean,
+            val highPriority: Boolean,
+        )
+
+        val calls = mutableListOf<CallRecord>()
+        var callCounter = 0
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+                audioFile = audioFile,
+                startMs = startMs,
+                endMs = endMs,
+                languagePair = languagePair,
+                forceRefresh = false,
+                highPriority = false,
+            )
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                forceRefresh: Boolean,
+                highPriority: Boolean,
+            ): OnDeviceChunkTranscriptionResult {
+                callCounter += 1
+                calls += CallRecord(
+                    startMs = startMs,
+                    endMs = endMs,
+                    languagePair = languagePair,
+                    forceRefresh = forceRefresh,
+                    highPriority = highPriority,
+                )
+                val lang = languagePair?.target ?: LanguageTag("ko")
+                return OnDeviceChunkTranscriptionResult(
+                    text = "再認識_${callCounter}_${lang.value}",
+                    language = lang,
+                    confidence = 0.95f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_retranscribe_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Retranscribe Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        val audioFile = mediaFileLocator.audioFileFor(mediaId, "mp3")
+        audioFile.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+
+        val chunkId = ChunkId(1201L)
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = chunkId.value,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 2_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+
+        // 初期状態: userEdited = false の既存文字起こしを配置し、言語トグルで chunkTranscriptByLangCache にも載せる
+        transcriptDao.upsert(
+            Transcript(
+                chunkId = chunkId,
+                text = "初期テキスト",
+                language = LanguageTag("ko"),
+                languageConfidence = 0.80f,
+                engine = EngineId("android-on-device-speech"),
+                userEdited = false,
+            ).toEntity(),
+        )
+
+        // 1. userEdited == false の状態で retranscribeChunk を呼ぶと、mediaItem の languagePair (ko/ja) かつ forceRefresh=true, highPriority=true で再認識される
+        repository.retranscribeChunk(mediaId, chunkId)
+        assertEquals(1, calls.size)
+        assertEquals(
+            CallRecord(
+                startMs = 0L,
+                endMs = 2_000L,
+                languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+                forceRefresh = true,
+                highPriority = true,
+            ),
+            calls.last(),
+        )
+        val afterFirstRetranscribe = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(afterFirstRetranscribe)
+        assertEquals("再認識_1_ko", afterFirstRetranscribe.text)
+        assertFalse(afterFirstRetranscribe.userEdited)
+
+        // 2. ユーザーが手動で ja に言語変更する（userEdited = true, language = "ja" になり、ja と ko がキャッシュされる）
+        repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ja"))
+        assertEquals(2, calls.size)
+        assertEquals("再認識_2_ja", repository.observeTranscripts(mediaId).first()[chunkId]?.text)
+
+        // 3. userEdited == true かつ language == "ja" の状態で retranscribeChunk を呼ぶと、
+        //    キャッシュを破棄して手動指定言語 (target=ja, base=null) で強制再認識される
+        repository.retranscribeChunk(mediaId, chunkId)
+        assertEquals(3, calls.size)
+        assertEquals(
+            CallRecord(
+                startMs = 0L,
+                endMs = 2_000L,
+                languagePair = LanguagePair(target = LanguageTag("ja"), base = null),
+                forceRefresh = true,
+                highPriority = true,
+            ),
+            calls.last(),
+        )
+        val afterManualRetranscribe = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(afterManualRetranscribe)
+        assertEquals("再認識_3_ja", afterManualRetranscribe.text)
+        assertEquals(LanguageTag("ja"), afterManualRetranscribe.language)
+        assertTrue(afterManualRetranscribe.userEdited)
+
+        // 4. retranscribeChunk によって旧キャッシュ ("再認識_1_ko") も破棄されているため、ko に切り替えるとキャッシュヒットせず新規認識が走る
+        repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ko"))
+        assertEquals(4, calls.size)
+        assertEquals("再認識_4_ko", repository.observeTranscripts(mediaId).first()[chunkId]?.text)
+    }
+
+    @Test
+    fun `triggerLookaheadAt実行中にretranscribeChunkとupdateChunkLanguageが呼ばれたとき残りの先読みチャンクより先に割り込んで実行される`() = runTest {
+        val firstChunkStarted = CompletableDeferred<Unit>()
+        val releaseFirstChunk = CompletableDeferred<Unit>()
+        val executionLog = mutableListOf<String>()
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+                audioFile = audioFile,
+                startMs = startMs,
+                endMs = endMs,
+                languagePair = languagePair,
+                forceRefresh = false,
+                highPriority = false,
+            )
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                forceRefresh: Boolean,
+                highPriority: Boolean,
+            ): OnDeviceChunkTranscriptionResult {
+                val tag = if (forceRefresh) {
+                    "retranscribe:$startMs"
+                } else if (highPriority) {
+                    "langToggle:$startMs:${languagePair?.target?.value}"
+                } else {
+                    "lookahead:$startMs"
+                }
+                executionLog += tag
+                if (startMs == 0L && !highPriority) {
+                    firstChunkStarted.complete(Unit)
+                    releaseFirstChunk.await()
+                }
+                return OnDeviceChunkTranscriptionResult(
+                    text = "Text($tag)",
+                    language = languagePair?.target ?: LanguageTag("ko"),
+                    confidence = 0.92f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_priority_preempt_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Priority Preempt Test",
+                durationMs = 8_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        val audioFile = mediaFileLocator.audioFileFor(mediaId, "mp3")
+        audioFile.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+
+        // 5 個の AUTO チャンク (1300L..1304L, startMs = 0, 1000, 2000, 3000, 4000)
+        val chunks = (0 until 5).map { idx ->
+            ChunkEntity(
+                id = (1300 + idx).toLong(),
+                mediaId = mediaId.value,
+                startMs = idx * 1_000L,
+                endMs = idx * 1_000L + 800L,
+                origin = ChunkOrigin.AUTO.name,
+            )
+        }
+        chunkDao.insertAll(chunks)
+
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+
+        // 1. 先読みを開始し、1件目のチャンク (1300L: startMs=0) の認識中に停止させる
+        val lookaheadJob = launch(dispatcher) {
+            repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(1300L))
+        }
+        firstChunkStarted.await()
+
+        // 2. 先読み 1件目の実行中に、後方のチャンク 1303L (startMs=3000) の強制再文字起こしと
+        //    チャンク 1304L (startMs=4000) の手動言語切替を要求する
+        val retranscribeJob = launch(dispatcher) {
+            repository.retranscribeChunk(mediaId, ChunkId(1303L))
+        }
+        val langToggleJob = launch(dispatcher) {
+            repository.updateChunkLanguage(mediaId, ChunkId(1304L), LanguageTag("ja"))
+        }
+
+        // 3. 先読み 1件目を完了させると、先読みの残り (1000ms, 2000ms) より前に
+        //    高優先度の retranscribe (3000ms) と langToggle (4000ms) が割り込んで実行される
+        releaseFirstChunk.complete(Unit)
+        retranscribeJob.join()
+        langToggleJob.join()
+        lookaheadJob.join()
+
+        assertEquals(
+            listOf(
+                "lookahead:0",
+                "retranscribe:3000",
+                "langToggle:4000:ja",
+                "lookahead:1000",
+                "lookahead:2000",
+            ),
+            executionLog,
+        )
+
+        val transcripts = repository.observeTranscripts(mediaId).first()
+        assertEquals("Text(lookahead:0)", transcripts[ChunkId(1300L)]?.text)
+        assertEquals("Text(lookahead:1000)", transcripts[ChunkId(1301L)]?.text)
+        assertEquals("Text(lookahead:2000)", transcripts[ChunkId(1302L)]?.text)
+        assertEquals("Text(retranscribe:3000)", transcripts[ChunkId(1303L)]?.text)
+        assertEquals("Text(langToggle:4000:ja)", transcripts[ChunkId(1304L)]?.text)
+        assertEquals(LanguageTag("ja"), transcripts[ChunkId(1304L)]?.language)
     }
 }

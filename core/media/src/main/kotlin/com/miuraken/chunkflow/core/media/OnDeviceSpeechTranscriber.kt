@@ -35,8 +35,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -77,6 +75,26 @@ interface OnDeviceChunkTranscriber {
         endMs: Long,
         languagePair: LanguagePair? = null,
     ): OnDeviceChunkTranscriptionResult?
+
+    /**
+     * 音声ファイル [audioFile] の `[startMs, endMs]` 区間を 16kHz モノラル 16-bit PCM に切り出して端末内音声認識を行う。
+     *
+     * @param forceRefresh `true` の場合は対象チャンクのキャッシュを破棄して強制的に再認識する。
+     * @param highPriority `true` の場合はバックグラウンド先読みより優先して認識ロックを取得する。
+     */
+    suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+    )
 
     /**
      * 切り出し済みの 16kHz モノラル 16-bit リトルエンディアン PCM（[pcm16LeBytes]）に対して端末内音声認識を行う。
@@ -747,7 +765,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         ): Boolean = size > MAX_STT_CACHE_ENTRIES
     }
 
-    private val recognitionMutex = Mutex()
+    private val recognitionLock = PriorityRecognitionLock()
     private var lastPipeAttemptCompletedRealtimeMs: Long = 0L
 
     override fun isAvailable(): Boolean = onDeviceAvailabilityChecker() || standardAvailabilityChecker()
@@ -757,6 +775,22 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         startMs: Long,
         endMs: Long,
         languagePair: LanguagePair?,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = false,
+        highPriority = false,
+    )
+
+    override suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || startMs < 0L || endMs <= startMs || !audioFile.isFile) {
             return null
@@ -772,7 +806,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val baseLang = languagePair?.base?.takeIf {
             targetLang == null || !it.value.equals(targetLang.value, ignoreCase = true)
         }
-        if (targetLang == null || baseLang == null) {
+        if (forceRefresh) {
+            evictCachedSttResults(cacheScope)
+        } else if (targetLang == null || baseLang == null) {
             val singleLang = targetLang ?: baseLang
             val cached = getCachedSttResult(cacheScope, singleLang)
             if (cached != null) {
@@ -805,6 +841,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
             languagePair = languagePair,
             cacheScope = cacheScope,
+            forceRefresh = forceRefresh,
+            highPriority = highPriority,
         )
     }
 
@@ -828,6 +866,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             sampleRateHz = sampleRateHz,
             languagePair = languagePair,
             cacheScope = syntheticScope,
+            forceRefresh = false,
+            highPriority = false,
         )
     }
 
@@ -836,6 +876,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         sampleRateHz: Int,
         languagePair: LanguagePair?,
         cacheScope: ChunkAudioCacheScope,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || pcm16LeBytes.isEmpty() || sampleRateHz <= 0) {
             return null
@@ -854,31 +896,45 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
         val chunkDurationMs = ((pcm16LeBytes.size / 2).toLong() * 1_000L) / sampleRateHz.toLong()
 
-        if (targetLang == null || baseLang == null) {
-            val singleLang = targetLang ?: baseLang
-            getCachedSttResult(cacheScope, singleLang)?.let { cached ->
-                logInfo(
-                    "singleLang cacheHit chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: "default"}",
-                )
-                return cached
-            }
-        } else {
-            getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
-                return cachedBoth
+        if (!forceRefresh) {
+            if (targetLang == null || baseLang == null) {
+                val singleLang = targetLang ?: baseLang
+                getCachedSttResult(cacheScope, singleLang)?.let { cached ->
+                    logInfo(
+                        "singleLang cacheHit chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: "default"}",
+                    )
+                    return cached
+                }
+            } else {
+                getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
+                    return cachedBoth
+                }
             }
         }
 
-        val lidPrediction = if (targetLang != null && baseLang != null && languageDetector != null) {
-            val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
-            runCatching {
-                languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
-            }.getOrNull()
-        } else {
-            null
-        }
+        return recognitionLock.withLock(highPriority = highPriority) {
+            if (forceRefresh) {
+                evictCachedSttResults(cacheScope)
+            } else if (targetLang == null || baseLang == null) {
+                val singleLang = targetLang ?: baseLang
+                getCachedSttResult(cacheScope, singleLang)?.let { cached ->
+                    return@withLock cached
+                }
+            } else {
+                getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
+                    return@withLock cachedBoth
+                }
+            }
 
-        return recognitionMutex.withLock {
             if (targetLang != null && baseLang != null) {
+                val lidPrediction = if (languageDetector != null) {
+                    val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
+                    runCatching {
+                        languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
+                    }.getOrNull()
+                } else {
+                    null
+                }
                 if (lidPrediction != null) {
                     transcribeWithWhisperLidPrediction(
                         pcm16LeBytes = pcm16LeBytes,
@@ -903,9 +959,6 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 }
             } else {
                 val singleLang = targetLang ?: baseLang
-                getCachedSttResult(cacheScope, singleLang)?.let { cached ->
-                    return@withLock cached
-                }
                 val bcp47Tag = singleLang?.value?.let(::toBcp47LocaleTag)
                     ?: toBcp47LocaleTag(Locale.getDefault().toLanguageTag())
                 val attempt = executeAttempt(
@@ -1233,6 +1286,22 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
     }
 
+    private fun evictCachedSttResults(cacheScope: ChunkAudioCacheScope) {
+        synchronized(sttCacheLock) {
+            val iterator = fullChunkSttCache.entries.iterator()
+            while (iterator.hasNext()) {
+                val key = iterator.next().key
+                if (key.audioPath == cacheScope.audioPath &&
+                    key.lastModified == cacheScope.lastModified &&
+                    key.startMs == cacheScope.startMs &&
+                    key.endMs == cacheScope.endMs
+                ) {
+                    iterator.remove()
+                }
+            }
+        }
+    }
+
     private suspend fun executeAttempt(
         pcm16LeBytes: ByteArray,
         sampleRateHz: Int,
@@ -1540,6 +1609,80 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             } else {
                 null
             }
+        }
+    }
+}
+
+/**
+ * `highPriority = true` の待機コルーチンが `highPriority = false`（バックグラウンド先読み）の待機コルーチンより
+ * 必ず先にロックを取得できる優先度付き非同期排他ロック。
+ */
+internal class PriorityRecognitionLock {
+    private val stateLock = Any()
+    private var isLocked = false
+    private val highPriorityQueue = ArrayDeque<CompletableDeferred<Unit>>()
+    private val normalPriorityQueue = ArrayDeque<CompletableDeferred<Unit>>()
+
+    suspend fun <T> withLock(highPriority: Boolean, block: suspend () -> T): T {
+        acquire(highPriority)
+        return try {
+            block()
+        } finally {
+            release()
+        }
+    }
+
+    private suspend fun acquire(highPriority: Boolean) {
+        val waiter: CompletableDeferred<Unit>? = synchronized(stateLock) {
+            if (!isLocked && highPriorityQueue.isEmpty() && normalPriorityQueue.isEmpty()) {
+                isLocked = true
+                null
+            } else {
+                CompletableDeferred<Unit>().also { deferred ->
+                    if (highPriority) {
+                        highPriorityQueue.addLast(deferred)
+                    } else {
+                        normalPriorityQueue.addLast(deferred)
+                    }
+                }
+            }
+        }
+        if (waiter == null) return
+        try {
+            waiter.await()
+        } catch (ce: CancellationException) {
+            var acquiredBeforeCancel = false
+            synchronized(stateLock) {
+                val removed = if (highPriority) {
+                    highPriorityQueue.remove(waiter)
+                } else {
+                    normalPriorityQueue.remove(waiter)
+                }
+                if (!removed && waiter.isCompleted) {
+                    acquiredBeforeCancel = true
+                }
+            }
+            if (acquiredBeforeCancel) {
+                release()
+            }
+            throw ce
+        }
+    }
+
+    private fun release() {
+        while (true) {
+            val next: CompletableDeferred<Unit>? = synchronized(stateLock) {
+                val waiter = highPriorityQueue.removeFirstOrNull()
+                    ?: normalPriorityQueue.removeFirstOrNull()
+                if (waiter == null) {
+                    isLocked = false
+                    null
+                } else {
+                    waiter
+                }
+            }
+            if (next == null) return
+            if (next.complete(Unit)) return
         }
     }
 }

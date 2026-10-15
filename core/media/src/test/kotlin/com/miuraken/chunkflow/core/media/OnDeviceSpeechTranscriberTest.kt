@@ -15,6 +15,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
@@ -753,5 +757,212 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals(1, lidCalls)
         // 2秒プローブを行わず、LID が選んだ ja-JP でチャンク全体 (112,000 bytes) を 1 回だけ SpeechRecognizer に渡す
         assertEquals(listOf("ja-JP" to 112_000), runnerCalls)
+    }
+
+    @Test
+    fun `transcribeChunk_forceRefreshがtrueのときキャッシュを破棄して再認識しキャッシュを新しい結果で更新する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dummyFile = tempFolder.newFile("force_refresh_chunk.wav").apply { writeBytes(byteArrayOf(31, 32, 33, 34)) }
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val samples = FloatArray(outputSampleRate) { 0.3f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = 1_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/wav",
+                )
+            }
+        }
+
+        var attemptCount = 0
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, _, _ ->
+                attemptCount += 1
+                SpeechRecognitionAttemptResult(
+                    text = "認識結果_$attemptCount",
+                    confidence = 0.90f,
+                )
+            },
+        )
+
+        val langPair = LanguagePair(target = LanguageTag("ja"), base = null)
+
+        // 1回目: 初回認識で "認識結果_1" が返りキャッシュされる
+        val first = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_000L,
+            languagePair = langPair,
+            forceRefresh = false,
+            highPriority = false,
+        )
+        assertNotNull(first)
+        assertEquals("認識結果_1", first.text)
+        assertEquals(1, attemptCount)
+
+        // 2回目: forceRefresh = false ならキャッシュヒットし attemptRunner は呼ばれない
+        val cached = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_000L,
+            languagePair = langPair,
+            forceRefresh = false,
+            highPriority = false,
+        )
+        assertNotNull(cached)
+        assertEquals("認識結果_1", cached.text)
+        assertEquals(1, attemptCount)
+
+        // 3回目: forceRefresh = true ならキャッシュを破棄して再認識し "認識結果_2" が返る
+        val refreshed = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_000L,
+            languagePair = langPair,
+            forceRefresh = true,
+            highPriority = true,
+        )
+        assertNotNull(refreshed)
+        assertEquals("認識結果_2", refreshed.text)
+        assertEquals(2, attemptCount)
+
+        // 4回目: 再び forceRefresh = false で呼ぶと更新後のキャッシュ "認識結果_2" が返る
+        val afterRefreshCached = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 1_000L,
+            languagePair = langPair,
+            forceRefresh = false,
+            highPriority = false,
+        )
+        assertNotNull(afterRefreshCached)
+        assertEquals("認識結果_2", afterRefreshCached.text)
+        assertEquals(2, attemptCount)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `transcribeChunk_highPriorityがtrueのリクエストは待機中の通常優先度リクエストを追い越して先に実行される`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dummyFile = tempFolder.newFile("priority_queue.wav").apply { writeBytes(byteArrayOf(41, 42, 43, 44)) }
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                // 4秒分 (0..4000ms)
+                val samples = FloatArray(outputSampleRate * 4) { 0.3f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = 4_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/wav",
+                )
+            }
+        }
+
+        val firstAttemptStarted = CompletableDeferred<Unit>()
+        val releaseFirstAttempt = CompletableDeferred<Unit>()
+        val executionOrder = mutableListOf<String>()
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                executionOrder += bcp47Tag
+                if (bcp47Tag == "en-US") {
+                    firstAttemptStarted.complete(Unit)
+                    releaseFirstAttempt.await()
+                }
+                SpeechRecognitionAttemptResult(text = "Result:$bcp47Tag", confidence = 0.9f)
+            },
+        )
+
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+
+        // 1. 通常優先度 (en) が最初にロックを取得して実行中になる
+        val jobNormal1 = launch(dispatcher) {
+            transcriber.transcribeChunk(
+                audioFile = dummyFile,
+                startMs = 0L,
+                endMs = 1_000L,
+                languagePair = LanguagePair(target = LanguageTag("en"), base = null),
+                forceRefresh = false,
+                highPriority = false,
+            )
+        }
+        firstAttemptStarted.await()
+
+        // 2. 実行中に通常優先度 (ko, fr) が順番に待機キューへ入る
+        val jobNormal2 = launch(dispatcher) {
+            transcriber.transcribeChunk(
+                audioFile = dummyFile,
+                startMs = 1_000L,
+                endMs = 2_000L,
+                languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+                forceRefresh = false,
+                highPriority = false,
+            )
+        }
+        val jobNormal3 = launch(dispatcher) {
+            transcriber.transcribeChunk(
+                audioFile = dummyFile,
+                startMs = 2_000L,
+                endMs = 3_000L,
+                languagePair = LanguagePair(target = LanguageTag("fr"), base = null),
+                forceRefresh = false,
+                highPriority = false,
+            )
+        }
+
+        // 3. 後から高優先度 (ja) が到着する
+        val jobHigh = launch(dispatcher) {
+            transcriber.transcribeChunk(
+                audioFile = dummyFile,
+                startMs = 3_000L,
+                endMs = 4_000L,
+                languagePair = LanguagePair(target = LanguageTag("ja"), base = null),
+                forceRefresh = true,
+                highPriority = true,
+            )
+        }
+
+        // 4. 1件目を解放すると、待機していた ko/fr より先に高優先度の ja が実行される
+        releaseFirstAttempt.complete(Unit)
+        jobNormal1.join()
+        jobNormal2.join()
+        jobNormal3.join()
+        jobHigh.join()
+
+        assertEquals(
+            listOf("en-US", "ja-JP", "ko-KR", "fr-FR"),
+            executionOrder,
+        )
     }
 }
