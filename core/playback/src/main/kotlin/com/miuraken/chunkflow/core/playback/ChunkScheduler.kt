@@ -222,10 +222,11 @@ class ChunkScheduler(
     }
 
     /**
-     * 再生停止中にチャンクリストの項目がクリックされた際、指定した [chunkId] のチャンクのみを再生する。
+     * 再生停止中にチャンクリストの項目（または拡大波形のチャンク）がタップされた際、指定した [chunkId] のチャンクのみを再生する。
      *
-     * - 対象チャンクにリピートマークがついている場合は、ユーザが停止するまでそのチャンクのみを繰り返す。
-     * - リピートマークがついていない場合は、そのチャンクを 1 回だけ再生して終端で停止する。
+     * - 「リピート」が ON で、対象チャンクが選択されている（[PracticeSettings.repeatChunkIds]）場合は、ユーザが停止するまで
+     *   そのチャンクのみを繰り返す。
+     * - それ以外の場合は、そのチャンクを 1 回だけ再生して終端で停止する。
      */
     fun startSingleChunkPlayback(chunkId: ChunkId) {
         val targetChunk = chunks.firstOrNull { it.id == chunkId } ?: return
@@ -305,11 +306,11 @@ class ChunkScheduler(
             reschedule(minBoundaryAfterMs = resumeAfterMs)
             return
         }
+        // チャンクを選択しているときは、選択の外から再生を始めたら最初の選択チャンクへ移る（リピートの ON / OFF によらない）
         if (playWhenReady &&
             singleChunkPlaybackId == null &&
             _autoPauseEndsAtMs.value == null &&
-            practiceSettings.loop !is LoopMode.AbRange &&
-            practiceSettings.repeatCheckedOnly
+            practiceSettings.loop !is LoopMode.AbRange
         ) {
             val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
             if (repeatChunks.isNotEmpty()) {
@@ -351,8 +352,6 @@ class ChunkScheduler(
     private fun onPracticeSettingsUpdated(newSettings: PracticeSettings) {
         val oldLoop = practiceSettings.loop
         val oldAutoPause = practiceSettings.autoPause
-        val oldRepeatChunkIds = practiceSettings.repeatChunkIds
-        val oldRepeatCheckedOnly = practiceSettings.repeatCheckedOnly
         practiceSettings = newSettings
 
         if (!isUpdatingLoopInternally && oldLoop != newSettings.loop) {
@@ -367,28 +366,9 @@ class ChunkScheduler(
             return
         }
 
-        if (singleChunkPlaybackId == null &&
-            newSettings.loop !is LoopMode.AbRange &&
-            newSettings.repeatCheckedOnly &&
-            (oldRepeatChunkIds != newSettings.repeatChunkIds || !oldRepeatCheckedOnly)
-        ) {
-            val repeatChunks = chunks.filter { it.id in newSettings.repeatChunkIds }
-            if (repeatChunks.isNotEmpty()) {
-                val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
-                val isCurrentlyInSelected = repeatChunks.any { nowMs in it.startMs until it.endMs }
-                if (!isCurrentlyInSelected && _autoPauseEndsAtMs.value == null) {
-                    val target = repeatChunks.first()
-                    seekInternal(target.startMs)
-                    updateState(chunkId = target.id, autoPauseEndsAt = null)
-                    scheduleBoundaryMessage(
-                        payload = BoundaryPayload.ChunkEnd(target),
-                        persistent = false,
-                    )
-                    return
-                }
-            }
-        }
-
+        // チャンクの選択（repeatChunkIds）やリピートを変えても、再生位置はその場で動かさない
+        // （拡大波形を長押ししてなぞっている最中に表示が動かないように）。いまのチャンクの終端で次の選択チャンクへ移り、
+        // 停止中なら再生を始めたときに最初の選択チャンクへ移る（onPlayWhenReadyChanged）
         if (!isUpdatingLoopInternally) {
             reschedule()
         }
@@ -585,7 +565,7 @@ class ChunkScheduler(
                     PostChunkAction.PauseAtChunkEnd
                 }
             }
-            return if (chunk.id in practiceSettings.repeatChunkIds) {
+            return if (chunk.id in practiceSettings.repeatChunkIds && practiceSettings.repeatCheckedOnly) {
                 PostChunkAction.SeekToChunk(chunk)
             } else {
                 singleChunkPlaybackId = null
@@ -636,22 +616,18 @@ class ChunkScheduler(
             LoopMode.Off -> Unit
         }
 
-        // チェックボックスで選択されたチャンク（repeatChunkIds）の順次・無限リピート再生（repeatCheckedOnly が ON のとき）
-        val repeatChunks = if (practiceSettings.repeatCheckedOnly) {
-            chunks.filter { it.id in practiceSettings.repeatChunkIds }
-        } else {
-            emptyList()
-        }
+        // チェックボックス（拡大波形の長押し）で選択したチャンク（repeatChunkIds）を時系列の順に再生する。
+        // 最後の選択チャンクのあとは、リピートが ON なら最初へ戻り、OFF なら一時停止する
+        val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
         if (repeatChunks.isNotEmpty()) {
-            val nextTarget = if (chunk.id in practiceSettings.repeatChunkIds) {
-                val idx = repeatChunks.indexOfFirst { it.id == chunk.id }
-                if (idx >= 0 && idx + 1 < repeatChunks.size) {
-                    repeatChunks[idx + 1]
-                } else {
-                    repeatChunks.first()
-                }
+            val selectedIndex = repeatChunks.indexOfFirst { it.id == chunk.id }
+            val nextTarget: Chunk? = if (selectedIndex >= 0) {
+                repeatChunks.getOrNull(selectedIndex + 1)
             } else {
-                repeatChunks.firstOrNull { it.startMs >= chunk.endMs } ?: repeatChunks.first()
+                repeatChunks.firstOrNull { it.startMs >= chunk.endMs }
+            } ?: if (practiceSettings.repeatCheckedOnly) repeatChunks.first() else null
+            if (nextTarget == null) {
+                return PostChunkAction.PauseAtChunkEnd
             }
             return if (nextTarget.id != chunk.id && nextTarget.startMs == chunk.endMs) {
                 PostChunkAction.AdvanceAfter(chunk.endMs)

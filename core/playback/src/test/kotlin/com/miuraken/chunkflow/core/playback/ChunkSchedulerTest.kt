@@ -440,7 +440,7 @@ class ChunkSchedulerTest {
     }
 
     @Test
-    fun `RepeatChunkIds_複数チャンクにチェックを入れると選択チャンクのみを順番に無限ループ再生し解除で通常再生へ戻る`() {
+    fun `RepeatChunkIds_複数チャンクを選択すると選択チャンクだけを時系列の順に再生しリピートONで繰り返しOFFで1周して止まる`() {
         val chunk4 = Chunk(
             id = ChunkId(4L),
             startMs = 7_000L,
@@ -449,7 +449,7 @@ class ChunkSchedulerTest {
         )
         scheduler.setChunks(listOf(chunk1, chunk2, chunk3, chunk4))
 
-        // 現在位置 0ms (chunk1) の状態で chunk2 と chunk4 にチェックを入れ、repeatCheckedOnly を ON にすると、即座に最初の選択チャンク chunk2 へ移動する
+        // 停止中に chunk2 と chunk4 を選択し、リピートを ON にしても、再生位置（0ms、chunk1）はその場で動かさない
         practiceController.update {
             it.copy(
                 repeatChunkIds = setOf(chunk2.id, chunk4.id),
@@ -457,10 +457,14 @@ class ChunkSchedulerTest {
             )
         }
         pumpLoopers()
+        assertTrue(exoPlayer.currentPosition < chunk2.startMs)
+
+        // 再生を始めると、最初の選択チャンク chunk2 へ移る
+        exoPlayer.play()
+        pumpLoopers()
         assertEquals(chunk2.id, scheduler.currentChunkId.value)
         assertTrue(exoPlayer.currentPosition in chunk2.startMs..(chunk2.startMs + 200L))
 
-        exoPlayer.play()
         // chunk2 (2000..4500) 終端で chunk3 を飛ばして chunk4 (7000..9000) へシークする
         runUntil { scheduler.currentChunkId.value == chunk4.id }
         pumpLoopers()
@@ -472,18 +476,34 @@ class ChunkSchedulerTest {
         pumpLoopers()
         assertEquals(chunk2.id, scheduler.currentChunkId.value)
 
-        // 2周目も chunk2 -> chunk4 へループする
+        // 2周目も chunk2 -> chunk4 へ進む
         runUntil { scheduler.currentChunkId.value == chunk4.id }
         pumpLoopers()
         assertEquals(chunk4.id, scheduler.currentChunkId.value)
 
-        // repeatCheckedOnly を OFF にすると（またはすべてのチェックを外すと）通常再生に戻り、chunk2 終端で chunk3 へ進む
+        // リピートを OFF にすると、選択チャンクを 1 周だけ再生し、最後の選択チャンク chunk4 の終端で一時停止する
         exoPlayer.seekTo(chunk2.startMs)
         pumpLoopers()
         practiceController.update {
             it.copy(repeatCheckedOnly = false)
         }
         pumpLoopers()
+        runUntil { scheduler.currentChunkId.value == chunk4.id }
+        pumpLoopers()
+        runUntil { !exoPlayer.playWhenReady }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertEquals(chunk4.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in (chunk4.endMs - 200L)..(chunk4.endMs + 200L))
+
+        // 選択をすべて外すと通常再生に戻り、chunk2 終端で chunk3 へ進む
+        practiceController.update {
+            it.copy(repeatChunkIds = emptySet())
+        }
+        pumpLoopers()
+        exoPlayer.seekTo(chunk2.startMs)
+        pumpLoopers()
+        exoPlayer.play()
         runUntil { scheduler.currentChunkId.value == chunk3.id }
         pumpLoopers()
         assertEquals(chunk3.id, scheduler.currentChunkId.value)
@@ -556,10 +576,30 @@ class ChunkSchedulerTest {
     }
 
     @Test
-    fun `startSingleChunkPlayback_対象チャンクにリピートマークがある場合は他チャンクへ移らずそのチャンクのみを繰り返し解除で停止する`() {
+    fun `startSingleChunkPlayback_選択中でもリピートがOFFなら対象チャンクを1回だけ再生して終端で停止する`() {
         scheduler.setChunks(sampleChunks)
         practiceController.update {
-            it.copy(repeatChunkIds = setOf(chunk1.id, chunk2.id))
+            it.copy(repeatChunkIds = setOf(chunk1.id, chunk2.id), repeatCheckedOnly = false)
+        }
+        pumpLoopers()
+
+        scheduler.startSingleChunkPlayback(chunk2.id)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+
+        runUntil { !exoPlayer.playWhenReady }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertFalse(scheduler.isSingleChunkPlaybackActive)
+        assertTrue(exoPlayer.currentPosition in chunk2.endMs..(chunk2.endMs + 200L))
+    }
+
+    @Test
+    fun `startSingleChunkPlayback_リピートONで対象チャンクが選択されている場合は他チャンクへ移らずそのチャンクのみを繰り返し解除で停止する`() {
+        scheduler.setChunks(sampleChunks)
+        practiceController.update {
+            it.copy(repeatChunkIds = setOf(chunk1.id, chunk2.id), repeatCheckedOnly = true)
         }
         pumpLoopers()
 
