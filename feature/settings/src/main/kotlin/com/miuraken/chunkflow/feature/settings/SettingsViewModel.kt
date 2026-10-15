@@ -8,6 +8,7 @@ import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -50,6 +51,24 @@ data class SettingsUiState(
     /** 広東語（`yue`）の表示字体。 */
     val cantoneseScript: ChineseScript
         get() = settings.cantoneseScript
+
+    /** 学習言語のチャンクの下にローマ字・ピンイン・IAST 等の読み方ガイドを表示するかどうか。 */
+    val showTargetRomanization: Boolean
+        get() = settings.showTargetRomanization
+
+    /** 中国語（`zh`）が学習言語または母語に選択されており、簡体字/繁体字設定を表示すべきかどうか。 */
+    val showChineseScriptOption: Boolean
+        get() = PhoneticGuideKind.isMandarinChinese(defaultLanguagePair.target) ||
+            PhoneticGuideKind.isMandarinChinese(defaultLanguagePair.base)
+
+    /** 広東語（`yue`）が学習言語または母語に選択されており、簡体字/繁体字設定を表示すべきかどうか。 */
+    val showCantoneseScriptOption: Boolean
+        get() = PhoneticGuideKind.isCantonese(defaultLanguagePair.target) ||
+            PhoneticGuideKind.isCantonese(defaultLanguagePair.base)
+
+    /** 学習言語に対する読み方ガイドの種別（ラテン文字言語の場合は `null`）。 */
+    val targetPhoneticGuideKind: PhoneticGuideKind?
+        get() = PhoneticGuideKind.forLanguage(defaultLanguagePair.target)
 
     /** 既定の再生速度（0.5..2.0）。 */
     val defaultSpeed: Float
@@ -214,6 +233,9 @@ sealed interface SettingsEvent {
 
     /** 広東語（`yue`）の表示字体を変更する。 */
     data class SetCantoneseScript(val script: ChineseScript) : SettingsEvent
+
+    /** 学習言語の読み方ガイド（ローマ字 / IAST / Pinyin 等）の表示 ON / OFF を切り替える。 */
+    data class SetShowTargetRomanization(val enabled: Boolean) : SettingsEvent
 }
 
 /**
@@ -321,6 +343,12 @@ class SettingsViewModel @Inject constructor(
             is SettingsEvent.SetCantoneseScript -> {
                 viewModelScope.launch {
                     userSettingsRepository.setCantoneseScript(event.script)
+                }
+            }
+
+            is SettingsEvent.SetShowTargetRomanization -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setShowTargetRomanization(event.enabled)
                 }
             }
 

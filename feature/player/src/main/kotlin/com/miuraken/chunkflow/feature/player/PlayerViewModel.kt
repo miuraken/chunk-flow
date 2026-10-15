@@ -23,6 +23,7 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -140,17 +141,61 @@ data class ChunkUi(
 ) {
     /**
      * 設定された漢字の字体（[chineseScript] / [cantoneseScript]）に従って表示するテキストを返す（§7.5.5）。
+     *
+     * `textVariants` に該当スクリプトがない場合でも、端末の ICU `Transliterator`（`Hans-Hant` / `Hant-Hans`）が
+     * 利用可能であれば自動的に簡体字・繁体字へ変換する。
      */
     fun resolveDisplayText(
         chineseScript: ChineseScript,
         cantoneseScript: ChineseScript,
     ): String? {
         val raw = text ?: return null
-        return when (language?.value?.lowercase(Locale.ROOT)) {
-            "zh" -> textVariants[chineseScript.iso15924] ?: raw
-            "yue" -> textVariants[cantoneseScript.iso15924] ?: raw
+        return when {
+            PhoneticGuideKind.isMandarinChinese(language) ->
+                textVariants[chineseScript.iso15924]
+                    ?: transliterateChineseScript(raw, chineseScript)
+                    ?: raw
+
+            PhoneticGuideKind.isCantonese(language) ->
+                textVariants[cantoneseScript.iso15924]
+                    ?: transliterateChineseScript(raw, cantoneseScript)
+                    ?: raw
+
             else -> raw
         }
+    }
+
+    /**
+     * 学習言語チャンクの下に小さく表示する読み方ガイド（ローマ字 / IAST / Pinyin / ラテン文字転写）を返す。
+     *
+     * 1. `textVariants` に `"Latn"` / `"pinyin"` / `"romaji"` / `"iast"` / `"jyutping"` があれば優先して返す。
+     * 2. なければ [PhoneticGuideKind.forLanguage] に応じて ICU `Transliterator`（または純 Kotlin フォールバック）で生成する。
+     * 3. 元の表示テキストと同一または空の場合は `null` を返す。
+     */
+    fun resolvePhoneticReading(
+        chineseScript: ChineseScript = ChineseScript.HANS,
+        cantoneseScript: ChineseScript = ChineseScript.HANT,
+    ): String? {
+        val raw = text?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val explicit = textVariants["Latn"]
+            ?: textVariants["latn"]
+            ?: textVariants["pinyin"]
+            ?: textVariants["romaji"]
+            ?: textVariants["iast"]
+            ?: textVariants["jyutping"]
+        if (!explicit.isNullOrBlank()) {
+            return explicit.trim()
+        }
+        val kind = PhoneticGuideKind.forLanguage(language) ?: return null
+        val transliterated = transliterateToLatin(raw, language, kind)?.trim()
+        if (transliterated.isNullOrEmpty()) return null
+        val display = resolveDisplayText(chineseScript, cantoneseScript)?.trim() ?: raw
+        if (transliterated.equals(display, ignoreCase = true) ||
+            transliterated.equals(raw, ignoreCase = true)
+        ) {
+            return null
+        }
+        return transliterated
     }
 
     /**
@@ -164,12 +209,166 @@ data class ChunkUi(
     ): String? {
         val rawTag = language?.value?.trim().orEmpty()
         if (rawTag.isEmpty() || rawTag.equals("und", ignoreCase = true)) return null
-        return when (rawTag.lowercase(Locale.ROOT)) {
-            "zh" -> "zh-${chineseScript.iso15924}"
-            "yue" -> "yue-${cantoneseScript.iso15924}"
+        return when {
+            PhoneticGuideKind.isMandarinChinese(language) -> "zh-${chineseScript.iso15924}"
+            PhoneticGuideKind.isCantonese(language) -> "yue-${cantoneseScript.iso15924}"
             else -> rawTag
         }
     }
+}
+
+private fun transliterateChineseScript(text: String, targetScript: ChineseScript): String? {
+    val transformId = if (targetScript == ChineseScript.HANS) "Hant-Hans" else "Hans-Hant"
+    return runCatching {
+        android.icu.text.Transliterator.getInstance(transformId).transliterate(text)
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+}
+
+private fun transliterateToLatin(
+    text: String,
+    language: LanguageTag?,
+    kind: PhoneticGuideKind,
+): String? {
+    val transformId = when (kind) {
+        PhoneticGuideKind.PINYIN -> "Han-Latin"
+
+        PhoneticGuideKind.IAST -> "Devanagari-Latin; Any-Latin"
+
+        PhoneticGuideKind.ROMAJI -> "Katakana-Hiragana; Hiragana-Latin; Any-Latin; Latin-ASCII"
+
+        PhoneticGuideKind.LATIN_TRANSLITERATION -> {
+            val code = language?.value?.lowercase(Locale.ROOT).orEmpty()
+            if (code.startsWith("ko")) "Hangul-Latin" else "Any-Latin"
+        }
+    }
+    val icuResult = runCatching {
+        android.icu.text.Transliterator.getInstance(transformId).transliterate(text)
+    }.getOrNull()?.takeIf { it.isNotBlank() && it != text }
+    if (icuResult != null) return icuResult
+
+    // JVM ユニットテスト環境等で android.icu.text.Transliterator が未初期化の場合の純 Kotlin フォールバック
+    return when (kind) {
+        PhoneticGuideKind.ROMAJI -> fallbackKanaToRomaji(text)
+
+        PhoneticGuideKind.LATIN_TRANSLITERATION -> {
+            val code = language?.value?.lowercase(Locale.ROOT).orEmpty()
+            if (code.startsWith("ko")) fallbackHangulToRomanization(text) else null
+        }
+
+        PhoneticGuideKind.IAST -> fallbackDevanagariToIast(text)
+
+        PhoneticGuideKind.PINYIN -> null
+    }?.takeIf { it.isNotBlank() && it != text }
+}
+
+private fun fallbackHangulToRomanization(text: String): String {
+    val initials = arrayOf(
+        "g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s",
+        "ss", "", "j", "jj", "ch", "k", "t", "p", "h",
+    )
+    val medials = arrayOf(
+        "a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa",
+        "wae", "oe", "yo", "u", "wo", "we", "wi", "yu", "eu", "ui", "i",
+    )
+    val finals = arrayOf(
+        "", "k", "k", "k", "n", "n", "n", "t", "l", "k", "m", "p",
+        "l", "l", "p", "l", "m", "p", "p", "t", "t", "ng", "t", "t",
+        "k", "t", "p", "t",
+    )
+    val sb = StringBuilder()
+    for (ch in text) {
+        val code = ch.code
+        if (code in 0xAC00..0xD7A3) {
+            val syllableIndex = code - 0xAC00
+            val initialIndex = syllableIndex / (21 * 28)
+            val medialIndex = (syllableIndex % (21 * 28)) / 28
+            val finalIndex = syllableIndex % 28
+            sb.append(initials[initialIndex])
+            sb.append(medials[medialIndex])
+            sb.append(finals[finalIndex])
+        } else {
+            sb.append(ch)
+        }
+    }
+    return sb.toString()
+}
+
+private fun fallbackKanaToRomaji(text: String): String {
+    val kanaMap = mapOf(
+        'あ' to "a", 'い' to "i", 'う' to "u", 'え' to "e", 'お' to "o",
+        'か' to "ka", 'き' to "ki", 'く' to "ku", 'け' to "ke", 'こ' to "ko",
+        'さ' to "sa", 'し' to "shi", 'す' to "su", 'せ' to "se", 'そ' to "so",
+        'た' to "ta", 'ち' to "chi", 'つ' to "tsu", 'て' to "te", 'と' to "to",
+        'な' to "na", 'に' to "ni", 'ぬ' to "nu", 'ね' to "ne", 'の' to "no",
+        'は' to "ha", 'ひ' to "hi", 'ふ' to "fu", 'へ' to "he", 'ほ' to "ho",
+        'ま' to "ma", 'み' to "mi", 'む' to "mu", 'め' to "me", 'も' to "mo",
+        'や' to "ya", 'ゆ' to "yu", 'よ' to "yo",
+        'ら' to "ra", 'り' to "ri", 'る' to "ru", 'れ' to "re", 'ろ' to "ro",
+        'わ' to "wa", 'を' to "o", 'ん' to "n",
+        'が' to "ga", 'ぎ' to "gi", 'ぐ' to "gu", 'げ' to "ge", 'ご' to "go",
+        'ざ' to "za", 'じ' to "ji", 'ず' to "zu", 'ぜ' to "ze", 'ぞ' to "zo",
+        'だ' to "da", 'ぢ' to "ji", 'づ' to "zu", 'で' to "de", 'ど' to "do",
+        'ば' to "ba", 'び' to "bi", 'ぶ' to "bu", 'べ' to "be", 'ぼ' to "bo",
+        'ぱ' to "pa", 'ぴ' to "pi", 'ぷ' to "pu", 'ぺ' to "pe", 'ぽ' to "po",
+    )
+    val sb = StringBuilder()
+    for (ch in text) {
+        val hira = if (ch.code in 0x30A1..0x30F6) (ch.code - 0x60).toChar() else ch
+        sb.append(kanaMap[hira] ?: ch)
+    }
+    return sb.toString()
+}
+
+private fun fallbackDevanagariToIast(text: String): String {
+    val vowels = mapOf(
+        'अ' to "a", 'आ' to "ā", 'इ' to "i", 'ई' to "ī", 'उ' to "u", 'ऊ' to "ū",
+        'ए' to "e", 'ऐ' to "ai", 'ओ' to "o", 'औ' to "au",
+    )
+    val consonants = mapOf(
+        'क' to "k", 'ख' to "kh", 'ग' to "g", 'घ' to "gh",
+        'च' to "c", 'छ' to "ch", 'ज' to "j", 'झ' to "jh",
+        'त' to "t", 'थ' to "th", 'द' to "d", 'ध' to "dh", 'न' to "n",
+        'प' to "p", 'फ' to "ph", 'ब' to "b", 'भ' to "bh", 'म' to "m",
+        'य' to "y", 'र' to "r", 'ल' to "l", 'व' to "v",
+        'श' to "ś", 'ष' to "ṣ", 'स' to "s", 'ह' to "h",
+    )
+    val matras = mapOf(
+        'ा' to "ā", 'ि' to "i", 'ी' to "ī", 'ु' to "u", 'ू' to "ū",
+        'े' to "e", 'ै' to "ai", 'ो' to "o", 'ौ' to "au",
+    )
+    val sb = StringBuilder()
+    var i = 0
+    while (i < text.length) {
+        val ch = text[i]
+        val cBase = consonants[ch]
+        if (cBase != null) {
+            sb.append(cBase)
+            val next = text.getOrNull(i + 1)
+            when {
+                next == '्' -> i += 2
+
+                next != null && next in matras -> {
+                    sb.append(matras[next])
+                    i += 2
+                }
+
+                else -> {
+                    sb.append('a')
+                    i += 1
+                }
+            }
+        } else if (ch in vowels) {
+            sb.append(vowels[ch])
+            i += 1
+        } else if (ch == 'ं') {
+            sb.append("ṃ")
+            i += 1
+        } else {
+            sb.append(ch)
+            i += 1
+        }
+    }
+    return sb.toString()
 }
 
 /**
@@ -199,6 +398,7 @@ data class PlayerUiState(
     val revealedChunkIds: Set<ChunkId> = emptySet(),
     val chineseScript: ChineseScript = ChineseScript.HANS,
     val cantoneseScript: ChineseScript = ChineseScript.HANT,
+    val showTargetRomanization: Boolean = false,
     val chunkSource: ChunkOrigin = ChunkOrigin.AUTO,
     val availableChunkOrigins: Set<ChunkOrigin> = emptySet(),
     val segmentationParams: SegmentationParams = SegmentationParams(),
@@ -211,6 +411,10 @@ data class PlayerUiState(
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
         get() = chunks.any { it.text != null }
+
+    /** 学習言語に対する読み方ガイド種別（ラテン文字言語の場合は `null`）。 */
+    val targetPhoneticGuideKind: PhoneticGuideKind?
+        get() = PhoneticGuideKind.forLanguage(languagePair?.target)
 
     /** 言語ラベルが未判定（`null` または `"und"`）の文字起こしチャンクが存在するかどうか（F1.4、F7.3）。 */
     val hasUnknownLanguageChunks: Boolean
@@ -289,6 +493,9 @@ sealed interface PlayerEvent {
 
     /** ブラインドモード中に特定のチャンクの一時表示を切り替える（F7.2）。 */
     data class ToggleRevealChunk(val chunkId: ChunkId) : PlayerEvent
+
+    /** 学習言語の読み方ガイド（ローマ字 / IAST / Pinyin 等）の表示 ON / OFF を切り替える。 */
+    data class SetShowTargetRomanization(val enabled: Boolean) : PlayerEvent
 
     /** チャンクの出どころ（文字起こし / 自動分割）を切り替える（F5.4）。 */
     data class SetChunkSource(val origin: ChunkOrigin) : PlayerEvent
@@ -653,6 +860,12 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            is PlayerEvent.SetShowTargetRomanization -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setShowTargetRomanization(event.enabled)
+                }
+            }
+
             is PlayerEvent.SetChunkSource -> {
                 val id = resolveActiveMediaId() ?: return
                 viewModelScope.launch {
@@ -974,6 +1187,7 @@ class PlayerViewModel @Inject constructor(
             revealedChunkIds = local.revealedChunkIds,
             chineseScript = settings.chineseScript,
             cantoneseScript = settings.cantoneseScript,
+            showTargetRomanization = settings.showTargetRomanization,
             chunkSource = resolvedOrigin,
             availableChunkOrigins = analysis.availableOrigins,
             segmentationParams = local.customSegmentationParams ?: settings.defaultSegmentationParams,

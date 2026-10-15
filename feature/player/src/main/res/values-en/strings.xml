@@ -122,4 +122,12 @@
     <string name="player_repeat_check_add">Add to sequential repeat</string>
     <string name="player_repeat_check_remove">Remove from sequential repeat</string>
     <string name="player_start_lookahead_stt">Auto-transcribe</string>
+    <string name="player_chip_phonetic_romaji_on">Romaji: ON</string>
+    <string name="player_chip_phonetic_romaji_off">Romaji: OFF</string>
+    <string name="player_chip_phonetic_iast_on">IAST: ON</string>
+    <string name="player_chip_phonetic_iast_off">IAST: OFF</string>
+    <string name="player_chip_phonetic_pinyin_on">Pinyin: ON</string>
+    <string name="player_chip_phonetic_pinyin_off">Pinyin: OFF</string>
+    <string name="player_chip_phonetic_latin_on">Reading: ON</string>
+    <string name="player_chip_phonetic_latin_off">Reading: OFF</string>
 </resources>

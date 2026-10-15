@@ -5,6 +5,7 @@ import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
@@ -12,6 +13,8 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -162,5 +165,45 @@ class SettingsViewModelTest {
 
         viewModel.onEvent(SettingsEvent.SetCantoneseScript(ChineseScript.HANS))
         assertEquals(ChineseScript.HANS, viewModel.uiState.value.cantoneseScript)
+    }
+
+    @Test
+    fun `表記と読み方ガイド_選択言語に応じた字体表示条件と読み方ガイド種別およびON_OFF切り替えが機能する`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val viewModel = SettingsViewModel(repo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 初期状態 (target=en, base=ja): 中国語・広東語ともに未選択、学習言語(en)はラテン文字のためガイドなし
+        assertFalse(viewModel.uiState.value.showChineseScriptOption)
+        assertFalse(viewModel.uiState.value.showCantoneseScriptOption)
+        assertNull(viewModel.uiState.value.targetPhoneticGuideKind)
+        assertFalse(viewModel.uiState.value.showTargetRomanization)
+
+        // 学習言語を中国語 (zh) に変更 -> 中国語字体オプションと Pinyin ガイドが有効
+        viewModel.onEvent(SettingsEvent.SetTargetLanguage(LanguageTag("zh")))
+        assertTrue(viewModel.uiState.value.showChineseScriptOption)
+        assertFalse(viewModel.uiState.value.showCantoneseScriptOption)
+        assertEquals(PhoneticGuideKind.PINYIN, viewModel.uiState.value.targetPhoneticGuideKind)
+
+        // 母語を広東語 (yue)、学習言語を日本語 (ja) に変更 -> 広東語字体オプションとローマ字ガイドが有効
+        viewModel.onEvent(SettingsEvent.SetBaseLanguage(LanguageTag("yue")))
+        viewModel.onEvent(SettingsEvent.SetTargetLanguage(LanguageTag("ja")))
+        assertFalse(viewModel.uiState.value.showChineseScriptOption)
+        assertTrue(viewModel.uiState.value.showCantoneseScriptOption)
+        assertEquals(PhoneticGuideKind.ROMAJI, viewModel.uiState.value.targetPhoneticGuideKind)
+
+        // 学習言語をヒンディー語 (hi) に変更 -> IAST ガイド
+        viewModel.onEvent(SettingsEvent.SetTargetLanguage(LanguageTag("hi")))
+        assertEquals(PhoneticGuideKind.IAST, viewModel.uiState.value.targetPhoneticGuideKind)
+
+        // 学習言語を韓国語 (ko) に変更 -> アルファベット読み方ガイド
+        viewModel.onEvent(SettingsEvent.SetTargetLanguage(LanguageTag("ko")))
+        assertEquals(PhoneticGuideKind.LATIN_TRANSLITERATION, viewModel.uiState.value.targetPhoneticGuideKind)
+
+        // 読み方ガイド表示の ON / OFF 切り替え
+        viewModel.onEvent(SettingsEvent.SetShowTargetRomanization(true))
+        assertTrue(viewModel.uiState.value.showTargetRomanization)
+        viewModel.onEvent(SettingsEvent.SetShowTargetRomanization(false))
+        assertFalse(viewModel.uiState.value.showTargetRomanization)
     }
 }

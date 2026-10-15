@@ -122,4 +122,12 @@
     <string name="player_repeat_check_add">連続リピート対象に追加</string>
     <string name="player_repeat_check_remove">連続リピート対象から外す</string>
     <string name="player_start_lookahead_stt">端末で文字起こし</string>
+    <string name="player_chip_phonetic_romaji_on">ローマ字: ON</string>
+    <string name="player_chip_phonetic_romaji_off">ローマ字: OFF</string>
+    <string name="player_chip_phonetic_iast_on">IAST: ON</string>
+    <string name="player_chip_phonetic_iast_off">IAST: OFF</string>
+    <string name="player_chip_phonetic_pinyin_on">Pinyin: ON</string>
+    <string name="player_chip_phonetic_pinyin_off">Pinyin: OFF</string>
+    <string name="player_chip_phonetic_latin_on">読み方: ON</string>
+    <string name="player_chip_phonetic_latin_off">読み方: OFF</string>
 </resources>
