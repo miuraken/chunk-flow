@@ -36,6 +36,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -604,5 +605,40 @@ class PlayerViewModelTest {
             language = LanguageTag("en"),
         )
         assertNull(enChunk.resolvePhoneticReading())
+    }
+
+    @Test
+    fun `先読み文字起こし_一時停止中でも未文字起こしチャンクを順次バックグラウンドでトリガーし続ける`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            // 全チャンクの文字起こしを未取得（空マップ）にする
+            update(item.id) { entry ->
+                entry.copy(transcripts = emptyMap())
+            }
+        }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to sample.chunks[0].id))
+
+        // 一時停止のまま時間が進むと、後続の未文字起こしチャンクに対しても順次 triggerLookaheadAt が呼ばれる
+        advanceTimeBy(350L)
+        assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to sample.chunks[1].id))
+
+        advanceTimeBy(350L)
+        assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to sample.chunks[2].id))
+
+        // OFF にするとループが停止する
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(false))
+        val countAfterDisable = analysisRepo.lookaheadTriggers.size
+        advanceTimeBy(1_000L)
+        assertEquals(countAfterDisable, analysisRepo.lookaheadTriggers.size)
     }
 }
