@@ -7,6 +7,8 @@ import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -146,6 +148,132 @@ class OnDeviceSpeechTranscriberTest {
     }
 
     @Test
+    fun `extractLeadingSpeechProbePcm_先頭無音をスキップし約2秒のプローブを切り出し長チャンクと短チャンクを識別する`() {
+        val sampleRate = 16_000
+        // 4.0秒 (64,000サンプル = 128,000 bytes): 先頭 200ms (3,200サンプル) は無音、残り 3.8秒は振幅 2,000
+        val longSamples = ShortArray(sampleRate * 4) { idx ->
+            if (idx < 3_200) 0 else 2_000
+        }
+        val longBytes = ChunkPcmExtractor.shortsToPcm16LeBytes(longSamples)
+
+        val longProbe = ChunkPcmExtractor.extractLeadingSpeechProbePcm(longBytes, sampleRate)
+        // 発話開始 200ms (6,400 bytes) の 60ms (1,920 bytes) 手前 = 4,480 bytes
+        assertEquals(4_480, longProbe.onsetByteOffset)
+        // 2,000ms = 64,000 bytes
+        assertEquals(64_000, longProbe.probePcm16LeBytes.size)
+        assertFalse(longProbe.isFullChunkCovered)
+
+        // 1.8秒 (28,800サンプル = 57,600 bytes) の短チャンクは isFullChunkCovered == true
+        val shortSamples = ShortArray((sampleRate * 1.8).toInt()) { 2_000 }
+        val shortBytes = ChunkPcmExtractor.shortsToPcm16LeBytes(shortSamples)
+        val shortProbe = ChunkPcmExtractor.extractLeadingSpeechProbePcm(shortBytes, sampleRate)
+        assertTrue(shortProbe.isFullChunkCovered)
+    }
+
+    @Test
+    fun `scoreProbeCandidateForLanguage_日本語発話のハングル音写よりも自然な日本語テキストが高スコアになる`() {
+        // 日本語音声「それでは、『日本語』という言い方です」が韓国語認識器でハングル音写されたケース
+        val transliteratedKo = SpeechRecognitionAttemptResult(
+            text = "소래 대화 니혼고 더유이가 다 됐어",
+            confidence = 0.78f,
+        )
+        val naturalJa = SpeechRecognitionAttemptResult(
+            text = "それでは日本語という言い方です",
+            confidence = 0.80f,
+        )
+
+        val koScoreOnJaAudio = scoreProbeCandidateForLanguage(transliteratedKo, "ko")
+        val jaScoreOnJaAudio = scoreProbeCandidateForLanguage(naturalJa, "ja")
+        assertTrue(
+            jaScoreOnJaAudio > koScoreOnJaAudio,
+            "Expected jaScore ($jaScoreOnJaAudio) > koScore ($koScoreOnJaAudio)",
+        )
+
+        // 韓国語音声「안녕하세요 만나서 반갑습니다」が日本語認識器でカタカナ音写されたケース
+        val naturalKo = SpeechRecognitionAttemptResult(
+            text = "안녕하세요 만나서 반갑습니다",
+            confidence = 0.82f,
+        )
+        val katakanaJa = SpeechRecognitionAttemptResult(
+            text = "アンニョンハセヨマンナソパンガプスミダ",
+            confidence = 0.75f,
+        )
+        val koScoreOnKoAudio = scoreProbeCandidateForLanguage(naturalKo, "ko")
+        val jaScoreOnKoAudio = scoreProbeCandidateForLanguage(katakanaJa, "ja")
+        assertTrue(
+            koScoreOnKoAudio > jaScoreOnKoAudio,
+            "Expected koScore ($koScoreOnKoAudio) > jaScore ($jaScoreOnKoAudio)",
+        )
+    }
+
+    @Test
+    fun `transcribePcm16Le_長チャンクで2秒プローブにより日本語と韓国語を判定し勝った言語で全体STTを実行する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val calls = mutableListOf<Pair<String, Int>>()
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult = AudioDecodeResult.Success(16_000, 1, 0, 0, 0, 0, 0, "audio/mpeg")
+        }
+
+        // 4.0秒 (128,000 bytes @ 16kHz) のチャンク（2秒プローブ = 64,000 bytes）
+        val fourSecPcm = ByteBuffer.allocate(128_000).order(ByteOrder.LITTLE_ENDIAN).apply {
+            for (i in 0 until 64_000) {
+                putShort(1_500)
+            }
+        }.array()
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { pcmBytes, _, bcp47Tag, _ ->
+                calls += bcp47Tag to pcmBytes.size
+                when {
+                    // 2秒プローブ (64,000 bytes) で ko-KR も音写ハングルを返すが、ja-JP が自然な日本語を返すケース
+                    pcmBytes.size == 64_000 && bcp47Tag == "ko-KR" ->
+                        SpeechRecognitionAttemptResult(text = "소래 대화 니혼고 더유이가 다 됐어", confidence = 0.75f)
+
+                    pcmBytes.size == 64_000 && bcp47Tag == "ja-JP" ->
+                        SpeechRecognitionAttemptResult(text = "それでは日本語という", confidence = 0.80f)
+
+                    // 勝った ja-JP でチャンク全体 (128,000 bytes) の STT を実行
+                    pcmBytes.size == 128_000 && bcp47Tag == "ja-JP" ->
+                        SpeechRecognitionAttemptResult(
+                            text = "それでは日本語という言い方です聞いて繰り返してください",
+                            confidence = 0.92f,
+                        )
+
+                    else -> null
+                }
+            },
+        )
+
+        val result = transcriber.transcribePcm16Le(
+            pcm16LeBytes = fourSecPcm,
+            sampleRateHz = 16_000,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        assertNotNull(result)
+        assertEquals("それでは日本語という言い方です聞いて繰り返してください", result.text)
+        assertEquals(LanguageTag("ja"), result.language)
+        assertEquals(0.92f, result.confidence)
+        assertEquals(
+            listOf(
+                "ko-KR" to 64_000,
+                "ja-JP" to 64_000,
+                "ja-JP" to 128_000,
+            ),
+            calls,
+        )
+    }
+
+    @Test
     fun `transcribePcm16Le_target言語で認識失敗時にbase言語へフォールバックし元の言語タグを返す`() = runTest {
         val context = RuntimeEnvironment.getApplication()
         val calls = mutableListOf<Pair<String, Boolean>>()
@@ -174,6 +302,7 @@ class OnDeviceSpeechTranscriberTest {
             },
         )
 
+        // 短チャンク (640 bytes <= 2.4秒) は 2秒プローブがチャンク全体をカバーするため、全体STTを再実行せずプローブ結果を返す
         val result = transcriber.transcribePcm16Le(
             pcm16LeBytes = ByteArray(640) { 1 },
             sampleRateHz = 16_000,
@@ -187,7 +316,7 @@ class OnDeviceSpeechTranscriberTest {
     }
 
     @Test
-    fun `transcribePcm16Le_preferOnDevice失敗時に標準SpeechRecognizerへフォールバックする`() = runTest {
+    fun `transcribePcm16Le_onDevice利用可能時はpreferOnDeviceのみを使用し物理マイクを開かない`() = runTest {
         val context = RuntimeEnvironment.getApplication()
         val calls = mutableListOf<Pair<String, Boolean>>()
         val fakeDecoder = object : AudioStreamDecoder {
@@ -207,11 +336,7 @@ class OnDeviceSpeechTranscriberTest {
             standardAvailabilityChecker = { true },
             attemptRunner = { _, _, bcp47Tag, preferOnDevice ->
                 calls += bcp47Tag to preferOnDevice
-                if (!preferOnDevice) {
-                    SpeechRecognitionAttemptResult(text = "Fallback success", confidence = 0.85f)
-                } else {
-                    null
-                }
+                null
             },
         )
 
@@ -220,10 +345,9 @@ class OnDeviceSpeechTranscriberTest {
             sampleRateHz = 16_000,
             languagePair = LanguagePair(target = LanguageTag("en"), base = null),
         )
-        assertNotNull(result)
-        assertEquals("Fallback success", result.text)
-        assertEquals(LanguageTag("en"), result.language)
-        assertEquals(listOf("en-US" to true, "en-US" to false), calls)
+        assertNull(result)
+        // preferOnDevice = false (物理マイクを開く createSpeechRecognizer) は呼ばれないこと
+        assertEquals(listOf("en-US" to true), calls)
     }
 
     @Test

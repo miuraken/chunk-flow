@@ -1072,4 +1072,82 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(8, transcribedRanges.size)
         assertEquals(8, transcribedRanges.distinct().size)
     }
+
+    @Test
+    fun `triggerLookaheadAt_冒頭チャンクが認識失敗nullでもスキップして7チャンク目以降へ順次進む`() = runTest {
+        val attemptedStartMsList = mutableListOf<Long>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult? {
+                attemptedStartMsList += startMs
+                // 先頭チャンク (0ms) と 2番目チャンク (1,000ms) はチャイム・無音想定で null を返す
+                if (startMs == 0L || startMs == 1_000L) {
+                    return null
+                }
+                return OnDeviceChunkTranscriptionResult(
+                    text = "Recognized $startMs",
+                    language = LanguageTag("ko"),
+                    confidence = 0.9f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_lookahead_skip_empty_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Skip Empty Test",
+                durationMs = 10_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        val audioFile = mediaFileLocator.audioFileFor(mediaId, "mp3")
+        audioFile.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+
+        // 8 個の AUTO チャンク (900L..907L, startMs = 0..7000ms)
+        val chunks = (0 until 8).map { idx ->
+            ChunkEntity(
+                id = (900 + idx).toLong(),
+                mediaId = mediaId.value,
+                startMs = idx * 1_000L,
+                endMs = idx * 1_000L + 800L,
+                origin = ChunkOrigin.AUTO.name,
+            )
+        }
+        chunkDao.insertAll(chunks)
+
+        repository.setLookaheadEnabled(mediaId, true)
+
+        // 1回目: チャンク 0..5 (0ms..5000ms) の 6 件を試行 (0ms と 1000ms は null)
+        repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(900L))
+        assertEquals(listOf(0L, 1_000L, 2_000L, 3_000L, 4_000L, 5_000L), attemptedStartMsList)
+
+        // 2回目: 同じ先頭チャンク (900L) からトリガーされても、null だった 0ms/1000ms で止まらず後続の 6000ms, 7000ms へ進む
+        repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(900L))
+        assertEquals(
+            listOf(0L, 1_000L, 2_000L, 3_000L, 4_000L, 5_000L, 6_000L, 7_000L),
+            attemptedStartMsList,
+        )
+
+        val transcripts = repository.observeTranscripts(mediaId).first()
+        assertNull(transcripts[ChunkId(900L)])
+        assertNull(transcripts[ChunkId(901L)])
+        assertEquals("Recognized 6000", transcripts[ChunkId(906L)]?.text)
+        assertEquals("Recognized 7000", transcripts[ChunkId(907L)]?.text)
+    }
 }

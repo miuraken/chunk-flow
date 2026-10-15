@@ -140,6 +140,7 @@ class DefaultAnalysisRepository(
     private val lookaheadMutex: Mutex = Mutex()
     private val waveformRefreshEvents = MutableSharedFlow<MediaId>(extraBufferCapacity = 16)
     private val lookaheadStates = ConcurrentHashMap<MediaId, MutableStateFlow<LookaheadTranscriptionStatus>>()
+    private val attemptedEmptyChunkIds = ConcurrentHashMap<MediaId, MutableSet<Long>>()
 
     override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = analysisStateDao.observeByMediaId(id.value)
         .map { entities ->
@@ -534,6 +535,7 @@ class DefaultAnalysisRepository(
                 preserveAllOldTranscripts = true,
             )
 
+            attemptedEmptyChunkIds.remove(id)
             val completedAt = clock()
             analysisStateDao.upsert(
                 StageStatus.Done.toEntity(
@@ -676,6 +678,7 @@ class DefaultAnalysisRepository(
     override fun observeLookaheadStatus(id: MediaId): Flow<LookaheadTranscriptionStatus> = lookaheadStateFor(id).asStateFlow()
 
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
+        attemptedEmptyChunkIds.remove(id)
         val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
         lookaheadStateFor(id).update { current ->
             current.copy(
@@ -703,7 +706,8 @@ class DefaultAnalysisRepository(
     }
 
     /**
-     * アクティブチャンクのインデックス [currentChunkIndex] から最大 [LOOKAHEAD_WINDOW_AHEAD] チャンク先までを先読み認識する（F6.2、§7.4.5）。
+     * アクティブチャンクのインデックス [currentChunkIndex] 以降から、未文字起こし（かつ空結果として試行済みでない）チャンクを
+     * 最大 `LOOKAHEAD_WINDOW_AHEAD + 1`（6）件ずつ順番に先読み認識する（F6.2、§7.4.5）。
      */
     suspend fun triggerLookaheadAt(id: MediaId, currentChunkIndex: Int) {
         if (currentChunkIndex < 0) return
@@ -726,27 +730,22 @@ class DefaultAnalysisRepository(
                 val audioFile = mediaFileResolver.resolveAudioFile(id)
                 if (audioFile == null || !audioFile.isFile) return@withLock
 
+                val skippedEmptyIds = attemptedEmptyChunkIds.computeIfAbsent(id) {
+                    ConcurrentHashMap.newKeySet()
+                }
                 val endIndex = min(activeChunks.lastIndex, currentChunkIndex + LOOKAHEAD_WINDOW_AHEAD)
                 val windowChunks = activeChunks.subList(currentChunkIndex, endIndex + 1)
-                val existingTranscripts = transcriptDao.getByChunkIds(windowChunks.map { it.id })
+
+                val candidateSlice = activeChunks.subList(currentChunkIndex, activeChunks.size)
+                val existingTranscripts = transcriptDao.getByChunkIds(candidateSlice.map { it.id })
                     .associateBy { it.chunkId }
 
-                // 既に認識済み（テキストが空でない、またはユーザー編集済み）のチャンクはスキップする
-                var targetChunks = windowChunks.filter { chunk ->
+                // まだ文字起こしテキストがなく、かつ無音・チャイム等で空結果として試行済みでないチャンクを先頭から最大 6 件取得する
+                val targetChunks = candidateSlice.filter { chunk ->
                     val existing = existingTranscripts[chunk.id]
-                    existing == null || (existing.text.isBlank() && !existing.userEdited)
-                }
-
-                // 直近ウィンドウがすべて文字起こし済みの場合、後続の未文字起こしチャンクがあれば次のバッチを取得する
-                if (targetChunks.isEmpty() && endIndex + 1 < activeChunks.size) {
-                    val remainingChunks = activeChunks.subList(endIndex + 1, activeChunks.size)
-                    val remainingTranscripts = transcriptDao.getByChunkIds(remainingChunks.map { it.id })
-                        .associateBy { it.chunkId }
-                    targetChunks = remainingChunks.filter { chunk ->
-                        val existing = remainingTranscripts[chunk.id]
-                        existing == null || (existing.text.isBlank() && !existing.userEdited)
-                    }.take(LOOKAHEAD_WINDOW_AHEAD + 1)
-                }
+                    val needsTranscript = existing == null || (existing.text.isBlank() && !existing.userEdited)
+                    needsTranscript && !skippedEmptyIds.contains(chunk.id)
+                }.take(LOOKAHEAD_WINDOW_AHEAD + 1)
 
                 if (targetChunks.isEmpty()) {
                     stateFlow.update {
@@ -782,6 +781,7 @@ class DefaultAnalysisRepository(
                 for (chunk in targetChunks) {
                     if (!stateFlow.value.enabled) break
                     if (chunk.endMs <= chunk.startMs) {
+                        skippedEmptyIds.add(chunk.id)
                         completed += 1
                         continue
                     }
@@ -809,6 +809,7 @@ class DefaultAnalysisRepository(
                     }
 
                     if (result != null && result.text.isNotBlank()) {
+                        skippedEmptyIds.remove(chunk.id)
                         val existing = transcriptDao.getByChunkId(chunk.id)
                         val resolvedLanguage = existing?.language?.takeIf { it.isNotBlank() && it != "und" }
                             ?: result.language?.value
@@ -832,6 +833,8 @@ class DefaultAnalysisRepository(
                             ),
                         )
                         anyTranscribed = true
+                    } else if (stateFlow.value.enabled) {
+                        skippedEmptyIds.add(chunk.id)
                     }
 
                     completed += 1

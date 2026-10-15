@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -28,6 +29,7 @@ import kotlin.coroutines.resume
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -142,6 +144,19 @@ internal fun toBcp47LocaleTag(lang: String): String {
 }
 
 /**
+ * チャンクの先頭発話プローブ切り出し結果（F6.2）。
+ *
+ * @property probePcm16LeBytes 発話開始位置から最大約 2 秒間を切り出した 16-bit リトルエンディアン PCM。
+ * @property onsetByteOffset 元のチャンク PCM 内での発話開始バイトオフセット（偶数）。
+ * @property isFullChunkCovered プローブ区間がチャンクの残り全体をカバーしている場合 `true`。
+ */
+internal data class SpeechProbeSlice(
+    val probePcm16LeBytes: ByteArray,
+    val onsetByteOffset: Int,
+    val isFullChunkCovered: Boolean,
+)
+
+/**
  * 音声ファイルから指定したチャンク区間 `[startMs, endMs]` の 16kHz モノラル 16-bit PCM を取り出すヘルパー（F6.2）。
  *
  * - `endSample` に到達した時点で即座にデコードを打ち切り、30 分等の長時間ファイル全体をデコードしない。
@@ -207,6 +222,75 @@ object ChunkPcmExtractor {
         val padded = ByteArray(leadingBytes + pcm16LeBytes.size + trailingBytes)
         System.arraycopy(pcm16LeBytes, 0, padded, leadingBytes, pcm16LeBytes.size)
         return padded
+    }
+
+    /**
+     * チャンク PCM（[pcm16LeBytes]）から発話開始位置を検出し、先頭約 [probeDurationMs]（既定 2,000ms）の
+     * 言語判定プローブ用 PCM スライスを切り出す。
+     */
+    internal fun extractLeadingSpeechProbePcm(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+        probeDurationMs: Long = PROBE_DURATION_MS,
+        fullCoverageThresholdMs: Long = PROBE_FULL_COVERAGE_THRESHOLD_MS,
+    ): SpeechProbeSlice {
+        val totalBytes = pcm16LeBytes.size and 1.inv()
+        if (totalBytes <= 0 || sampleRateHz <= 0) {
+            return SpeechProbeSlice(
+                probePcm16LeBytes = pcm16LeBytes,
+                onsetByteOffset = 0,
+                isFullChunkCovered = true,
+            )
+        }
+
+        val frameSamples = ((sampleRateHz * PROBE_RMS_FRAME_MS) / 1_000).coerceAtLeast(1)
+        val frameBytes = frameSamples * 2
+        val preRollBytes = (((sampleRateHz * PROBE_ONSET_PRE_ROLL_MS) / 1_000) * 2).coerceAtLeast(0)
+
+        var onsetByteOffset = 0
+        var offset = 0
+        while (offset + 1 < totalBytes) {
+            val frameEnd = min(offset + frameBytes, totalBytes)
+            var sumSq = 0.0
+            var count = 0
+            var idx = offset
+            while (idx + 1 < frameEnd) {
+                val lo = pcm16LeBytes[idx].toInt() and 0xFF
+                val hi = pcm16LeBytes[idx + 1].toInt()
+                val sample = ((hi shl 8) or lo).toShort().toDouble()
+                sumSq += sample * sample
+                count += 1
+                idx += 2
+            }
+            val rms = if (count > 0) sqrt(sumSq / count) else 0.0
+            if (rms >= SPEECH_ONSET_RMS_THRESHOLD) {
+                onsetByteOffset = (offset - preRollBytes).coerceAtLeast(0) and 1.inv()
+                break
+            }
+            offset += frameBytes
+        }
+
+        val remainingBytes = (totalBytes - onsetByteOffset).coerceAtLeast(0)
+        val maxProbeBytes = (((sampleRateHz.toLong() * probeDurationMs) / 1_000L) * 2L)
+            .coerceAtLeast(2L)
+            .toInt() and 1.inv()
+        val fullCoverageBytes = (((sampleRateHz.toLong() * fullCoverageThresholdMs) / 1_000L) * 2L)
+            .coerceAtLeast(maxProbeBytes.toLong())
+            .toInt() and 1.inv()
+
+        val isFullChunkCovered = remainingBytes <= fullCoverageBytes
+        val sliceBytes = min(remainingBytes, maxProbeBytes)
+        val probeBytes = if (onsetByteOffset == 0 && sliceBytes == pcm16LeBytes.size) {
+            pcm16LeBytes
+        } else {
+            pcm16LeBytes.copyOfRange(onsetByteOffset, onsetByteOffset + sliceBytes)
+        }
+
+        return SpeechProbeSlice(
+            probePcm16LeBytes = probeBytes,
+            onsetByteOffset = onsetByteOffset,
+            isFullChunkCovered = isFullChunkCovered,
+        )
     }
 
     /**
@@ -338,6 +422,13 @@ object ChunkPcmExtractor {
 
     internal const val LEADING_SILENCE_MS: Int = 150
     internal const val TRAILING_SILENCE_MS: Int = 600
+    internal const val PROBE_LEADING_SILENCE_MS: Int = 120
+    internal const val PROBE_TRAILING_SILENCE_MS: Int = 400
+    internal const val PROBE_DURATION_MS: Long = 2_000L
+    internal const val PROBE_FULL_COVERAGE_THRESHOLD_MS: Long = 2_400L
+    private const val PROBE_RMS_FRAME_MS: Int = 20
+    private const val PROBE_ONSET_PRE_ROLL_MS: Int = 60
+    private const val SPEECH_ONSET_RMS_THRESHOLD: Double = 160.0
     private const val MAX_CHUNK_PCM_BYTES: Int = 4 * 1024 * 1024
     private const val MAX_CACHED_ENTRY_BYTES: Int = 512 * 1024
     private const val MAX_CACHE_ENTRIES: Int = 8
@@ -352,13 +443,220 @@ internal data class SpeechRecognitionAttemptResult(
 )
 
 /**
- * Android 標準の [SpeechRecognizer]（`createOnDeviceSpeechRecognizer` および非対応時の `createSpeechRecognizer` フォールバック、
- * API 33+ の `EXTRA_AUDIO_SOURCE` + `ParcelFileDescriptor.createPipe()`）を用いた [OnDeviceChunkTranscriber] 実装（F6.2）。
+ * 2 秒プローブ認識結果 [attempt] が指定言語 [langTag] の自然な発話としてどの程度もっともらしいかを採点する。
  *
- * - 短い言語コード（`"ja"`, `"ko"` 等）は [toBcp47LocaleTag] で地域付き BCP-47 ロケールタグ（`"ja-JP"`, `"ko-KR"` 等）へ変換して認識器へ渡す。
- * - `EXTRA_ENABLE_LANGUAGE_DETECTION` は指定せず、まず学習言語（`languagePair.target`）で認識し、空の場合は母語（`languagePair.base`）へフォールバックする。
- * - `preferOnDevice = true` で認識できなかった場合は `createSpeechRecognizer`（`EXTRA_PREFER_OFFLINE = false`）へフォールバックする。
- * - 切り出した PCM の先頭に 150ms、末尾に 600ms の無音を付加し、`startListening` 開始後にペーシング書き込みを行う。
+ * 外国語音声が別言語の認識器に音写された場合（例: 日本語音声が韓国語認識器でハングル音写された場合や、
+ * 韓国語音声が日本語認識器でカタカナ音写された場合）よりも、本来の言語の認識結果が高スコアになるよう判定する。
+ */
+internal fun scoreProbeCandidateForLanguage(
+    attempt: SpeechRecognitionAttemptResult,
+    langTag: String,
+): Float {
+    val text = attempt.text.trim()
+    if (text.isEmpty()) return Float.NEGATIVE_INFINITY
+
+    val primaryLang = langTag.trim().replace('_', '-').substringBefore('-').lowercase(Locale.ROOT)
+    var score = (attempt.confidence?.takeIf { it > 0f } ?: DEFAULT_PROBE_CONFIDENCE) * 1.0f
+
+    var kanjiCount = 0
+    var hiraganaCount = 0
+    var katakanaCount = 0
+    var hangulCount = 0
+    var devanagariCount = 0
+    var latinCount = 0
+    var totalLetterCount = 0
+
+    for (ch in text) {
+        when {
+            ch in '\u4E00'..'\u9FFF' || ch in '\u3400'..'\u4DBF' -> {
+                kanjiCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u3040'..'\u309F' -> {
+                hiraganaCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u30A0'..'\u30FF' -> {
+                katakanaCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\uAC00'..'\uD7A3' || ch in '\u3130'..'\u318F' -> {
+                hangulCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u0900'..'\u097F' -> {
+                devanagariCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in 'A'..'Z' || ch in 'a'..'z' || ch in '\u00C0'..'\u024F' -> {
+                latinCount += 1
+                totalLetterCount += 1
+            }
+
+            Character.isLetterOrDigit(ch) -> {
+                totalLetterCount += 1
+            }
+        }
+    }
+
+    when (primaryLang) {
+        "ja" -> {
+            if (kanjiCount >= 1 && hiraganaCount >= 2) {
+                score += 1.2f
+            } else if (hiraganaCount >= 2) {
+                score += 0.5f
+            }
+
+            val hasJaMultiPattern = JA_FUNCTION_PATTERNS.any { text.contains(it) }
+            val hasJaParticle = hiraganaCount >= 1 && JA_PARTICLES.any { text.contains(it) }
+            if (hasJaMultiPattern || hasJaParticle) {
+                score += 0.8f
+            }
+
+            if (hiraganaCount == 0 && katakanaCount > 0 && katakanaCount * 2 >= totalLetterCount.coerceAtLeast(1)) {
+                score -= 0.8f
+            }
+        }
+
+        "ko" -> {
+            if (hangulCount > 0) {
+                val hasKoGrammar = KO_GRAMMAR_PATTERNS.any { text.contains(it) }
+                if (hasKoGrammar) {
+                    score += 0.7f
+                }
+                val tokens = text.split(WHITESPACE_REGEX).filter { it.isNotEmpty() }
+                val avgTokenLen = if (tokens.isNotEmpty()) {
+                    tokens.sumOf { it.length }.toFloat() / tokens.size.toFloat()
+                } else {
+                    0f
+                }
+                val hasPoliteEnding = KO_POLITE_ENDINGS.any { text.contains(it) }
+                if (tokens.size >= 3 && avgTokenLen <= 2.2f && !hasPoliteEnding) {
+                    score -= 0.5f
+                }
+            } else {
+                score -= 0.8f
+            }
+        }
+
+        "zh", "yue" -> {
+            if (totalLetterCount > 0) {
+                score += (kanjiCount.toFloat() / totalLetterCount.toFloat()) * 0.8f
+            }
+            if (hiraganaCount == 0 && ZH_COMMON_CHARS.any { text.contains(it) }) {
+                score += 0.6f
+            }
+        }
+
+        "hi" -> {
+            if (totalLetterCount > 0) {
+                score += (devanagariCount.toFloat() / totalLetterCount.toFloat()) * 1.0f
+            }
+        }
+
+        else -> {
+            if (totalLetterCount > 0) {
+                score += (latinCount.toFloat() / totalLetterCount.toFloat()) * 0.7f
+            }
+        }
+    }
+
+    return score
+}
+
+private const val DEFAULT_PROBE_CONFIDENCE: Float = 0.65f
+private val WHITESPACE_REGEX = Regex("\\s+")
+
+private val JA_FUNCTION_PATTERNS: List<String> = listOf(
+    "です",
+    "ます",
+    "した",
+    "して",
+    "さい",
+    "しょう",
+    "という",
+    "から",
+    "では",
+    "には",
+    "ません",
+    "ください",
+    "ましょう",
+    "について",
+    "ように",
+    "ている",
+)
+
+private val JA_PARTICLES: List<String> = listOf("の", "を", "が", "は", "に", "で")
+
+private val KO_GRAMMAR_PATTERNS: List<String> = listOf(
+    "습니다",
+    "습니까",
+    "세요",
+    "해요",
+    "어요",
+    "아요",
+    "예요",
+    "이에요",
+    "네요",
+    "지만",
+    "에서",
+    "으로",
+    "에게",
+    "부터",
+    "까지",
+    "니다",
+    "니까",
+    "을",
+    "를",
+    "은",
+    "는",
+)
+
+private val KO_POLITE_ENDINGS: List<String> = listOf(
+    "습니다",
+    "습니까",
+    "세요",
+    "해요",
+    "어요",
+    "아요",
+    "예요",
+    "이에요",
+    "네요",
+    "니다",
+    "니까",
+)
+
+private val ZH_COMMON_CHARS: List<String> = listOf(
+    "的",
+    "了",
+    "是",
+    "在",
+    "我",
+    "你",
+    "他",
+    "们",
+    "这",
+    "那",
+    "不",
+    "有",
+    "吗",
+    "呢",
+)
+
+/**
+ * Android 標準の [SpeechRecognizer.createOnDeviceSpeechRecognizer]（API 33+ の `EXTRA_AUDIO_SOURCE` +
+ * `ParcelFileDescriptor.createPipe()`）を用いた [OnDeviceChunkTranscriber] 実装（F6.2）。
+ *
+ * - 学習言語（`target`）と母語（`base`）のペアが設定されている場合、まずチャンク先頭約 2 秒のプローブ音声を
+ *   両言語で認識し、[scoreProbeCandidateForLanguage] でどちらの言語かを判定してから、勝った言語でチャンク全体の STT を実行する。
+ * - `isOnDeviceRecognitionAvailable(context) == true` の端末では `createOnDeviceSpeechRecognizer` のみを使用し、
+ *   物理マイクを掴んでハングする `createSpeechRecognizer`（`preferOnDevice = false`）へはフォールバックしない。
+ * - 連続して `SpeechRecognizer` を呼び出す際はシステムサービスのアンバインド競合を防ぐため 200ms の間隔を空ける。
  */
 @Singleton
 class AndroidSpeechRecognizerChunkTranscriber internal constructor(
@@ -393,6 +691,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     )
 
     private val recognitionMutex = Mutex()
+    private var lastPipeAttemptCompletedRealtimeMs: Long = 0L
 
     override fun isAvailable(): Boolean = onDeviceAvailabilityChecker() || standardAvailabilityChecker()
 
@@ -437,51 +736,164 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         val onDeviceAvailable = onDeviceAvailabilityChecker()
         val standardAvailable = standardAvailabilityChecker()
-        val modesToTry = buildList {
-            if (onDeviceAvailable) add(true)
-            if (standardAvailable || !onDeviceAvailable) add(false)
-        }.distinct()
-        if (modesToTry.isEmpty()) return null
+        if (!onDeviceAvailable && !standardAvailable) return null
 
-        val candidateLanguages: List<LanguageTag?> = buildList {
-            if (languagePair != null) {
-                add(languagePair.target)
-                val base = languagePair.base
-                if (base != null && !base.value.equals(languagePair.target.value, ignoreCase = true)) {
-                    add(base)
-                }
-            } else {
-                add(null)
-            }
+        // isOnDeviceRecognitionAvailable == true の端末では物理マイクが開くのを防ぐため preferOnDevice = true のみを使用する
+        val preferOnDevice = onDeviceAvailable
+
+        val targetLang = languagePair?.target
+        val baseLang = languagePair?.base?.takeIf {
+            targetLang == null || !it.value.equals(targetLang.value, ignoreCase = true)
         }
+        val chunkDurationMs = ((pcm16LeBytes.size / 2).toLong() * 1_000L) / sampleRateHz.toLong()
 
         return recognitionMutex.withLock {
-            for (candidateLang in candidateLanguages) {
-                val bcp47Tag = candidateLang?.value?.let(::toBcp47LocaleTag)
+            if (targetLang != null && baseLang != null) {
+                transcribeWithTwoSecondLanguageProbe(
+                    pcm16LeBytes = pcm16LeBytes,
+                    sampleRateHz = sampleRateHz,
+                    chunkDurationMs = chunkDurationMs,
+                    targetLang = targetLang,
+                    baseLang = baseLang,
+                    preferOnDevice = preferOnDevice,
+                )
+            } else {
+                val singleLang = targetLang ?: baseLang
+                val bcp47Tag = singleLang?.value?.let(::toBcp47LocaleTag)
                     ?: toBcp47LocaleTag(Locale.getDefault().toLanguageTag())
-                for (preferOnDevice in modesToTry) {
-                    val runner = attemptRunner
-                    val attempt = if (runner != null) {
-                        runner(pcm16LeBytes, sampleRateHz, bcp47Tag, preferOnDevice)
-                    } else {
-                        runSinglePipeAttempt(
-                            pcm16LeBytes = pcm16LeBytes,
-                            sampleRateHz = sampleRateHz,
-                            bcp47LocaleTag = bcp47Tag,
-                            preferOnDevice = preferOnDevice,
-                        )
-                    }
-                    if (attempt != null && attempt.text.isNotBlank()) {
-                        return@withLock OnDeviceChunkTranscriptionResult(
-                            text = attempt.text.trim(),
-                            language = candidateLang,
-                            confidence = attempt.confidence,
-                        )
-                    }
+                val attempt = executeAttempt(
+                    pcm16LeBytes = pcm16LeBytes,
+                    sampleRateHz = sampleRateHz,
+                    bcp47LocaleTag = bcp47Tag,
+                    preferOnDevice = preferOnDevice,
+                    isProbe = false,
+                )
+                if (attempt != null && attempt.text.isNotBlank()) {
+                    logInfo(
+                        "singleLang chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} chars=${attempt.text.trim().length}",
+                    )
+                    OnDeviceChunkTranscriptionResult(
+                        text = attempt.text.trim(),
+                        language = singleLang,
+                        confidence = attempt.confidence,
+                    )
+                } else {
+                    logInfo(
+                        "singleLang empty chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag}",
+                    )
+                    null
                 }
             }
-            null
         }
+    }
+
+    private suspend fun transcribeWithTwoSecondLanguageProbe(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        chunkDurationMs: Long,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+        preferOnDevice: Boolean,
+    ): OnDeviceChunkTranscriptionResult? {
+        val probeSlice = ChunkPcmExtractor.extractLeadingSpeechProbePcm(
+            pcm16LeBytes = pcm16LeBytes,
+            sampleRateHz = sampleRateHz,
+        )
+        val probeBytes = probeSlice.probePcm16LeBytes
+        val targetBcp47 = toBcp47LocaleTag(targetLang.value)
+        val baseBcp47 = toBcp47LocaleTag(baseLang.value)
+
+        val targetProbe = executeAttempt(
+            pcm16LeBytes = probeBytes,
+            sampleRateHz = sampleRateHz,
+            bcp47LocaleTag = targetBcp47,
+            preferOnDevice = preferOnDevice,
+            isProbe = true,
+        )?.takeIf { it.text.isNotBlank() }
+
+        val baseProbe = executeAttempt(
+            pcm16LeBytes = probeBytes,
+            sampleRateHz = sampleRateHz,
+            bcp47LocaleTag = baseBcp47,
+            preferOnDevice = preferOnDevice,
+            isProbe = true,
+        )?.takeIf { it.text.isNotBlank() }
+
+        if (targetProbe == null && baseProbe == null) {
+            logInfo(
+                "probe empty chunkDurationMs=$chunkDurationMs targetLang=${targetLang.value} baseLang=${baseLang.value}",
+            )
+            return null
+        }
+
+        val targetScore = targetProbe?.let { scoreProbeCandidateForLanguage(it, targetLang.value) }
+            ?: Float.NEGATIVE_INFINITY
+        val baseScore = baseProbe?.let { scoreProbeCandidateForLanguage(it, baseLang.value) }
+            ?: Float.NEGATIVE_INFINITY
+
+        val winningLang: LanguageTag
+        val winningProbe: SpeechRecognitionAttemptResult
+        if (baseProbe != null && (targetProbe == null || baseScore > targetScore)) {
+            winningLang = baseLang
+            winningProbe = baseProbe
+        } else if (targetProbe != null) {
+            winningLang = targetLang
+            winningProbe = targetProbe
+        } else {
+            return null
+        }
+
+        if (probeSlice.isFullChunkCovered) {
+            val text = winningProbe.text.trim()
+            logInfo(
+                "probe winner=${winningLang.value} chunkDurationMs=$chunkDurationMs targetLang=${targetLang.value} targetScore=$targetScore baseLang=${baseLang.value} baseScore=$baseScore fullChunkUsed=false chars=${text.length}",
+            )
+            return OnDeviceChunkTranscriptionResult(
+                text = text,
+                language = winningLang,
+                confidence = winningProbe.confidence,
+            )
+        }
+
+        val winningBcp47 = toBcp47LocaleTag(winningLang.value)
+        val fullAttempt = executeAttempt(
+            pcm16LeBytes = pcm16LeBytes,
+            sampleRateHz = sampleRateHz,
+            bcp47LocaleTag = winningBcp47,
+            preferOnDevice = preferOnDevice,
+            isProbe = false,
+        )?.takeIf { it.text.isNotBlank() }
+
+        val finalAttempt = fullAttempt ?: winningProbe
+        val finalText = finalAttempt.text.trim()
+        logInfo(
+            "probe winner=${winningLang.value} chunkDurationMs=$chunkDurationMs targetLang=${targetLang.value} targetScore=$targetScore baseLang=${baseLang.value} baseScore=$baseScore fullChunkUsed=${fullAttempt != null} chars=${finalText.length}",
+        )
+        return OnDeviceChunkTranscriptionResult(
+            text = finalText,
+            language = winningLang,
+            confidence = finalAttempt.confidence,
+        )
+    }
+
+    private suspend fun executeAttempt(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        bcp47LocaleTag: String,
+        preferOnDevice: Boolean,
+        isProbe: Boolean,
+    ): SpeechRecognitionAttemptResult? {
+        val runner = attemptRunner
+        if (runner != null) {
+            return runner(pcm16LeBytes, sampleRateHz, bcp47LocaleTag, preferOnDevice)
+        }
+        return runSinglePipeAttempt(
+            pcm16LeBytes = pcm16LeBytes,
+            sampleRateHz = sampleRateHz,
+            bcp47LocaleTag = bcp47LocaleTag,
+            preferOnDevice = preferOnDevice,
+            isProbe = isProbe,
+        )
     }
 
     private suspend fun runSinglePipeAttempt(
@@ -489,10 +901,33 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         sampleRateHz: Int,
         bcp47LocaleTag: String,
         preferOnDevice: Boolean,
+        isProbe: Boolean,
     ): SpeechRecognitionAttemptResult? {
+        if (lastPipeAttemptCompletedRealtimeMs > 0L) {
+            val elapsed = SystemClock.elapsedRealtime() - lastPipeAttemptCompletedRealtimeMs
+            if (elapsed in 0L until INTER_RECOGNITION_SETTLE_DELAY_MS) {
+                delay(INTER_RECOGNITION_SETTLE_DELAY_MS - elapsed)
+            }
+        }
+
+        val leadingSilenceMs = if (isProbe) {
+            ChunkPcmExtractor.PROBE_LEADING_SILENCE_MS
+        } else {
+            ChunkPcmExtractor.LEADING_SILENCE_MS
+        }
+        val trailingSilenceMs = if (isProbe) {
+            ChunkPcmExtractor.PROBE_TRAILING_SILENCE_MS
+        } else {
+            ChunkPcmExtractor.TRAILING_SILENCE_MS
+        }
+        val audioPaceMs = if (isProbe) PROBE_PIPE_AUDIO_PACE_MS else PIPE_AUDIO_PACE_MS
+        val trailingPaceMs = if (isProbe) PROBE_PIPE_TRAILING_SILENCE_PACE_MS else PIPE_TRAILING_SILENCE_PACE_MS
+
         val paddedBytes = ChunkPcmExtractor.padPcmWithSilence(
             pcm16LeBytes = pcm16LeBytes,
             sampleRateHz = sampleRateHz,
+            leadingSilenceMs = leadingSilenceMs,
+            trailingSilenceMs = trailingSilenceMs,
         )
 
         val pipe = try {
@@ -504,10 +939,6 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val writeSide = pipe[1]
         val listeningStarted = CompletableDeferred<Boolean>()
 
-        logDebug(
-            "start attempt preferOnDevice=$preferOnDevice lang=$bcp47LocaleTag pcmBytes=${pcm16LeBytes.size} paddedBytes=${paddedBytes.size}",
-        )
-
         return try {
             coroutineScope {
                 val writerJob = launch {
@@ -515,8 +946,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     runCatching {
                         val frameBytes = ((sampleRateHz * 2 * PIPE_FRAME_DURATION_MS) / 1_000)
                             .coerceAtLeast(MIN_PIPE_FRAME_BYTES)
-                        val trailingSilenceBytes =
-                            ((sampleRateHz * ChunkPcmExtractor.TRAILING_SILENCE_MS) / 1_000) * 2
+                        val trailingSilenceBytes = ((sampleRateHz * trailingSilenceMs) / 1_000) * 2
                         val trailingStartOffset = (paddedBytes.size - trailingSilenceBytes).coerceAtLeast(0)
 
                         ParcelFileDescriptor.AutoCloseOutputStream(writeSide).use { output ->
@@ -526,9 +956,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                                 output.write(paddedBytes, offset, len)
                                 offset += len
                                 if (offset <= trailingStartOffset) {
-                                    delay(PIPE_AUDIO_PACE_MS)
+                                    delay(audioPaceMs)
                                 } else {
-                                    delay(PIPE_TRAILING_SILENCE_PACE_MS)
+                                    delay(trailingPaceMs)
                                 }
                             }
                             output.flush()
@@ -560,6 +990,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         } finally {
             runCatching { readSide.close() }
             runCatching { writeSide.close() }
+            lastPipeAttemptCompletedRealtimeMs = SystemClock.elapsedRealtime()
         }
     }
 
@@ -621,7 +1052,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             partialText = latestPartialText,
                             errorCode = error,
                         )
-                        logDebug(
+                        logInfo(
                             "onError preferOnDevice=$preferOnDevice lang=$bcp47LocaleTag error=$error fallbackChars=${outcome?.text?.length ?: 0}",
                         )
                         cleanup.run()
@@ -640,7 +1071,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             partialText = latestPartialText,
                             errorCode = null,
                         )
-                        logDebug(
+                        logInfo(
                             "onResults preferOnDevice=$preferOnDevice lang=$bcp47LocaleTag chars=${outcome?.text?.length ?: 0}",
                         )
                         cleanup.run()
@@ -691,11 +1122,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         ?.trim()
         .orEmpty()
 
-    private fun logDebug(message: String) {
+    private fun logInfo(message: String) {
         runCatching {
-            if (Log.isLoggable(LOG_TAG, Log.DEBUG)) {
-                Log.d(LOG_TAG, message)
-            }
+            Log.i(LOG_TAG, message)
         }
     }
 
@@ -705,6 +1134,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         private const val MIN_PIPE_FRAME_BYTES: Int = 640
         private const val PIPE_AUDIO_PACE_MS: Long = 10L
         private const val PIPE_TRAILING_SILENCE_PACE_MS: Long = 15L
+        private const val PROBE_PIPE_AUDIO_PACE_MS: Long = 8L
+        private const val PROBE_PIPE_TRAILING_SILENCE_PACE_MS: Long = 10L
+        internal const val INTER_RECOGNITION_SETTLE_DELAY_MS: Long = 200L
         private const val RECOGNITION_TIMEOUT_MS: Long = 12_000L
 
         /**
