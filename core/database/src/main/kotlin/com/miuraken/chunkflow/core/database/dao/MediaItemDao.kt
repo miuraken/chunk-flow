@@ -61,6 +61,23 @@ interface MediaItemDao {
         baseLang: String?,
     )
 
+    /** 指定したコース（ディレクトリ）に属する教材のコース名と言語ペアを一括更新する。 */
+    @Query("UPDATE media_item SET course = :newCourse, target_lang = :targetLang, base_lang = :baseLang WHERE course = :oldCourse")
+    suspend fun updateCourseMetadata(
+        oldCourse: String,
+        newCourse: String?,
+        targetLang: String,
+        baseLang: String?,
+    )
+
+    /** コース未設定（`course IS NULL`）の教材のコース名と言語ペアを一括更新する。 */
+    @Query("UPDATE media_item SET course = :newCourse, target_lang = :targetLang, base_lang = :baseLang WHERE course IS NULL")
+    suspend fun updateUncategorizedCourseMetadata(
+        newCourse: String?,
+        targetLang: String,
+        baseLang: String?,
+    )
+
     /** 教材を削除する（外部キーの `ON DELETE CASCADE` により関連テーブルも削除される）。 */
     @Query("DELETE FROM media_item WHERE id = :id")
     suspend fun deleteById(id: String)

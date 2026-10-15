@@ -24,6 +24,7 @@ enum class ChineseScript(val iso15924: String) {
  * @property seekForwardMs 早送りのミリ秒数（正の値、既定 5,000ms）。
  * @property defaultAutoPause 新しく開く教材の既定の自動ポーズ設定（F6.3、F9.1）。
  * @property defaultSegmentationParams 端末内の自動チャンク分割の既定パラメータ（§7.3.3、F5.2、F9.1）。
+ * @property enabledLanguages 設定画面やダイアログの言語選択肢として表示する言語の集合。
  */
 data class UserSettings(
     val defaultLanguagePair: LanguagePair = LanguagePair(
@@ -37,6 +38,7 @@ data class UserSettings(
     val seekForwardMs: Long = DEFAULT_SEEK_FORWARD_MS,
     val defaultAutoPause: AutoPause = AutoPause.Off,
     val defaultSegmentationParams: SegmentationParams = SegmentationParams(),
+    val enabledLanguages: Set<LanguageTag> = DEFAULT_ENABLED_LANGUAGES,
 ) {
     init {
         require(defaultSpeed in ItemState.MIN_SPEED..ItemState.MAX_SPEED) {
@@ -44,6 +46,7 @@ data class UserSettings(
         }
         require(seekBackMs > 0L) { "seekBackMs must be > 0: $seekBackMs" }
         require(seekForwardMs > 0L) { "seekForwardMs must be > 0: $seekForwardMs" }
+        require(enabledLanguages.isNotEmpty()) { "enabledLanguages must not be empty" }
     }
 
     companion object {
@@ -52,5 +55,11 @@ data class UserSettings(
 
         /** 早送りの既定値（5 秒、F3.3）。 */
         const val DEFAULT_SEEK_FORWARD_MS: Long = 5_000L
+
+        /** 選択肢として有効な言語の既定セット（日本語・英語）。 */
+        val DEFAULT_ENABLED_LANGUAGES: Set<LanguageTag> = setOf(
+            LanguageTag("ja"),
+            LanguageTag("en"),
+        )
     }
 }

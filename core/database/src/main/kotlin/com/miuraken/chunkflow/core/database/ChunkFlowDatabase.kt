@@ -2,6 +2,8 @@ package com.miuraken.chunkflow.core.database
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
 import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
@@ -32,7 +34,7 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         BookmarkEntity::class,
         DriveFileEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -60,5 +62,12 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
     companion object {
         /** データベースファイル名（`data_extraction_rules.xml` の `database` ドメイン対象）。 */
         const val DATABASE_NAME: String = "chunkflow.db"
+
+        /** バージョン 1 から 2 へのマイグレーション（`item_state` に `is_listened` 列を追加）。 */
+        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE item_state ADD COLUMN is_listened INTEGER NOT NULL DEFAULT 0")
+            }
+        }
     }
 }

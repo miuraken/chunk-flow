@@ -81,6 +81,10 @@ class DataStoreUserSettingsRepositoryTest {
 
         repository.setDefaultAutoPause(AutoPause.Off)
         assertEquals(AutoPause.Off, repository.settings.first().defaultAutoPause)
+
+        val customLangs = setOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko"))
+        repository.setEnabledLanguages(customLangs)
+        assertEquals(customLangs, repository.settings.first().enabledLanguages)
     }
 
     @Test

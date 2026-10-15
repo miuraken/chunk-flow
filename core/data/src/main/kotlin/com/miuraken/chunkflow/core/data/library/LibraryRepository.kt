@@ -90,6 +90,20 @@ interface LibraryRepository {
         languages: LanguagePair,
     ) = Unit
 
+    /** ディレクトリ（コース）単位でコース名と言語ペアを一括再設定する。 */
+    suspend fun updateDirectoryMetadata(
+        currentCourse: String?,
+        newCourse: String? = currentCourse,
+        languages: LanguagePair,
+    ) = Unit
+
+    /** 教材の聴取完了フラグ（Listened / 済）と最終アクセス日時を更新する。 */
+    suspend fun markItemListened(
+        id: MediaId,
+        isListened: Boolean = true,
+        updatedAtEpochMs: Long = System.currentTimeMillis(),
+    ) = Unit
+
     /**
      * 教材の文字起こし（手動修正された言語ラベルを含む）を `.chunkflow.json` 形式でローカル原本ファイルへ書き出す（§7.2 書き戻し準備）。
      *

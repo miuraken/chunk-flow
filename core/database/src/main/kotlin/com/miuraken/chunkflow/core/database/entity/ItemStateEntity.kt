@@ -43,6 +43,8 @@ data class ItemStateEntity(
     val languageFilter: String = LanguageFilter.ALL.name,
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long = 0L,
+    @ColumnInfo(name = "is_listened", defaultValue = "0")
+    val isListened: Boolean = false,
 ) {
     companion object {
         internal const val AUTO_PAUSE_OFF = "OFF"
@@ -93,6 +95,7 @@ fun ItemStateEntity.toExternalModel(): ItemState = ItemState(
     languageFilter = LanguageFilter.entries.firstOrNull { it.name == languageFilter }
         ?: LanguageFilter.ALL,
     updatedAtEpochMs = updatedAt,
+    isListened = isListened,
 )
 
 /** ドメインモデルの [ItemState] を [ItemStateEntity] に変換する。 */
@@ -105,4 +108,5 @@ fun ItemState.toEntity(): ItemStateEntity = ItemStateEntity(
     autoPauseScope = autoPauseScope.name,
     languageFilter = languageFilter.name,
     updatedAt = updatedAtEpochMs,
+    isListened = isListened,
 )

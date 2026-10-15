@@ -177,6 +177,41 @@ class FakeLibraryRepository(
         }
     }
 
+    override suspend fun updateDirectoryMetadata(
+        currentCourse: String?,
+        newCourse: String?,
+        languages: LanguagePair,
+    ) {
+        items.update { list ->
+            list.map { item ->
+                if (item.course == currentCourse) {
+                    item.copy(course = newCourse, languagePair = languages)
+                } else {
+                    item
+                }
+            }
+        }
+    }
+
+    override suspend fun markItemListened(
+        id: MediaId,
+        isListened: Boolean,
+        updatedAtEpochMs: Long,
+    ) {
+        itemStates.update { current ->
+            val existing = current[id]
+            val updated = existing?.copy(
+                isListened = isListened,
+                updatedAtEpochMs = updatedAtEpochMs,
+            ) ?: ItemState(
+                mediaId = id,
+                isListened = isListened,
+                updatedAtEpochMs = updatedAtEpochMs,
+            )
+            current + (id to updated)
+        }
+    }
+
     override suspend fun exportLocalTranscriptJson(id: MediaId): Boolean {
         exportedTranscriptIds += id
         return exportTranscriptResult

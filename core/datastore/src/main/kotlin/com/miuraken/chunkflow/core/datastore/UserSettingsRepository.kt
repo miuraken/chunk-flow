@@ -3,6 +3,7 @@ package com.miuraken.chunkflow.core.datastore
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
@@ -39,4 +40,7 @@ interface UserSettingsRepository {
 
     /** 端末内の自動チャンク分割の既定パラメータを更新する（§7.3.3、F5.2、F9.1）。 */
     suspend fun setDefaultSegmentationParams(params: SegmentationParams) {}
+
+    /** 設定画面やダイアログの言語選択肢として表示する言語のセットを更新する。 */
+    suspend fun setEnabledLanguages(languages: Set<LanguageTag>) = Unit
 }

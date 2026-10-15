@@ -4,6 +4,7 @@ import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
@@ -57,5 +58,10 @@ class FakeUserSettingsRepository(
 
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
         state.update { it.copy(defaultSegmentationParams = params) }
+    }
+
+    override suspend fun setEnabledLanguages(languages: Set<LanguageTag>) {
+        require(languages.isNotEmpty()) { "enabledLanguages must not be empty" }
+        state.update { it.copy(enabledLanguages = languages) }
     }
 }
