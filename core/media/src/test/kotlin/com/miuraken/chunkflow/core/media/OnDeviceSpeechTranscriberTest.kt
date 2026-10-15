@@ -6,6 +6,7 @@ import android.speech.SpeechRecognizer
 import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -390,9 +391,30 @@ class OnDeviceSpeechTranscriberTest {
             resultsText = null,
             confidence = null,
             partialText = "クライアントエラー時",
-            errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+            errorCode = SpeechRecognizer.ERROR_CLIENT,
         )
         assertNull(fromClientError)
+
+        // 言語モデルが使えないエラーは、部分結果を採用せず「本文なし + エラーコード」として返す
+        val fromLanguageNotSupported = AndroidSpeechRecognizerChunkTranscriber.resolveRecognitionCallbackOutcome(
+            resultsText = null,
+            confidence = null,
+            partialText = "非対応言語",
+            errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+        )
+        assertNotNull(fromLanguageNotSupported)
+        assertEquals("", fromLanguageNotSupported.text)
+        assertTrue(fromLanguageNotSupported.isLanguageModelUnavailable)
+
+        val fromLanguageUnavailable = AndroidSpeechRecognizerChunkTranscriber.resolveRecognitionCallbackOutcome(
+            resultsText = null,
+            confidence = null,
+            partialText = "",
+            errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+        )
+        assertNotNull(fromLanguageUnavailable)
+        assertEquals(SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE, fromLanguageUnavailable.errorCode)
+        assertTrue(fromLanguageUnavailable.isLanguageModelUnavailable)
     }
 
     @Test
@@ -967,5 +989,368 @@ class OnDeviceSpeechTranscriberTest {
             listOf("en-US", "ja-JP", "ko-KR", "fr-FR"),
             executionOrder,
         )
+    }
+
+    @Test
+    fun `scoreProbeCandidateForLanguage_カタカナ外来語化に助詞やですが混ざっても減点されSpeechRecognizerのconfidenceが高い学習言語側が勝つ`() {
+        // 1. 韓国語音声が日本語認識器で「カタカナ＋です／助詞」に外来語化されたケース
+        val katakanaWithDesuJa = SpeechRecognitionAttemptResult(
+            text = "アンニョンハセヨマンナソです",
+            confidence = 0.78f,
+        )
+        val naturalKo = SpeechRecognitionAttemptResult(
+            text = "안녕하세요 만나서",
+            confidence = 0.80f,
+        )
+        val jaKatakanaDesuScore = scoreProbeCandidateForLanguage(katakanaWithDesuJa, "ja")
+        val koScore = scoreProbeCandidateForLanguage(naturalKo, "ko")
+        assertTrue(
+            koScore > jaKatakanaDesuScore,
+            "Expected koScore ($koScore) > jaKatakanaDesuScore ($jaKatakanaDesuScore)",
+        )
+        assertTrue(isKatakanaTransliterationSuspected(katakanaWithDesuJa.text, "ja"))
+
+        // 2. 英語音声が日本語認識器で低確信度の漢字かな混じり文に空耳変換された場合でも、confidence差を重視して英語側が勝つケース
+        val lowConfidenceHallucinatedJa = SpeechRecognitionAttemptResult(
+            text = "腹を空かせてチェックインです",
+            confidence = 0.55f,
+        )
+        val highConfidenceEn = SpeechRecognitionAttemptResult(
+            text = "Hello I would like to check in",
+            confidence = 0.88f,
+        )
+        val hallucinatedJaScore = scoreProbeCandidateForLanguage(lowConfidenceHallucinatedJa, "ja")
+        val enScore = scoreProbeCandidateForLanguage(highConfidenceEn, "en")
+        assertTrue(
+            enScore > hallucinatedJaScore,
+            "Expected enScore ($enScore) > hallucinatedJaScore ($hallucinatedJaScore)",
+        )
+    }
+
+    @Test
+    fun `transcribeChunk_WhisperTinyが日本語と誤判定してもカタカナ外来語化や低confidence時は学習言語へフォールバック検証し学習言語側を採用する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dummyFile = tempFolder.newFile("whisper_lid_katakana_fallback.wav").apply {
+            writeBytes(byteArrayOf(51, 52, 53, 54))
+        }
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val samples = FloatArray(outputSampleRate * 2) { 0.35f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = 2_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/wav",
+                )
+            }
+        }
+
+        val runnerCalls = mutableListOf<String>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag
+                when (bcp47Tag) {
+                    "ja-JP" -> SpeechRecognitionAttemptResult(
+                        text = "グッドモーニングマイネームはジョンです",
+                        confidence = 0.72f,
+                    )
+
+                    "en-US" -> SpeechRecognitionAttemptResult(
+                        text = "Good morning my name is John",
+                        confidence = 0.91f,
+                    )
+
+                    else -> null
+                }
+            },
+            languageDetector = { _, _, _ ->
+                // WhisperTiny LID が誤って ja を 0.82 の確率で選んだ状況を模擬
+                LanguagePairPrediction(
+                    selectedTag = "ja",
+                    fallbackTag = "en",
+                    selectedProbability = 0.82f,
+                    targetProbability = 0.18f,
+                    baseProbability = 0.82f,
+                    inferenceTimeMs = 10L,
+                )
+            },
+        )
+
+        val result = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        assertNotNull(result)
+        // カタカナ外来語化の疑いにより en-US も検証され、confidence が高く自然な英語側が採用されること
+        assertEquals(listOf("ja-JP", "en-US"), runnerCalls)
+        assertEquals("Good morning my name is John", result.text)
+        assertEquals(LanguageTag("en"), result.language)
+        assertEquals(0.91f, result.confidence)
+    }
+
+    @Test
+    fun `transcribeChunk_LIDが韓国語と確信し韓国語モデルが未ダウンロードのとき日本語の音写で代用せず言語判定のみを返しダウンロードを1回だけ要求する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val gateway = FakeRecognitionModelGateway()
+        val runnerCalls = mutableListOf<String>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag
+                when (bcp47Tag) {
+                    // 韓国語の言語モデルが端末にない（ERROR_LANGUAGE_UNAVAILABLE）
+                    "ko-KR" -> SpeechRecognitionAttemptResult(
+                        text = "",
+                        errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                    )
+
+                    // 日本語認識器では韓国語音声がカタカナに音写される
+                    "ja-JP" -> SpeechRecognitionAttemptResult(text = "アンニョンハセヨ", confidence = 0.8f)
+
+                    else -> null
+                }
+            },
+            languageDetector = { _, _, _ ->
+                LanguagePairPrediction(
+                    selectedTag = "ko",
+                    fallbackTag = "ja",
+                    selectedProbability = 0.97f,
+                    targetProbability = 0.97f,
+                    baseProbability = 0.03f,
+                    inferenceTimeMs = 8L,
+                )
+            },
+            modelGateway = gateway,
+        )
+        val koJaPair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+
+        val first = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("ko_missing_model_1.wav").apply { writeBytes(byteArrayOf(1, 2)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = koJaPair,
+        )
+        assertNotNull(first)
+        assertTrue(first.isLanguageOnly)
+        assertEquals("", first.text)
+        assertEquals(LanguageTag("ko"), first.language)
+        assertEquals(0.97f, first.confidence)
+        assertEquals(OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID, first.engineId)
+        // 日本語認識器（音写）は呼ばれない
+        assertEquals(listOf("ko-KR"), runnerCalls)
+        // ダウンロードを自動で要求し、状態は「ダウンロード中」
+        assertEquals(listOf("ko-KR"), gateway.downloadRequests)
+        assertEquals(
+            mapOf(LanguageTag("ko") to OnDeviceRecognitionModelState.DOWNLOADING),
+            transcriber.recognitionModelIssues.value,
+        )
+
+        // 2 チャンク目でも言語判定のみを返し、ダウンロードの要求は繰り返さない
+        val second = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("ko_missing_model_2.wav").apply { writeBytes(byteArrayOf(3, 4)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = koJaPair,
+        )
+        assertNotNull(second)
+        assertTrue(second.isLanguageOnly)
+        assertEquals(listOf("ko-KR"), gateway.downloadRequests)
+
+        // ダウンロードが終わると、問題の一覧から外れる
+        gateway.emit(RecognitionModelDownloadEvent.SUCCESS)
+        assertTrue(transcriber.recognitionModelIssues.value.isEmpty())
+    }
+
+    @Test
+    fun `transcribeChunk_LIDが曖昧で韓国語モデルが未ダウンロードのとき自然な日本語は採用し音写は言語判定のみにする`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        var jaResult = SpeechRecognitionAttemptResult(text = "それでは日本語という言い方です", confidence = 0.9f)
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                when (bcp47Tag) {
+                    "ko-KR" -> SpeechRecognitionAttemptResult(
+                        text = "",
+                        errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                    )
+
+                    "ja-JP" -> jaResult
+
+                    else -> null
+                }
+            },
+            languageDetector = { _, _, _ ->
+                LanguagePairPrediction(
+                    selectedTag = "ko",
+                    fallbackTag = "ja",
+                    selectedProbability = 0.6f,
+                    targetProbability = 0.6f,
+                    baseProbability = 0.4f,
+                    inferenceTimeMs = 8L,
+                )
+            },
+            modelGateway = FakeRecognitionModelGateway(),
+        )
+        val koJaPair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+
+        // 自然な日本語として認識できた場合は日本語の結果を採用する
+        val natural = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("ambiguous_natural_ja.wav").apply { writeBytes(byteArrayOf(5, 6)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = koJaPair,
+        )
+        assertNotNull(natural)
+        assertEquals("それでは日本語という言い方です", natural.text)
+        assertEquals(LanguageTag("ja"), natural.language)
+
+        // カタカナの音写しか得られない場合は、韓国語の言語判定のみを返す
+        jaResult = SpeechRecognitionAttemptResult(text = "マンナソパンガプスミダ", confidence = 0.8f)
+        val transliterated = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("ambiguous_katakana_ja.wav").apply { writeBytes(byteArrayOf(7, 8)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = koJaPair,
+        )
+        assertNotNull(transliterated)
+        assertTrue(transliterated.isLanguageOnly)
+        assertEquals(LanguageTag("ko"), transliterated.language)
+    }
+
+    @Test
+    fun `refreshRecognitionModelIssues_OSの対応状況でインストール済みになった言語を問題の一覧から外す`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val gateway = FakeRecognitionModelGateway()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 1),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, _, _ ->
+                SpeechRecognitionAttemptResult(
+                    text = "",
+                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                )
+            },
+            modelGateway = gateway,
+        )
+        val result = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("single_ko_missing.wav").apply { writeBytes(byteArrayOf(9, 10)) },
+            startMs = 0L,
+            endMs = 1_000L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+        )
+        // 単一言語の場合は言語が既知のため、本文がなければ null を返す（状態だけ記録する）
+        assertNull(result)
+        assertEquals(
+            mapOf(LanguageTag("ko") to OnDeviceRecognitionModelState.DOWNLOADING),
+            transcriber.recognitionModelIssues.value,
+        )
+
+        // 予約（Wi-Fi 待ちなど）のあと、OS の対応状況でインストール済みになったら一覧から外す
+        gateway.emit(RecognitionModelDownloadEvent.SCHEDULED)
+        assertEquals(
+            mapOf(LanguageTag("ko") to OnDeviceRecognitionModelState.DOWNLOADING),
+            transcriber.recognitionModelIssues.value,
+        )
+        gateway.supportResult = mapOf("ko-KR" to RecognitionModelSupport.INSTALLED)
+        transcriber.refreshRecognitionModelIssues()
+        assertTrue(transcriber.recognitionModelIssues.value.isEmpty())
+    }
+
+    @Test
+    fun `requestRecognitionModelDownload_ダウンロードに失敗するとDOWNLOAD_FAILEDになる`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val gateway = FakeRecognitionModelGateway()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 1),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, _, _ -> null },
+            modelGateway = gateway,
+        )
+
+        assertTrue(transcriber.requestRecognitionModelDownload(LanguageTag("ko")))
+        assertEquals(listOf("ko-KR"), gateway.downloadRequests)
+        assertEquals(
+            mapOf(LanguageTag("ko") to OnDeviceRecognitionModelState.DOWNLOADING),
+            transcriber.recognitionModelIssues.value,
+        )
+
+        gateway.emit(RecognitionModelDownloadEvent.FAILED)
+        assertEquals(
+            mapOf(LanguageTag("ko") to OnDeviceRecognitionModelState.DOWNLOAD_FAILED),
+            transcriber.recognitionModelIssues.value,
+        )
+    }
+
+    /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
+    private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
+        override suspend fun decode(
+            file: File,
+            sink: SampleSink,
+            outputSampleRate: Int,
+            expectedDurationMs: Long?,
+            onProgress: suspend (DecodeProgress) -> Unit,
+        ): AudioDecodeResult {
+            val samples = FloatArray(outputSampleRate * durationSec) { 0.3f }
+            sink.onSamples(samples, samples.size)
+            return AudioDecodeResult.Success(
+                sampleRate = outputSampleRate,
+                channels = 1,
+                decodedFrames = samples.size.toLong(),
+                resampledSamples = samples.size.toLong(),
+                durationMs = durationSec * 1_000L,
+                encoderDelay = 0,
+                encoderPadding = 0,
+                mimeType = "audio/wav",
+            )
+        }
+    }
+
+    /** ダウンロード要求を記録し、通知をテストから送れる [RecognitionModelGateway]。 */
+    private class FakeRecognitionModelGateway : RecognitionModelGateway {
+        val downloadRequests = mutableListOf<String>()
+        var supportResult: Map<String, RecognitionModelSupport> = emptyMap()
+        private var lastOnEvent: ((RecognitionModelDownloadEvent) -> Unit)? = null
+
+        override fun requestDownload(
+            bcp47LocaleTag: String,
+            onEvent: (RecognitionModelDownloadEvent) -> Unit,
+        ): Boolean {
+            downloadRequests += bcp47LocaleTag
+            lastOnEvent = onEvent
+            return true
+        }
+
+        override suspend fun checkSupport(bcp47LocaleTags: List<String>): Map<String, RecognitionModelSupport> = supportResult.filterKeys { it in bcp47LocaleTags }
+
+        fun emit(event: RecognitionModelDownloadEvent) {
+            lastOnEvent?.invoke(event)
+        }
     }
 }

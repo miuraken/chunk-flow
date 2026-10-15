@@ -8,7 +8,10 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.speech.ModelDownloadListener
 import android.speech.RecognitionListener
+import android.speech.RecognitionSupport
+import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
@@ -16,12 +19,14 @@ import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
@@ -33,6 +38,10 @@ import kotlin.math.sqrt
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -40,9 +49,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * 端末内音声認識による 1 チャンク分の認識結果（F6.2）。
  *
- * @property text 認識されたテキスト（前後空白除去済み）。
+ * 選ばれた言語の音声認識モデルが端末にない（未ダウンロードなど）場合は、本文を空にして
+ * 言語判定（Whisper Tiny）の結果だけを返すことがある（[isLanguageOnly]）。
+ *
+ * @property text 認識されたテキスト（前後空白除去済み）。言語判定のみの結果では空文字。
  * @property language 検出または指定された言語タグ（不明な場合は `null`）。
- * @property confidence 認識信頼度（0.0..1.0、取得できない場合は `null`）。
+ * @property confidence 認識信頼度（0.0..1.0、取得できない場合は `null`）。言語判定のみの結果では言語判定の確率。
  * @property engineId 使用した端末内認識エンジンの識別子。
  */
 data class OnDeviceChunkTranscriptionResult(
@@ -51,8 +63,15 @@ data class OnDeviceChunkTranscriptionResult(
     val confidence: Float? = null,
     val engineId: EngineId = DEFAULT_ON_DEVICE_ENGINE_ID,
 ) {
+    /** 本文がなく、言語の判定だけを行った結果かどうか（音声認識モデルが使えなかった場合）。 */
+    val isLanguageOnly: Boolean
+        get() = text.isBlank() && language != null
+
     companion object {
         val DEFAULT_ON_DEVICE_ENGINE_ID: EngineId = EngineId("android-on-device-speech")
+
+        /** 音声認識モデルが使えず、Whisper Tiny の言語判定だけで言語を決めた結果のエンジン ID。 */
+        val LANGUAGE_ID_ONLY_ENGINE_ID: EngineId = EngineId("whisper-tiny-lid")
     }
 }
 
@@ -63,6 +82,28 @@ data class OnDeviceChunkTranscriptionResult(
 interface OnDeviceChunkTranscriber {
     /** 端末内音声認識が利用可能かどうかを返す。 */
     fun isAvailable(): Boolean
+
+    /**
+     * 端末内音声認識の言語モデルが使えない言語と、その理由（未ダウンロード・ダウンロード中・非対応など）。
+     *
+     * 認識を試みて問題がわかった言語だけを含み、問題のない言語は含まない。
+     */
+    val recognitionModelIssues: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>>
+        get() = NO_RECOGNITION_MODEL_ISSUES
+
+    /**
+     * [language] の端末内音声認識モデルのダウンロードを OS に要求する。
+     *
+     * OS が利用者に確認を求めることがある。要求を送れた場合は `true`。
+     */
+    suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean = false
+
+    /**
+     * [recognitionModelIssues] に含まれる言語の言語モデルの状態を OS に問い合わせ直す。
+     *
+     * ダウンロードが終わっていれば、その言語を [recognitionModelIssues] から外す。
+     */
+    suspend fun refreshRecognitionModelIssues() = Unit
 
     /**
      * 音声ファイル [audioFile] の `[startMs, endMs]` 区間を 16kHz モノラル 16-bit PCM に切り出して端末内音声認識を行う。
@@ -107,6 +148,9 @@ interface OnDeviceChunkTranscriber {
 
     companion object {
         const val DEFAULT_SAMPLE_RATE_HZ: Int = 16_000
+
+        private val NO_RECOGNITION_MODEL_ISSUES: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>> =
+            MutableStateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>>(emptyMap()).asStateFlow()
     }
 }
 
@@ -469,17 +513,216 @@ object ChunkPcmExtractor {
 
 /**
  * 1 回の `SpeechRecognizer` 呼び出し試行の結果（内部・テスト用）。
+ *
+ * @property errorCode 認識できなかったときの `SpeechRecognizer` のエラーコード（言語モデルの未ダウンロードなどの判定に使う）。
  */
 internal data class SpeechRecognitionAttemptResult(
     val text: String,
     val confidence: Float? = null,
-)
+    val errorCode: Int? = null,
+) {
+    /** 言語モデルが使えない（未ダウンロード・非対応）ために認識できなかったかどうか。 */
+    val isLanguageModelUnavailable: Boolean
+        get() = text.isBlank() &&
+            (
+                errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
+                    errorCode == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+                )
+}
+
+/** 端末内音声認識の言語モデルのダウンロード要求の進み具合（内部・テスト用）。 */
+internal enum class RecognitionModelDownloadEvent {
+    /** ダウンロード中。 */
+    PROGRESS,
+
+    /** ダウンロードが予約された（Wi-Fi 接続時などに OS が行う。以後の通知はない）。 */
+    SCHEDULED,
+
+    /** ダウンロードが終わり、言語モデルを使えるようになった。 */
+    SUCCESS,
+
+    /** ダウンロードに失敗した。 */
+    FAILED,
+}
+
+/** 端末内音声認識の言語モデルの対応状況（内部・テスト用）。 */
+internal enum class RecognitionModelSupport {
+    /** 端末にインストール済み。 */
+    INSTALLED,
+
+    /** ダウンロード中または予約済み。 */
+    PENDING,
+
+    /** 対応しているが未インストール。 */
+    SUPPORTED_NOT_INSTALLED,
+
+    /** 端末内音声認識が対応していない。 */
+    UNSUPPORTED,
+}
+
+/**
+ * 端末内音声認識の言語モデルの対応状況の確認とダウンロード要求（内部。テストで差し替える）。
+ */
+internal interface RecognitionModelGateway {
+    /**
+     * [bcp47LocaleTag] の言語モデルのダウンロードを要求し、進み具合を [onEvent] に通知する。
+     *
+     * 要求を送れた場合は `true`。
+     */
+    fun requestDownload(
+        bcp47LocaleTag: String,
+        onEvent: (RecognitionModelDownloadEvent) -> Unit,
+    ): Boolean
+
+    /**
+     * [bcp47LocaleTags] の言語モデルの対応状況を調べる。調べられなかった言語は結果に含めない。
+     */
+    suspend fun checkSupport(bcp47LocaleTags: List<String>): Map<String, RecognitionModelSupport>
+}
+
+/**
+ * [SpeechRecognizer.triggerModelDownload] と [SpeechRecognizer.checkRecognitionSupport] を使う
+ * [RecognitionModelGateway] の本番実装。`SpeechRecognizer` はメインスレッドで作成・破棄する。
+ */
+internal class AndroidRecognitionModelGateway(
+    private val context: Context,
+) : RecognitionModelGateway {
+
+    override fun requestDownload(
+        bcp47LocaleTag: String,
+        onEvent: (RecognitionModelDownloadEvent) -> Unit,
+    ): Boolean {
+        val mainHandler = Handler(Looper.getMainLooper())
+        return mainHandler.post {
+            var recognizer: SpeechRecognizer? = null
+            var released = false
+            val release = Runnable {
+                if (!released) {
+                    released = true
+                    runCatching { recognizer?.destroy() }
+                    recognizer = null
+                }
+            }
+            try {
+                val created = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                recognizer = created
+                created.triggerModelDownload(
+                    buildModelIntent(bcp47LocaleTag),
+                    context.mainExecutor,
+                    object : ModelDownloadListener {
+                        override fun onProgress(completedPercent: Int) {
+                            onEvent(RecognitionModelDownloadEvent.PROGRESS)
+                        }
+
+                        override fun onSuccess() {
+                            onEvent(RecognitionModelDownloadEvent.SUCCESS)
+                            release.run()
+                        }
+
+                        override fun onScheduled() {
+                            onEvent(RecognitionModelDownloadEvent.SCHEDULED)
+                            release.run()
+                        }
+
+                        override fun onError(error: Int) {
+                            logModelInfo("modelDownload onError lang=$bcp47LocaleTag error=$error")
+                            onEvent(RecognitionModelDownloadEvent.FAILED)
+                            release.run()
+                        }
+                    },
+                )
+                // 完了通知が来ないまま SpeechRecognizer を持ち続けないよう、一定時間で手放す
+                mainHandler.postDelayed(release, MODEL_DOWNLOAD_LISTENER_TIMEOUT_MS)
+            } catch (e: Exception) {
+                logModelInfo("modelDownload failed lang=$bcp47LocaleTag error=${e.javaClass.simpleName}")
+                release.run()
+                onEvent(RecognitionModelDownloadEvent.FAILED)
+            }
+        }
+    }
+
+    override suspend fun checkSupport(bcp47LocaleTags: List<String>): Map<String, RecognitionModelSupport> {
+        if (bcp47LocaleTags.isEmpty()) return emptyMap()
+        val support = withTimeoutOrNull(SUPPORT_CHECK_TIMEOUT_MS) { querySupportOnMainLooper() }
+            ?: return emptyMap()
+        return bcp47LocaleTags.associateWith { tag ->
+            when {
+                support.installedOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.INSTALLED
+                support.pendingOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.PENDING
+                support.supportedOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
+                else -> RecognitionModelSupport.UNSUPPORTED
+            }
+        }
+    }
+
+    private suspend fun querySupportOnMainLooper(): RecognitionSupport? = suspendCancellableCoroutine { continuation ->
+        val mainHandler = Handler(Looper.getMainLooper())
+        var recognizer: SpeechRecognizer? = null
+        val release = Runnable {
+            runCatching { recognizer?.destroy() }
+            recognizer = null
+        }
+        continuation.invokeOnCancellation { mainHandler.post(release) }
+        mainHandler.post {
+            if (!continuation.isActive) return@post
+            try {
+                val created = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                recognizer = created
+                created.checkRecognitionSupport(
+                    buildModelIntent(bcp47LocaleTag = null),
+                    context.mainExecutor,
+                    object : RecognitionSupportCallback {
+                        override fun onSupportResult(recognitionSupport: RecognitionSupport) {
+                            release.run()
+                            if (continuation.isActive) continuation.resume(recognitionSupport)
+                        }
+
+                        override fun onError(error: Int) {
+                            logModelInfo("checkRecognitionSupport onError error=$error")
+                            release.run()
+                            if (continuation.isActive) continuation.resume(null)
+                        }
+                    },
+                )
+            } catch (e: Exception) {
+                logModelInfo("checkRecognitionSupport failed error=${e.javaClass.simpleName}")
+                release.run()
+                if (continuation.isActive) continuation.resume(null)
+            }
+        }
+    }
+
+    private fun buildModelIntent(bcp47LocaleTag: String?): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        if (bcp47LocaleTag != null) {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, bcp47LocaleTag)
+        }
+    }
+
+    private fun List<String>.containsTag(tag: String): Boolean = any { it.equals(tag, ignoreCase = true) }
+
+    private fun logModelInfo(message: String) {
+        runCatching {
+            if (Log.isLoggable(MODEL_LOG_TAG, Log.INFO)) {
+                Log.i(MODEL_LOG_TAG, message)
+            }
+        }
+    }
+
+    private companion object {
+        const val MODEL_LOG_TAG: String = "ChunkFlowSpeech"
+        const val MODEL_DOWNLOAD_LISTENER_TIMEOUT_MS: Long = 30L * 60L * 1_000L
+        const val SUPPORT_CHECK_TIMEOUT_MS: Long = 5_000L
+    }
+}
 
 /**
  * 2 秒プローブ認識結果 [attempt] が指定言語 [langTag] の自然な発話としてどの程度もっともらしいかを採点する。
  *
- * 外国語音声が別言語の認識器に音写された場合（例: 日本語音声が韓国語認識器でハングル音写された場合や、
- * 韓国語音声が日本語認識器でカタカナ音写された場合）よりも、本来の言語の認識結果が高スコアになるよう判定する。
+ * - `SpeechRecognizer` の [SpeechRecognitionAttemptResult.confidence] を最重視（重み [CONFIDENCE_SCORE_WEIGHT] = 3.0）し、
+ *   低確信度（`< 0.60`）の無理な当てはめ認識には追加ペナルティを与える。
+ * - 外国語音声が日本語認識器にカタカナ外来語化・音写された場合（純カタカナだけでなく、助詞や「です」等の
+ *   ひらがなが数文字混入したカタカナ主体の結果も含む）を強く減点し、本来の学習言語の認識結果が高スコアになるよう判定する。
  */
 internal fun scoreProbeCandidateForLanguage(
     attempt: SpeechRecognitionAttemptResult,
@@ -489,7 +732,12 @@ internal fun scoreProbeCandidateForLanguage(
     if (text.isEmpty()) return Float.NEGATIVE_INFINITY
 
     val primaryLang = langTag.trim().replace('_', '-').substringBefore('-').lowercase(Locale.ROOT)
-    var score = (attempt.confidence?.takeIf { it > 0f } ?: DEFAULT_PROBE_CONFIDENCE) * 1.0f
+    val validConfidence = attempt.confidence?.takeIf { it > 0f }
+    val baseConfidence = validConfidence ?: DEFAULT_PROBE_CONFIDENCE
+    var score = baseConfidence * CONFIDENCE_SCORE_WEIGHT
+    if (validConfidence != null && validConfidence < LOW_CONFIDENCE_PENALTY_THRESHOLD) {
+        score -= (LOW_CONFIDENCE_PENALTY_THRESHOLD - validConfidence) * LOW_CONFIDENCE_PENALTY_WEIGHT
+    }
 
     var kanjiCount = 0
     var hiraganaCount = 0
@@ -537,30 +785,59 @@ internal fun scoreProbeCandidateForLanguage(
         }
     }
 
+    val safeTotalLetters = totalLetterCount.coerceAtLeast(1).toFloat()
+
     when (primaryLang) {
         "ja" -> {
-            if (kanjiCount >= 1 && hiraganaCount >= 2) {
-                score += 1.2f
-            } else if (hiraganaCount >= 2) {
-                score += 0.5f
-            }
-
+            val katakanaRatio = katakanaCount.toFloat() / safeTotalLetters
             val hasJaMultiPattern = JA_FUNCTION_PATTERNS.any { text.contains(it) }
             val hasJaParticle = hiraganaCount >= 1 && JA_PARTICLES.any { text.contains(it) }
-            if (hasJaMultiPattern || hasJaParticle) {
-                score += 0.8f
-            }
 
-            if (hiraganaCount == 0 && katakanaCount > 0 && katakanaCount * 2 >= totalLetterCount.coerceAtLeast(1)) {
-                score -= 0.8f
+            when {
+                hiraganaCount == 0 && kanjiCount == 0 && katakanaCount > 0 -> {
+                    // ひらがな・漢字を含まない純カタカナ音写は強く減点する
+                    score -= 1.6f
+                }
+
+                katakanaRatio >= 0.50f -> {
+                    // 半分以上がカタカナのテキストは、助詞や「です」が混ざっていても外来語音写の可能性が高いためボーナスを与えず減点する
+                    score -= katakanaRatio * 1.5f
+                }
+
+                katakanaRatio >= 0.30f -> {
+                    // カタカナ比率が 30%〜50% の場合も減点し、日本語ボーナスを半分に抑える
+                    score -= katakanaRatio * 1.0f
+                    if (kanjiCount >= 1 && hiraganaCount >= 2) {
+                        score += 0.35f
+                    } else if (hiraganaCount >= 2) {
+                        score += 0.15f
+                    }
+                    if (hasJaMultiPattern || hasJaParticle) {
+                        score += 0.2f
+                    }
+                }
+
+                else -> {
+                    if (kanjiCount >= 1 && hiraganaCount >= 2) {
+                        score += 0.7f
+                    } else if (hiraganaCount >= 2) {
+                        score += 0.35f
+                    }
+                    if (hasJaMultiPattern || hasJaParticle) {
+                        score += 0.45f
+                    }
+                }
             }
         }
 
         "ko" -> {
             if (hangulCount > 0) {
+                val hangulRatio = hangulCount.toFloat() / safeTotalLetters
+                score += hangulRatio * 0.55f
+
                 val hasKoGrammar = KO_GRAMMAR_PATTERNS.any { text.contains(it) }
                 if (hasKoGrammar) {
-                    score += 0.7f
+                    score += 0.55f
                 }
                 val tokens = text.split(WHITESPACE_REGEX).filter { it.isNotEmpty() }
                 val avgTokenLen = if (tokens.isNotEmpty()) {
@@ -570,31 +847,34 @@ internal fun scoreProbeCandidateForLanguage(
                 }
                 val hasPoliteEnding = KO_POLITE_ENDINGS.any { text.contains(it) }
                 if (tokens.size >= 3 && avgTokenLen <= 2.2f && !hasPoliteEnding) {
-                    score -= 0.5f
+                    score -= 0.6f
                 }
             } else {
-                score -= 0.8f
+                score -= 1.0f
             }
         }
 
         "zh", "yue" -> {
             if (totalLetterCount > 0) {
-                score += (kanjiCount.toFloat() / totalLetterCount.toFloat()) * 0.8f
+                score += (kanjiCount.toFloat() / safeTotalLetters) * 0.65f
             }
-            if (hiraganaCount == 0 && ZH_COMMON_CHARS.any { text.contains(it) }) {
-                score += 0.6f
+            if (hiraganaCount == 0 && katakanaCount == 0 && ZH_COMMON_CHARS.any { text.contains(it) }) {
+                score += 0.5f
+            }
+            if (hiraganaCount > 0 || katakanaCount > 0) {
+                score -= 0.8f
             }
         }
 
         "hi" -> {
             if (totalLetterCount > 0) {
-                score += (devanagariCount.toFloat() / totalLetterCount.toFloat()) * 1.0f
+                score += (devanagariCount.toFloat() / safeTotalLetters) * 1.1f
             }
         }
 
         else -> {
             if (totalLetterCount > 0) {
-                score += (latinCount.toFloat() / totalLetterCount.toFloat()) * 0.7f
+                score += (latinCount.toFloat() / safeTotalLetters) * 0.95f
             }
         }
     }
@@ -602,7 +882,53 @@ internal fun scoreProbeCandidateForLanguage(
     return score
 }
 
-private const val DEFAULT_PROBE_CONFIDENCE: Float = 0.65f
+/**
+ * 日本語認識結果 [text] が外国語音声のカタカナ外来語化（音写）である疑いが高いかどうかを判定する。
+ */
+internal fun isKatakanaTransliterationSuspected(
+    text: String,
+    langTag: String,
+): Boolean {
+    val primaryLang = langTag.trim().replace('_', '-').substringBefore('-').lowercase(Locale.ROOT)
+    if (primaryLang != "ja") return false
+
+    var kanjiCount = 0
+    var hiraganaCount = 0
+    var katakanaCount = 0
+    var totalLetterCount = 0
+    for (ch in text) {
+        when {
+            ch in '\u4E00'..'\u9FFF' || ch in '\u3400'..'\u4DBF' -> {
+                kanjiCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u3040'..'\u309F' -> {
+                hiraganaCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u30A0'..'\u30FF' -> {
+                katakanaCount += 1
+                totalLetterCount += 1
+            }
+
+            Character.isLetterOrDigit(ch) -> {
+                totalLetterCount += 1
+            }
+        }
+    }
+    if (totalLetterCount <= 0 || katakanaCount <= 0) return false
+    if (hiraganaCount == 0 && kanjiCount == 0) return true
+    val katakanaRatio = katakanaCount.toFloat() / totalLetterCount.toFloat()
+    return katakanaRatio >= KATAKANA_SUSPECT_RATIO_THRESHOLD
+}
+
+private const val CONFIDENCE_SCORE_WEIGHT: Float = 3.0f
+private const val DEFAULT_PROBE_CONFIDENCE: Float = 0.55f
+private const val LOW_CONFIDENCE_PENALTY_THRESHOLD: Float = 0.60f
+private const val LOW_CONFIDENCE_PENALTY_WEIGHT: Float = 1.5f
+private const val KATAKANA_SUSPECT_RATIO_THRESHOLD: Float = 0.35f
 private val WHITESPACE_REGEX = Regex("\\s+")
 
 private val JA_FUNCTION_PATTERNS: List<String> = listOf(
@@ -690,6 +1016,9 @@ private val ZH_COMMON_CHARS: List<String> = listOf(
  * - `isOnDeviceRecognitionAvailable(context) == true` の端末では `createOnDeviceSpeechRecognizer` のみを使用し、
  *   物理マイクを掴んでハングする `createSpeechRecognizer`（`preferOnDevice = false`）へはフォールバックしない。
  * - 連続して `SpeechRecognizer` を呼び出す際はシステムサービスのアンバインド競合を防ぐため 200ms の間隔を空ける。
+ * - 言語の音声認識モデルが未ダウンロード（`ERROR_LANGUAGE_UNAVAILABLE`）のときは、もう一方の言語の認識結果で
+ *   代用せず（カタカナ・ハングル音写の誤ラベルになるため）、言語判定だけの結果を返す。あわせて、その言語の
+ *   モデルのダウンロードを 1 回だけ自動で OS に要求し、状態を [recognitionModelIssues] で知らせる。
  */
 @Singleton
 class AndroidSpeechRecognizerChunkTranscriber internal constructor(
@@ -712,6 +1041,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             baseTag: String,
         ) -> LanguagePairPrediction?
     )? = null,
+    modelGateway: RecognitionModelGateway? = null,
 ) : OnDeviceChunkTranscriber {
 
     @Inject
@@ -770,7 +1100,143 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     private val recognitionLock = PriorityRecognitionLock()
     private var lastPipeAttemptCompletedRealtimeMs: Long = 0L
 
+    private val recognitionModelGateway: RecognitionModelGateway =
+        modelGateway ?: AndroidRecognitionModelGateway(context)
+    private val modelIssuesState =
+        MutableStateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>>(emptyMap())
+
+    /** 自動でダウンロードを要求済みの言語（BCP-47、小文字）。同じ言語の要求はプロセスごとに 1 回だけ。 */
+    private val autoDownloadRequestedTags: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    @Volatile
+    private var lastModelIssueRefreshRealtimeMs: Long = 0L
+
+    override val recognitionModelIssues: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>> =
+        modelIssuesState.asStateFlow()
+
     override fun isAvailable(): Boolean = onDeviceAvailabilityChecker() || standardAvailabilityChecker()
+
+    override suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean {
+        if (!onDeviceAvailabilityChecker()) return false
+        val bcp47Tag = toBcp47LocaleTag(language.value)
+        autoDownloadRequestedTags.add(bcp47Tag.lowercase(Locale.ROOT))
+        return startRecognitionModelDownload(language, bcp47Tag)
+    }
+
+    override suspend fun refreshRecognitionModelIssues() {
+        val issues = modelIssuesState.value
+        if (issues.isEmpty() || !onDeviceAvailabilityChecker()) return
+        val now = SystemClock.elapsedRealtime()
+        if (lastModelIssueRefreshRealtimeMs > 0L &&
+            now - lastModelIssueRefreshRealtimeMs in 0L until MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS
+        ) {
+            return
+        }
+        lastModelIssueRefreshRealtimeMs = now
+        val bcp47ByLanguage = issues.keys.associateWith { toBcp47LocaleTag(it.value) }
+        // 認識中の SpeechRecognizer と同時にサービスへ接続しないよう、認識ロックを取ってから問い合わせる
+        val support = recognitionLock.withLock(highPriority = false) {
+            try {
+                recognitionModelGateway.checkSupport(bcp47ByLanguage.values.distinct())
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        }
+        for ((language, bcp47Tag) in bcp47ByLanguage) {
+            when (support[bcp47Tag]) {
+                RecognitionModelSupport.INSTALLED -> {
+                    logInfo("modelSupport lang=$bcp47Tag installed")
+                    clearModelIssue(language)
+                }
+
+                RecognitionModelSupport.PENDING -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+
+                // 未インストール・非対応・不明は、認識時のエラーコードから決めた状態を優先して変えない
+                RecognitionModelSupport.SUPPORTED_NOT_INSTALLED, RecognitionModelSupport.UNSUPPORTED, null -> Unit
+            }
+        }
+    }
+
+    private fun startRecognitionModelDownload(language: LanguageTag, bcp47Tag: String): Boolean {
+        logInfo("modelDownload request lang=$bcp47Tag")
+        setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+        val requested = runCatching {
+            recognitionModelGateway.requestDownload(bcp47Tag) { event ->
+                onRecognitionModelDownloadEvent(language, bcp47Tag, event)
+            }
+        }.getOrDefault(false)
+        if (!requested) {
+            setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOAD_FAILED)
+        }
+        return requested
+    }
+
+    private fun onRecognitionModelDownloadEvent(
+        language: LanguageTag,
+        bcp47Tag: String,
+        event: RecognitionModelDownloadEvent,
+    ) {
+        if (event != RecognitionModelDownloadEvent.PROGRESS) {
+            logInfo("modelDownload lang=$bcp47Tag event=$event")
+        }
+        when (event) {
+            RecognitionModelDownloadEvent.PROGRESS,
+            RecognitionModelDownloadEvent.SCHEDULED,
+            -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+
+            RecognitionModelDownloadEvent.SUCCESS -> clearModelIssue(language)
+
+            RecognitionModelDownloadEvent.FAILED -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOAD_FAILED)
+        }
+    }
+
+    /**
+     * 1 回の認識試行の結果から、[language] の言語モデルの状態を更新する。
+     *
+     * 言語モデルの未ダウンロード（`ERROR_LANGUAGE_UNAVAILABLE`）を初めて検出した言語は、ダウンロードを自動で要求する。
+     */
+    private fun noteRecognitionAttemptOutcome(
+        language: LanguageTag?,
+        bcp47Tag: String,
+        attempt: SpeechRecognitionAttemptResult?,
+    ) {
+        if (language == null || attempt == null) return
+        when {
+            attempt.text.isNotBlank() -> clearModelIssue(language)
+
+            attempt.errorCode == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> {
+                setModelIssue(language, OnDeviceRecognitionModelState.UNSUPPORTED)
+            }
+
+            attempt.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
+                val current = modelIssuesState.value[language]
+                if (current != OnDeviceRecognitionModelState.DOWNLOADING &&
+                    current != OnDeviceRecognitionModelState.DOWNLOAD_FAILED
+                ) {
+                    setModelIssue(language, OnDeviceRecognitionModelState.NOT_INSTALLED)
+                }
+                if (onDeviceAvailabilityChecker() &&
+                    autoDownloadRequestedTags.add(bcp47Tag.lowercase(Locale.ROOT))
+                ) {
+                    startRecognitionModelDownload(language, bcp47Tag)
+                }
+            }
+        }
+    }
+
+    private fun setModelIssue(language: LanguageTag, state: OnDeviceRecognitionModelState) {
+        modelIssuesState.update { current ->
+            if (current[language] == state) current else current + (language to state)
+        }
+    }
+
+    private fun clearModelIssue(language: LanguageTag) {
+        modelIssuesState.update { current ->
+            if (language in current) current - language else current
+        }
+    }
 
     override suspend fun transcribeChunk(
         audioFile: File,
@@ -969,6 +1435,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     bcp47LocaleTag = bcp47Tag,
                     preferOnDevice = preferOnDevice,
                     isProbe = false,
+                    language = singleLang,
                 )
                 if (attempt != null && attempt.text.isNotBlank()) {
                     logInfo(
@@ -983,7 +1450,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     result
                 } else {
                     logInfo(
-                        "singleLang empty chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag}",
+                        "singleLang empty chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} " +
+                            "modelUnavailable=${attempt?.isLanguageModelUnavailable == true}",
                     )
                     null
                 }
@@ -1014,6 +1482,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 "lidMs=${prediction.inferenceTimeMs} chunkDurationMs=$chunkDurationMs",
         )
 
+        var primaryModelUnavailable = false
         val primaryResult = getCachedSttResult(cacheScope, selectedLang) ?: run {
             val selectedBcp47 = toBcp47LocaleTag(selectedLang.value)
             val attempt = executeAttempt(
@@ -1022,8 +1491,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 bcp47LocaleTag = selectedBcp47,
                 preferOnDevice = preferOnDevice,
                 isProbe = false,
-            )?.takeIf { it.text.isNotBlank() }
-            attempt?.let {
+                language = selectedLang,
+            )
+            primaryModelUnavailable = attempt?.isLanguageModelUnavailable == true
+            attempt?.takeIf { it.text.isNotBlank() }?.let {
                 OnDeviceChunkTranscriptionResult(
                     text = it.text.trim(),
                     language = selectedLang,
@@ -1034,12 +1505,27 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             }
         }
 
-        val isAmbiguousAndLowConfidence = primaryResult != null &&
-            prediction.selectedProbability < AMBIGUOUS_LID_PROB_THRESHOLD &&
-            primaryResult.confidence != null &&
-            primaryResult.confidence < LOW_STT_CONFIDENCE_THRESHOLD
+        val isLidConfident = prediction.selectedProbability >= AMBIGUOUS_LID_PROB_THRESHOLD
+        if (primaryResult == null && primaryModelUnavailable && isLidConfident) {
+            // 選ばれた言語の音声認識モデルがない。もう一方の言語で認識するとカタカナ・ハングルの音写になり
+            // 言語ラベルも誤るため、言語判定の結果だけを返す（モデルのダウンロード後に本文を認識し直す）
+            logInfo(
+                "whisperLid selected=${selectedLang.value} prob=${prediction.selectedProbability} " +
+                    "modelUnavailable=true result=languageOnly chunkDurationMs=$chunkDurationMs",
+            )
+            return languageOnlyResult(selectedLang, prediction.selectedProbability)
+        }
 
-        if (primaryResult != null && !isAmbiguousAndLowConfidence) {
+        val shouldVerifyFallback = primaryResult != null && (
+            isKatakanaTransliterationSuspected(primaryResult.text, selectedLang.value) ||
+                (primaryResult.confidence != null && primaryResult.confidence < LOW_STT_CONFIDENCE_THRESHOLD) ||
+                (
+                    prediction.selectedProbability < AMBIGUOUS_LID_PROB_THRESHOLD &&
+                        (primaryResult.confidence == null || primaryResult.confidence < MODERATE_STT_CONFIDENCE_THRESHOLD)
+                    )
+            )
+
+        if (primaryResult != null && !shouldVerifyFallback) {
             return primaryResult
         }
 
@@ -1051,6 +1537,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 bcp47LocaleTag = fallbackBcp47,
                 preferOnDevice = preferOnDevice,
                 isProbe = false,
+                language = fallbackLang,
             )?.takeIf { it.text.isNotBlank() }
             attempt?.let {
                 OnDeviceChunkTranscriptionResult(
@@ -1064,7 +1551,24 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
 
         if (primaryResult == null) {
-            return fallbackResult
+            // 選ばれた言語で認識できなかった場合、もう一方の言語の結果は、自然な発話に見える（音写の疑いがない）ときか、
+            // 言語判定が曖昧で、かつ選ばれた言語のモデル自体は使える（単に聞き取れなかった）ときだけ採用する
+            val acceptFallback = fallbackResult != null && (
+                isNaturalRecognitionFor(fallbackResult, fallbackLang) ||
+                    (!isLidConfident && !primaryModelUnavailable)
+                )
+            if (acceptFallback) {
+                return fallbackResult
+            }
+            if (primaryModelUnavailable || fallbackResult != null) {
+                logInfo(
+                    "whisperLid selected=${selectedLang.value} prob=${prediction.selectedProbability} " +
+                        "modelUnavailable=$primaryModelUnavailable fallbackRejected=${fallbackResult != null} " +
+                        "result=languageOnly chunkDurationMs=$chunkDurationMs",
+                )
+                return languageOnlyResult(selectedLang, prediction.selectedProbability)
+            }
+            return null
         }
         if (fallbackResult == null) {
             return primaryResult
@@ -1080,6 +1584,24 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         )
         return if (fallbackScore > primaryScore) fallbackResult else primaryResult
     }
+
+    /** 認識結果 [result] が言語 [language] の自然な発話に見える（音写の疑いがなく、信頼度が低すぎない）かどうか。 */
+    private fun isNaturalRecognitionFor(
+        result: OnDeviceChunkTranscriptionResult,
+        language: LanguageTag,
+    ): Boolean = !isKatakanaTransliterationSuspected(result.text, language.value) &&
+        (result.confidence == null || result.confidence >= LOW_STT_CONFIDENCE_THRESHOLD)
+
+    /** 本文なしで、言語判定の結果だけを持つ認識結果を作る。キャッシュには入れない。 */
+    private fun languageOnlyResult(
+        language: LanguageTag,
+        lidProbability: Float,
+    ): OnDeviceChunkTranscriptionResult = OnDeviceChunkTranscriptionResult(
+        text = "",
+        language = language,
+        confidence = lidProbability.coerceIn(0f, 1f),
+        engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+    )
 
     private fun getCachedBilingualResultIfBothPresent(
         cacheScope: ChunkAudioCacheScope,
@@ -1125,6 +1647,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 bcp47LocaleTag = targetBcp47,
                 preferOnDevice = preferOnDevice,
                 isProbe = true,
+                language = targetLang,
             )?.takeIf { it.text.isNotBlank() }?.also { probe ->
                 putCachedSttResult(
                     cacheScope = cacheScope,
@@ -1143,6 +1666,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 bcp47LocaleTag = targetBcp47,
                 preferOnDevice = preferOnDevice,
                 isProbe = true,
+                language = targetLang,
             )?.takeIf { it.text.isNotBlank() }
         }
 
@@ -1155,6 +1679,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 bcp47LocaleTag = baseBcp47,
                 preferOnDevice = preferOnDevice,
                 isProbe = true,
+                language = baseLang,
             )?.takeIf { it.text.isNotBlank() }?.also { probe ->
                 putCachedSttResult(
                     cacheScope = cacheScope,
@@ -1173,6 +1698,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 bcp47LocaleTag = baseBcp47,
                 preferOnDevice = preferOnDevice,
                 isProbe = true,
+                language = baseLang,
             )?.takeIf { it.text.isNotBlank() }
         }
 
@@ -1228,6 +1754,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             bcp47LocaleTag = winningBcp47,
             preferOnDevice = preferOnDevice,
             isProbe = false,
+            language = winningLang,
         )?.takeIf { it.text.isNotBlank() }
 
         val finalAttempt = fullAttempt ?: winningProbe
@@ -1310,18 +1837,22 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         bcp47LocaleTag: String,
         preferOnDevice: Boolean,
         isProbe: Boolean,
+        language: LanguageTag? = null,
     ): SpeechRecognitionAttemptResult? {
         val runner = attemptRunner
-        if (runner != null) {
-            return runner(pcm16LeBytes, sampleRateHz, bcp47LocaleTag, preferOnDevice)
+        val attempt = if (runner != null) {
+            runner(pcm16LeBytes, sampleRateHz, bcp47LocaleTag, preferOnDevice)
+        } else {
+            runSinglePipeAttempt(
+                pcm16LeBytes = pcm16LeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = bcp47LocaleTag,
+                preferOnDevice = preferOnDevice,
+                isProbe = isProbe,
+            )
         }
-        return runSinglePipeAttempt(
-            pcm16LeBytes = pcm16LeBytes,
-            sampleRateHz = sampleRateHz,
-            bcp47LocaleTag = bcp47LocaleTag,
-            preferOnDevice = preferOnDevice,
-            isProbe = isProbe,
-        )
+        noteRecognitionAttemptOutcome(language, bcp47LocaleTag, attempt)
+        return attempt
     }
 
     private suspend fun runSinglePipeAttempt(
@@ -1577,11 +2108,16 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         internal const val INTER_RECOGNITION_SETTLE_DELAY_MS: Long = 200L
         private const val RECOGNITION_TIMEOUT_MS: Long = 12_000L
         private const val MAX_STT_CACHE_ENTRIES: Int = 2_048
-        private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.60f
-        private const val LOW_STT_CONFIDENCE_THRESHOLD: Float = 0.30f
+        private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.75f
+        private const val LOW_STT_CONFIDENCE_THRESHOLD: Float = 0.68f
+        private const val MODERATE_STT_CONFIDENCE_THRESHOLD: Float = 0.80f
+        private const val MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS: Long = 15_000L
 
         /**
          * `onResults` または `onError` コールバック時点で最終結果テキストと `onPartialResults` の保持テキストを統合する。
+         *
+         * 言語モデルが使えないエラー（`ERROR_LANGUAGE_UNAVAILABLE` / `ERROR_LANGUAGE_NOT_SUPPORTED`）は、
+         * 呼び出し側で区別できるよう、本文が空でエラーコードを持つ結果として返す。
          */
         internal fun resolveRecognitionCallbackOutcome(
             resultsText: String?,
@@ -1595,6 +2131,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     text = trimmedFinal,
                     confidence = confidence,
                 )
+            }
+            if (errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
+                errorCode == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+            ) {
+                return SpeechRecognitionAttemptResult(text = "", errorCode = errorCode)
             }
             val trimmedPartial = partialText.trim()
             if (trimmedPartial.isEmpty()) return null
