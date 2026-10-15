@@ -86,8 +86,9 @@
     <string name="player_chip_instant_comp_on">瞬間作文: ON</string>
     <string name="player_chunk_set_lang_target">学習言語（%1$s）に設定</string>
     <string name="player_chunk_set_lang_base">母語（%1$s）に設定</string>
-    <string name="player_chunk_set_lang_unknown">言語を未判定（?）に戻す</string>
+    <string name="player_chunk_set_lang_unknown">言語を未判定（-）に戻す</string>
     <string name="player_bulk_set_unknown_target">未判定の言語をすべて学習言語（%1$s）に設定</string>
+    <string name="player_bulk_set_unknown_base">未判定の言語をすべて母語（%1$s）に設定</string>
     <string name="player_offset_section_title">文字起こしの時刻補正</string>
     <string name="player_offset_current_value">現在の補正値: %1$s ms</string>
     <string name="player_offset_auto_align">音声の立ち上がりに自動補正</string>

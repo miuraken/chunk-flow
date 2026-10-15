@@ -56,16 +56,19 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fake.FakePositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -73,6 +76,27 @@ import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+
+/**
+ * チャンクの言語タグ [chunkLanguage] が役割の言語タグ [roleLanguage] と一致するかどうかを判定する。
+ *
+ * 大文字小文字を無視し、BCP-47 の主言語サブタグ（例: `ja-JP` と `ja`、`ko-KR` と `ko`）の一致も許容する。
+ */
+internal fun matchesLanguageRole(
+    chunkLanguage: LanguageTag?,
+    roleLanguage: LanguageTag?,
+): Boolean {
+    val chunkTag = chunkLanguage?.value?.trim()?.takeUnless {
+        it.isEmpty() || it.equals("und", ignoreCase = true)
+    } ?: return false
+    val roleTag = roleLanguage?.value?.trim()?.takeUnless {
+        it.isEmpty() || it.equals("und", ignoreCase = true)
+    } ?: return false
+    if (chunkTag.equals(roleTag, ignoreCase = true)) return true
+    val chunkPrimary = chunkTag.substringBefore('-').substringBefore('_').lowercase(Locale.ROOT)
+    val rolePrimary = roleTag.substringBefore('-').substringBefore('_').lowercase(Locale.ROOT)
+    return chunkPrimary.isNotEmpty() && chunkPrimary == rolePrimary
+}
 
 /** 拡大波形の既定の表示窓（2 分 = 120,000ms、§7.5.4）。 */
 internal const val DEFAULT_ZOOM_WINDOW_MS: Long = 120_000L
@@ -156,16 +180,22 @@ fun WaveformSection(
     val seekBackActionLabel = stringResource(R.string.player_seek_back_cd, seekBackSeconds)
 
     val colorScheme = MaterialTheme.colorScheme
+    val langPalette = chunkFlowLanguagePalette()
     val wavePeakColor = colorScheme.primary.copy(alpha = 0.55f)
     val waveRmsColor = colorScheme.primary
     val playheadColor = colorScheme.error
     val boundaryTickColor = colorScheme.outline
     val viewportStrokeColor = colorScheme.secondary
     val viewportFillColor = colorScheme.secondary.copy(alpha = 0.14f)
-    val targetChunkColor = colorScheme.primaryContainer.copy(alpha = 0.45f)
-    val baseChunkColor = colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+    val targetChunkColor = langPalette.targetLoopRowBackground
+    val targetActiveChunkColor = langPalette.targetActiveRowBackground
+    val targetActiveBorderColor = langPalette.onTargetBadgeContainer.copy(alpha = 0.45f)
+    val baseChunkColor = langPalette.baseLoopRowBackground
+    val baseActiveChunkColor = langPalette.baseActiveRowBackground
+    val baseActiveBorderColor = langPalette.onBaseBadgeContainer.copy(alpha = 0.45f)
     val unknownChunkColor = colorScheme.surfaceVariant.copy(alpha = 0.45f)
-    val activeChunkHighlightColor = colorScheme.primary.copy(alpha = 0.24f)
+    val unknownActiveChunkColor = colorScheme.primaryContainer.copy(alpha = 0.55f)
+    val unknownActiveBorderColor = colorScheme.primary.copy(alpha = 0.45f)
     val abLoopHighlightColor = colorScheme.tertiary.copy(alpha = 0.30f)
     val abLoopBorderColor = colorScheme.tertiary
 
@@ -276,9 +306,14 @@ fun WaveformSection(
                 waveRmsColor = waveRmsColor,
                 playheadColor = playheadColor,
                 targetChunkColor = targetChunkColor,
+                targetActiveChunkColor = targetActiveChunkColor,
+                targetActiveBorderColor = targetActiveBorderColor,
                 baseChunkColor = baseChunkColor,
+                baseActiveChunkColor = baseActiveChunkColor,
+                baseActiveBorderColor = baseActiveBorderColor,
                 unknownChunkColor = unknownChunkColor,
-                activeChunkHighlightColor = activeChunkHighlightColor,
+                unknownActiveChunkColor = unknownActiveChunkColor,
+                unknownActiveBorderColor = unknownActiveBorderColor,
                 abLoopHighlightColor = abLoopHighlightColor,
                 abLoopBorderColor = abLoopBorderColor,
                 contentDescriptionText = zoomedCd,
@@ -515,9 +550,14 @@ private fun ZoomedWaveformCanvas(
     waveRmsColor: Color,
     playheadColor: Color,
     targetChunkColor: Color,
+    targetActiveChunkColor: Color,
+    targetActiveBorderColor: Color,
     baseChunkColor: Color,
+    baseActiveChunkColor: Color,
+    baseActiveBorderColor: Color,
     unknownChunkColor: Color,
-    activeChunkHighlightColor: Color,
+    unknownActiveChunkColor: Color,
+    unknownActiveBorderColor: Color,
     abLoopHighlightColor: Color,
     abLoopBorderColor: Color,
     contentDescriptionText: String,
@@ -691,23 +731,37 @@ private fun ZoomedWaveformCanvas(
                         val clampedRight = rightX.coerceIn(clampedLeft, size.width)
                         if (clampedRight <= clampedLeft) continue
 
-                        val roleColor = when {
-                            languagePair != null && chunk.language == languagePair.target -> targetChunkColor
-                            languagePair?.base != null && chunk.language == languagePair.base -> baseChunkColor
+                        val isTargetChunk = matchesLanguageRole(chunk.language, languagePair?.target)
+                        val isBaseChunk = matchesLanguageRole(chunk.language, languagePair?.base)
+                        val isActiveChunk = chunk.id == activeId
+                        val fillColor = when {
+                            isActiveChunk && isTargetChunk -> targetActiveChunkColor
+                            isActiveChunk && isBaseChunk -> baseActiveChunkColor
+                            isActiveChunk -> unknownActiveChunkColor
+                            isTargetChunk -> targetChunkColor
+                            isBaseChunk -> baseChunkColor
                             else -> unknownChunkColor
                         }
+                        val topOffset = if (isActiveChunk) 0f else 2.dp.toPx()
+                        val rectHeight = if (isActiveChunk) size.height else size.height - 4.dp.toPx()
                         drawRoundRect(
-                            color = roleColor,
-                            topLeft = Offset(clampedLeft, 2.dp.toPx()),
-                            size = Size(clampedRight - clampedLeft, size.height - 4.dp.toPx()),
+                            color = fillColor,
+                            topLeft = Offset(clampedLeft, topOffset),
+                            size = Size(clampedRight - clampedLeft, rectHeight),
                             cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
                         )
-                        if (chunk.id == activeId) {
+                        if (isActiveChunk) {
+                            val borderColor = when {
+                                isTargetChunk -> targetActiveBorderColor
+                                isBaseChunk -> baseActiveBorderColor
+                                else -> unknownActiveBorderColor
+                            }
                             drawRoundRect(
-                                color = activeChunkHighlightColor,
+                                color = borderColor,
                                 topLeft = Offset(clampedLeft, 0f),
                                 size = Size(clampedRight - clampedLeft, size.height),
                                 cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
+                                style = Stroke(width = 1.5.dp.toPx()),
                             )
                         }
                     }

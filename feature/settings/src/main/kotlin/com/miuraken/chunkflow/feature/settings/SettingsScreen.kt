@@ -35,6 +35,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -53,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
@@ -126,6 +128,7 @@ fun SettingsScreen(
                 seekForwardMs = state.seekForwardMs,
                 defaultSpeed = state.defaultSpeed,
                 defaultAutoPause = state.defaultAutoPause,
+                lookaheadTranscriptionEnabled = state.lookaheadTranscriptionEnabled,
                 onEvent = onEvent,
             )
 
@@ -169,6 +172,7 @@ private fun PlaybackSettingsSection(
     seekForwardMs: Long,
     defaultSpeed: Float,
     defaultAutoPause: AutoPause,
+    lookaheadTranscriptionEnabled: Boolean,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_playback)) {
@@ -300,6 +304,43 @@ private fun PlaybackSettingsSection(
                 )
             }
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(!lookaheadTranscriptionEnabled))
+                }
+                .padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_lookahead_transcription_label),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = stringResource(R.string.settings_lookahead_transcription_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = lookaheadTranscriptionEnabled,
+                onCheckedChange = { enabled ->
+                    onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(enabled))
+                },
+            )
+        }
     }
 }
 
@@ -387,6 +428,7 @@ private fun LanguagePairSection(
     onEvent: (SettingsEvent) -> Unit,
 ) {
     var showEnabledLanguagesDialog by remember { mutableStateOf(false) }
+    val langPalette = chunkFlowLanguagePalette()
 
     SettingsCard(title = stringResource(R.string.settings_section_language)) {
         OutlinedButton(
@@ -408,58 +450,86 @@ private fun LanguagePairSection(
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        Text(
-            text = stringResource(R.string.settings_target_language_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+        Surface(
+            color = langPalette.targetRowBackground,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            selectableLanguages.forEach { language ->
-                FilterChip(
-                    selected = targetLanguage == language,
-                    onClick = { onEvent(SettingsEvent.SetTargetLanguage(language)) },
-                    label = { Text(text = languageDisplayName(language)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_target_language_label),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = langPalette.onTargetBadgeContainer,
                 )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    selectableLanguages.forEach { language ->
+                        FilterChip(
+                            selected = targetLanguage == language,
+                            onClick = { onEvent(SettingsEvent.SetTargetLanguage(language)) },
+                            label = { Text(text = languageDisplayName(language)) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = langPalette.targetBadgeContainer,
+                                selectedLabelColor = langPalette.onTargetBadgeContainer,
+                            ),
+                        )
+                    }
+                }
             }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        Text(
-            text = stringResource(R.string.settings_base_language_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+        Surface(
+            color = langPalette.baseRowBackground,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            FilterChip(
-                selected = baseLanguage == null,
-                onClick = { onEvent(SettingsEvent.SetBaseLanguage(null)) },
-                label = { Text(text = stringResource(R.string.settings_base_language_none)) },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ),
-            )
-            selectableLanguages.forEach { language ->
-                FilterChip(
-                    selected = baseLanguage == language,
-                    onClick = { onEvent(SettingsEvent.SetBaseLanguage(language)) },
-                    label = { Text(text = languageDisplayName(language)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_base_language_label),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = langPalette.onBaseBadgeContainer,
                 )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    FilterChip(
+                        selected = baseLanguage == null,
+                        onClick = { onEvent(SettingsEvent.SetBaseLanguage(null)) },
+                        label = { Text(text = stringResource(R.string.settings_base_language_none)) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        ),
+                    )
+                    selectableLanguages.forEach { language ->
+                        FilterChip(
+                            selected = baseLanguage == language,
+                            onClick = { onEvent(SettingsEvent.SetBaseLanguage(language)) },
+                            label = { Text(text = languageDisplayName(language)) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = langPalette.baseBadgeContainer,
+                                selectedLabelColor = langPalette.onBaseBadgeContainer,
+                            ),
+                        )
+                    }
+                }
             }
         }
     }

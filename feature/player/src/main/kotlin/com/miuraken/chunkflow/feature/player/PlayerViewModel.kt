@@ -152,7 +152,7 @@ data class ChunkUi(
         chineseScript: ChineseScript,
         cantoneseScript: ChineseScript,
     ): String? {
-        val raw = text ?: return null
+        val raw = text?.takeIf { it.isNotBlank() } ?: return null
         return when {
             PhoneticGuideKind.isMandarinChinese(language) ->
                 textVariants[chineseScript.iso15924]
@@ -577,6 +577,7 @@ private data class LocalUiSnapshot(
     val transcriptExportBanner: TranscriptExportBannerState? = null,
     val transcriptOffsetMs: Int = 0,
     val localTranscriptExported: Boolean = false,
+    val languageOverrides: Map<ChunkId, LanguageTag?> = emptyMap(),
 )
 
 /**
@@ -683,16 +684,42 @@ class PlayerViewModel @Inject constructor(
     )
 
     init {
-        // 再生中のチャンクが切り替わるたびに先読み文字起こし（3チャンク先読み）を通知する
+        // 設定の先読み文字起こし ON/OFF と開いている教材・チャンク読み込みを同期する
+        viewModelScope.launch {
+            combine(
+                currentMediaId,
+                userSettingsRepository.settings
+                    .map { it.lookaheadTranscriptionEnabled }
+                    .distinctUntilChanged(),
+                currentAnalysisSnapshot
+                    .map { it.chunks.firstOrNull()?.id }
+                    .distinctUntilChanged(),
+            ) { mediaId, enabled, firstChunkId ->
+                Triple(mediaId, enabled, firstChunkId)
+            }.distinctUntilChanged().collect { (mediaId, enabled, _) ->
+                if (mediaId != null) {
+                    syncLookaheadState(mediaId, enabled)
+                }
+            }
+        }
+
+        // 再生中のチャンクが切り替わるたび、または再生開始時に先読み文字起こしを通知する
         viewModelScope.launch {
             combine(
                 currentMediaId,
                 playbackController.status.map { it.currentChunkId }.distinctUntilChanged(),
-            ) { mediaId, activeChunkId ->
-                mediaId to activeChunkId
-            }.distinctUntilChanged().collect { (mediaId, activeChunkId) ->
-                if (mediaId != null && activeChunkId != null) {
-                    analysisRepository.triggerLookaheadAt(mediaId, activeChunkId)
+                playbackController.status.map { it.isPlaying }.distinctUntilChanged(),
+            ) { mediaId, activeChunkId, isPlaying ->
+                Triple(mediaId, activeChunkId, isPlaying)
+            }.distinctUntilChanged().collect { (mediaId, activeChunkId, isPlaying) ->
+                if (mediaId != null) {
+                    if (activeChunkId != null) {
+                        analysisRepository.triggerLookaheadAt(mediaId, activeChunkId)
+                    } else if (isPlaying && uiState.value.lookaheadStatus.enabled) {
+                        val targetId = uiState.value.chunks.firstOrNull { isChunkUndetected(it) }?.id
+                            ?: uiState.value.chunks.firstOrNull()?.id
+                        analysisRepository.triggerLookaheadAt(mediaId, targetId)
+                    }
                 }
             }
         }
@@ -889,8 +916,14 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.UpdateChunkLanguage -> {
                 val id = resolveActiveMediaId() ?: return
+                localUiState.update { state ->
+                    state.copy(languageOverrides = state.languageOverrides + (event.chunkId to event.language))
+                }
                 viewModelScope.launch {
                     analysisRepository.updateChunkLanguage(id, event.chunkId, event.language)
+                    if (uiState.value.lookaheadStatus.enabled) {
+                        analysisRepository.triggerLookaheadAt(id, event.chunkId)
+                    }
                     val exported = libraryRepository.exportLocalTranscriptJson(id)
                     if (exported) {
                         localUiState.update { it.copy(localTranscriptExported = true) }
@@ -937,6 +970,16 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.BulkSetUnknownTranscriptLanguage -> {
                 val id = resolveActiveMediaId() ?: return
+                localUiState.update { state ->
+                    val updatedOverrides = state.languageOverrides.mapValues { (_, lang) ->
+                        if (lang == null || lang.value.isBlank() || lang.value.equals("und", ignoreCase = true)) {
+                            event.language
+                        } else {
+                            lang
+                        }
+                    }
+                    state.copy(languageOverrides = updatedOverrides)
+                }
                 viewModelScope.launch {
                     analysisRepository.bulkSetUnknownTranscriptLanguage(id, event.language)
                     val exported = libraryRepository.exportLocalTranscriptJson(id)
@@ -975,43 +1018,10 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.SetLookaheadEnabled -> {
                 val id = resolveActiveMediaId() ?: return
-                lookaheadLoopJob?.cancel()
-                lookaheadLoopJob = null
-                if (!event.enabled) {
-                    viewModelScope.launch {
-                        analysisRepository.setLookaheadEnabled(id, false)
-                    }
-                } else {
-                    lookaheadLoopJob = viewModelScope.launch {
-                        analysisRepository.setLookaheadEnabled(id, true)
-                        val requestedStartIds = mutableSetOf<ChunkId?>()
-                        val initialChunkId = playbackController.status.value.currentChunkId
-                            ?: uiState.value.chunks.firstOrNull()?.id
-                        requestedStartIds.add(initialChunkId)
-                        analysisRepository.triggerLookaheadAt(id, initialChunkId)
-
-                        while (isActive) {
-                            delay(300L)
-                            val currentState = uiState.value
-                            if (!currentState.lookaheadStatus.enabled || currentState.mediaId != id) {
-                                break
-                            }
-                            val chunks = currentState.chunks
-                            if (chunks.isEmpty()) break
-                            val activeIdx = currentState.activeChunkIndex ?: 0
-                            val orderedCandidates = if (activeIdx in chunks.indices) {
-                                chunks.subList(activeIdx, chunks.size) + chunks.subList(0, activeIdx)
-                            } else {
-                                chunks
-                            }
-                            val nextUntranscribed = orderedCandidates.firstOrNull { chunk ->
-                                chunk.text.isNullOrBlank() && chunk.id !in requestedStartIds
-                            } ?: break
-                            requestedStartIds.add(nextUntranscribed.id)
-                            analysisRepository.triggerLookaheadAt(id, nextUntranscribed.id)
-                        }
-                    }
+                viewModelScope.launch {
+                    userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
                 }
+                syncLookaheadState(id, event.enabled)
             }
 
             is PlayerEvent.TriggerLookahead -> {
@@ -1082,6 +1092,71 @@ class PlayerViewModel @Inject constructor(
         lookaheadLoopJob?.cancel()
         lookaheadLoopJob = null
         super.onCleared()
+    }
+
+    private fun isChunkUndetected(chunk: ChunkUi): Boolean = chunk.text.isNullOrBlank() ||
+        chunk.language == null ||
+        chunk.language.value.isBlank() ||
+        chunk.language.value.equals("und", ignoreCase = true)
+
+    private fun syncLookaheadState(mediaId: MediaId, enabled: Boolean) {
+        lookaheadLoopJob?.cancel()
+        lookaheadLoopJob = null
+        if (!enabled) {
+            viewModelScope.launch {
+                analysisRepository.setLookaheadEnabled(mediaId, false)
+            }
+        } else {
+            lookaheadLoopJob = viewModelScope.launch {
+                analysisRepository.setLookaheadEnabled(mediaId, true)
+                val requestedStartIds = mutableSetOf<ChunkId?>()
+                val initialChunks = uiState.value.chunks
+                val initialChunkId = playbackController.status.value.currentChunkId
+                    ?: initialChunks.firstOrNull { isChunkUndetected(it) }?.id
+                    ?: initialChunks.firstOrNull()?.id
+                requestedStartIds.add(initialChunkId)
+                analysisRepository.triggerLookaheadAt(mediaId, initialChunkId)
+
+                while (isActive) {
+                    val currentState = uiState.value
+                    if (!currentState.lookaheadStatus.enabled || currentState.mediaId != mediaId) {
+                        break
+                    }
+                    val chunks = currentState.chunks
+                    if (chunks.isEmpty()) break
+                    val activeIdx = currentState.activeChunkIndex ?: 0
+                    val orderedCandidates = if (activeIdx in chunks.indices) {
+                        chunks.subList(activeIdx, chunks.size) + chunks.subList(0, activeIdx)
+                    } else {
+                        chunks
+                    }
+                    val hasMore = orderedCandidates.any { chunk ->
+                        isChunkUndetected(chunk) && chunk.id !in requestedStartIds
+                    }
+                    if (!hasMore) break
+
+                    delay(300L)
+                    val refreshedState = uiState.value
+                    if (!refreshedState.lookaheadStatus.enabled || refreshedState.mediaId != mediaId) {
+                        break
+                    }
+                    val refreshedChunks = refreshedState.chunks
+                    if (refreshedChunks.isEmpty()) break
+                    val refreshedActiveIdx = refreshedState.activeChunkIndex ?: 0
+                    val refreshedCandidates = if (refreshedActiveIdx in refreshedChunks.indices) {
+                        refreshedChunks.subList(refreshedActiveIdx, refreshedChunks.size) +
+                            refreshedChunks.subList(0, refreshedActiveIdx)
+                    } else {
+                        refreshedChunks
+                    }
+                    val nextUntranscribed = refreshedCandidates.firstOrNull { chunk ->
+                        isChunkUndetected(chunk) && chunk.id !in requestedStartIds
+                    } ?: break
+                    requestedStartIds.add(nextUntranscribed.id)
+                    analysisRepository.triggerLookaheadAt(mediaId, nextUntranscribed.id)
+                }
+            }
+        }
     }
 
     private fun resolveActiveMediaId(): MediaId? = uiState.value.mediaId ?: currentMediaId.value ?: playbackController.status.value.mediaId
@@ -1186,12 +1261,17 @@ class PlayerViewModel @Inject constructor(
                 (bookmark.positionMs >= chunk.startMs && bookmark.positionMs < chunk.endMs) ||
                     bookmark.positionMs == chunk.startMs
             }
+            val resolvedLanguage = if (chunk.id in local.languageOverrides) {
+                local.languageOverrides[chunk.id]
+            } else {
+                transcript?.language
+            }
             ChunkUi(
                 id = chunk.id,
                 startMs = chunk.startMs,
                 endMs = chunk.endMs,
-                text = transcript?.text,
-                language = transcript?.language,
+                text = transcript?.text?.takeIf { it.isNotBlank() },
+                language = resolvedLanguage,
                 isBookmarked = isBookmarked,
                 isRepeatChecked = chunk.id in practice.repeatChunkIds,
                 textVariants = transcript?.textVariants.orEmpty(),

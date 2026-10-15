@@ -31,6 +31,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -1265,50 +1266,94 @@ private fun ImportConfigDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                OutlinedTextField(
-                    value = targetLangText,
-                    onValueChange = { targetLangText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
-                    singleLine = true,
+                val langPalette = chunkFlowLanguagePalette()
+
+                Surface(
+                    color = langPalette.targetRowBackground,
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    targetPresets.forEach { code ->
-                        FilterChip(
-                            selected = targetLangText.trim().equals(code, ignoreCase = true),
-                            onClick = { targetLangText = code },
-                            label = { Text(text = code.uppercase(Locale.ROOT)) },
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = targetLangText,
+                            onValueChange = { targetLangText = it },
+                            label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            targetPresets.forEach { code ->
+                                FilterChip(
+                                    selected = targetLangText.trim().equals(code, ignoreCase = true),
+                                    onClick = { targetLangText = code },
+                                    label = { Text(text = code.uppercase(Locale.ROOT)) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = langPalette.targetBadgeContainer,
+                                        selectedLabelColor = langPalette.onTargetBadgeContainer,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
 
-                OutlinedTextField(
-                    value = baseLangText,
-                    onValueChange = { baseLangText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
-                    singleLine = true,
+                Surface(
+                    color = langPalette.baseRowBackground,
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    basePresets.forEach { code ->
-                        val isSelected = if (code == null) {
-                            baseLangText.isBlank()
-                        } else {
-                            baseLangText.trim().equals(code, ignoreCase = true)
-                        }
-                        val label = code?.uppercase(Locale.ROOT)
-                            ?: stringResource(R.string.library_edit_base_lang_none)
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { baseLangText = code.orEmpty() },
-                            label = { Text(text = label) },
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = baseLangText,
+                            onValueChange = { baseLangText = it },
+                            label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            basePresets.forEach { code ->
+                                val isSelected = if (code == null) {
+                                    baseLangText.isBlank()
+                                } else {
+                                    baseLangText.trim().equals(code, ignoreCase = true)
+                                }
+                                val label = code?.uppercase(Locale.ROOT)
+                                    ?: stringResource(R.string.library_edit_base_lang_none)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { baseLangText = code.orEmpty() },
+                                    label = { Text(text = label) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = if (code == null) {
+                                            MaterialTheme.colorScheme.secondaryContainer
+                                        } else {
+                                            langPalette.baseBadgeContainer
+                                        },
+                                        selectedLabelColor = if (code == null) {
+                                            MaterialTheme.colorScheme.onSecondaryContainer
+                                        } else {
+                                            langPalette.onBaseBadgeContainer
+                                        },
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1375,50 +1420,94 @@ private fun EditItemMetadataDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                OutlinedTextField(
-                    value = targetLangText,
-                    onValueChange = { targetLangText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
-                    singleLine = true,
+                val langPalette = chunkFlowLanguagePalette()
+
+                Surface(
+                    color = langPalette.targetRowBackground,
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    targetPresets.forEach { code ->
-                        FilterChip(
-                            selected = targetLangText.trim().equals(code, ignoreCase = true),
-                            onClick = { targetLangText = code },
-                            label = { Text(text = code.uppercase(Locale.ROOT)) },
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = targetLangText,
+                            onValueChange = { targetLangText = it },
+                            label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            targetPresets.forEach { code ->
+                                FilterChip(
+                                    selected = targetLangText.trim().equals(code, ignoreCase = true),
+                                    onClick = { targetLangText = code },
+                                    label = { Text(text = code.uppercase(Locale.ROOT)) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = langPalette.targetBadgeContainer,
+                                        selectedLabelColor = langPalette.onTargetBadgeContainer,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
 
-                OutlinedTextField(
-                    value = baseLangText,
-                    onValueChange = { baseLangText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
-                    singleLine = true,
+                Surface(
+                    color = langPalette.baseRowBackground,
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    basePresets.forEach { code ->
-                        val isSelected = if (code == null) {
-                            baseLangText.isBlank()
-                        } else {
-                            baseLangText.trim().equals(code, ignoreCase = true)
-                        }
-                        val label = code?.uppercase(Locale.ROOT)
-                            ?: stringResource(R.string.library_edit_base_lang_none)
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { baseLangText = code.orEmpty() },
-                            label = { Text(text = label) },
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = baseLangText,
+                            onValueChange = { baseLangText = it },
+                            label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            basePresets.forEach { code ->
+                                val isSelected = if (code == null) {
+                                    baseLangText.isBlank()
+                                } else {
+                                    baseLangText.trim().equals(code, ignoreCase = true)
+                                }
+                                val label = code?.uppercase(Locale.ROOT)
+                                    ?: stringResource(R.string.library_edit_base_lang_none)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { baseLangText = code.orEmpty() },
+                                    label = { Text(text = label) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = if (code == null) {
+                                            MaterialTheme.colorScheme.secondaryContainer
+                                        } else {
+                                            langPalette.baseBadgeContainer
+                                        },
+                                        selectedLabelColor = if (code == null) {
+                                            MaterialTheme.colorScheme.onSecondaryContainer
+                                        } else {
+                                            langPalette.onBaseBadgeContainer
+                                        },
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1495,50 +1584,94 @@ private fun EditDirectoryMetadataDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                OutlinedTextField(
-                    value = targetLangText,
-                    onValueChange = { targetLangText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
-                    singleLine = true,
+                val langPalette = chunkFlowLanguagePalette()
+
+                Surface(
+                    color = langPalette.targetRowBackground,
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    targetPresets.forEach { code ->
-                        FilterChip(
-                            selected = targetLangText.trim().equals(code, ignoreCase = true),
-                            onClick = { targetLangText = code },
-                            label = { Text(text = code.uppercase(Locale.ROOT)) },
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = targetLangText,
+                            onValueChange = { targetLangText = it },
+                            label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            targetPresets.forEach { code ->
+                                FilterChip(
+                                    selected = targetLangText.trim().equals(code, ignoreCase = true),
+                                    onClick = { targetLangText = code },
+                                    label = { Text(text = code.uppercase(Locale.ROOT)) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = langPalette.targetBadgeContainer,
+                                        selectedLabelColor = langPalette.onTargetBadgeContainer,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
 
-                OutlinedTextField(
-                    value = baseLangText,
-                    onValueChange = { baseLangText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
-                    singleLine = true,
+                Surface(
+                    color = langPalette.baseRowBackground,
+                    shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    basePresets.forEach { code ->
-                        val isSelected = if (code == null) {
-                            baseLangText.isBlank()
-                        } else {
-                            baseLangText.trim().equals(code, ignoreCase = true)
-                        }
-                        val label = code?.uppercase(Locale.ROOT)
-                            ?: stringResource(R.string.library_edit_base_lang_none)
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = { baseLangText = code.orEmpty() },
-                            label = { Text(text = label) },
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = baseLangText,
+                            onValueChange = { baseLangText = it },
+                            label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            basePresets.forEach { code ->
+                                val isSelected = if (code == null) {
+                                    baseLangText.isBlank()
+                                } else {
+                                    baseLangText.trim().equals(code, ignoreCase = true)
+                                }
+                                val label = code?.uppercase(Locale.ROOT)
+                                    ?: stringResource(R.string.library_edit_base_lang_none)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { baseLangText = code.orEmpty() },
+                                    label = { Text(text = label) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = if (code == null) {
+                                            MaterialTheme.colorScheme.secondaryContainer
+                                        } else {
+                                            langPalette.baseBadgeContainer
+                                        },
+                                        selectedLabelColor = if (code == null) {
+                                            MaterialTheme.colorScheme.onSecondaryContainer
+                                        } else {
+                                            langPalette.onBaseBadgeContainer
+                                        },
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
             }

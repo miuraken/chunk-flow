@@ -11,6 +11,8 @@
     <string name="settings_auto_pause_off">OFF</string>
     <string name="settings_auto_pause_fixed">Fixed %1$.1fs</string>
     <string name="settings_auto_pause_proportional">Chunk × %1$.1f</string>
+    <string name="settings_lookahead_transcription_label">Lookahead transcription</string>
+    <string name="settings_lookahead_transcription_hint">Automatically recognize speech and detect language for untranscribed chunks during playback</string>
     <string name="settings_section_segmentation">Default Auto-Segmentation</string>
     <string name="settings_segmentation_min_silence">Min silence duration: %1$d ms</string>
     <string name="settings_segmentation_pre_padding">Pre-padding: %1$d ms</string>
