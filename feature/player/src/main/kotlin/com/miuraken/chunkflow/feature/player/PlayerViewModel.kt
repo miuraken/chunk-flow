@@ -44,6 +44,8 @@ import java.util.Locale
 import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +57,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -602,6 +605,7 @@ class PlayerViewModel @Inject constructor(
     private val currentMediaId = MutableStateFlow<MediaId?>(null)
     private val localUiState = MutableStateFlow(LocalUiSnapshot())
     private var lastOpenedMediaId: MediaId? = null
+    private var lookaheadLoopJob: Job? = null
 
     /** 高頻度で変わる再生位置のプロバイダ（§6.2）。 */
     val positionProvider: PositionProvider
@@ -699,6 +703,8 @@ class PlayerViewModel @Inject constructor(
         currentMediaId.value = mediaId
         if (lastOpenedMediaId == mediaId) return
         lastOpenedMediaId = mediaId
+        lookaheadLoopJob?.cancel()
+        lookaheadLoopJob = null
         localUiState.value = LocalUiSnapshot()
         viewModelScope.launch {
             val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
@@ -969,12 +975,41 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.SetLookaheadEnabled -> {
                 val id = resolveActiveMediaId() ?: return
-                viewModelScope.launch {
-                    analysisRepository.setLookaheadEnabled(id, event.enabled)
-                    if (event.enabled) {
-                        val activeChunkId = playbackController.status.value.currentChunkId
+                lookaheadLoopJob?.cancel()
+                lookaheadLoopJob = null
+                if (!event.enabled) {
+                    viewModelScope.launch {
+                        analysisRepository.setLookaheadEnabled(id, false)
+                    }
+                } else {
+                    lookaheadLoopJob = viewModelScope.launch {
+                        analysisRepository.setLookaheadEnabled(id, true)
+                        val requestedStartIds = mutableSetOf<ChunkId?>()
+                        val initialChunkId = playbackController.status.value.currentChunkId
                             ?: uiState.value.chunks.firstOrNull()?.id
-                        analysisRepository.triggerLookaheadAt(id, activeChunkId)
+                        requestedStartIds.add(initialChunkId)
+                        analysisRepository.triggerLookaheadAt(id, initialChunkId)
+
+                        while (isActive) {
+                            delay(300L)
+                            val currentState = uiState.value
+                            if (!currentState.lookaheadStatus.enabled || currentState.mediaId != id) {
+                                break
+                            }
+                            val chunks = currentState.chunks
+                            if (chunks.isEmpty()) break
+                            val activeIdx = currentState.activeChunkIndex ?: 0
+                            val orderedCandidates = if (activeIdx in chunks.indices) {
+                                chunks.subList(activeIdx, chunks.size) + chunks.subList(0, activeIdx)
+                            } else {
+                                chunks
+                            }
+                            val nextUntranscribed = orderedCandidates.firstOrNull { chunk ->
+                                chunk.text.isNullOrBlank() && chunk.id !in requestedStartIds
+                            } ?: break
+                            requestedStartIds.add(nextUntranscribed.id)
+                            analysisRepository.triggerLookaheadAt(id, nextUntranscribed.id)
+                        }
                     }
                 }
             }
@@ -1041,6 +1076,12 @@ class PlayerViewModel @Inject constructor(
 
             PlayerEvent.Back -> Unit
         }
+    }
+
+    override fun onCleared() {
+        lookaheadLoopJob?.cancel()
+        lookaheadLoopJob = null
+        super.onCleared()
     }
 
     private fun resolveActiveMediaId(): MediaId? = uiState.value.mediaId ?: currentMediaId.value ?: playbackController.status.value.mediaId
