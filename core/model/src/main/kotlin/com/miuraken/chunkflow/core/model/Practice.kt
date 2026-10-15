@@ -85,8 +85,8 @@ enum class LanguageFilter {
  * @property autoPauseScope 自動ポーズを入れるチャンクの範囲。
  * @property languageFilter 言語フィルタ。
  * @property bookmarksOnly ブックマークしたチャンクだけを再生するフィルタ（F8.1）。
- * @property repeatChunkIds チャンクごとのリピートチェックボックスで選択されたチャンク ID の集合。
- * @property repeatCheckedOnly 下部再生コントロールの「リピート」トグルが ON かどうか（デフォルトは `false`）。`true` かつ [repeatChunkIds] が空でない場合、選択されたチャンクを順番に無限リピート再生する。
+ * @property repeatChunkIds 選択したチャンク（チャンクリストのチェックボックス、拡大波形の長押し）の ID の集合。空でない場合、選択したチャンクだけを時系列の順に再生する。
+ * @property repeatCheckedOnly 下部再生コントロールの「リピート」トグルが ON かどうか（デフォルトは `false`）。`true` かつ [repeatChunkIds] が空でない場合は選択したチャンクを繰り返し、`false` の場合は最後の選択チャンクのあとで一時停止する。
  */
 data class PracticeSettings(
     val loop: LoopMode = LoopMode.Off,

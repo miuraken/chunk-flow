@@ -67,7 +67,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
-import kotlin.math.min
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.NonCancellable
@@ -1553,10 +1552,11 @@ class DefaultAnalysisRepository(
             activeChunks.subList(0, startIndex)
         val existingTranscripts = transcriptDao.getByChunkIds(orderedCandidates.map { it.id })
             .associateBy { it.chunkId }
+        // プレイヤー画面で開いている間は、現在位置から後ろ、続けて先頭からの順で、残りのすべてのチャンクを対象にする
         return orderedCandidates.filter { chunk ->
             needsLookaheadTranscription(existingTranscripts[chunk.id]) &&
                 !skippedEmptyIds.contains(chunk.id)
-        }.take(LOOKAHEAD_WINDOW_AHEAD + 1)
+        }
     }
 
     private suspend fun updateQueuedChunkIdsState(
@@ -1599,7 +1599,7 @@ class DefaultAnalysisRepository(
 
     /**
      * アクティブチャンクのインデックス [currentChunkIndex] 以降から、未文字起こし・または言語未確定（かつ空結果として試行済みでない）チャンクを
-     * 最大 `LOOKAHEAD_WINDOW_AHEAD + 1`（6）件ずつ順番に先読み認識する（F6.2、§7.4.5）。
+     * プレイヤー画面で開いている間、残りのすべてのチャンクを順番に先読み認識する（F6.2、§7.4.5）。
      *
      * 各チャンクの認識前に高優先度の手動リクエスト（[retranscribeChunk] / [updateChunkLanguage] / [prioritizeChunkTranscription]）が
      * 待機している場合は認識スロットを譲り、また先読み中に起点インデックスが更新された場合は次のチャンクから即座に新しい起点へ切り替える。
@@ -1643,7 +1643,7 @@ class DefaultAnalysisRepository(
 
                 val allChunks = chunkDao.observeByMediaId(id.value).first()
                 val itemState = itemStateDao.getByMediaId(id.value)
-                val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+                var activeChunks = selectActiveChunkEntities(itemState, allChunks)
                 val initialIndex = latestLookaheadChunkIndex[id] ?: currentChunkIndex
                 if (initialIndex !in activeChunks.indices) return@withLock
 
@@ -1653,8 +1653,6 @@ class DefaultAnalysisRepository(
                 val skippedEmptyIds = attemptedEmptyChunkIds.computeIfAbsent(id) {
                     ConcurrentHashMap.newKeySet()
                 }
-                val endIndex = min(activeChunks.lastIndex, initialIndex + LOOKAHEAD_WINDOW_AHEAD)
-                val windowChunks = activeChunks.subList(initialIndex, endIndex + 1)
 
                 val initialTargets = computeLookaheadTargetChunks(id, activeChunks, initialIndex)
                 if (initialTargets.isEmpty()) {
@@ -1668,8 +1666,8 @@ class DefaultAnalysisRepository(
                             } else {
                                 emptySet()
                             },
-                            completedCount = windowChunks.size,
-                            totalTargetCount = windowChunks.size,
+                            completedCount = activeChunks.size,
+                            totalTargetCount = activeChunks.size,
                         )
                     }
                     return@withLock
@@ -1700,15 +1698,24 @@ class DefaultAnalysisRepository(
                     updateQueuedChunkIdsState(id, activeChunks)
                 }
 
-                var processedInBatch = 0
-                while (processedInBatch < totalTargets && stateFlow.value.enabled && isMediaOpenForTranscription(id)) {
+                // プレイヤー画面が開いている間は、残りのチャンクがなくなるまで順に処理する。
+                // 同じバッチ内で同じチャンクを繰り返さないよう、試したチャンクを覚えておく
+                val attemptedInBatch = HashSet<Long>()
+                while (stateFlow.value.enabled && isMediaOpenForTranscription(id)) {
+                    // 分割・連結でチャンクが作り直されることがあるため、毎回最新のチャンク一覧を読む
+                    activeChunks = selectActiveChunkEntities(
+                        itemStateDao.getByMediaId(id.value),
+                        chunkDao.observeByMediaId(id.value).first(),
+                    )
+                    if (activeChunks.isEmpty()) break
                     val activeStartIndex = (latestLookaheadChunkIndex[id] ?: currentChunkIndex)
                         .coerceIn(0, activeChunks.lastIndex)
                     val remainingTargets = computeLookaheadTargetChunks(id, activeChunks, activeStartIndex)
+                        .filterNot { it.id in attemptedInBatch }
                     val chunk = remainingTargets.firstOrNull() ?: break
-                    processedInBatch += 1
 
                     if (chunk.endMs <= chunk.startMs) {
+                        attemptedInBatch.add(chunk.id)
                         skippedEmptyIds.add(chunk.id)
                         completed += 1
                         continue
@@ -1729,7 +1736,9 @@ class DefaultAnalysisRepository(
                         val refreshedStartIndex = (latestLookaheadChunkIndex[id] ?: activeStartIndex)
                             .coerceIn(0, activeChunks.lastIndex)
                         val refreshedTargets = computeLookaheadTargetChunks(id, activeChunks, refreshedStartIndex)
+                            .filterNot { it.id in attemptedInBatch }
                         val targetChunk = refreshedTargets.firstOrNull()
+                        targetChunk?.let { attemptedInBatch.add(it.id) }
                         if (targetChunk == null) {
                             completed += 1
                             stateFlow.update { current ->
@@ -2119,6 +2128,76 @@ class DefaultAnalysisRepository(
                 newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
                 effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIndex] = it }
                 index += 1
+            }
+        }
+
+        val insertedChunks = chunkDao.replaceChunksTransaction(
+            mediaId = id.value,
+            origin = ChunkOrigin.MANUAL.name,
+            newChunks = newChunks,
+            newTranscriptsByIndex = newTranscriptsByIndex,
+            preserveAllOldTranscripts = true,
+        )
+        syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
+        setChunkSource(id, ChunkOrigin.MANUAL)
+        persistTranscriptBackupFile(id)
+        true
+    }
+
+    override suspend fun mergeChunks(id: MediaId, chunkIds: List<ChunkId>): Boolean = withContext(ioDispatcher) {
+        if (chunkIds.size < 2) return@withContext false
+        val allChunks = chunkDao.observeByMediaId(id.value).first()
+        val itemState = itemStateDao.getByMediaId(id.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        val indices = chunkIds.map { chunkId -> activeChunks.indexOfFirst { it.id == chunkId.value } }.sorted()
+        if (indices.any { it < 0 } || indices.distinct().size != indices.size) return@withContext false
+        val firstIndex = indices.first()
+        val lastIndex = indices.last()
+        // 途中に選ばれていないチャンクを挟む（連続していない）場合は連結しない
+        if (lastIndex - firstIndex + 1 != indices.size) return@withContext false
+
+        val now = clock()
+        val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
+        val first = activeChunks[firstIndex]
+        val mergedStartMs = first.startMs
+        val mergedEndMs = maxOf(activeChunks[lastIndex].endMs, mergedStartMs + 1L)
+
+        // 文字起こしは先頭から順に 2 件ずつ連結する（半角スペース 1 文字を挟み、言語は先頭のチャンクに合わせる）
+        var mergedTranscript: TranscriptEntity? = effectiveTranscripts[first.id]
+        for (index in (firstIndex + 1)..lastIndex) {
+            mergedTranscript = mergeTranscriptEntities(
+                first = mergedTranscript,
+                second = effectiveTranscripts[activeChunks[index].id],
+                mergedStartMs = mergedStartMs,
+                mergedEndMs = mergedEndMs,
+                createdAtEpochMs = now,
+            )
+        }
+
+        val newChunks = ArrayList<ChunkEntity>(activeChunks.size - (lastIndex - firstIndex))
+        val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
+        for ((index, chunk) in activeChunks.withIndex()) {
+            when {
+                index == firstIndex -> {
+                    val mergedIndex = newChunks.size
+                    newChunks.add(
+                        chunk.copy(
+                            id = 0L,
+                            startMs = mergedStartMs,
+                            endMs = mergedEndMs,
+                            origin = ChunkOrigin.MANUAL.name,
+                        ),
+                    )
+                    mergedTranscript?.let { newTranscriptsByIndex[mergedIndex] = it.copy(userEdited = true, createdAt = now) }
+                }
+
+                index in (firstIndex + 1)..lastIndex -> Unit
+
+                else -> {
+                    val destIndex = newChunks.size
+                    newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
+                    effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIndex] = it }
+                }
             }
         }
 
@@ -2800,7 +2879,8 @@ private class PriorityRecognitionSlotGate(
             } else {
                 CompletableDeferred<Unit>().also { deferred ->
                     if (highPriority) {
-                        highPriorityQueue.addLast(deferred)
+                        // 最優先の要求はスタックとして扱い、最後に来た要求（直近の操作）から処理する
+                        highPriorityQueue.addFirst(deferred)
                     } else {
                         normalPriorityQueue.addLast(deferred)
                     }

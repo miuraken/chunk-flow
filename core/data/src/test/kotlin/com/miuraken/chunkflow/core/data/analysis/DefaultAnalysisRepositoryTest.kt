@@ -461,7 +461,7 @@ class DefaultAnalysisRepositoryTest {
     }
 
     @Test
-    fun `triggerLookaheadAt_現在位置から最大6チャンクを先読み認識しステータスと文字起こしを更新する`() = runTest {
+    fun `triggerLookaheadAt_現在位置から後ろ続けて先頭からの順で残りのすべてのチャンクを先読み認識しステータスと文字起こしを更新する`() = runTest {
         val transcribedRanges = mutableListOf<Pair<Long, Long>>()
         val fakeTranscriber = object : OnDeviceChunkTranscriber {
             override fun isAvailable(): Boolean = true
@@ -516,24 +516,26 @@ class DefaultAnalysisRepositoryTest {
         chunkDao.insertAll(chunks)
 
         repository.setLookaheadEnabled(mediaId, true)
-        // インデックス 1 からトリガーすると 1..6 の 6 チャンクのみが対象になり、チャンク間の無音（800..1000ms 等）は渡されない
+        // インデックス 1 からトリガーすると、1..7 のあとに先頭の 0 へ戻って残りのすべてのチャンクを認識し、
+        // チャンク間の無音（800..1000ms 等）は渡されない
         repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(301L))
 
-        assertEquals(6, transcribedRanges.size)
+        assertEquals(8, transcribedRanges.size)
         assertEquals(1_000L to 1_800L, transcribedRanges.first())
-        assertEquals(6_000L to 6_800L, transcribedRanges.last())
+        assertEquals(7_000L to 7_800L, transcribedRanges[6])
+        assertEquals(0L to 800L, transcribedRanges.last())
 
         val status = repository.observeLookaheadStatus(mediaId).first()
         assertTrue(status.enabled)
         assertTrue(status.engineAvailable)
         assertNull(status.inFlightChunkId)
-        assertEquals(6, status.completedCount)
-        assertEquals(6, status.totalTargetCount)
+        assertEquals(8, status.completedCount)
+        assertEquals(8, status.totalTargetCount)
 
         val transcripts = repository.observeTranscripts(mediaId).first()
         assertEquals("Chunk 1000-1800", transcripts[ChunkId(301L)]?.text)
-        assertEquals("Chunk 6000-6800", transcripts[ChunkId(306L)]?.text)
-        assertNull(transcripts[ChunkId(307L)])
+        assertEquals("Chunk 7000-7800", transcripts[ChunkId(307L)]?.text)
+        assertEquals("Chunk 0-800", transcripts[ChunkId(300L)]?.text)
     }
 
     @Test
@@ -939,6 +941,73 @@ class DefaultAnalysisRepositoryTest {
     }
 
     @Test
+    fun `mergeChunks_連続する複数チャンクを1つに連結し連続していない場合や1件だけの場合は何もしない`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_merge_many_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Merge Many Test",
+                durationMs = 6_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            (0 until 4).map { idx ->
+                ChunkEntity(
+                    id = 1_401L + idx,
+                    mediaId = mediaId.value,
+                    startMs = idx * 1_200L,
+                    endMs = idx * 1_200L + 1_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                )
+            },
+        )
+        val texts = listOf("하나", "둘", "셋", "넷")
+        val languages = listOf("ko", "ja", "ko", "ko")
+        transcriptDao.upsertAll(
+            texts.indices.map { idx ->
+                Transcript(
+                    chunkId = ChunkId(1_401L + idx),
+                    text = texts[idx],
+                    language = LanguageTag(languages[idx]),
+                    languageConfidence = 0.9f,
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity()
+            },
+        )
+
+        // 1 件だけ・連続していない（1401 と 1403）場合は連結しない
+        assertFalse(repository.mergeChunks(mediaId, listOf(ChunkId(1_401L))))
+        assertFalse(repository.mergeChunks(mediaId, listOf(ChunkId(1_401L), ChunkId(1_403L))))
+        assertEquals(4, repository.observeChunks(mediaId).first().size)
+
+        // 1401..1403 を連結 -> [0..3400ms] と [3600..4600ms] の 2 チャンク（MANUAL）になる
+        assertTrue(repository.mergeChunks(mediaId, listOf(ChunkId(1_401L), ChunkId(1_402L), ChunkId(1_403L))))
+        val merged = repository.observeChunks(mediaId).first()
+        assertEquals(2, merged.size)
+        assertEquals(ChunkOrigin.MANUAL, merged[0].origin)
+        assertEquals(0L to 3_400L, merged[0].startMs to merged[0].endMs)
+        assertEquals(3_600L to 4_600L, merged[1].startMs to merged[1].endMs)
+
+        val transcripts = repository.observeTranscripts(mediaId).first()
+        val mergedTranscript = transcripts[merged[0].id]
+        assertNotNull(mergedTranscript)
+        assertEquals("하나 둘 셋", mergedTranscript.text)
+        assertEquals(LanguageTag("ko"), mergedTranscript.language)
+        assertTrue(mergedTranscript.userEdited)
+        assertEquals("넷", transcripts[merged[1].id]?.text)
+    }
+
+    @Test
     fun `requestAnalysis_複数ファイルを一括要求したとき同時に走らず1件ずつ順番に直列実行される`() = runTest {
         val mediaIds = listOf(
             MediaId("media_seq_1"),
@@ -1221,16 +1290,14 @@ class DefaultAnalysisRepositoryTest {
 
         repository.setLookaheadEnabled(mediaId, true)
 
-        // 1回目: チャンク 0..5 (0ms..5000ms) の 6 件を試行 (0ms と 1000ms は null)
+        // 1回目: 0ms と 1000ms が null でも止まらず、残りのすべてのチャンク (0ms..7000ms) を順に試行する
         repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(900L))
-        assertEquals(listOf(0L, 1_000L, 2_000L, 3_000L, 4_000L, 5_000L), attemptedStartMsList)
+        val allStarts = listOf(0L, 1_000L, 2_000L, 3_000L, 4_000L, 5_000L, 6_000L, 7_000L)
+        assertEquals(allStarts, attemptedStartMsList)
 
-        // 2回目: 同じ先頭チャンク (900L) からトリガーされても、null だった 0ms/1000ms で止まらず後続の 6000ms, 7000ms へ進む
+        // 2回目: 同じ先頭チャンク (900L) からトリガーされても、null だった 0ms/1000ms はこのセッションでは試し直さない
         repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(900L))
-        assertEquals(
-            listOf(0L, 1_000L, 2_000L, 3_000L, 4_000L, 5_000L, 6_000L, 7_000L),
-            attemptedStartMsList,
-        )
+        assertEquals(allStarts, attemptedStartMsList)
 
         val transcripts = repository.observeTranscripts(mediaId).first()
         assertNull(transcripts[ChunkId(900L)])
@@ -1752,8 +1819,8 @@ class DefaultAnalysisRepositoryTest {
         assertTrue(ChunkId(1304L) in midStatus.queuedChunkIds)
         assertTrue(ChunkId(1302L) in midStatus.queuedChunkIds)
 
-        // 3. 先読み 1件目を完了させると、中断されることなく 1件目が完了した直後に
-        //    高優先度の 1303L, 1304L, 1302L が先に処理され、その後に残りの 1301L が処理される
+        // 3. 先読み 1件目を完了させると、中断されることなく 1件目が完了した直後に、最優先の要求が
+        //    スタックの順（後から来た要求が先）で 1302L, 1304L, 1303L と処理され、その後に残りの 1301L が処理される
         releaseFirstChunk.complete(Unit)
         retranscribeJob.join()
         langToggleJob.join()
@@ -1763,9 +1830,9 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(
             listOf(
                 "lookahead:0",
-                "retranscribe:3000",
-                "langToggle:4000:ja",
                 "prioritize:2000",
+                "langToggle:4000:ja",
+                "retranscribe:3000",
                 "lookahead:1000",
             ),
             executionLog,

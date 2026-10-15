@@ -78,6 +78,9 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [retranscribeChunk] の呼び出し履歴（呼ばれた順）。 */
     val retranscribeChunkRequests: MutableList<Pair<MediaId, ChunkId>> = mutableListOf()
 
+    /** [mergeChunks] の呼び出し履歴（呼ばれた順）。 */
+    val mergeChunksRequests: MutableList<Pair<MediaId, List<ChunkId>>> = mutableListOf()
+
     /** 現在プレイヤー画面で開いているとして通知されている教材 ID の集合。 */
     val openTranscriptionSessions: MutableSet<MediaId> = mutableSetOf()
 
@@ -346,6 +349,56 @@ class FakeAnalysisRepository : AnalysisRepository {
                     )
                 } else if (currentTranscript == null && nextTranscript != null) {
                     put(current.id, nextTranscript.copy(chunkId = current.id, userEdited = true))
+                }
+            }
+            chunkSources[id] = ChunkOrigin.MANUAL
+            entry.copy(
+                chunks = manualChunks,
+                transcripts = updatedTranscripts,
+                chunksByOrigin = entry.chunksByOrigin + (ChunkOrigin.MANUAL to manualChunks),
+            )
+        }
+        return success
+    }
+
+    override suspend fun mergeChunks(id: MediaId, chunkIds: List<ChunkId>): Boolean {
+        mergeChunksRequests += id to chunkIds
+        if (chunkIds.size < 2) return false
+        var success = false
+        update(id) { entry ->
+            val indices = chunkIds.map { chunkId -> entry.chunks.indexOfFirst { it.id == chunkId } }.sorted()
+            if (indices.any { it < 0 } || indices.distinct().size != indices.size) return@update entry
+            val firstIndex = indices.first()
+            val lastIndex = indices.last()
+            if (lastIndex - firstIndex + 1 != indices.size) return@update entry
+            success = true
+
+            val first = entry.chunks[firstIndex]
+            val merged = first.copy(endMs = entry.chunks[lastIndex].endMs, origin = ChunkOrigin.MANUAL)
+            val manualChunks = entry.chunks.mapIndexedNotNull { index, chunk ->
+                when (index) {
+                    firstIndex -> merged
+                    in (firstIndex + 1)..lastIndex -> null
+                    else -> chunk.copy(origin = ChunkOrigin.MANUAL)
+                }
+            }
+            // 文字起こしは半角スペース 1 文字を挟んで連結し、言語は先頭のチャンクに合わせる
+            val sources = (firstIndex..lastIndex).mapNotNull { entry.transcripts[entry.chunks[it].id] }
+            val updatedTranscripts = entry.transcripts.toMutableMap().apply {
+                (firstIndex..lastIndex).forEach { remove(entry.chunks[it].id) }
+                val base = sources.firstOrNull()
+                if (base != null) {
+                    put(
+                        first.id,
+                        base.copy(
+                            chunkId = first.id,
+                            text = sources.map { it.text }.filter { it.isNotBlank() }.joinToString(" "),
+                            language = entry.transcripts[first.id]?.language ?: base.language,
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                            userEdited = true,
+                        ),
+                    )
                 }
             }
             chunkSources[id] = ChunkOrigin.MANUAL

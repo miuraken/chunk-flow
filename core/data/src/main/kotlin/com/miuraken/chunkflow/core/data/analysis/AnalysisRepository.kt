@@ -155,6 +155,14 @@ interface AnalysisRepository {
     suspend fun mergeWithNextChunk(id: MediaId, chunkId: ChunkId): Boolean = false
 
     /**
+     * 連続する複数のチャンク [chunkIds]（開始時刻の順）を 1 つに連結する（F5.3）。
+     *
+     * 文字起こしは半角スペース 1 文字を挟んで連結し、言語は先頭のチャンクに合わせる。
+     * チャンクが 2 件未満、または連続していない場合は何もせず `false` を返す。
+     */
+    suspend fun mergeChunks(id: MediaId, chunkIds: List<ChunkId>): Boolean = false
+
+    /**
      * チャンクの開始・終了境界を [newStartMs] / [newEndMs] に移動し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
      *
      * @return 境界移動が成立した場合は `true`、隣接チャンクとの整合性や最小チャンク長を満たさない場合は `false`。
