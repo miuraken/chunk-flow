@@ -30,7 +30,9 @@ object DatabaseModule {
         context,
         ChunkFlowDatabase::class.java,
         ChunkFlowDatabase.DATABASE_NAME,
-    ).build()
+    )
+        .addMigrations(ChunkFlowDatabase.MIGRATION_1_2)
+        .build()
 
     /** [MediaItemDao] を提供する。 */
     @Provides

@@ -262,6 +262,39 @@ internal class FakeMediaItemDao : MediaItemDao {
         }
     }
 
+    override suspend fun updateCourseMetadata(
+        oldCourse: String,
+        newCourse: String?,
+        targetLang: String,
+        baseLang: String?,
+    ) {
+        store.update { current ->
+            current.mapValues { (_, item) ->
+                if (item.course == oldCourse) {
+                    item.copy(course = newCourse, targetLang = targetLang, baseLang = baseLang)
+                } else {
+                    item
+                }
+            }
+        }
+    }
+
+    override suspend fun updateUncategorizedCourseMetadata(
+        newCourse: String?,
+        targetLang: String,
+        baseLang: String?,
+    ) {
+        store.update { current ->
+            current.mapValues { (_, item) ->
+                if (item.course == null) {
+                    item.copy(course = newCourse, targetLang = targetLang, baseLang = baseLang)
+                } else {
+                    item
+                }
+            }
+        }
+    }
+
     override suspend fun deleteById(id: String) {
         store.update { it - id }
     }

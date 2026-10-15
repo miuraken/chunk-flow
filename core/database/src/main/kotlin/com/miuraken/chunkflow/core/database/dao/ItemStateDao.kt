@@ -55,4 +55,27 @@ interface ItemStateDao {
         )
         upsert(updated)
     }
+
+    /**
+     * 教材の聴取完了フラグ（`is_listened`）と最終アクセス日時を更新する。
+     *
+     * まだ `item_state` の行がない場合は既定値で行を作成する。
+     */
+    @Transaction
+    suspend fun updateListenedStatus(
+        mediaId: String,
+        isListened: Boolean,
+        updatedAt: Long,
+    ) {
+        val existing = getByMediaId(mediaId)
+        val updated = existing?.copy(
+            isListened = isListened,
+            updatedAt = updatedAt,
+        ) ?: ItemStateEntity(
+            mediaId = mediaId,
+            isListened = isListened,
+            updatedAt = updatedAt,
+        )
+        upsert(updated)
+    }
 }

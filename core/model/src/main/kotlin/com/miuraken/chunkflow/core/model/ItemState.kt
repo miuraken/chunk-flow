@@ -13,6 +13,7 @@ package com.miuraken.chunkflow.core.model
  * @property autoPauseScope 自動ポーズを入れるチャンクの範囲。
  * @property languageFilter 言語フィルタ。
  * @property updatedAtEpochMs 更新時刻（UNIX エポックからのミリ秒）。
+ * @property isListened ファイルの 95%〜100% の位置を 1 秒以上再生したかどうか（聴取完了フラグ）。
  */
 data class ItemState(
     val mediaId: MediaId,
@@ -23,6 +24,7 @@ data class ItemState(
     val autoPauseScope: AutoPauseScope = AutoPauseScope.ALL_CHUNKS,
     val languageFilter: LanguageFilter = LanguageFilter.ALL,
     val updatedAtEpochMs: Long = 0L,
+    val isListened: Boolean = false,
 ) {
     init {
         require(positionMs >= 0L) { "positionMs must be >= 0: $positionMs" }

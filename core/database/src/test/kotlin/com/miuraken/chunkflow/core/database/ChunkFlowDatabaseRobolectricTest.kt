@@ -64,6 +64,18 @@ class ChunkFlowDatabaseRobolectricTest {
             updatedAt = 2_000L,
         )
         assertEquals(12_340L, db.itemStateDao().observeByMediaId(mediaId).first()?.positionMs)
+        assertEquals(false, db.itemStateDao().getByMediaId(mediaId)?.isListened)
+
+        // updateListenedStatus で is_listened を true にし、その後の updatePlaybackPosition でも維持される
+        db.itemStateDao().updateListenedStatus(mediaId = mediaId, isListened = true, updatedAt = 2_500L)
+        assertEquals(true, db.itemStateDao().getByMediaId(mediaId)?.isListened)
+        db.itemStateDao().updatePlaybackPosition(
+            mediaId = mediaId,
+            positionMs = 20_000L,
+            speed = 1.0f,
+            updatedAt = 2_800L,
+        )
+        assertEquals(true, db.itemStateDao().getByMediaId(mediaId)?.isListened)
 
         // analysis_state
         db.analysisStateDao().upsert(
@@ -116,6 +128,13 @@ class ChunkFlowDatabaseRobolectricTest {
         assertEquals("final-course", updatedMedia?.course)
         assertEquals("zh", updatedMedia?.targetLang)
         assertEquals("en", updatedMedia?.baseLang)
+
+        db.mediaItemDao().updateCourseMetadata("final-course", null, "ko", "ja")
+        assertEquals(null, db.mediaItemDao().getById(mediaId)?.course)
+        assertEquals("ko", db.mediaItemDao().getById(mediaId)?.targetLang)
+        db.mediaItemDao().updateUncategorizedCourseMetadata("categorized-course", "zh", "ja")
+        assertEquals("categorized-course", db.mediaItemDao().getById(mediaId)?.course)
+        assertEquals("zh", db.mediaItemDao().getById(mediaId)?.targetLang)
 
         db.transcriptDao().upsert(
             TranscriptEntity(

@@ -134,6 +134,14 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setEnabledLanguages(languages: Set<LanguageTag>) {
+        require(languages.isNotEmpty()) { "enabledLanguages must not be empty" }
+        require(languages.all { it.value.isNotBlank() }) { "language tag must not be blank" }
+        dataStore.edit { prefs ->
+            prefs[KEY_ENABLED_LANGUAGES] = languages.joinToString(",") { it.value }
+        }
+    }
+
     private fun Preferences.toUserSettings(): UserSettings {
         val defaults = UserSettings()
         val defaultSeg = defaults.defaultSegmentationParams
@@ -187,6 +195,14 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val thresholdRatio = this[KEY_SEG_THRESHOLD_RATIO]
             ?.takeIf { it in 0.0f..1.0f }
             ?: defaultSeg.thresholdRatio
+        val enabledLanguages = this[KEY_ENABLED_LANGUAGES]
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.map(::LanguageTag)
+            ?.toSet()
+            ?.takeIf { it.isNotEmpty() }
+            ?: UserSettings.DEFAULT_ENABLED_LANGUAGES
 
         return UserSettings(
             defaultLanguagePair = LanguagePair(target = targetLang, base = baseLang),
@@ -205,6 +221,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
                 postPaddingMs = postPaddingMs,
                 thresholdRatio = thresholdRatio,
             ),
+            enabledLanguages = enabledLanguages,
         )
     }
 
@@ -228,6 +245,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_SEG_PRE_PADDING_MS = intPreferencesKey("seg_pre_padding_ms")
         val KEY_SEG_POST_PADDING_MS = intPreferencesKey("seg_post_padding_ms")
         val KEY_SEG_THRESHOLD_RATIO = floatPreferencesKey("seg_threshold_ratio")
+        val KEY_ENABLED_LANGUAGES = stringPreferencesKey("enabled_languages")
 
         fun encodeAutoPause(autoPause: AutoPause): String = when (autoPause) {
             AutoPause.Off -> AUTO_PAUSE_OFF
