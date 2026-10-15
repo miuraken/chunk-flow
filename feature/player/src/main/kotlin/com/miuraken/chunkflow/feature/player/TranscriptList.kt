@@ -56,6 +56,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -72,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ChunkId
@@ -656,15 +658,38 @@ private fun TranscriptChunkRow(
     var menuExpanded by remember { mutableStateOf(false) }
     var badgeMenuExpanded by remember { mutableStateOf(false) }
     val colorScheme = MaterialTheme.colorScheme
+    val langPalette = chunkFlowLanguagePalette()
+    val normalizedLang = chunk.language?.value?.trim()?.takeUnless { it.equals("und", ignoreCase = true) }
+    val isTargetLang = normalizedLang != null &&
+        languagePair != null &&
+        normalizedLang.equals(languagePair.target.value.trim(), ignoreCase = true)
+    val isBaseLang = normalizedLang != null &&
+        languagePair?.base != null &&
+        normalizedLang.equals(languagePair.base?.value?.trim(), ignoreCase = true)
+
     val rowBackground = when {
-        isActive -> colorScheme.primaryContainer.copy(alpha = 0.36f)
-        isInLoopRange -> colorScheme.tertiaryContainer.copy(alpha = 0.28f)
+        isActive -> when {
+            isTargetLang -> langPalette.targetActiveRowBackground
+            isBaseLang -> langPalette.baseActiveRowBackground
+            else -> colorScheme.primaryContainer.copy(alpha = 0.36f)
+        }
+
+        isInLoopRange -> when {
+            isTargetLang -> langPalette.targetLoopRowBackground
+            isBaseLang -> langPalette.baseLoopRowBackground
+            else -> colorScheme.tertiaryContainer.copy(alpha = 0.28f)
+        }
+
+        isTargetLang -> langPalette.targetRowBackground
+
+        isBaseLang -> langPalette.baseRowBackground
+
         else -> colorScheme.surface
     }
     val indicatorColor = when {
         isActive -> colorScheme.primary
         isInLoopRange -> colorScheme.tertiary
-        else -> colorScheme.surface
+        else -> Color.Transparent
     }
 
     val displayText = chunk.resolveDisplayText(
@@ -1085,19 +1110,24 @@ internal fun ChunkLanguageBadge(
     modifier: Modifier = Modifier,
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    val langPalette = chunkFlowLanguagePalette()
     val normalizedValue = language?.value?.trim()?.takeUnless { it.equals("und", ignoreCase = true) }
-    val isTarget = normalizedValue != null && languagePair != null && language == languagePair.target
-    val isBase = normalizedValue != null && languagePair?.base != null && language == languagePair.base
+    val isTarget = normalizedValue != null &&
+        languagePair != null &&
+        normalizedValue.equals(languagePair.target.value.trim(), ignoreCase = true)
+    val isBase = normalizedValue != null &&
+        languagePair?.base != null &&
+        normalizedValue.equals(languagePair.base?.value?.trim(), ignoreCase = true)
 
     val containerColor = when {
-        isTarget -> colorScheme.primaryContainer
-        isBase -> colorScheme.tertiaryContainer
+        isTarget -> langPalette.targetBadgeContainer
+        isBase -> langPalette.baseBadgeContainer
         normalizedValue != null -> colorScheme.secondaryContainer
         else -> colorScheme.surfaceVariant
     }
     val contentColor = when {
-        isTarget -> colorScheme.onPrimaryContainer
-        isBase -> colorScheme.onTertiaryContainer
+        isTarget -> langPalette.onTargetBadgeContainer
+        isBase -> langPalette.onBaseBadgeContainer
         normalizedValue != null -> colorScheme.onSecondaryContainer
         else -> colorScheme.onSurfaceVariant
     }

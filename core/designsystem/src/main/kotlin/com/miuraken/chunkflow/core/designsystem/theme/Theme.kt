@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 
@@ -30,5 +31,12 @@ fun ChunkFlowTheme(
         darkTheme -> FallbackDarkColorScheme
         else -> FallbackLightColorScheme
     }
-    MaterialTheme(colorScheme = colorScheme, content = content)
+    val languagePalette = if (darkTheme) {
+        DarkChunkFlowLanguagePalette
+    } else {
+        LightChunkFlowLanguagePalette
+    }
+    CompositionLocalProvider(LocalChunkFlowLanguagePalette provides languagePalette) {
+        MaterialTheme(colorScheme = colorScheme, content = content)
+    }
 }

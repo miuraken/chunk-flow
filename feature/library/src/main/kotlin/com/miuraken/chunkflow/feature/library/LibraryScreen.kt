@@ -68,6 +68,7 @@ import com.miuraken.chunkflow.core.data.library.SyncError
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AudioItem
@@ -1572,22 +1573,60 @@ private fun LanguagePairBadge(
     pair: LanguagePair,
     modifier: Modifier = Modifier,
 ) {
+    val langPalette = chunkFlowLanguagePalette()
     val targetUpper = pair.target.value.uppercase(Locale.ROOT)
-    val label = pair.base?.value?.uppercase(Locale.ROOT)?.let { baseUpper ->
-        "$baseUpper → $targetUpper"
-    } ?: targetUpper
+    val baseUpper = pair.base?.value?.uppercase(Locale.ROOT)
 
-    Surface(
-        modifier = modifier,
-        color = MaterialTheme.colorScheme.primaryContainer,
-        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-        shape = MaterialTheme.shapes.extraSmall,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-        )
+    if (baseUpper != null) {
+        Row(
+            modifier = modifier,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Surface(
+                color = langPalette.baseBadgeContainer,
+                contentColor = langPalette.onBaseBadgeContainer,
+                shape = MaterialTheme.shapes.extraSmall,
+            ) {
+                Text(
+                    text = baseUpper,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+            Text(
+                text = "→",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Surface(
+                color = langPalette.targetBadgeContainer,
+                contentColor = langPalette.onTargetBadgeContainer,
+                shape = MaterialTheme.shapes.extraSmall,
+            ) {
+                Text(
+                    text = targetUpper,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+    } else {
+        Surface(
+            modifier = modifier,
+            color = langPalette.targetBadgeContainer,
+            contentColor = langPalette.onTargetBadgeContainer,
+            shape = MaterialTheme.shapes.extraSmall,
+        ) {
+            Text(
+                text = targetUpper,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
     }
 }
 

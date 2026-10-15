@@ -2,6 +2,10 @@ package com.miuraken.chunkflow.core.designsystem.theme
 
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 // ダイナミックカラーを使わないとき（プレビュー、スクリーンショットテスト）の代替の配色。
@@ -25,6 +29,62 @@ private val Amber30 = Color(0xFF5C4200)
 private val Amber40 = Color(0xFF7A5900)
 private val Amber80 = Color(0xFFF8BD2A)
 private val Amber90 = Color(0xFFFFDEA0)
+
+/**
+ * ベース言語（ブルー系）と対象言語（ピンク系）の役割別カラーパレット。
+ *
+ * チャンク一覧の控えめな行背景色と、チャンク行・ライブラリ画面の言語タグバッジ色を共通化する。
+ */
+@Immutable
+data class ChunkFlowLanguagePalette(
+    val baseRowBackground: Color,
+    val baseActiveRowBackground: Color,
+    val baseLoopRowBackground: Color,
+    val baseBadgeContainer: Color,
+    val onBaseBadgeContainer: Color,
+    val targetRowBackground: Color,
+    val targetActiveRowBackground: Color,
+    val targetLoopRowBackground: Color,
+    val targetBadgeContainer: Color,
+    val onTargetBadgeContainer: Color,
+)
+
+/** ライトテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク系）。 */
+val LightChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
+    baseRowBackground = Color(0xFFEDF5FF),
+    baseActiveRowBackground = Color(0xFFD6EAFF),
+    baseLoopRowBackground = Color(0xFFE0EFFF),
+    baseBadgeContainer = Color(0xFFD4E8FF),
+    onBaseBadgeContainer = Color(0xFF0A3966),
+    targetRowBackground = Color(0xFFFFEFF5),
+    targetActiveRowBackground = Color(0xFFFFDCE9),
+    targetLoopRowBackground = Color(0xFFFFE5EF),
+    targetBadgeContainer = Color(0xFFFFD6E5),
+    onTargetBadgeContainer = Color(0xFF6B0F36),
+)
+
+/** ダークテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク系）。 */
+val DarkChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
+    baseRowBackground = Color(0xFF64B5F6).copy(alpha = 0.14f),
+    baseActiveRowBackground = Color(0xFF64B5F6).copy(alpha = 0.28f),
+    baseLoopRowBackground = Color(0xFF64B5F6).copy(alpha = 0.22f),
+    baseBadgeContainer = Color(0xFF144272),
+    onBaseBadgeContainer = Color(0xFFD4E8FF),
+    targetRowBackground = Color(0xFFF48FB1).copy(alpha = 0.14f),
+    targetActiveRowBackground = Color(0xFFF48FB1).copy(alpha = 0.28f),
+    targetLoopRowBackground = Color(0xFFF48FB1).copy(alpha = 0.22f),
+    targetBadgeContainer = Color(0xFF6A1B3D),
+    onTargetBadgeContainer = Color(0xFFFFD6E5),
+)
+
+internal val LocalChunkFlowLanguagePalette = staticCompositionLocalOf {
+    LightChunkFlowLanguagePalette
+}
+
+/** 現在のテーマ（ライト / ダーク）に応じた [ChunkFlowLanguagePalette] を取得する。 */
+@Composable
+@ReadOnlyComposable
+fun chunkFlowLanguagePalette(): ChunkFlowLanguagePalette = LocalChunkFlowLanguagePalette.current
 
 /** ライトテーマの代替の配色。 */
 internal val FallbackLightColorScheme = lightColorScheme(
