@@ -990,4 +990,86 @@ class DefaultAnalysisRepositoryTest {
             assertTrue(repository.observeChunks(id).first().isNotEmpty())
         }
     }
+
+    @Test
+    fun `triggerLookaheadAt_複数回同時に呼ばれてもlookaheadMutexにより直列化され後続未認識チャンクを継続処理する`() = runTest {
+        var activeRecognitions = 0
+        var maxActiveRecognitions = 0
+        val transcribedRanges = mutableListOf<Pair<Long, Long>>()
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult {
+                activeRecognitions += 1
+                if (activeRecognitions > maxActiveRecognitions) {
+                    maxActiveRecognitions = activeRecognitions
+                }
+                delay(30L)
+                transcribedRanges.add(startMs to endMs)
+                activeRecognitions -= 1
+                return OnDeviceChunkTranscriptionResult(
+                    text = "Text $startMs-$endMs",
+                    language = languagePair?.target ?: LanguageTag("ja"),
+                    confidence = 0.9f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_lookahead_serial_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Lookahead Serial Test",
+                durationMs = 10_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ja",
+                baseLang = "en",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        val audioFile = mediaFileLocator.audioFileFor(mediaId, "mp3")
+        audioFile.writeBytes(byteArrayOf(0x01, 0x02, 0x03))
+
+        // 8 個の AUTO チャンク (0..7)
+        val chunks = (0 until 8).map { idx ->
+            ChunkEntity(
+                id = (800 + idx).toLong(),
+                mediaId = mediaId.value,
+                startMs = idx * 1_000L,
+                endMs = idx * 1_000L + 800L,
+                origin = ChunkOrigin.AUTO.name,
+            )
+        }
+        chunkDao.insertAll(chunks)
+
+        repository.setLookaheadEnabled(mediaId, true)
+
+        // 2 つのコルーチンから同時に triggerLookaheadAt(chunkId = 800L) を呼び出す
+        val job1 = launch(UnconfinedTestDispatcher(testScheduler)) {
+            repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(800L))
+        }
+        val job2 = launch(UnconfinedTestDispatcher(testScheduler)) {
+            repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(800L))
+        }
+        job1.join()
+        job2.join()
+
+        // 同時に 2 個以上の認識が走らないこと (ERROR_RECOGNIZER_BUSY 防止)
+        assertEquals(1, maxActiveRecognitions)
+        // 1回目のバッチで 0..5 (6個) が文字起こしされ、2回目の呼び出しで残りの未文字起こし 6..7 (2個) が重複なく継続処理される
+        assertEquals(8, transcribedRanges.size)
+        assertEquals(8, transcribedRanges.distinct().size)
+    }
 }

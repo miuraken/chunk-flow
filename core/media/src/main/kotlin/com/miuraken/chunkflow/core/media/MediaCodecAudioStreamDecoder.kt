@@ -36,6 +36,7 @@ internal interface ExtractorSession : AutoCloseable {
     val trackCount: Int
     fun getTrackFormat(index: Int): MediaFormat
     fun selectTrack(index: Int)
+    fun seekTo(timeUs: Long) {}
     fun readSampleData(buffer: ByteBuffer, offset: Int): Int
     val sampleTime: Long
     fun advance(): Boolean
@@ -133,6 +134,61 @@ class MediaCodecAudioStreamDecoder internal constructor(
         }
     }
 
+    /**
+     * 指定した開始時刻 [startPositionMs] 付近へシークしてからストリーミングデコードを開始する（F6.2 チャンク切り出し高速化用）。
+     */
+    internal suspend fun decodeFromPosition(
+        file: File,
+        startPositionMs: Long,
+        sink: SampleSink,
+        outputSampleRate: Int = StreamingResampler.DEFAULT_OUTPUT_RATE,
+        onSeekLandingMs: (Long) -> Unit = {},
+    ): AudioDecodeResult {
+        require(outputSampleRate > 0) { "outputSampleRate must be > 0: $outputSampleRate" }
+        if (!file.exists() || !file.isFile || !file.canRead()) {
+            return AudioDecodeResult.Failure(AnalysisError.IO)
+        }
+        if (file.length() <= 0L) {
+            return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
+        }
+
+        val extractor = try {
+            extractorOpener(file)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: FileNotFoundException) {
+            return AudioDecodeResult.Failure(AnalysisError.IO)
+        } catch (_: SecurityException) {
+            return AudioDecodeResult.Failure(AnalysisError.IO)
+        } catch (_: IOException) {
+            return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
+        } catch (_: Exception) {
+            return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
+        }
+
+        return try {
+            extractor.use { ex ->
+                decodeWithExtractor(
+                    extractor = ex,
+                    sink = sink,
+                    outputSampleRate = outputSampleRate,
+                    expectedDurationMs = null,
+                    onProgress = {},
+                    startPositionMs = startPositionMs,
+                    onSeekLandingMs = onSeekLandingMs,
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: MediaCodec.CodecException) {
+            AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
+        } catch (_: IOException) {
+            AudioDecodeResult.Failure(AnalysisError.IO)
+        } catch (_: Exception) {
+            AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
+        }
+    }
+
     @Suppress("CyclomaticComplexMethod", "LongMethod")
     private suspend fun decodeWithExtractor(
         extractor: ExtractorSession,
@@ -140,6 +196,8 @@ class MediaCodecAudioStreamDecoder internal constructor(
         outputSampleRate: Int,
         expectedDurationMs: Long?,
         onProgress: suspend (DecodeProgress) -> Unit,
+        startPositionMs: Long = 0L,
+        onSeekLandingMs: (Long) -> Unit = {},
     ): AudioDecodeResult {
         val trackIndex = (0 until extractor.trackCount).firstOrNull { idx ->
             val mime = extractor.getTrackFormat(idx).getString(MediaFormat.KEY_MIME)
@@ -152,6 +210,24 @@ class MediaCodecAudioStreamDecoder internal constructor(
             ?: return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
 
         extractor.selectTrack(trackIndex)
+        if (startPositionMs > SEEK_PRE_ROLL_MS) {
+            val beforeSeekUs = extractor.sampleTime
+            val targetSeekUs = (startPositionMs - SEEK_PRE_ROLL_MS).coerceAtLeast(0L) * 1_000L
+            runCatching { extractor.seekTo(targetSeekUs) }
+            val afterSeekUs = extractor.sampleTime
+            val landedMs = if (
+                afterSeekUs > 0L &&
+                afterSeekUs != beforeSeekUs &&
+                afterSeekUs <= startPositionMs * 1_000L
+            ) {
+                afterSeekUs / 1_000L
+            } else {
+                0L
+            }
+            onSeekLandingMs(landedMs)
+        } else {
+            onSeekLandingMs(0L)
+        }
 
         val encoderDelay = trackFormat.intOrZero(MediaFormat.KEY_ENCODER_DELAY)
         val encoderPadding = trackFormat.intOrZero(MediaFormat.KEY_ENCODER_PADDING)
@@ -396,6 +472,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
         private const val STALL_TIMEOUT_MS: Long = 5_000L
         internal const val REPEATED_PTS_LIMIT: Int = 8
         private const val DEFAULT_PROGRESS_INTERVAL_MS: Long = 250L
+        private const val SEEK_PRE_ROLL_MS: Long = 500L
 
         @OptIn(UnstableApi::class)
         internal fun createExtractorCompat(context: Context): MediaExtractorCompat {
@@ -418,6 +495,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 override val trackCount: Int get() = extractor.trackCount
                 override fun getTrackFormat(index: Int): MediaFormat = extractor.getTrackFormat(index)
                 override fun selectTrack(index: Int) = extractor.selectTrack(index)
+                override fun seekTo(timeUs: Long) {
+                    extractor.seekTo(timeUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                }
                 override fun readSampleData(buffer: ByteBuffer, offset: Int): Int = extractor.readSampleData(buffer, offset)
                 override val sampleTime: Long get() = extractor.sampleTime
                 override fun advance(): Boolean = extractor.advance()
