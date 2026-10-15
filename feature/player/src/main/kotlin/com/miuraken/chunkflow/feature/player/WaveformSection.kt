@@ -43,6 +43,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalInspectionMode
@@ -95,7 +96,13 @@ internal fun matchesLanguageRole(
     if (chunkTag.equals(roleTag, ignoreCase = true)) return true
     val chunkPrimary = chunkTag.substringBefore('-').substringBefore('_').lowercase(Locale.ROOT)
     val rolePrimary = roleTag.substringBefore('-').substringBefore('_').lowercase(Locale.ROOT)
-    return chunkPrimary.isNotEmpty() && chunkPrimary == rolePrimary
+    if (chunkPrimary.isEmpty() || chunkPrimary != rolePrimary) return false
+    val chunkChineseVariant = explicitChineseScriptForTag(chunkTag)
+    val roleChineseVariant = explicitChineseScriptForTag(roleTag)
+    if (chunkChineseVariant != null && roleChineseVariant != null && chunkChineseVariant != roleChineseVariant) {
+        return false
+    }
+    return true
 }
 
 /** 拡大波形の既定の表示窓（2 分 = 120,000ms、§7.5.4）。 */
@@ -133,6 +140,7 @@ fun WaveformSection(
     onSeekBack: () -> Unit,
     modifier: Modifier = Modifier,
     seekBackSeconds: Int = 3,
+    onSeekToChunk: (ChunkId) -> Unit = {},
 ) {
     if (waveform == null || waveform.peak.isEmpty()) {
         WaveformPlaceholderCard(
@@ -187,15 +195,19 @@ fun WaveformSection(
     val boundaryTickColor = colorScheme.outline
     val viewportStrokeColor = colorScheme.secondary
     val viewportFillColor = colorScheme.secondary.copy(alpha = 0.14f)
-    val targetChunkColor = langPalette.targetLoopRowBackground
-    val targetActiveChunkColor = langPalette.targetActiveRowBackground
-    val targetActiveBorderColor = langPalette.onTargetBadgeContainer.copy(alpha = 0.45f)
-    val baseChunkColor = langPalette.baseLoopRowBackground
-    val baseActiveChunkColor = langPalette.baseActiveRowBackground
-    val baseActiveBorderColor = langPalette.onBaseBadgeContainer.copy(alpha = 0.45f)
-    val unknownChunkColor = colorScheme.surfaceVariant.copy(alpha = 0.45f)
-    val unknownActiveChunkColor = colorScheme.primaryContainer.copy(alpha = 0.55f)
-    val unknownActiveBorderColor = colorScheme.primary.copy(alpha = 0.45f)
+    val targetWavePeakColor = langPalette.targetWaveformPeak
+    val targetWaveRmsColor = langPalette.targetWaveformRms
+    val targetActiveChunkColor = langPalette.targetActiveRowBackground.copy(alpha = 0.32f)
+    val targetActiveBorderColor = langPalette.onTargetBadgeContainer.copy(alpha = 0.55f)
+    val baseWavePeakColor = langPalette.baseWaveformPeak
+    val baseWaveRmsColor = langPalette.baseWaveformRms
+    val baseActiveChunkColor = langPalette.baseActiveRowBackground.copy(alpha = 0.32f)
+    val baseActiveBorderColor = langPalette.onBaseBadgeContainer.copy(alpha = 0.55f)
+    val unknownWavePeakColor = colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+    val unknownWaveRmsColor = colorScheme.onSurfaceVariant.copy(alpha = 0.68f)
+    val unknownActiveChunkColor = colorScheme.primaryContainer.copy(alpha = 0.28f)
+    val unknownActiveBorderColor = colorScheme.primary.copy(alpha = 0.50f)
+    val chunkBoundaryLineColor = colorScheme.outlineVariant.copy(alpha = 0.55f)
     val abLoopHighlightColor = colorScheme.tertiary.copy(alpha = 0.30f)
     val abLoopBorderColor = colorScheme.tertiary
 
@@ -302,16 +314,18 @@ fun WaveformSection(
                 abDragStartMs = abDragStartMs,
                 abDragCurrentMs = abDragCurrentMs,
                 frameTick = { frameTick.longValue },
-                wavePeakColor = wavePeakColor,
-                waveRmsColor = waveRmsColor,
+                unknownWavePeakColor = unknownWavePeakColor,
+                unknownWaveRmsColor = unknownWaveRmsColor,
+                targetWavePeakColor = targetWavePeakColor,
+                targetWaveRmsColor = targetWaveRmsColor,
+                baseWavePeakColor = baseWavePeakColor,
+                baseWaveRmsColor = baseWaveRmsColor,
                 playheadColor = playheadColor,
-                targetChunkColor = targetChunkColor,
+                chunkBoundaryLineColor = chunkBoundaryLineColor,
                 targetActiveChunkColor = targetActiveChunkColor,
                 targetActiveBorderColor = targetActiveBorderColor,
-                baseChunkColor = baseChunkColor,
                 baseActiveChunkColor = baseActiveChunkColor,
                 baseActiveBorderColor = baseActiveBorderColor,
-                unknownChunkColor = unknownChunkColor,
                 unknownActiveChunkColor = unknownActiveChunkColor,
                 unknownActiveBorderColor = unknownActiveBorderColor,
                 abLoopHighlightColor = abLoopHighlightColor,
@@ -325,6 +339,14 @@ fun WaveformSection(
                     scrubPositionMs = null
                     cachedAnchorCenterMs = clamped
                     onSeekTo(clamped)
+                },
+                onSeekToChunk = { chunkId ->
+                    scrubPositionMs = null
+                    val targetChunk = chunks.firstOrNull { it.id == chunkId }
+                    if (targetChunk != null) {
+                        cachedAnchorCenterMs = targetChunk.startMs.coerceIn(0L, effectiveDurationMs)
+                    }
+                    onSeekToChunk(chunkId)
                 },
                 onScrubChange = { targetMs ->
                     val clamped = targetMs.coerceIn(0L, effectiveDurationMs)
@@ -546,16 +568,18 @@ private fun ZoomedWaveformCanvas(
     abDragStartMs: Long?,
     abDragCurrentMs: Long?,
     frameTick: () -> Long,
-    wavePeakColor: Color,
-    waveRmsColor: Color,
+    unknownWavePeakColor: Color,
+    unknownWaveRmsColor: Color,
+    targetWavePeakColor: Color,
+    targetWaveRmsColor: Color,
+    baseWavePeakColor: Color,
+    baseWaveRmsColor: Color,
     playheadColor: Color,
-    targetChunkColor: Color,
+    chunkBoundaryLineColor: Color,
     targetActiveChunkColor: Color,
     targetActiveBorderColor: Color,
-    baseChunkColor: Color,
     baseActiveChunkColor: Color,
     baseActiveBorderColor: Color,
-    unknownChunkColor: Color,
     unknownActiveChunkColor: Color,
     unknownActiveBorderColor: Color,
     abLoopHighlightColor: Color,
@@ -565,6 +589,7 @@ private fun ZoomedWaveformCanvas(
     nextChunkActionLabel: String,
     seekBackActionLabel: String,
     onSeekTo: (Long) -> Unit,
+    onSeekToChunk: (ChunkId) -> Unit,
     onScrubChange: (Long) -> Unit,
     onZoomWindowChange: (Long) -> Unit,
     onAbDragUpdate: (Long, Long) -> Unit,
@@ -574,6 +599,7 @@ private fun ZoomedWaveformCanvas(
     onSeekBack: () -> Unit,
 ) {
     val currentZoomWindowMs by rememberUpdatedState(zoomWindowMs)
+    val currentChunks by rememberUpdatedState(chunks)
 
     // ピンチ操作中は既存の波形 Path を水平スケーリングで即座に追従させ、
     // 操作停止から 0.2 秒（200ms）後に高精度なダウンサンプル波形 Path を再構築する
@@ -629,39 +655,84 @@ private fun ZoomedWaveformCanvas(
                 )
             }
             .pointerInput(durationMs) {
-                detectTapGestures { offset ->
-                    if (size.width > 0) {
-                        val liveWindow = currentZoomWindowMs
-                        val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
-                        val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
-                        val targetMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
-                            .coerceIn(0L, durationMs)
-                        onSeekTo(targetMs)
-                    }
-                }
+                detectTapGestures(
+                    onTap = { offset ->
+                        if (size.width > 0) {
+                            val liveWindow = currentZoomWindowMs
+                            val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
+                            val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
+                            val targetMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
+                                .coerceIn(0L, durationMs)
+                            onSeekTo(targetMs)
+                        }
+                    },
+                    onDoubleTap = { offset ->
+                        if (size.width > 0) {
+                            val liveWindow = currentZoomWindowMs
+                            val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
+                            val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
+                            val targetMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
+                                .coerceIn(0L, durationMs)
+                            val targetChunk = currentChunks.firstOrNull { targetMs in it.startMs..it.endMs }
+                            if (targetChunk != null) {
+                                onSeekToChunk(targetChunk.id)
+                            } else {
+                                onSeekTo(targetMs)
+                            }
+                        }
+                    },
+                )
             }
             .pointerInput(durationMs) {
                 var startTouchMs = 0L
                 var currentTouchMs = 0L
+                var initialChunkStartMs: Long? = null
+                var initialChunkEndMs: Long? = null
+                var totalDragPx = 0f
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
                         if (size.width > 0) {
                             val liveWindow = currentZoomWindowMs
                             val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
                             val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
-                            startTouchMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
+                            val touchMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
                                 .coerceIn(0L, durationMs)
-                            currentTouchMs = startTouchMs
-                            onAbDragUpdate(startTouchMs, currentTouchMs)
+                            startTouchMs = touchMs
+                            currentTouchMs = touchMs
+                            totalDragPx = 0f
+                            val touchedChunk = currentChunks.firstOrNull { touchMs in it.startMs..it.endMs }
+                            if (touchedChunk != null) {
+                                initialChunkStartMs = touchedChunk.startMs
+                                initialChunkEndMs = touchedChunk.endMs
+                                onAbDragUpdate(touchedChunk.startMs, touchedChunk.endMs)
+                            } else {
+                                initialChunkStartMs = null
+                                initialChunkEndMs = null
+                                onAbDragUpdate(startTouchMs, currentTouchMs)
+                            }
                         }
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
                         if (size.width > 0) {
                             val liveWindow = currentZoomWindowMs
+                            totalDragPx += abs(dragAmount.x)
                             val deltaMs = ((dragAmount.x / size.width.toFloat()) * liveWindow).roundToLong()
                             currentTouchMs = (currentTouchMs + deltaMs).coerceIn(0L, durationMs)
-                            onAbDragUpdate(startTouchMs, currentTouchMs)
+                            val chunkStart = initialChunkStartMs
+                            val chunkEnd = initialChunkEndMs
+                            if (chunkStart != null && chunkEnd != null) {
+                                if (totalDragPx < 8.dp.toPx()) {
+                                    onAbDragUpdate(chunkStart, chunkEnd)
+                                } else {
+                                    onAbDragUpdate(
+                                        min(chunkStart, currentTouchMs),
+                                        max(chunkEnd, currentTouchMs),
+                                    )
+                                }
+                            } else {
+                                onAbDragUpdate(startTouchMs, currentTouchMs)
+                            }
                         }
                     },
                     onDragEnd = { onAbDragFinish() },
@@ -721,8 +792,9 @@ private fun ZoomedWaveformCanvas(
                     val windowStartMs = currentPosMs - liveWindowMs / 2L
                     val windowEndMs = currentPosMs + liveWindowMs / 2L
 
-                    // チャンク領域を役割別の色で描画（学習言語 / 母語 / 不明）
                     val activeId: ChunkId? = activeChunkIndex?.let { chunks.getOrNull(it)?.id }
+
+                    // 1. アクティブチャンクの控えめな背景ハイライトとチャンク境界線
                     for (chunk in chunks) {
                         if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
                         val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
@@ -734,39 +806,39 @@ private fun ZoomedWaveformCanvas(
                         val isTargetChunk = matchesLanguageRole(chunk.language, languagePair?.target)
                         val isBaseChunk = matchesLanguageRole(chunk.language, languagePair?.base)
                         val isActiveChunk = chunk.id == activeId
-                        val fillColor = when {
-                            isActiveChunk && isTargetChunk -> targetActiveChunkColor
-                            isActiveChunk && isBaseChunk -> baseActiveChunkColor
-                            isActiveChunk -> unknownActiveChunkColor
-                            isTargetChunk -> targetChunkColor
-                            isBaseChunk -> baseChunkColor
-                            else -> unknownChunkColor
-                        }
-                        val topOffset = if (isActiveChunk) 0f else 2.dp.toPx()
-                        val rectHeight = if (isActiveChunk) size.height else size.height - 4.dp.toPx()
-                        drawRoundRect(
-                            color = fillColor,
-                            topLeft = Offset(clampedLeft, topOffset),
-                            size = Size(clampedRight - clampedLeft, rectHeight),
-                            cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
-                        )
                         if (isActiveChunk) {
-                            val borderColor = when {
-                                isTargetChunk -> targetActiveBorderColor
-                                isBaseChunk -> baseActiveBorderColor
-                                else -> unknownActiveBorderColor
+                            val activeFill = when {
+                                isTargetChunk -> targetActiveChunkColor
+                                isBaseChunk -> baseActiveChunkColor
+                                else -> unknownActiveChunkColor
                             }
                             drawRoundRect(
-                                color = borderColor,
+                                color = activeFill,
                                 topLeft = Offset(clampedLeft, 0f),
                                 size = Size(clampedRight - clampedLeft, size.height),
                                 cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
-                                style = Stroke(width = 1.5.dp.toPx()),
+                            )
+                        }
+                        if (leftX in 0f..size.width) {
+                            drawLine(
+                                color = chunkBoundaryLineColor,
+                                start = Offset(leftX, 0f),
+                                end = Offset(leftX, size.height),
+                                strokeWidth = 1.dp.toPx(),
+                            )
+                        }
+                        if (rightX in 0f..size.width) {
+                            drawLine(
+                                color = chunkBoundaryLineColor,
+                                start = Offset(rightX, 0f),
+                                end = Offset(rightX, size.height),
+                                strokeWidth = 1.dp.toPx(),
                             )
                         }
                     }
 
-                    // 3 倍幅のキャッシュ Path を平行移動（およびピンチ中の即時水平スケール）して描画（§7.5.4）
+                    // 2. 3 倍幅のキャッシュ Path を平行移動（およびピンチ中の即時水平スケール）して描画（§7.5.4）
+                    // チャンク外・未検出チャンクは落ち着いた色、学習言語チャンクはピンク、ベース言語チャンクはブルーで波形バー自体を色分け
                     val centerX = size.width * 0.5f
                     val currentPosInCachedPx =
                         ((currentPosMs - cachedStartMs).toFloat() / cachedWindowMs.toFloat()) * size.width
@@ -782,8 +854,71 @@ private fun ZoomedWaveformCanvas(
                         }
                         translate(left = translationX)
                     }) {
-                        drawPath(path = peakPath, color = wavePeakColor)
-                        drawPath(path = rmsPath, color = waveRmsColor)
+                        drawPath(path = peakPath, color = unknownWavePeakColor)
+                        drawPath(path = rmsPath, color = unknownWaveRmsColor)
+                    }
+
+                    for (chunk in chunks) {
+                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
+                        val isTargetChunk = matchesLanguageRole(chunk.language, languagePair?.target)
+                        val isBaseChunk = matchesLanguageRole(chunk.language, languagePair?.base)
+                        if (!isTargetChunk && !isBaseChunk) continue
+
+                        val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
+                        val rightX = ((chunk.endMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
+                        val clampedLeft = leftX.coerceIn(0f, size.width)
+                        val clampedRight = rightX.coerceIn(clampedLeft, size.width)
+                        if (clampedRight <= clampedLeft) continue
+
+                        val chunkPeakColor = if (isTargetChunk) targetWavePeakColor else baseWavePeakColor
+                        val chunkRmsColor = if (isTargetChunk) targetWaveRmsColor else baseWaveRmsColor
+
+                        clipRect(
+                            left = clampedLeft,
+                            top = 0f,
+                            right = clampedRight,
+                            bottom = size.height,
+                        ) {
+                            withTransform({
+                                if (abs(zoomScaleX - 1f) > 0.001f) {
+                                    scale(
+                                        scaleX = zoomScaleX,
+                                        scaleY = 1f,
+                                        pivot = Offset(centerX, size.height * 0.5f),
+                                    )
+                                }
+                                translate(left = translationX)
+                            }) {
+                                drawPath(path = peakPath, color = chunkPeakColor)
+                                drawPath(path = rmsPath, color = chunkRmsColor)
+                            }
+                        }
+                    }
+
+                    // 3. アクティブチャンクの枠線
+                    for (chunk in chunks) {
+                        if (chunk.id != activeId) continue
+                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
+                        val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
+                        val rightX = ((chunk.endMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
+                        val clampedLeft = leftX.coerceIn(0f, size.width)
+                        val clampedRight = rightX.coerceIn(clampedLeft, size.width)
+                        if (clampedRight <= clampedLeft) continue
+
+                        val isTargetChunk = matchesLanguageRole(chunk.language, languagePair?.target)
+                        val isBaseChunk = matchesLanguageRole(chunk.language, languagePair?.base)
+                        val borderColor = when {
+                            isTargetChunk -> targetActiveBorderColor
+                            isBaseChunk -> baseActiveBorderColor
+                            else -> unknownActiveBorderColor
+                        }
+                        drawRoundRect(
+                            color = borderColor,
+                            topLeft = Offset(clampedLeft, 0f),
+                            size = Size(clampedRight - clampedLeft, size.height),
+                            cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
+                            style = Stroke(width = 1.5.dp.toPx()),
+                        )
                     }
 
                     // A-B リピートまたはドラッグ中の A-B 範囲を強調

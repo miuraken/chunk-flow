@@ -28,7 +28,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -39,6 +43,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -93,35 +98,55 @@ private fun formatEpochMsLocal(epochMs: Long): String = runCatching {
         .format(LAST_ACCESSED_FORMATTER)
 }.getOrDefault("")
 
-private fun buildTargetPresetCodes(
-    enabledLanguages: List<LanguageTag>,
-    currentCode: String,
-): List<String> {
-    val codes = LinkedHashSet<String>()
-    for (tag in enabledLanguages) {
-        if (tag.value.isNotBlank()) codes.add(tag.value.lowercase(Locale.ROOT))
+internal data class LanguageDropdownOption(
+    val code: String,
+    val label: String,
+)
+
+internal val ALPHABETICAL_LANGUAGE_OPTIONS: List<LanguageDropdownOption> = listOf(
+    LanguageDropdownOption("de", "de - ドイツ語"),
+    LanguageDropdownOption("el", "el - ギリシャ語"),
+    LanguageDropdownOption("en", "en - 英語"),
+    LanguageDropdownOption("es", "es - スペイン語"),
+    LanguageDropdownOption("fr", "fr - フランス語"),
+    LanguageDropdownOption("hi", "hi - ヒンディー語"),
+    LanguageDropdownOption("id", "id - インドネシア語"),
+    LanguageDropdownOption("it", "it - イタリア語"),
+    LanguageDropdownOption("ja", "ja - 日本語"),
+    LanguageDropdownOption("ko", "ko - 韓国語"),
+    LanguageDropdownOption("pt", "pt - ポルトガル語"),
+    LanguageDropdownOption("ru", "ru - ロシア語"),
+    LanguageDropdownOption("th", "th - タイ語"),
+    LanguageDropdownOption("vi", "vi - ベトナム語"),
+    LanguageDropdownOption("yue", "yue - 広東語"),
+    LanguageDropdownOption("zh-cn", "zh-cn - 簡体中国語"),
+    LanguageDropdownOption("zh-tw", "zh-tw - 繁体中国語"),
+)
+
+internal fun normalizeDialogLanguageCode(rawCode: String): String {
+    val cleaned = rawCode.trim().lowercase(Locale.ROOT).replace('_', '-')
+    return when (cleaned) {
+        "zh", "zh-hans", "zh-cn" -> "zh-cn"
+        "zh-hant", "zh-tw", "zh-hk" -> "zh-tw"
+        else -> cleaned
     }
-    val trimmed = currentCode.trim().lowercase(Locale.ROOT)
-    if (trimmed.isNotBlank()) codes.add(trimmed)
-    if (codes.isEmpty()) {
-        codes.add("ja")
-        codes.add("en")
-    }
-    return codes.toList()
 }
 
-private fun buildBasePresetCodes(
-    enabledLanguages: List<LanguageTag>,
+internal fun buildDialogLanguageOptions(
     currentCode: String,
-): List<String?> {
-    val codes = LinkedHashSet<String?>()
-    codes.add(null)
-    for (tag in enabledLanguages) {
-        if (tag.value.isNotBlank()) codes.add(tag.value.lowercase(Locale.ROOT))
+    noneLabel: String? = null,
+): List<LanguageDropdownOption> {
+    val normalizedCurrent = normalizeDialogLanguageCode(currentCode)
+    val baseList = ALPHABETICAL_LANGUAGE_OPTIONS.toMutableList()
+    if (normalizedCurrent.isNotBlank() && baseList.none { it.code == normalizedCurrent }) {
+        baseList.add(LanguageDropdownOption(normalizedCurrent, normalizedCurrent))
+        baseList.sortBy { it.code }
     }
-    val trimmed = currentCode.trim().lowercase(Locale.ROOT)
-    if (trimmed.isNotBlank()) codes.add(trimmed)
-    return codes.toList()
+    return if (noneLabel != null) {
+        listOf(LanguageDropdownOption("", noneLabel)) + baseList
+    } else {
+        baseList
+    }
 }
 
 /**
@@ -1207,23 +1232,165 @@ private fun LibraryItemRow(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LanguagePairDropdownSection(
+    targetLangCode: String,
+    baseLangCode: String,
+    onTargetLangChange: (String) -> Unit,
+    onBaseLangChange: (String) -> Unit,
+) {
+    val langPalette = chunkFlowLanguagePalette()
+    val noneLabel = stringResource(R.string.library_edit_base_lang_none)
+
+    val normalizedTarget = normalizeDialogLanguageCode(targetLangCode)
+    val normalizedBase = normalizeDialogLanguageCode(baseLangCode)
+
+    val targetOptions = remember(normalizedTarget) {
+        buildDialogLanguageOptions(currentCode = normalizedTarget, noneLabel = null)
+    }
+    val baseOptions = remember(normalizedBase, noneLabel) {
+        buildDialogLanguageOptions(currentCode = normalizedBase, noneLabel = noneLabel)
+    }
+
+    val selectedTargetLabel = targetOptions.firstOrNull { it.code == normalizedTarget }?.label
+        ?: normalizedTarget.ifBlank { "en" }
+    val selectedBaseLabel = baseOptions.firstOrNull { it.code == normalizedBase }?.label
+        ?: noneLabel
+
+    var targetExpanded by remember { mutableStateOf(false) }
+    var baseExpanded by remember { mutableStateOf(false) }
+
+    Surface(
+        color = langPalette.targetRowBackground,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ExposedDropdownMenuBox(
+                expanded = targetExpanded,
+                onExpandedChange = { targetExpanded = it },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedTextField(
+                    value = selectedTargetLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    singleLine = true,
+                    label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = targetExpanded)
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = langPalette.onTargetBadgeContainer,
+                        focusedLabelColor = langPalette.onTargetBadgeContainer,
+                    ),
+                    modifier = Modifier
+                        .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                        .fillMaxWidth(),
+                )
+                ExposedDropdownMenu(
+                    expanded = targetExpanded,
+                    onDismissRequest = { targetExpanded = false },
+                ) {
+                    targetOptions.forEach { option ->
+                        val isSelected = option.code == normalizedTarget
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = option.label,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                )
+                            },
+                            onClick = {
+                                targetExpanded = false
+                                onTargetLangChange(option.code)
+                            },
+                            contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    Surface(
+        color = langPalette.baseRowBackground,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ExposedDropdownMenuBox(
+                expanded = baseExpanded,
+                onExpandedChange = { baseExpanded = it },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedTextField(
+                    value = selectedBaseLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    singleLine = true,
+                    label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = baseExpanded)
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = langPalette.onBaseBadgeContainer,
+                        focusedLabelColor = langPalette.onBaseBadgeContainer,
+                    ),
+                    modifier = Modifier
+                        .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                        .fillMaxWidth(),
+                )
+                ExposedDropdownMenu(
+                    expanded = baseExpanded,
+                    onDismissRequest = { baseExpanded = false },
+                ) {
+                    baseOptions.forEach { option ->
+                        val isSelected = option.code == normalizedBase
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = option.label,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                )
+                            },
+                            onClick = {
+                                baseExpanded = false
+                                onBaseLangChange(option.code)
+                            },
+                            contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ImportConfigDialog(
     config: PendingImportConfig,
-    enabledLanguages: List<LanguageTag>,
+    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var courseText by remember(config) { mutableStateOf(config.initialCourse.orEmpty()) }
-    var targetLangText by remember(config) { mutableStateOf(config.initialLanguages.target.value) }
-    var baseLangText by remember(config) { mutableStateOf(config.initialLanguages.base?.value.orEmpty()) }
-
-    val targetPresets = remember(enabledLanguages, targetLangText) {
-        buildTargetPresetCodes(enabledLanguages, targetLangText)
+    var targetLangText by remember(config) {
+        mutableStateOf(normalizeDialogLanguageCode(config.initialLanguages.target.value))
     }
-    val basePresets = remember(enabledLanguages, baseLangText) {
-        buildBasePresetCodes(enabledLanguages, baseLangText)
+    var baseLangText by remember(config) {
+        mutableStateOf(normalizeDialogLanguageCode(config.initialLanguages.base?.value.orEmpty()))
     }
 
     val dialogTitle = if (config.isDriveSyncFolder) {
@@ -1266,103 +1433,19 @@ private fun ImportConfigDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                val langPalette = chunkFlowLanguagePalette()
-
-                Surface(
-                    color = langPalette.targetRowBackground,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = targetLangText,
-                            onValueChange = { targetLangText = it },
-                            label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            targetPresets.forEach { code ->
-                                FilterChip(
-                                    selected = targetLangText.trim().equals(code, ignoreCase = true),
-                                    onClick = { targetLangText = code },
-                                    label = { Text(text = code.uppercase(Locale.ROOT)) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = langPalette.targetBadgeContainer,
-                                        selectedLabelColor = langPalette.onTargetBadgeContainer,
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Surface(
-                    color = langPalette.baseRowBackground,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = baseLangText,
-                            onValueChange = { baseLangText = it },
-                            label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            basePresets.forEach { code ->
-                                val isSelected = if (code == null) {
-                                    baseLangText.isBlank()
-                                } else {
-                                    baseLangText.trim().equals(code, ignoreCase = true)
-                                }
-                                val label = code?.uppercase(Locale.ROOT)
-                                    ?: stringResource(R.string.library_edit_base_lang_none)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = { baseLangText = code.orEmpty() },
-                                    label = { Text(text = label) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = if (code == null) {
-                                            MaterialTheme.colorScheme.secondaryContainer
-                                        } else {
-                                            langPalette.baseBadgeContainer
-                                        },
-                                        selectedLabelColor = if (code == null) {
-                                            MaterialTheme.colorScheme.onSecondaryContainer
-                                        } else {
-                                            langPalette.onBaseBadgeContainer
-                                        },
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
+                LanguagePairDropdownSection(
+                    targetLangCode = targetLangText,
+                    baseLangCode = baseLangText,
+                    onTargetLangChange = { targetLangText = it },
+                    onBaseLangChange = { baseLangText = it },
+                )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    val cleanTarget = targetLangText.trim().lowercase(Locale.ROOT).ifBlank { "en" }
-                    val cleanBase = baseLangText.trim().lowercase(Locale.ROOT).ifBlank { null }
+                    val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
+                    val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
                     onConfirm(
                         courseText.trim().ifBlank { null },
                         LanguagePair(
@@ -1383,23 +1466,19 @@ private fun ImportConfigDialog(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EditItemMetadataDialog(
     item: AudioItem,
-    enabledLanguages: List<LanguageTag>,
+    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var courseText by remember(item) { mutableStateOf(item.course.orEmpty()) }
-    var targetLangText by remember(item) { mutableStateOf(item.languagePair.target.value) }
-    var baseLangText by remember(item) { mutableStateOf(item.languagePair.base?.value.orEmpty()) }
-
-    val targetPresets = remember(enabledLanguages, targetLangText) {
-        buildTargetPresetCodes(enabledLanguages, targetLangText)
+    var targetLangText by remember(item) {
+        mutableStateOf(normalizeDialogLanguageCode(item.languagePair.target.value))
     }
-    val basePresets = remember(enabledLanguages, baseLangText) {
-        buildBasePresetCodes(enabledLanguages, baseLangText)
+    var baseLangText by remember(item) {
+        mutableStateOf(normalizeDialogLanguageCode(item.languagePair.base?.value.orEmpty()))
     }
 
     AlertDialog(
@@ -1420,103 +1499,19 @@ private fun EditItemMetadataDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                val langPalette = chunkFlowLanguagePalette()
-
-                Surface(
-                    color = langPalette.targetRowBackground,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = targetLangText,
-                            onValueChange = { targetLangText = it },
-                            label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            targetPresets.forEach { code ->
-                                FilterChip(
-                                    selected = targetLangText.trim().equals(code, ignoreCase = true),
-                                    onClick = { targetLangText = code },
-                                    label = { Text(text = code.uppercase(Locale.ROOT)) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = langPalette.targetBadgeContainer,
-                                        selectedLabelColor = langPalette.onTargetBadgeContainer,
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Surface(
-                    color = langPalette.baseRowBackground,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = baseLangText,
-                            onValueChange = { baseLangText = it },
-                            label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            basePresets.forEach { code ->
-                                val isSelected = if (code == null) {
-                                    baseLangText.isBlank()
-                                } else {
-                                    baseLangText.trim().equals(code, ignoreCase = true)
-                                }
-                                val label = code?.uppercase(Locale.ROOT)
-                                    ?: stringResource(R.string.library_edit_base_lang_none)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = { baseLangText = code.orEmpty() },
-                                    label = { Text(text = label) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = if (code == null) {
-                                            MaterialTheme.colorScheme.secondaryContainer
-                                        } else {
-                                            langPalette.baseBadgeContainer
-                                        },
-                                        selectedLabelColor = if (code == null) {
-                                            MaterialTheme.colorScheme.onSecondaryContainer
-                                        } else {
-                                            langPalette.onBaseBadgeContainer
-                                        },
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
+                LanguagePairDropdownSection(
+                    targetLangCode = targetLangText,
+                    baseLangCode = baseLangText,
+                    onTargetLangChange = { targetLangText = it },
+                    onBaseLangChange = { baseLangText = it },
+                )
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    val cleanTarget = targetLangText.trim().lowercase(Locale.ROOT).ifBlank { "en" }
-                    val cleanBase = baseLangText.trim().lowercase(Locale.ROOT).ifBlank { null }
+                    val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
+                    val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
                     onConfirm(
                         courseText.trim().ifBlank { null },
                         LanguagePair(
@@ -1537,27 +1532,19 @@ private fun EditItemMetadataDialog(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EditDirectoryMetadataDialog(
     directoryEdit: PendingDirectoryEdit,
-    enabledLanguages: List<LanguageTag>,
+    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var courseText by remember(directoryEdit) { mutableStateOf(directoryEdit.currentCourse.orEmpty()) }
     var targetLangText by remember(directoryEdit) {
-        mutableStateOf(directoryEdit.initialLanguages.target.value)
+        mutableStateOf(normalizeDialogLanguageCode(directoryEdit.initialLanguages.target.value))
     }
     var baseLangText by remember(directoryEdit) {
-        mutableStateOf(directoryEdit.initialLanguages.base?.value.orEmpty())
-    }
-
-    val targetPresets = remember(enabledLanguages, targetLangText) {
-        buildTargetPresetCodes(enabledLanguages, targetLangText)
-    }
-    val basePresets = remember(enabledLanguages, baseLangText) {
-        buildBasePresetCodes(enabledLanguages, baseLangText)
+        mutableStateOf(normalizeDialogLanguageCode(directoryEdit.initialLanguages.base?.value.orEmpty()))
     }
 
     AlertDialog(
@@ -1584,103 +1571,19 @@ private fun EditDirectoryMetadataDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                val langPalette = chunkFlowLanguagePalette()
-
-                Surface(
-                    color = langPalette.targetRowBackground,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = targetLangText,
-                            onValueChange = { targetLangText = it },
-                            label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            targetPresets.forEach { code ->
-                                FilterChip(
-                                    selected = targetLangText.trim().equals(code, ignoreCase = true),
-                                    onClick = { targetLangText = code },
-                                    label = { Text(text = code.uppercase(Locale.ROOT)) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = langPalette.targetBadgeContainer,
-                                        selectedLabelColor = langPalette.onTargetBadgeContainer,
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Surface(
-                    color = langPalette.baseRowBackground,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = baseLangText,
-                            onValueChange = { baseLangText = it },
-                            label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            basePresets.forEach { code ->
-                                val isSelected = if (code == null) {
-                                    baseLangText.isBlank()
-                                } else {
-                                    baseLangText.trim().equals(code, ignoreCase = true)
-                                }
-                                val label = code?.uppercase(Locale.ROOT)
-                                    ?: stringResource(R.string.library_edit_base_lang_none)
-                                FilterChip(
-                                    selected = isSelected,
-                                    onClick = { baseLangText = code.orEmpty() },
-                                    label = { Text(text = label) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = if (code == null) {
-                                            MaterialTheme.colorScheme.secondaryContainer
-                                        } else {
-                                            langPalette.baseBadgeContainer
-                                        },
-                                        selectedLabelColor = if (code == null) {
-                                            MaterialTheme.colorScheme.onSecondaryContainer
-                                        } else {
-                                            langPalette.onBaseBadgeContainer
-                                        },
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                }
+                LanguagePairDropdownSection(
+                    targetLangCode = targetLangText,
+                    baseLangCode = baseLangText,
+                    onTargetLangChange = { targetLangText = it },
+                    onBaseLangChange = { baseLangText = it },
+                )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    val cleanTarget = targetLangText.trim().lowercase(Locale.ROOT).ifBlank { "en" }
-                    val cleanBase = baseLangText.trim().lowercase(Locale.ROOT).ifBlank { null }
+                    val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
+                    val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
                     onConfirm(
                         courseText.trim().ifBlank { null },
                         LanguagePair(

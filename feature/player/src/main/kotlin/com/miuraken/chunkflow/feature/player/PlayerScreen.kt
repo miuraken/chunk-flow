@@ -294,6 +294,7 @@ fun PlayerScreen(
                             positionProvider = positionProvider,
                             seekBackSeconds = seekBackSeconds,
                             onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
+                            onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                             onSetAbRange = { startMs, endMs ->
                                 onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
                             },
@@ -417,6 +418,7 @@ fun PlayerScreen(
                             positionProvider = positionProvider,
                             seekBackSeconds = seekBackSeconds,
                             onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
+                            onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                             onSetAbRange = { startMs, endMs ->
                                 onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
                             },
