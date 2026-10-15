@@ -50,11 +50,38 @@ interface LibraryRepository {
      */
     fun import(uris: List<Uri>): Flow<ImportProgress>
 
+    /**
+     * コース名（フォルダ名）と言語ペアを共通設定して、音声と文字起こしファイルをまとめて取り込む。
+     *
+     * @param uris SAF の `content://` URI（または Tree URI）。
+     * @param course 取り込む教材に設定するコース名（`null` の場合は URI から推定）。
+     * @param languages 取り込む教材に共通で設定する言語ペア（`null` の場合は既定の言語ペア）。
+     */
+    fun import(
+        uris: List<Uri>,
+        course: String?,
+        languages: LanguagePair?,
+    ): Flow<ImportProgress> = import(uris)
+
     /** 文字起こしファイルだけを取り込み、SHA-256 が一致する既存の教材に付ける。 */
     suspend fun importTranscript(uri: Uri): TranscriptImportResult
 
     /** Drive の `ChunkFlow/` フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
     fun syncFromDrive(): Flow<SyncProgress>
+
+    /**
+     * Drive 同期対象のフォルダ（Tree URI）が設定されているかどうかを返す。
+     */
+    suspend fun hasLinkedSyncFolder(): Boolean = false
+
+    /**
+     * Drive 同期対象のフォルダ（Tree URI）を登録し、言語ペアとコース名を保存して同期を実行する。
+     */
+    fun syncFromLinkedFolder(
+        treeUri: Uri? = null,
+        course: String? = null,
+        languages: LanguagePair? = null,
+    ): Flow<SyncProgress> = syncFromDrive()
 
     /** 教材のコース名と言語ペアを更新する（F1.3、F1.4）。 */
     suspend fun updateItemMetadata(

@@ -34,6 +34,18 @@ class FakeLibraryRepository(
     /** [import] に渡された URI（呼ばれた順）。 */
     val importedUris: MutableList<List<Uri>> = mutableListOf()
 
+    /** [import]（コース名・言語ペア指定版）に渡された引数（呼ばれた順）。 */
+    val importedConfigs: MutableList<Triple<List<Uri>, String?, LanguagePair?>> = mutableListOf()
+
+    /** [syncFromLinkedFolder] で登録された同期対象フォルダの Tree URI。 */
+    var linkedSyncFolderUri: Uri? = null
+
+    /** [syncFromLinkedFolder] で登録されたコース名。 */
+    var linkedSyncCourse: String? = null
+
+    /** [syncFromLinkedFolder] で登録された言語ペア。 */
+    var linkedSyncLanguages: LanguagePair? = null
+
     /** [import] が流す進捗を決める。既定はすぐに「0 件で完了」。 */
     var importResult: (List<Uri>) -> Flow<ImportProgress> = {
         flowOf(ImportProgress.Copying(0f), ImportProgress.Done(emptyList(), duplicates = 0, transcriptsAttached = 0))
@@ -107,9 +119,47 @@ class FakeLibraryRepository(
         return importResult(uris)
     }
 
+    override fun import(
+        uris: List<Uri>,
+        course: String?,
+        languages: LanguagePair?,
+    ): Flow<ImportProgress> {
+        importedConfigs += Triple(uris, course, languages)
+        if (course != null || languages != null) {
+            items.update { list ->
+                list.map { item ->
+                    item.copy(
+                        course = course ?: item.course,
+                        languagePair = languages ?: item.languagePair,
+                    )
+                }
+            }
+        }
+        return import(uris)
+    }
+
     override suspend fun importTranscript(uri: Uri): TranscriptImportResult = importTranscriptResult(uri)
 
     override fun syncFromDrive(): Flow<SyncProgress> = syncResult()
+
+    override suspend fun hasLinkedSyncFolder(): Boolean = linkedSyncFolderUri != null
+
+    override fun syncFromLinkedFolder(
+        treeUri: Uri?,
+        course: String?,
+        languages: LanguagePair?,
+    ): Flow<SyncProgress> {
+        if (treeUri != null) {
+            linkedSyncFolderUri = treeUri
+        }
+        if (course != null) {
+            linkedSyncCourse = course
+        }
+        if (languages != null) {
+            linkedSyncLanguages = languages
+        }
+        return syncFromDrive()
+    }
 
     override suspend fun updateItemMetadata(
         id: MediaId,
