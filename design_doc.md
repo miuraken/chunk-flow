@@ -1054,8 +1054,8 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 ### 8.2 実装ルール
 
 - **権限**: 最小限にし、追加するときは理由を ADR に残す。
-  - 宣言する: `INTERNET`（Drive の同期だけに使う）、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`FOREGROUND_SERVICE_MEDIA_PROCESSING`、`FOREGROUND_SERVICE_DATA_SYNC`、`WAKE_LOCK`、`POST_NOTIFICATIONS`。実行時に許可を求めるのは `POST_NOTIFICATIONS` だけで、解析の進捗通知のためなので、拒否されても機能は動作する。
-  - 宣言しない: `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO`（SAF のみを使う）、`RECORD_AUDIO`（自分の声の録音を加える場合にだけ見直す）。
+  - 宣言する: `INTERNET`（Drive の同期だけに使う）、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`FOREGROUND_SERVICE_MEDIA_PROCESSING`、`FOREGROUND_SERVICE_DATA_SYNC`、`WAKE_LOCK`、`POST_NOTIFICATIONS`、`RECORD_AUDIO`（端末内 `SpeechRecognizer` による先読み文字起こし利用時のみ要求。マイク録音自体は行わず `EXTRA_AUDIO_SOURCE` でチャンク PCM を供給するが、Android の `SpeechRecognitionManagerService` / `AppOps` が呼び出し元に要求するため宣言する）。実行時に許可を求めるのは `POST_NOTIFICATIONS`（解析の進捗通知用）と `RECORD_AUDIO`（端末内 `SpeechRecognizer` による先読み文字起こし実行時）だけで、拒否されても再生・無音分割・外部文字起こしファイル読み込みは動作する。
+  - 宣言しない: `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO`（SAF のみを使う）。
   - 依存ライブラリがマニフェストのマージで権限を持ち込んでいないことを CI で確認する（持ち込まれた場合は `tools:node="remove"` で取り除くか、依存を見直す）。
   - Google Play では公開しないため、フォアグラウンドサービスの種類ごとの申告は不要（公開することになった場合は必要）。
 - **ファイル**: 保存名は UUID にする。削除するときは、正規化したパスがアプリの管理ディレクトリ配下にあることを確認する。Java のシリアライズ（`ObjectInputStream`）は使わない。

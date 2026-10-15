@@ -29,6 +29,7 @@ ALLOWED_PERMISSIONS = {
     "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
     "android.permission.WAKE_LOCK",
     "android.permission.POST_NOTIFICATIONS",
+    "android.permission.RECORD_AUDIO",
     # §9: WorkManager が持ち込むネットワーク関連の権限で、許容するのはこれだけ。
     "android.permission.ACCESS_NETWORK_STATE",
     # androidx.core が宣言・使用する signature 保護の独自権限（動的に登録する非公開のレシーバー用）。

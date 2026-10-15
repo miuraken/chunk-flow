@@ -16,6 +16,21 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 端末内 SpeechRecognizer 先読み文字起こし用（EXTRA_AUDIO_SOURCE 利用時も OS が要求） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Android 11+ パッケージ可視性: 端末内 SpeechRecognizer サービス（Pixel Android System Intelligence / Google Speech Services 等）へのバインドに必要 -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <package android:name="com.google.android.as" />
+        <package android:name="com.google.android.tts" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+    </queries>
 
     <!-- WorkManager（androidx.work:work-runtime）が持ち込む RECEIVE_BOOT_COMPLETED を §8.2 の一覧に合わせて取り除く -->
     <uses-permission
