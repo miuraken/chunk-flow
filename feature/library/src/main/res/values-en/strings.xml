@@ -34,7 +34,7 @@
     <string name="library_dismiss_banner">Dismiss</string>
     <string name="library_item_resume_position">Resume %1$s / %2$s (%3$d%%)</string>
     <string name="library_item_last_accessed">Last accessed: %1$s</string>
-    <string name="library_item_listened_badge">Listened</string>
+    <string name="library_item_listened_badge">Listened (済)</string>
     <string name="library_item_chunk_count">%1$d chunks</string>
     <string name="library_item_analyzing">Analyzing…</string>
     <string name="library_item_transcript_ready">Transcript attached</string>
