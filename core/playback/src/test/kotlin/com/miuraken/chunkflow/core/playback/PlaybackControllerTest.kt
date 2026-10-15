@@ -185,12 +185,13 @@ class PlaybackControllerTest {
         assertEquals(chunk1.id, controller.status.value.currentChunkId)
 
         controller.seekToChunk(chunk2.id)
-        advanceUntilIdle()
+        runCurrent()
         shadowOf(Looper.getMainLooper()).idle()
-        advanceUntilIdle()
+        runCurrent()
 
         assertEquals(4_000L, controller.position.currentPositionMs())
         assertEquals(chunk2.id, controller.status.value.currentChunkId)
+        assertTrue(controller.status.value.isPlaying)
         assertTrue(analysisRepository.lookaheadCalls.contains(mediaId1 to chunk1.id))
         assertTrue(analysisRepository.lookaheadCalls.contains(mediaId1 to chunk2.id))
 
