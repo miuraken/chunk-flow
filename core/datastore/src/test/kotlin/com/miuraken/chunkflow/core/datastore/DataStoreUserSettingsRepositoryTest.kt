@@ -90,6 +90,12 @@ class DataStoreUserSettingsRepositoryTest {
         assertEquals(true, repository.settings.first().showTargetRomanization)
         repository.setShowTargetRomanization(false)
         assertEquals(false, repository.settings.first().showTargetRomanization)
+
+        assertEquals(true, repository.settings.first().lookaheadTranscriptionEnabled)
+        repository.setLookaheadTranscriptionEnabled(false)
+        assertEquals(false, repository.settings.first().lookaheadTranscriptionEnabled)
+        repository.setLookaheadTranscriptionEnabled(true)
+        assertEquals(true, repository.settings.first().lookaheadTranscriptionEnabled)
     }
 
     @Test

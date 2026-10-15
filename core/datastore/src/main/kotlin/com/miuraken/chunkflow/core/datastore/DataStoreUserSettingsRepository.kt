@@ -149,6 +149,12 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setLookaheadTranscriptionEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED] = enabled
+        }
+    }
+
     private fun Preferences.toUserSettings(): UserSettings {
         val defaults = UserSettings()
         val defaultSeg = defaults.defaultSegmentationParams
@@ -230,6 +236,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
             ),
             enabledLanguages = enabledLanguages,
             showTargetRomanization = this[KEY_SHOW_TARGET_ROMANIZATION] ?: defaults.showTargetRomanization,
+            lookaheadTranscriptionEnabled = this[KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED]
+                ?: defaults.lookaheadTranscriptionEnabled,
         )
     }
 
@@ -255,6 +263,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_SEG_THRESHOLD_RATIO = floatPreferencesKey("seg_threshold_ratio")
         val KEY_ENABLED_LANGUAGES = stringPreferencesKey("enabled_languages")
         val KEY_SHOW_TARGET_ROMANIZATION = booleanPreferencesKey("show_target_romanization")
+        val KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED = booleanPreferencesKey("lookahead_transcription_enabled")
 
         fun encodeAutoPause(autoPause: AutoPause): String = when (autoPause) {
             AutoPause.Off -> AUTO_PAUSE_OFF

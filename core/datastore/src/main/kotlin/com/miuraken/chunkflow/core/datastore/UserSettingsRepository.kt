@@ -46,4 +46,7 @@ interface UserSettingsRepository {
 
     /** 対象言語にアルファベットによる読み方（ローマ字・Pinyin・IAST 等）を付加して表示するかどうかを更新する。 */
     suspend fun setShowTargetRomanization(enabled: Boolean) = Unit
+
+    /** 先読み文字起こしの有効・無効を更新する（既定は true）。 */
+    suspend fun setLookaheadTranscriptionEnabled(enabled: Boolean) = Unit
 }
