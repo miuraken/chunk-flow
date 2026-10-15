@@ -1358,7 +1358,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `import_ディレクトリ内の複数ファイルはファイル名の自然昇順に取り込まれ順番に解析がリクエストされる`() = runTest {
+    fun `import_ディレクトリ内の複数ファイルはファイル名の自然昇順に取り込まれ未アクセス2件まで解析がリクエストされアクセス後に補充される`() = runTest {
         val treeUri = registerTreeDirectory(
             rootDocId = "primary:ChunkFlow/NaturalOrderCourse",
             rootDisplayName = "NaturalOrderCourse",
@@ -1377,8 +1377,50 @@ class DefaultLibraryRepositoryTest {
         val importedTitles = done.mediaIds.mapNotNull { id -> repo.observeItem(id).first()?.title }
         assertEquals(listOf("lesson1", "lesson2", "lesson10"), importedTitles)
 
-        val requestedIdsInOrder = analysisRepository.requestedAnalyses.map { it.first }
-        assertEquals(done.mediaIds, requestedIdsInOrder)
+        // 取り込み直後はフォルダ内の未アクセス解析済み（または解析中）ファイルが 2 件になるよう先頭 2 件のみリクエストされる
+        assertEquals(done.mediaIds.take(2), analysisRepository.requestedAnalyses.map { it.first })
+
+        // 先頭 1 件にアクセス（再生位置更新）すると、未アクセス解析済みが 1 件（2件未満）になるため 3 件目が自動補充される
+        repo.updatePlaybackPosition(
+            id = done.mediaIds[0],
+            positionMs = 5_000L,
+            speed = 1.0f,
+            updatedAtEpochMs = 1_800_000_000_000L,
+        )
+        assertEquals(done.mediaIds, analysisRepository.requestedAnalyses.map { it.first })
+    }
+
+    @Test
+    fun `import_ツリー配下のドキュメントURIを30個渡しても900件に多重展開されず30件のみ取り込まれる`() = runTest {
+        val rootDocId = "primary:ChunkFlow/Course30"
+        val audioFiles = (1..30).map { idx ->
+            "track_%02d.mp3".format(idx) to "audio-payload-$idx".encodeToByteArray()
+        }
+        val treeUri = registerTreeDirectory(
+            rootDocId = rootDocId,
+            rootDisplayName = "Course30",
+            audioFiles = audioFiles,
+            transcriptionFiles = emptyList(),
+        )
+        // LibraryRoute の scanDirectory が返すのと同じく、treeUri から構築した個別ファイルの Document URI 30 個を渡す
+        val documentUris = audioFiles.map { (name, _) ->
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, "$rootDocId/$name")
+        }
+
+        val repo = createRepository()
+        val events = repo.import(
+            uris = documentUris,
+            course = "Course30",
+            languages = null,
+        ).toList()
+
+        val done = events.last() as ImportProgress.Done
+        // 30x30 = 900 件に多重展開されていれば duplicates == 870 になるが、修正後は 30 件ちょうど（重複 0）になること
+        assertEquals(30, done.mediaIds.size)
+        assertEquals(0, done.duplicates)
+
+        // 自動解析は未アクセス上限 2 件（track_01, track_02）のみリクエストされること
+        assertEquals(done.mediaIds.take(2), analysisRepository.requestedAnalyses.map { it.first })
     }
 
     @Test

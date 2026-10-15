@@ -407,6 +407,9 @@ sealed interface LibraryEvent {
     /** SAF ファイルピッカーを開いて文字起こし・字幕ファイルを単体で取り込む。 */
     data object RequestImportTranscript : LibraryEvent
 
+    /** 指定された教材 [id] に対して SAF ファイルピッカーを開き、文字起こし・字幕ファイルを取り込む。 */
+    data class RequestImportTranscriptForItem(val id: MediaId) : LibraryEvent
+
     /** 指定されたフォルダ（ディレクトリ）名と配下の URI 一覧を取り込む。 */
     data class ImportDirectory(val directoryName: String?, val uris: List<Uri>) : LibraryEvent
 
@@ -415,6 +418,9 @@ sealed interface LibraryEvent {
 
     /** SAF で選択された文字起こし・字幕 URI を単体で取り込む。 */
     data class ImportTranscriptUri(val uri: Uri) : LibraryEvent
+
+    /** 指定された教材 [id] に対して選択された文字起こし・字幕 URI を直接取り込む。 */
+    data class ImportTranscriptForItem(val id: MediaId, val uri: Uri) : LibraryEvent
 
     /** Google Drive の `ChunkFlow/` フォルダと同期する（F1.5）。 */
     data object SyncFromDrive : LibraryEvent
@@ -750,6 +756,8 @@ class LibraryViewModel @Inject constructor(
 
             is LibraryEvent.ImportTranscriptUri -> importTranscriptUri(event.uri)
 
+            is LibraryEvent.ImportTranscriptForItem -> importTranscriptForItem(event.id, event.uri)
+
             LibraryEvent.SyncFromDrive -> syncFromDrive()
 
             LibraryEvent.DismissImportStatus -> {
@@ -846,6 +854,7 @@ class LibraryViewModel @Inject constructor(
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.RequestImportTranscript,
+            is LibraryEvent.RequestImportTranscriptForItem,
             LibraryEvent.RequestSelectDriveSyncFolder,
             is LibraryEvent.OpenItem,
             LibraryEvent.OpenSettings,
@@ -886,22 +895,33 @@ class LibraryViewModel @Inject constructor(
         importState.value = LibraryImportUiState.Idle
         viewModelScope.launch {
             val result = libraryRepository.importTranscript(uri)
-            transcriptImportState.value = when (result) {
-                is TranscriptImportResult.Attached -> TranscriptImportUiState.Attached(
-                    mediaId = result.mediaId,
-                    chunkCount = result.chunkCount,
-                    durationMismatch = result.durationMismatch,
-                )
-
-                is TranscriptImportResult.NoMatchingAudio -> TranscriptImportUiState.NoMatchingAudio(
-                    audioFileName = result.audioFileName,
-                )
-
-                is TranscriptImportResult.Invalid -> TranscriptImportUiState.Invalid(
-                    error = result.error,
-                )
-            }
+            transcriptImportState.value = mapTranscriptImportResult(result)
         }
+    }
+
+    private fun importTranscriptForItem(id: MediaId, uri: Uri) {
+        importState.value = LibraryImportUiState.Idle
+        pendingEditItem.value = null
+        viewModelScope.launch {
+            val result = libraryRepository.importTranscriptForMedia(id, uri)
+            transcriptImportState.value = mapTranscriptImportResult(result)
+        }
+    }
+
+    private fun mapTranscriptImportResult(result: TranscriptImportResult): TranscriptImportUiState = when (result) {
+        is TranscriptImportResult.Attached -> TranscriptImportUiState.Attached(
+            mediaId = result.mediaId,
+            chunkCount = result.chunkCount,
+            durationMismatch = result.durationMismatch,
+        )
+
+        is TranscriptImportResult.NoMatchingAudio -> TranscriptImportUiState.NoMatchingAudio(
+            audioFileName = result.audioFileName,
+        )
+
+        is TranscriptImportResult.Invalid -> TranscriptImportUiState.Invalid(
+            error = result.error,
+        )
     }
 
     private fun syncFromDrive() {

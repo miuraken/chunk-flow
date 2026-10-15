@@ -218,11 +218,19 @@ fun LibraryRoute(
         }
     }
 
+    var targetTranscriptItemId by remember { mutableStateOf<MediaId?>(null) }
+
     val transcriptPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
+        val itemId = targetTranscriptItemId
+        targetTranscriptItemId = null
         if (uri != null) {
-            viewModel.onEvent(LibraryEvent.ImportTranscriptUri(uri))
+            if (itemId != null) {
+                viewModel.onEvent(LibraryEvent.ImportTranscriptForItem(id = itemId, uri = uri))
+            } else {
+                viewModel.onEvent(LibraryEvent.ImportTranscriptUri(uri))
+            }
         }
     }
 
@@ -252,15 +260,32 @@ fun LibraryRoute(
                     ),
                 )
 
-                LibraryEvent.RequestImportTranscript -> transcriptPickerLauncher.launch(
-                    arrayOf(
-                        "application/json",
-                        "text/vtt",
-                        "application/x-subrip",
-                        "text/plain",
-                        "*/*",
-                    ),
-                )
+                LibraryEvent.RequestImportTranscript -> {
+                    targetTranscriptItemId = null
+                    transcriptPickerLauncher.launch(
+                        arrayOf(
+                            "application/json",
+                            "text/vtt",
+                            "application/x-subrip",
+                            "text/plain",
+                            "*/*",
+                        ),
+                    )
+                }
+
+                is LibraryEvent.RequestImportTranscriptForItem -> {
+                    targetTranscriptItemId = event.id
+                    viewModel.onEvent(LibraryEvent.CancelEditMetadata)
+                    transcriptPickerLauncher.launch(
+                        arrayOf(
+                            "application/json",
+                            "text/vtt",
+                            "application/x-subrip",
+                            "text/plain",
+                            "*/*",
+                        ),
+                    )
+                }
 
                 is LibraryEvent.OpenItem -> onOpenPlayer(event.id)
 
@@ -465,6 +490,9 @@ fun LibraryScreen(
         EditItemMetadataDialog(
             item = itemToEdit,
             enabledLanguages = state.enabledLanguages,
+            onImportTranscript = {
+                onEvent(LibraryEvent.RequestImportTranscriptForItem(itemToEdit.id))
+            },
             onConfirm = { course, languages ->
                 onEvent(
                     LibraryEvent.ConfirmEditMetadata(
@@ -1470,6 +1498,7 @@ private fun ImportConfigDialog(
 private fun EditItemMetadataDialog(
     item: AudioItem,
     @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
+    onImportTranscript: () -> Unit,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1505,6 +1534,27 @@ private fun EditItemMetadataDialog(
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
                 )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                Text(
+                    text = stringResource(R.string.library_edit_transcript_section_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+
+                FilledTonalButton(
+                    onClick = onImportTranscript,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.library_edit_import_transcript_button))
+                }
             }
         },
         confirmButton = {

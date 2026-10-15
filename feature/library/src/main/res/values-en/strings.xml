@@ -64,6 +64,8 @@
     <string name="library_edit_target_lang_label">Target language tag (e.g. ko, zh, yue, id, en)</string>
     <string name="library_edit_base_lang_label">Base language tag (leave blank for single-language, e.g. ja, en)</string>
     <string name="library_edit_base_lang_none">Single-lang (none)</string>
+    <string name="library_edit_transcript_section_title">Transcript</string>
+    <string name="library_edit_import_transcript_button">Import transcript from file</string>
     <string name="library_edit_save">Save</string>
     <string name="library_edit_cancel">Cancel</string>
     <string name="library_item_missing_audio">Missing audio (re-import needed)</string>

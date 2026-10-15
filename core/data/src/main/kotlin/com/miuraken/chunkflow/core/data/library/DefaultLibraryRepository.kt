@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
+import com.miuraken.chunkflow.core.data.analysis.DefaultAnalysisRepository
 import com.miuraken.chunkflow.core.data.di.ChunkFlowDispatchers
 import com.miuraken.chunkflow.core.data.di.Dispatcher
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
@@ -64,6 +65,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.Properties
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
@@ -153,6 +155,7 @@ class DefaultLibraryRepository(
     )
 
     private val audioFileStateVersion = MutableStateFlow(0L)
+    private val scheduledAnalysisMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
 
     override fun observeItems(): Flow<List<AudioItem>> = mediaItemDao.observeAll().map { entities ->
         entities.map(MediaItemEntity::toExternalModel)
@@ -193,6 +196,10 @@ class DefaultLibraryRepository(
                 speed = coercedSpeed,
                 updatedAt = updatedAtEpochMs,
             )
+            if (coercedPosition > 0L) {
+                val course = mediaItemDao.getById(id.value)?.course
+                scheduleCourseAnalysisUpToLimit(course)
+            }
         }
     }
 
@@ -215,7 +222,7 @@ class DefaultLibraryRepository(
         val explicitCourse = sanitizeCourseName(course).takeIf { it.isNotBlank() }
 
         // 1. スキームの検証と SAF フォルダ（Tree URI）の展開
-        val candidates = mutableListOf<ImportCandidate>()
+        val rawCandidates = mutableListOf<ImportCandidate>()
         for (uri in uris) {
             currentCoroutineContext().ensureActive()
             if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
@@ -224,7 +231,7 @@ class DefaultLibraryRepository(
             }
             if (isTreeUriSafe(uri)) {
                 val expanded = expandTreeUri(uri)
-                candidates += if (explicitCourse != null) {
+                rawCandidates += if (explicitCourse != null) {
                     expanded.map { it.copy(course = explicitCourse) }
                 } else {
                     expanded
@@ -232,7 +239,7 @@ class DefaultLibraryRepository(
             } else {
                 val meta = queryContentMetadata(uri)
                 val resolvedCourse = explicitCourse ?: extractCourseFromDocumentUri(uri)
-                candidates += ImportCandidate(
+                rawCandidates += ImportCandidate(
                     uri = uri,
                     meta = meta,
                     course = resolvedCourse,
@@ -240,6 +247,7 @@ class DefaultLibraryRepository(
             }
         }
 
+        val candidates = rawCandidates.distinctBy { it.uri }
         if (candidates.isEmpty()) {
             emit(ImportProgress.Done(mediaIds = emptyList(), duplicates = 0, transcriptsAttached = 0))
             return@flow
@@ -299,10 +307,7 @@ class DefaultLibraryRepository(
             val resolvedMediaId = when (outcome) {
                 is SingleImportOutcome.Imported -> {
                     mediaIds += outcome.mediaId
-                    analysisRepository.requestAnalysis(
-                        outcome.mediaId,
-                        setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
-                    )
+                    scheduleCourseAnalysisUpToLimit(candidate.course)
                     outcome.mediaId
                 }
 
@@ -310,10 +315,7 @@ class DefaultLibraryRepository(
                     mediaIds += outcome.mediaId
                     duplicates += 1
                     if (outcome.reattachedAudioFile) {
-                        analysisRepository.requestAnalysis(
-                            outcome.mediaId,
-                            setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
-                        )
+                        handleReattachedAudioAnalysis(outcome.mediaId, candidate.course)
                     }
                     outcome.mediaId
                 }
@@ -520,6 +522,10 @@ class DefaultLibraryRepository(
                 isListened = isListened,
                 updatedAt = updatedAtEpochMs,
             )
+            if (isListened) {
+                val course = mediaItemDao.getById(id.value)?.course
+                scheduleCourseAnalysisUpToLimit(course)
+            }
         }
     }
 
@@ -711,10 +717,7 @@ class DefaultLibraryRepository(
             when (outcome) {
                 is SingleImportOutcome.Imported -> {
                     newAudioCount += 1
-                    analysisRepository.requestAnalysis(
-                        outcome.mediaId,
-                        setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
-                    )
+                    scheduleCourseAnalysisUpToLimit(courseName)
                     driveFileDao?.upsert(
                         DriveFileEntity(
                             driveFileId = remoteAudio.id,
@@ -735,10 +738,7 @@ class DefaultLibraryRepository(
                 is SingleImportOutcome.Duplicate -> {
                     if (outcome.reattachedAudioFile) {
                         newAudioCount += 1
-                        analysisRepository.requestAnalysis(
-                            outcome.mediaId,
-                            setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
-                        )
+                        handleReattachedAudioAnalysis(outcome.mediaId, courseName)
                     }
                     driveFileDao?.upsert(
                         DriveFileEntity(
@@ -935,11 +935,88 @@ class DefaultLibraryRepository(
 
     override suspend fun delete(id: MediaId) {
         withContext(ioDispatcher) {
+            val deletedCourse = mediaItemDao.getById(id.value)?.course
+            scheduledAnalysisMediaIds.remove(id)
             // DB の CASCADE 削除（chunks / transcripts / item_state / drive_sync_records）を実行した上で実ファイルを消す
             mediaItemDao.deleteById(id.value)
             mediaFileLocator.deleteMediaFiles(id)
             audioFileStateVersion.update { it + 1L }
+            scheduleCourseAnalysisUpToLimit(deletedCourse)
         }
+    }
+
+    private suspend fun handleReattachedAudioAnalysis(mediaId: MediaId, course: String?) {
+        scheduledAnalysisMediaIds.remove(mediaId)
+        val item = mediaItemDao.getById(mediaId.value)
+        val state = itemStateDao.getByMediaId(mediaId.value)
+        if (item != null && !DefaultAnalysisRepository.isItemUnaccessed(item, state)) {
+            requestAnalysisForMedia(mediaId)
+        } else {
+            scheduleCourseAnalysisUpToLimit(course ?: item?.course)
+        }
+    }
+
+    private suspend fun scheduleCourseAnalysisUpToLimit(course: String?) {
+        val allItems = mediaItemDao.observeAll().first()
+            .filter { it.course == course }
+        if (allItems.isEmpty()) return
+
+        val statesByMediaId = itemStateDao.observeAll().first()
+            .associateBy { it.mediaId }
+
+        val unaccessedItems = allItems
+            .filter { item ->
+                val itemId = MediaId(item.id)
+                DefaultAnalysisRepository.isItemUnaccessed(item, statesByMediaId[item.id]) &&
+                    mediaFileLocator.resolveAudioFile(itemId, item.mimeType)?.isFile == true
+            }
+            .sortedWith(
+                compareBy<MediaItemEntity, String>(naturalFileNameComparator) { it.title }
+                    .thenBy { it.id },
+            )
+
+        if (unaccessedItems.isEmpty()) return
+
+        var activeOrDoneCount = 0
+        val pendingCandidates = mutableListOf<MediaId>()
+        for (item in unaccessedItems) {
+            val itemId = MediaId(item.id)
+            if (isAnalysisRequestedOrDone(itemId)) {
+                activeOrDoneCount += 1
+            } else {
+                pendingCandidates += itemId
+            }
+        }
+
+        val slotsRemaining =
+            (DefaultAnalysisRepository.MAX_UNACCESSED_ANALYZED_PER_FOLDER - activeOrDoneCount)
+                .coerceAtLeast(0)
+        for (candidateId in pendingCandidates.take(slotsRemaining)) {
+            requestAnalysisForMedia(candidateId)
+        }
+    }
+
+    private suspend fun isAnalysisRequestedOrDone(id: MediaId): Boolean {
+        if (id in scheduledAnalysisMediaIds) return true
+        val statusByStage = runCatching { analysisRepository.observeStatus(id).first() }
+            .getOrDefault(emptyMap())
+        val featuresStatus = statusByStage[AnalysisStage.FEATURES]
+        val segStatus = statusByStage[AnalysisStage.SEGMENTATION]
+        val featuresActiveOrDone = featuresStatus is StageStatus.NotStarted ||
+            featuresStatus is StageStatus.Running ||
+            featuresStatus is StageStatus.Done
+        val segActiveOrDone = segStatus is StageStatus.NotStarted ||
+            segStatus is StageStatus.Running ||
+            segStatus is StageStatus.Done
+        return featuresActiveOrDone && segActiveOrDone
+    }
+
+    private suspend fun requestAnalysisForMedia(id: MediaId) {
+        scheduledAnalysisMediaIds.add(id)
+        analysisRepository.requestAnalysis(
+            id,
+            setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
+        )
     }
 
     private suspend fun importSingleFile(
@@ -1074,7 +1151,7 @@ class DefaultLibraryRepository(
             mediaId = newMediaId.value,
             positionMs = 0L,
             speed = settings.defaultSpeed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED),
-            updatedAt = nowMs,
+            updatedAt = 0L,
         )
         mediaItemDao.upsert(entity)
         itemStateDao.upsert(initialState)
@@ -1252,10 +1329,13 @@ class DefaultLibraryRepository(
         }
 
         // 使用するチャンク種別を IMPORTED に切り替える（§7.1 手順 7）
+        // 取り込み時の文字起こし紐付けでは未アクセス状態（existing.updatedAt）を維持する
+        val existingState = itemStateDao.getByMediaId(targetEntity.id)
+        val preservedUpdatedAt = existingState?.updatedAt ?: 0L
         val updatedRows = itemStateDao.updateChunkSource(
             mediaId = targetEntity.id,
             chunkSource = ChunkOrigin.IMPORTED.name,
-            updatedAt = nowMs,
+            updatedAt = preservedUpdatedAt,
         )
         if (updatedRows == 0) {
             val defaultSpeed = userSettingsRepository.settings.first().defaultSpeed
@@ -1266,7 +1346,7 @@ class DefaultLibraryRepository(
                     positionMs = 0L,
                     speed = defaultSpeed,
                     chunkSource = ChunkOrigin.IMPORTED.name,
-                    updatedAt = nowMs,
+                    updatedAt = preservedUpdatedAt,
                 ),
             )
         }
@@ -1434,17 +1514,26 @@ class DefaultLibraryRepository(
         }
     }
 
+    /**
+     * 純粋なフォルダ（Tree URI）であるかを判定する。
+     *
+     * `DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)` で生成された個別ファイルの Document URI
+     * （`/tree/<rootDocId>/document/<docId>`）に対しても Android の `DocumentsContract.isTreeUri` は `true` を返すため、
+     * Document URI を除外しないと 1 ファイルごとに親フォルダ全体が再展開され N×N 件（例: 30×30 = 900 件）の重複が発生する。
+     */
     private fun isTreeUriSafe(uri: Uri): Boolean = runCatching {
-        DocumentsContract.isTreeUri(uri)
+        val segments = uri.pathSegments
+        val isDocumentInTree = segments.size >= 4 &&
+            segments[0] == "tree" &&
+            segments[2] == "document"
+        !isDocumentInTree &&
+            !DocumentsContract.isDocumentUri(context, uri) &&
+            DocumentsContract.isTreeUri(uri)
     }.getOrDefault(false)
 
     private fun extractCourseFromDocumentUri(uri: Uri): String? {
         val docId = runCatching {
-            if (DocumentsContract.isDocumentUri(context, uri)) {
-                DocumentsContract.getDocumentId(uri)
-            } else {
-                null
-            }
+            DocumentsContract.getDocumentId(uri)
         }.getOrNull() ?: return null
 
         val pathPart = docId.substringAfter(':', docId)
@@ -1713,7 +1802,7 @@ class DefaultLibraryRepository(
             mediaId = newMediaId.value,
             positionMs = 0L,
             speed = settings.defaultSpeed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED),
-            updatedAt = nowMs,
+            updatedAt = 0L,
         )
         mediaItemDao.upsert(entity)
         itemStateDao.upsert(initialState)
@@ -2128,20 +2217,14 @@ class DefaultLibraryRepository(
             val resolvedMediaId = when (outcome) {
                 is SingleImportOutcome.Imported -> {
                     newAudioCount += 1
-                    analysisRepository.requestAnalysis(
-                        outcome.mediaId,
-                        setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
-                    )
+                    scheduleCourseAnalysisUpToLimit(candidate.course)
                     outcome.mediaId
                 }
 
                 is SingleImportOutcome.Duplicate -> {
                     if (outcome.reattachedAudioFile) {
                         newAudioCount += 1
-                        analysisRepository.requestAnalysis(
-                            outcome.mediaId,
-                            setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
-                        )
+                        handleReattachedAudioAnalysis(outcome.mediaId, candidate.course)
                     }
                     outcome.mediaId
                 }
