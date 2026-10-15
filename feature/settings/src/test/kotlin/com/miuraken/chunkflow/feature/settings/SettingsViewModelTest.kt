@@ -6,11 +6,13 @@ import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.collect
@@ -101,6 +103,49 @@ class SettingsViewModelTest {
             LanguagePair(target = LanguageTag("yue"), base = null),
             viewModel.uiState.value.defaultLanguagePair,
         )
+    }
+
+    @Test
+    fun `選択肢の言語_既定で日本語と英語が有効であり追加と解除と一括更新が機能する`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val viewModel = SettingsViewModel(repo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 初期状態は ja と en のみ
+        assertEquals(UserSettings.DEFAULT_ENABLED_LANGUAGES, viewModel.uiState.value.enabledLanguages)
+        assertEquals(
+            listOf(LanguageTag("ja"), LanguageTag("en")),
+            viewModel.uiState.value.selectableLanguages,
+        )
+
+        // 端末認識可能言語リストは ja, en を先頭に含む
+        val deviceLanguages = SettingsUiState.availableDeviceLanguages()
+        assertTrue(deviceLanguages.size >= 2)
+        assertEquals(LanguageTag("ja"), deviceLanguages[0].tag)
+        assertEquals(LanguageTag("en"), deviceLanguages[1].tag)
+
+        // 韓国語を追加
+        viewModel.onEvent(SettingsEvent.ToggleEnabledLanguage(LanguageTag("ko")))
+        assertEquals(
+            setOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+            viewModel.uiState.value.enabledLanguages,
+        )
+
+        // 一括更新
+        viewModel.onEvent(
+            SettingsEvent.SetEnabledLanguages(
+                setOf(LanguageTag("ja"), LanguageTag("zh"), LanguageTag("yue")),
+            ),
+        )
+        assertEquals(
+            setOf(LanguageTag("ja"), LanguageTag("zh"), LanguageTag("yue")),
+            viewModel.uiState.value.enabledLanguages,
+        )
+
+        // 最後の 1 件を解除しようとしても空にならない
+        viewModel.onEvent(SettingsEvent.SetEnabledLanguages(setOf(LanguageTag("ja"))))
+        viewModel.onEvent(SettingsEvent.ToggleEnabledLanguage(LanguageTag("ja")))
+        assertEquals(setOf(LanguageTag("ja")), viewModel.uiState.value.enabledLanguages)
     }
 
     @Test

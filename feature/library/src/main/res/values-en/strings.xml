@@ -8,8 +8,12 @@
     <string name="library_directory_structure_hint">Pairs audio files in the selected folder with transcription/&lt;audio&gt;.chunkflow.json</string>
     <string name="library_directory_uncategorized">Uncategorized folder</string>
     <string name="library_directory_item_count">%1$d items</string>
+    <string name="library_directory_listened_count">Listened %1$d/%2$d</string>
     <string name="library_directory_expand">Expand folder</string>
     <string name="library_directory_collapse">Collapse folder</string>
+    <string name="library_edit_directory_metadata_cd">Edit folder course and language pair</string>
+    <string name="library_edit_directory_metadata_title">Edit folder languages &amp; course</string>
+    <string name="library_edit_directory_metadata_hint">Reconfigure the course name, target language, and base language for all items in this folder.</string>
     <string name="library_empty">No materials yet.</string>
     <string name="library_empty_hint">Select a study folder (directory) or choose audio and transcript (.chunkflow.json) files to start learning.</string>
     <string name="library_empty_import_directory_action">Select folder (directory)</string>
@@ -28,7 +32,9 @@
     <string name="library_transcript_no_matching_audio_unknown">Matching audio is not imported yet. Import the audio file first.</string>
     <string name="library_transcript_invalid">The transcript file format is invalid.</string>
     <string name="library_dismiss_banner">Dismiss</string>
-    <string name="library_item_resume_position">Resume %1$s / %2$s</string>
+    <string name="library_item_resume_position">Resume %1$s / %2$s (%3$d%%)</string>
+    <string name="library_item_last_accessed">Last accessed: %1$s</string>
+    <string name="library_item_listened_badge">Listened</string>
     <string name="library_item_chunk_count">%1$d chunks</string>
     <string name="library_item_analyzing">Analyzing…</string>
     <string name="library_item_transcript_ready">Transcript attached</string>

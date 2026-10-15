@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -10,18 +11,27 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -30,6 +40,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -45,6 +58,8 @@ import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.UserSettings
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -121,6 +136,8 @@ fun SettingsScreen(
             LanguagePairSection(
                 targetLanguage = state.defaultLanguagePair.target,
                 baseLanguage = state.defaultLanguagePair.base,
+                enabledLanguages = state.enabledLanguages,
+                selectableLanguages = state.selectableLanguages,
                 onEvent = onEvent,
             )
 
@@ -355,9 +372,32 @@ private fun SegmentationDefaultsSection(
 private fun LanguagePairSection(
     targetLanguage: LanguageTag,
     baseLanguage: LanguageTag?,
+    enabledLanguages: Set<LanguageTag>,
+    selectableLanguages: List<LanguageTag>,
     onEvent: (SettingsEvent) -> Unit,
 ) {
+    var showEnabledLanguagesDialog by remember { mutableStateOf(false) }
+
     SettingsCard(title = stringResource(R.string.settings_section_language)) {
+        OutlinedButton(
+            onClick = { showEnabledLanguagesDialog = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Translate,
+                contentDescription = null,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = stringResource(
+                    R.string.settings_enabled_languages_button,
+                    enabledLanguages.size,
+                ),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
         Text(
             text = stringResource(R.string.settings_target_language_label),
             style = MaterialTheme.typography.titleSmall,
@@ -367,7 +407,7 @@ private fun LanguagePairSection(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            SettingsUiState.SUPPORTED_LANGUAGES.forEach { language ->
+            selectableLanguages.forEach { language ->
                 FilterChip(
                     selected = targetLanguage == language,
                     onClick = { onEvent(SettingsEvent.SetTargetLanguage(language)) },
@@ -400,7 +440,7 @@ private fun LanguagePairSection(
                     selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
                 ),
             )
-            SettingsUiState.SUPPORTED_LANGUAGES.forEach { language ->
+            selectableLanguages.forEach { language ->
                 FilterChip(
                     selected = baseLanguage == language,
                     onClick = { onEvent(SettingsEvent.SetBaseLanguage(language)) },
@@ -413,6 +453,124 @@ private fun LanguagePairSection(
             }
         }
     }
+
+    if (showEnabledLanguagesDialog) {
+        EnabledLanguagesDialog(
+            initialEnabled = enabledLanguages,
+            onConfirm = { updatedSet ->
+                showEnabledLanguagesDialog = false
+                onEvent(SettingsEvent.SetEnabledLanguages(updatedSet))
+            },
+            onDismiss = { showEnabledLanguagesDialog = false },
+        )
+    }
+}
+
+@Composable
+private fun EnabledLanguagesDialog(
+    initialEnabled: Set<LanguageTag>,
+    onConfirm: (Set<LanguageTag>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val allOptions = remember { SettingsUiState.availableDeviceLanguages() }
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedTags by remember(initialEnabled) {
+        mutableStateOf(initialEnabled.ifEmpty { UserSettings.DEFAULT_ENABLED_LANGUAGES })
+    }
+
+    val filteredOptions = remember(allOptions, searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isEmpty()) {
+            allOptions
+        } else {
+            allOptions.filter { option ->
+                option.displayName.contains(query, ignoreCase = true) ||
+                    option.tag.value.contains(query, ignoreCase = true)
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = stringResource(R.string.settings_enabled_languages_dialog_title)) },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_enabled_languages_dialog_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text(text = stringResource(R.string.settings_enabled_languages_search_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(
+                    onClick = { selectedTags = UserSettings.DEFAULT_ENABLED_LANGUAGES },
+                ) {
+                    Text(text = stringResource(R.string.settings_enabled_languages_reset_default))
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp),
+                ) {
+                    items(
+                        items = filteredOptions,
+                        key = { it.tag.value },
+                    ) { option ->
+                        val isChecked = option.tag in selectedTags
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedTags = if (isChecked) {
+                                        if (selectedTags.size > 1) selectedTags - option.tag else selectedTags
+                                    } else {
+                                        selectedTags + option.tag
+                                    }
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = isChecked,
+                                onCheckedChange = { checked ->
+                                    selectedTags = if (checked) {
+                                        selectedTags + option.tag
+                                    } else {
+                                        if (selectedTags.size > 1) selectedTags - option.tag else selectedTags
+                                    }
+                                },
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = option.displayName,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(selectedTags) },
+            ) {
+                Text(text = stringResource(R.string.settings_enabled_languages_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.settings_enabled_languages_cancel))
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -510,18 +668,36 @@ private fun autoPauseLabel(autoPause: AutoPause): String = when (autoPause) {
 @Composable
 private fun languageDisplayName(language: LanguageTag): String = when (language.value) {
     "en" -> stringResource(R.string.settings_lang_en)
+
     "ja" -> stringResource(R.string.settings_lang_ja)
+
     "ko" -> stringResource(R.string.settings_lang_ko)
+
     "zh" -> stringResource(R.string.settings_lang_zh)
+
     "yue" -> stringResource(R.string.settings_lang_yue)
+
     "hi" -> stringResource(R.string.settings_lang_hi)
+
     "vi" -> stringResource(R.string.settings_lang_vi)
+
     "ru" -> stringResource(R.string.settings_lang_ru)
+
     "es" -> stringResource(R.string.settings_lang_es)
+
     "de" -> stringResource(R.string.settings_lang_de)
+
     "el" -> stringResource(R.string.settings_lang_el)
+
     "id" -> stringResource(R.string.settings_lang_id)
-    else -> language.value.uppercase()
+
+    else -> {
+        val code = language.value
+        val display = Locale.forLanguageTag(code).getDisplayLanguage(Locale.getDefault())
+            .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
+        val upper = code.uppercase(Locale.ROOT)
+        if (display != null) "$display ($upper)" else upper
+    }
 }
 
 @Composable

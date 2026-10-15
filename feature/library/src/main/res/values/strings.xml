@@ -8,8 +8,12 @@
     <string name="library_directory_structure_hint">指定フォルダ配下の音声と transcription/&lt;音声名&gt;.chunkflow.json を対応付けて管理します</string>
     <string name="library_directory_uncategorized">未分類フォルダ</string>
     <string name="library_directory_item_count">%1$d 件の教材</string>
+    <string name="library_directory_listened_count">済 %1$d/%2$d</string>
     <string name="library_directory_expand">フォルダを展開</string>
     <string name="library_directory_collapse">フォルダを折りたたむ</string>
+    <string name="library_edit_directory_metadata_cd">フォルダのコース名と言語ペアを一括設定</string>
+    <string name="library_edit_directory_metadata_title">フォルダ全体の言語・コース再設定</string>
+    <string name="library_edit_directory_metadata_hint">このフォルダ内のすべての教材に対して、コース名と対象言語・ベース言語を一括で再設定します。</string>
     <string name="library_empty">教材がまだありません。</string>
     <string name="library_empty_hint">学習フォルダ（ディレクトリ）を指定するか、音声ファイルと文字起こし（.chunkflow.json）を選んで取り込みます。</string>
     <string name="library_empty_import_directory_action">フォルダ（ディレクトリ）を指定</string>
@@ -28,7 +32,9 @@
     <string name="library_transcript_no_matching_audio_unknown">対応する音声がまだ取り込まれていません。先に音声ファイルを取り込んでください。</string>
     <string name="library_transcript_invalid">文字起こしファイルの形式が正しくありません。</string>
     <string name="library_dismiss_banner">閉じる</string>
-    <string name="library_item_resume_position">前回 %1$s / %2$s</string>
+    <string name="library_item_resume_position">前回 %1$s / %2$s (%3$d%%)</string>
+    <string name="library_item_last_accessed">最終アクセス: %1$s</string>
+    <string name="library_item_listened_badge">済</string>
     <string name="library_item_chunk_count">%1$d チャンク</string>
     <string name="library_item_analyzing">解析中…</string>
     <string name="library_item_transcript_ready">文字起こしあり</string>

@@ -11,6 +11,7 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.Locale
 import javax.inject.Inject
 import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,6 +19,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+/**
+ * 端末で認識可能な言語選択肢のモデル。
+ *
+ * @property tag BCP 47 言語タグ（小文字 ISO コード）。
+ * @property displayName 現在のロケールでの表示名（例: `日本語 (JA)`）。
+ */
+data class DeviceLanguageOption(
+    val tag: LanguageTag,
+    val displayName: String,
+)
 
 /**
  * 設定画面の UI 状態（F9.1、F3.2、F3.3、F5.2、F6.3）。
@@ -59,6 +71,29 @@ data class SettingsUiState(
     val defaultSegmentationParams: SegmentationParams
         get() = settings.defaultSegmentationParams
 
+    /** 選択肢として有効な言語のセット（既定は日本語・英語）。 */
+    val enabledLanguages: Set<LanguageTag>
+        get() = settings.enabledLanguages
+
+    /**
+     * 設定画面の言語チップに表示する言語一覧。
+     *
+     * [enabledLanguages] に加え、現在選択中の [defaultLanguagePair] の学習言語・ベース言語も含め、
+     * 日本語（`ja`）・英語（`en`）を先頭に並べる。
+     */
+    val selectableLanguages: List<LanguageTag>
+        get() {
+            val combined = buildSet {
+                addAll(enabledLanguages)
+                add(defaultLanguagePair.target)
+                defaultLanguagePair.base?.let { add(it) }
+            }
+            val priority = listOf(LanguageTag("ja"), LanguageTag("en"))
+            val head = priority.filter { it in combined }
+            val tail = combined.filterNot { it in priority }.sortedBy { it.value }
+            return head + tail
+        }
+
     companion object {
         /** 巻き戻し秒数の選択肢（ミリ秒）。 */
         val SEEK_BACK_OPTIONS_MS: List<Long> = listOf(1_000L, 2_000L, 3_000L, 5_000L, 10_000L)
@@ -93,6 +128,49 @@ data class SettingsUiState(
             LanguageTag("el"),
             LanguageTag("id"),
         )
+
+        /**
+         * 端末（[Locale.getAvailableLocales]）で認識可能な言語一覧を返す。
+         *
+         * 日本語（`ja`）と英語（`en`）を先頭に配置し、残りは表示名・コード順でソートする。
+         */
+        fun availableDeviceLanguages(displayLocale: Locale = Locale.getDefault()): List<DeviceLanguageOption> {
+            val rawCodes = buildSet {
+                addAll(SUPPORTED_LANGUAGES.map { it.value })
+                for (locale in Locale.getAvailableLocales()) {
+                    val normalized = when (val lang = locale.language.lowercase(Locale.ROOT)) {
+                        "in" -> "id"
+                        "iw" -> "he"
+                        "ji" -> "yi"
+                        else -> lang
+                    }
+                    if (normalized.length in 2..3 &&
+                        normalized.all { it in 'a'..'z' } &&
+                        normalized != "und"
+                    ) {
+                        add(normalized)
+                    }
+                }
+            }
+            val optionsByCode = rawCodes.associateWith { code ->
+                val tagLocale = Locale.forLanguageTag(code)
+                val name = tagLocale.getDisplayLanguage(displayLocale)
+                    .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
+                    ?: code.uppercase(Locale.ROOT)
+                val upper = code.uppercase(Locale.ROOT)
+                DeviceLanguageOption(
+                    tag = LanguageTag(code),
+                    displayName = "$name ($upper)",
+                )
+            }
+            val priorityCodes = listOf("ja", "en")
+            val head = priorityCodes.mapNotNull { optionsByCode[it] }
+            val tail = optionsByCode
+                .filterKeys { it !in priorityCodes }
+                .values
+                .sortedWith(compareBy<DeviceLanguageOption> { it.displayName }.thenBy { it.tag.value })
+            return head + tail
+        }
     }
 }
 
@@ -124,6 +202,12 @@ sealed interface SettingsEvent {
 
     /** 既定の母語・解説の言語（base、単一言語は `null`）を変更する。 */
     data class SetBaseLanguage(val language: LanguageTag?) : SettingsEvent
+
+    /** 選択肢として有効な言語の ON / OFF を切り替える。 */
+    data class ToggleEnabledLanguage(val language: LanguageTag) : SettingsEvent
+
+    /** 選択肢として有効な言語のセットを一括更新する。 */
+    data class SetEnabledLanguages(val languages: Set<LanguageTag>) : SettingsEvent
 
     /** 中国語（`zh`）の表示字体を変更する。 */
     data class SetChineseScript(val script: ChineseScript) : SettingsEvent
@@ -220,6 +304,14 @@ class SettingsViewModel @Inject constructor(
                 }
             }
 
+            is SettingsEvent.ToggleEnabledLanguage -> {
+                toggleEnabledLanguage(event.language)
+            }
+
+            is SettingsEvent.SetEnabledLanguages -> {
+                updateEnabledLanguages(event.languages)
+            }
+
             is SettingsEvent.SetChineseScript -> {
                 viewModelScope.launch {
                     userSettingsRepository.setChineseScript(event.script)
@@ -233,6 +325,33 @@ class SettingsViewModel @Inject constructor(
             }
 
             SettingsEvent.Back -> Unit
+        }
+    }
+
+    /** 選択肢として有効な言語の ON / OFF を切り替える（最低 1 言語は残す）。 */
+    fun toggleEnabledLanguage(tag: LanguageTag) {
+        if (tag.value.isBlank()) return
+        val current = uiState.value.enabledLanguages
+        val next = if (tag in current) {
+            if (current.size <= 1) return
+            current - tag
+        } else {
+            current + tag
+        }
+        updateEnabledLanguages(next)
+    }
+
+    /** 選択肢として有効な言語のセットを更新する（空の場合は既定の日本語・英語にフォールバックする）。 */
+    fun updateEnabledLanguages(languages: Set<LanguageTag>) {
+        val cleaned = languages
+            .mapNotNull { tag ->
+                val code = tag.value.trim().lowercase(Locale.ROOT)
+                if (code.isNotEmpty()) LanguageTag(code) else null
+            }
+            .toSet()
+            .ifEmpty { UserSettings.DEFAULT_ENABLED_LANGUAGES }
+        viewModelScope.launch {
+            userSettingsRepository.setEnabledLanguages(cleaned)
         }
     }
 }
