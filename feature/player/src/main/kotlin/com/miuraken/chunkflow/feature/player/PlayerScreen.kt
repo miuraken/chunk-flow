@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -259,7 +260,7 @@ fun PlayerScreen(
                     IconButton(onClick = { showResegmentSheet = true }) {
                         Icon(
                             imageVector = ChunkFlowIcons.Tune,
-                            contentDescription = stringResource(R.string.player_chip_resegment),
+                            contentDescription = stringResource(R.string.player_file_settings_cd),
                         )
                     }
                 },
@@ -306,6 +307,9 @@ fun PlayerScreen(
                             seekBackSeconds = seekBackSeconds,
                             onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
                             onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
+                            onSetChunkSelected = { chunkId, selected ->
+                                onEvent(PlayerEvent.SetChunkSelected(chunkId, selected))
+                            },
                             onSetAbRange = { startMs, endMs ->
                                 onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
                             },
@@ -343,7 +347,6 @@ fun PlayerScreen(
                         ChunkListControlStrip(
                             state = state,
                             onEvent = onEvent,
-                            onOpenResegmentSheet = { showResegmentSheet = true },
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                         )
 
@@ -437,6 +440,9 @@ fun PlayerScreen(
                             seekBackSeconds = seekBackSeconds,
                             onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
                             onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
+                            onSetChunkSelected = { chunkId, selected ->
+                                onEvent(PlayerEvent.SetChunkSelected(chunkId, selected))
+                            },
                             onSetAbRange = { startMs, endMs ->
                                 onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
                             },
@@ -450,7 +456,6 @@ fun PlayerScreen(
                     ChunkListControlStrip(
                         state = state,
                         onEvent = onEvent,
-                        onOpenResegmentSheet = { showResegmentSheet = true },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                     )
 
@@ -563,6 +568,10 @@ fun PlayerScreen(
         ModalBottomSheet(onDismissRequest = { showResegmentSheet = false }) {
             ResegmentSheetContent(
                 initialParams = state.segmentationParams,
+                languagePair = state.languagePair,
+                onChangeLanguages = { pair ->
+                    onEvent(PlayerEvent.UpdateItemLanguages(target = pair.target, base = pair.base))
+                },
                 transcriptOffsetMs = state.transcriptOffsetMs,
                 onAdjustTranscriptOffset = { deltaMs ->
                     onEvent(PlayerEvent.AdjustTranscriptOffset(deltaMs))
@@ -679,13 +688,14 @@ private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
  * - 「言語」（*すべて、学習言語のみ、母語のみ）
  * - 「学習言語を表示」（*on, off）
  * - 「読み」（on, *off）
- * - 「分割調整」
+ *
+ * 左端には、チャンクを選択しているときは「全選択解除」（選択が連続していて両端の言語が同じなら「連結」も）、
+ * 選択がないときは現在位置でチャンクを分ける「分割」を表示する。
  */
 @Composable
 private fun ChunkListControlStrip(
     state: PlayerUiState,
     onEvent: (PlayerEvent) -> Unit,
-    onOpenResegmentSheet: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var langFilterMenuExpanded by remember { mutableStateOf(false) }
@@ -700,6 +710,8 @@ private fun ChunkListControlStrip(
     val isShowTargetLangOn = state.blindMode == BlindMode.OFF
     val isReadingOn = state.showTargetRomanization
     val toggleColors = brightnessToggleChipColors()
+    val hasSelection = state.chunks.any { it.isRepeatChecked }
+    val canMergeSelection = remember(state.chunks) { canMergeSelectedChunks(state.chunks) }
 
     Row(
         modifier = modifier
@@ -708,6 +720,25 @@ private fun ChunkListControlStrip(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 0. 選択中: 「全選択解除」（+「連結」）、選択なし: 「分割」
+        if (hasSelection) {
+            AssistChip(
+                onClick = { onEvent(PlayerEvent.ClearChunkSelection) },
+                label = { Text(text = stringResource(R.string.player_selection_clear_all), maxLines = 1) },
+            )
+            if (canMergeSelection) {
+                AssistChip(
+                    onClick = { onEvent(PlayerEvent.MergeSelectedChunks) },
+                    label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
+                )
+            }
+        } else if (state.chunks.isNotEmpty()) {
+            AssistChip(
+                onClick = { onEvent(PlayerEvent.SplitChunkAtCurrentPosition) },
+                label = { Text(text = stringResource(R.string.player_split_at_cursor), maxLines = 1) },
+            )
+        }
+
         // 1. 「言語」（*すべて、学習言語のみ、母語のみ）
         Column {
             FilterChip(
@@ -778,13 +809,6 @@ private fun ChunkListControlStrip(
                 )
             },
             colors = toggleColors,
-        )
-
-        // 4. 「分割調整」
-        FilterChip(
-            selected = state.transcriptOffsetMs != 0,
-            onClick = onOpenResegmentSheet,
-            label = { Text(text = stringResource(R.string.player_chip_resegment), maxLines = 1) },
         )
     }
 }
@@ -1189,6 +1213,8 @@ private fun PlayerSpeedSheetContent(
 @Composable
 private fun ResegmentSheetContent(
     initialParams: SegmentationParams,
+    languagePair: LanguagePair?,
+    onChangeLanguages: (LanguagePair) -> Unit,
     transcriptOffsetMs: Int,
     onAdjustTranscriptOffset: (Int) -> Unit,
     onAutoAlignTranscriptOffset: () -> Unit,
@@ -1217,6 +1243,14 @@ private fun ResegmentSheetContent(
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        // 教材の言語（学習言語・ベース言語）を選び直す
+        ItemLanguageSettingsSection(
+            languagePair = languagePair,
+            onChangeLanguages = onChangeLanguages,
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
         // 文字起こしファイル (F1.3, F1.4, F7.5)
         Text(
             text = stringResource(R.string.player_export_section_title),

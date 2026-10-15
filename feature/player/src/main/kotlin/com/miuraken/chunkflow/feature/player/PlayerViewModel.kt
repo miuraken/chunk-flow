@@ -521,6 +521,21 @@ sealed interface PlayerEvent {
     /** 指定したチャンクの連続無限リピートチェック（`PracticeSettings.repeatChunkIds`）をトグルする（F6.1）。 */
     data class ToggleChunkRepeat(val chunkId: ChunkId) : PlayerEvent
 
+    /** 指定したチャンクを選択状態（`PracticeSettings.repeatChunkIds`）にする、または選択を外す（拡大波形の長押し）。 */
+    data class SetChunkSelected(val chunkId: ChunkId, val selected: Boolean) : PlayerEvent
+
+    /** チャンクの選択（チェックボックス）をすべて外す。 */
+    data object ClearChunkSelection : PlayerEvent
+
+    /** 選択中の連続したチャンクを 1 つに連結する（両端のチャンクの言語が同じ場合のみ）。 */
+    data object MergeSelectedChunks : PlayerEvent
+
+    /** 現在の再生位置（拡大波形の中央のカーソル）でチャンクを 2 つに分割する。 */
+    data object SplitChunkAtCurrentPosition : PlayerEvent
+
+    /** 開いている教材の学習言語とベース言語を変更する。 */
+    data class UpdateItemLanguages(val target: LanguageTag, val base: LanguageTag?) : PlayerEvent
+
     /** ブラインドモードを変更する（F7.2）。 */
     data class SetBlindMode(val blindMode: BlindMode) : PlayerEvent
 
@@ -601,6 +616,9 @@ sealed interface PlayerEvent {
 /** 端末内音声認識モデルの問題が残っている間、ダウンロードの完了を OS に問い合わせる間隔。 */
 private const val RECOGNITION_MODEL_REFRESH_INTERVAL_MS: Long = 30_000L
 
+/** 言語バッジの最後のトグルから、文字起こしのやり直しを始めるまでの待ち時間（誤タップ対策）。 */
+internal const val LANGUAGE_TOGGLE_COMMIT_DELAY_MS: Long = 1_000L
+
 private data class AnalysisSnapshot(
     val status: Map<AnalysisStage, StageStatus> = emptyMap(),
     val waveform: Waveform? = null,
@@ -650,6 +668,8 @@ class PlayerViewModel @Inject constructor(
     private val localUiState = MutableStateFlow(LocalUiSnapshot())
     private var lastOpenedMediaId: MediaId? = null
 
+    /** 言語バッジのトグル後、文字起こしのやり直しを待っているチャンクごとのジョブ（最後のトグルから 1 秒後に実行）。 */
+    private val pendingLanguageCommitJobs = mutableMapOf<ChunkId, Job>()
     private var lookaheadLoopJob: Job? = null
 
     /** 高頻度で変わる再生位置のプロバイダ（§6.2）。 */
@@ -1017,6 +1037,66 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            is PlayerEvent.SetChunkSelected -> {
+                playbackController.updatePractice { current ->
+                    val nextIds = if (event.selected) {
+                        current.repeatChunkIds + event.chunkId
+                    } else {
+                        current.repeatChunkIds - event.chunkId
+                    }
+                    if (nextIds == current.repeatChunkIds) current else current.copy(repeatChunkIds = nextIds)
+                }
+            }
+
+            PlayerEvent.ClearChunkSelection -> {
+                playbackController.updatePractice { current ->
+                    if (current.repeatChunkIds.isEmpty()) current else current.copy(repeatChunkIds = emptySet())
+                }
+            }
+
+            PlayerEvent.MergeSelectedChunks -> {
+                val id = resolveActiveMediaId() ?: return
+                val chunkIds = mergeableSelectedChunkIds(uiState.value.chunks)
+                if (chunkIds.size < 2) return
+                viewModelScope.launch {
+                    withContext(NonCancellable) {
+                        val merged = analysisRepository.mergeChunks(id, chunkIds)
+                        if (merged) {
+                            // 連結するとチャンクの ID が変わるため、選択を外す
+                            playbackController.updatePractice { it.copy(repeatChunkIds = emptySet()) }
+                        }
+                    }
+                }
+            }
+
+            PlayerEvent.SplitChunkAtCurrentPosition -> {
+                val id = resolveActiveMediaId() ?: return
+                val positionMs = playbackController.position.currentPositionMs()
+                val target = findSplitTargetChunk(uiState.value.chunks, positionMs) ?: return
+                viewModelScope.launch {
+                    withContext(NonCancellable) {
+                        val split = analysisRepository.splitChunk(id, target.id, positionMs)
+                        if (split) {
+                            playbackController.updatePractice { current ->
+                                if (current.repeatChunkIds.isEmpty()) current else current.copy(repeatChunkIds = emptySet())
+                            }
+                        }
+                    }
+                }
+            }
+
+            is PlayerEvent.UpdateItemLanguages -> {
+                val id = resolveActiveMediaId() ?: return
+                val target = event.target.value.trim().lowercase(Locale.ROOT).ifBlank { return }
+                val base = event.base?.value?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() && it != target }
+                viewModelScope.launch {
+                    val item = libraryRepository.observeItem(id).firstOrNull() ?: return@launch
+                    val newPair = LanguagePair(target = LanguageTag(target), base = base?.let(::LanguageTag))
+                    if (item.languagePair == newPair) return@launch
+                    libraryRepository.updateItemMetadata(id = id, course = item.course, languages = newPair)
+                }
+            }
+
             is PlayerEvent.SetBlindMode -> {
                 localUiState.update {
                     it.copy(
@@ -1060,36 +1140,15 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.UpdateChunkLanguage -> {
                 val id = resolveActiveMediaId() ?: return
+                // 言語バッジの表示はすぐに切り替え、文字起こしのやり直しは最後のトグルから 1 秒後にまとめて行う（誤タップ対策）
                 localUiState.update { state ->
-                    state.copy(
-                        languageOverrides = state.languageOverrides + (event.chunkId to event.language),
-                        clearingChunkIds = state.clearingChunkIds + event.chunkId,
-                    )
+                    state.copy(languageOverrides = state.languageOverrides + (event.chunkId to event.language))
                 }
-                viewModelScope.launch {
-                    try {
-                        withContext(NonCancellable) {
-                            analysisRepository.updateChunkLanguage(id, event.chunkId, event.language)
-                            val hasTranscript =
-                                analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
-                            if (hasTranscript) {
-                                localUiState.update { state ->
-                                    state.copy(languageOverrides = state.languageOverrides - event.chunkId)
-                                }
-                            }
-                            val exported = libraryRepository.exportLocalTranscriptJson(id)
-                            if (exported) {
-                                localUiState.update { it.copy(localTranscriptExported = true) }
-                            }
-                        }
-                        if (lastOpenedMediaId == id && uiState.value.lookaheadStatus.enabled) {
-                            analysisRepository.triggerLookaheadAt(id, event.chunkId)
-                        }
-                    } finally {
-                        localUiState.update { state ->
-                            state.copy(clearingChunkIds = state.clearingChunkIds - event.chunkId)
-                        }
-                    }
+                pendingLanguageCommitJobs.remove(event.chunkId)?.cancel()
+                pendingLanguageCommitJobs[event.chunkId] = viewModelScope.launch {
+                    delay(LANGUAGE_TOGGLE_COMMIT_DELAY_MS)
+                    pendingLanguageCommitJobs.remove(event.chunkId)
+                    commitChunkLanguage(id, event.chunkId, event.language)
                 }
             }
 
@@ -1433,6 +1492,39 @@ class PlayerViewModel @Inject constructor(
             viewModelScope.launch {
                 analysisRepository.prioritizeChunkTranscription(id, matchingChunk.id)
             }
+        }
+    }
+
+    /**
+     * 言語バッジのトグルを確定し、切り替えた言語で文字起こしをやり直す（認識キューの最優先で実行）。
+     *
+     * 保存済みの言語（本文あり）と同じ言語に戻した場合は何もしない（誤タップの取り消し）。
+     */
+    private suspend fun commitChunkLanguage(id: MediaId, chunkId: ChunkId, language: LanguageTag?) {
+        val stored = analysisRepository.observeTranscripts(id).firstOrNull()?.get(chunkId)
+        if (stored != null && stored.text.isNotBlank() && stored.language == language) {
+            localUiState.update { state -> state.copy(languageOverrides = state.languageOverrides - chunkId) }
+            return
+        }
+        localUiState.update { state -> state.copy(clearingChunkIds = state.clearingChunkIds + chunkId) }
+        try {
+            withContext(NonCancellable) {
+                analysisRepository.updateChunkLanguage(id, chunkId, language)
+                val hasTranscript =
+                    analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(chunkId) == true
+                if (hasTranscript) {
+                    localUiState.update { state -> state.copy(languageOverrides = state.languageOverrides - chunkId) }
+                }
+                val exported = libraryRepository.exportLocalTranscriptJson(id)
+                if (exported) {
+                    localUiState.update { it.copy(localTranscriptExported = true) }
+                }
+            }
+            if (lastOpenedMediaId == id && uiState.value.lookaheadStatus.enabled) {
+                analysisRepository.triggerLookaheadAt(id, chunkId)
+            }
+        } finally {
+            localUiState.update { state -> state.copy(clearingChunkIds = state.clearingChunkIds - chunkId) }
         }
     }
 

@@ -70,7 +70,14 @@
 
     <string name="player_chip_source_imported">区切り: 文字起こし</string>
     <string name="player_chip_source_auto">区切り: 自動分割</string>
-    <string name="player_chip_resegment">分割調整</string>
+    <string name="player_file_settings_cd">ファイルの設定</string>
+    <string name="player_selection_clear_all">全選択解除</string>
+    <string name="player_selection_merge">連結</string>
+    <string name="player_split_at_cursor">分割</string>
+    <string name="player_settings_language_section_title">言語</string>
+    <string name="player_settings_target_lang_label">学習言語</string>
+    <string name="player_settings_base_lang_label">ベース言語</string>
+    <string name="player_settings_base_lang_none">なし</string>
 
     <string name="player_resegment_sheet_title">自動チャンク分割の調整</string>
     <string name="player_resegment_min_silence">無音区間の最小長: %1$d ms</string>
@@ -129,8 +136,8 @@
     <string name="player_export_txt">TXT 書き出し</string>
     <string name="player_export_done">%1$s ファイルを書き出しました</string>
     <string name="player_export_failed">ファイルの書き出しに失敗しました</string>
-    <string name="player_prev_chunk_label">prev chunk</string>
-    <string name="player_next_chunk_label">next chunk</string>
+    <string name="player_prev_chunk_label">前</string>
+    <string name="player_next_chunk_label">次</string>
     <string name="player_chip_repeat_checked_count">選択リピート (%1$d件)</string>
     <string name="player_repeat_check_add">連続リピート対象に追加</string>
     <string name="player_repeat_check_remove">連続リピート対象から外す</string>

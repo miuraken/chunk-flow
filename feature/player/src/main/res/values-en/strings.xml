@@ -70,7 +70,14 @@
 
     <string name="player_chip_source_imported">Chunks: Transcript</string>
     <string name="player_chip_source_auto">Chunks: Auto VAD</string>
-    <string name="player_chip_resegment">Resegment</string>
+    <string name="player_file_settings_cd">File settings</string>
+    <string name="player_selection_clear_all">Clear selection</string>
+    <string name="player_selection_merge">Merge</string>
+    <string name="player_split_at_cursor">Split</string>
+    <string name="player_settings_language_section_title">Languages</string>
+    <string name="player_settings_target_lang_label">Target language</string>
+    <string name="player_settings_base_lang_label">Base language</string>
+    <string name="player_settings_base_lang_none">None</string>
 
     <string name="player_resegment_sheet_title">Adjust Auto-Segmentation</string>
     <string name="player_resegment_min_silence">Min silence duration: %1$d ms</string>
@@ -129,8 +136,8 @@
     <string name="player_export_txt">Export TXT</string>
     <string name="player_export_done">Exported %1$s file</string>
     <string name="player_export_failed">Failed to export file</string>
-    <string name="player_prev_chunk_label">prev chunk</string>
-    <string name="player_next_chunk_label">next chunk</string>
+    <string name="player_prev_chunk_label">prev</string>
+    <string name="player_next_chunk_label">next</string>
     <string name="player_chip_repeat_checked_count">Checked Repeat (%1$d)</string>
     <string name="player_repeat_check_add">Add to sequential repeat</string>
     <string name="player_repeat_check_remove">Remove from sequential repeat</string>

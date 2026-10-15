@@ -35,6 +35,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -283,9 +284,10 @@ class PlayerViewModelTest {
         viewModel.open(item.id)
 
         val targetChunkId = sample.chunks[0].id
-        // 言語を null（未判定 ?）に更新
+        // 言語を null（未判定 ?）に更新（表示はすぐに切り替わり、保存と書き出しは最後のトグルから 1 秒後）
         viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(targetChunkId, null))
         assertNull(viewModel.uiState.value.chunks[0].language)
+        advanceTimeBy(LANGUAGE_TOGGLE_COMMIT_DELAY_MS + 1L)
         assertTrue(viewModel.uiState.value.hasUnknownLanguageChunks)
         assertTrue(viewModel.uiState.value.localTranscriptExported)
         assertTrue(item.id in libraryRepo.exportedTranscriptIds)
@@ -692,10 +694,12 @@ class PlayerViewModelTest {
 
         // 先読み有効化してチャンク 1 の言語を ko に変更
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
-        analysisRepo.lookaheadTriggers.clear()
         viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(secondChunkId, LanguageTag("ko")))
         assertEquals(LanguageTag("ko"), viewModel.uiState.value.chunks[1].language)
         assertNull(viewModel.uiState.value.chunks[1].text)
+        // 文字起こしのやり直しは最後のトグルから 1 秒後に、そのチャンクを起点に行う
+        analysisRepo.lookaheadTriggers.clear()
+        advanceTimeBy(LANGUAGE_TOGGLE_COMMIT_DELAY_MS + 1L)
         assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to secondChunkId))
     }
 
@@ -961,5 +965,160 @@ class PlayerViewModelTest {
         // 3. Back または close で現在のファイルの文字起こしセッションが閉じられる
         viewModel.onEvent(PlayerEvent.Back)
         assertTrue(analysisRepo.openTranscriptionSessions.isEmpty())
+    }
+
+    @Test
+    fun `言語バッジのトグル_最後のトグルから1秒たつまで保存せず元の言語に戻した場合は文字起こしをやり直さない`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository(UserSettings(lookaheadTranscriptionEnabled = false))
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val chunkId = sample.chunks[0].id // ja「では、聞いてみましょう。」
+        suspend fun storedTranscript() = analysisRepo.observeTranscripts(item.id).first().getValue(chunkId)
+
+        // ja -> ko -> ja と素早くトグルすると、表示は切り替わるが保存はまだ行わない
+        viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, LanguageTag("ko")))
+        assertEquals(LanguageTag("ko"), viewModel.uiState.value.chunks[0].language)
+        advanceTimeBy(LANGUAGE_TOGGLE_COMMIT_DELAY_MS / 2)
+        viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, LanguageTag("ja")))
+        assertEquals(LanguageTag("ja"), viewModel.uiState.value.chunks[0].language)
+        advanceTimeBy(LANGUAGE_TOGGLE_COMMIT_DELAY_MS / 2 + 1L)
+        assertFalse(storedTranscript().userEdited)
+
+        // 最後のトグルから 1 秒たっても、保存済みの言語（本文あり）と同じなので何もしない（誤タップの取り消し）
+        advanceTimeBy(LANGUAGE_TOGGLE_COMMIT_DELAY_MS)
+        assertFalse(storedTranscript().userEdited)
+        assertEquals(LanguageTag("ja"), storedTranscript().language)
+        assertTrue(libraryRepo.exportedTranscriptIds.isEmpty())
+
+        // 別の言語のまま 1 秒たつと保存し、文字起こしを書き出す
+        viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, LanguageTag("ko")))
+        advanceTimeBy(LANGUAGE_TOGGLE_COMMIT_DELAY_MS + 1L)
+        assertTrue(storedTranscript().userEdited)
+        assertEquals(LanguageTag("ko"), storedTranscript().language)
+        assertTrue(item.id in libraryRepo.exportedTranscriptIds)
+    }
+
+    @Test
+    fun `チャンクの選択_拡大波形の長押しの選択がチェックボックスと連動し全選択解除ですべて外れる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c1 = sample.chunks[1].id
+        val c3 = sample.chunks[3].id
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c1, selected = true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c3, selected = true))
+        assertEquals(setOf(c1, c3), playback.practiceState.value.repeatChunkIds)
+        assertEquals(
+            listOf(false, true, false, true, false),
+            viewModel.uiState.value.chunks.map { it.isRepeatChecked },
+        )
+
+        // 同じ値をもう一度送っても変わらず、false で選択が外れる
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c3, selected = true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c1, selected = false))
+        assertEquals(setOf(c3), playback.practiceState.value.repeatChunkIds)
+
+        viewModel.onEvent(PlayerEvent.ClearChunkSelection)
+        assertTrue(playback.practiceState.value.repeatChunkIds.isEmpty())
+        assertTrue(viewModel.uiState.value.chunks.none { it.isRepeatChecked })
+    }
+
+    @Test
+    fun `連結_連続して両端の言語が同じ選択だけを1つのチャンクに連結し選択を外す`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val chunks = sample.chunks
+        // 連続していない選択（1 と 3）は連結しない
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[1].id, selected = true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[3].id, selected = true))
+        assertFalse(canMergeSelectedChunks(viewModel.uiState.value.chunks))
+        viewModel.onEvent(PlayerEvent.MergeSelectedChunks)
+        assertTrue(analysisRepo.mergeChunksRequests.isEmpty())
+
+        // 連続していて両端が ko（3 と 4）なら連結する。本文は半角スペースを挟んでつなぐ
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[1].id, selected = false))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[4].id, selected = true))
+        assertTrue(canMergeSelectedChunks(viewModel.uiState.value.chunks))
+        viewModel.onEvent(PlayerEvent.MergeSelectedChunks)
+
+        assertEquals(listOf(item.id to listOf(chunks[3].id, chunks[4].id)), analysisRepo.mergeChunksRequests)
+        val merged = viewModel.uiState.value.chunks
+        assertEquals(4, merged.size)
+        assertEquals(chunks[3].startMs, merged[3].startMs)
+        assertEquals(chunks[4].endMs, merged[3].endMs)
+        assertEquals("이건 얼마예요? 저는 한국어를 공부하고 있어요.", merged[3].text)
+        assertEquals(LanguageTag("ko"), merged[3].language)
+        assertTrue(playback.practiceState.value.repeatChunkIds.isEmpty())
+    }
+
+    @Test
+    fun `分割_選択がないとき現在位置でチャンクを2つに分け端に近すぎる位置では分けない`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // チャンク 1（4100..6900）の開始から 200ms 未満の位置では分けない
+        viewModel.onEvent(PlayerEvent.SeekTo(4_200L))
+        viewModel.onEvent(PlayerEvent.SplitChunkAtCurrentPosition)
+        assertEquals(5, viewModel.uiState.value.chunks.size)
+
+        // 5000ms で分けると 4100..5000 と 5000..6900 になる
+        viewModel.onEvent(PlayerEvent.SeekTo(5_000L))
+        viewModel.onEvent(PlayerEvent.SplitChunkAtCurrentPosition)
+        val chunks = viewModel.uiState.value.chunks
+        assertEquals(6, chunks.size)
+        assertEquals(4_100L to 5_000L, chunks[1].startMs to chunks[1].endMs)
+        assertEquals(5_000L to 6_900L, chunks[2].startMs to chunks[2].endMs)
+    }
+
+    @Test
+    fun `教材の言語_設定シートで学習言語とベース言語を変えると教材に保存される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        viewModel.onEvent(PlayerEvent.UpdateItemLanguages(target = LanguageTag("ZH-CN"), base = LanguageTag("en")))
+        val expected = LanguagePair(target = LanguageTag("zh-cn"), base = LanguageTag("en"))
+        assertEquals(expected, libraryRepo.observeItem(item.id).first()?.languagePair)
+        assertEquals(expected, viewModel.uiState.value.languagePair)
+        assertEquals(item.course, libraryRepo.observeItem(item.id).first()?.course)
+
+        // ベース言語が学習言語と同じなら「なし」にする
+        viewModel.onEvent(PlayerEvent.UpdateItemLanguages(target = LanguageTag("ko"), base = LanguageTag("ko")))
+        assertEquals(LanguagePair(target = LanguageTag("ko"), base = null), viewModel.uiState.value.languagePair)
     }
 }

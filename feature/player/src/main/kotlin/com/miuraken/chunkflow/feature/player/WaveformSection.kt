@@ -1,10 +1,14 @@
 package com.miuraken.chunkflow.feature.player
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,9 +52,17 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -115,8 +128,11 @@ internal fun matchesLanguageRole(
 /** 拡大波形の既定の表示窓（30 秒 = 30,000ms）。 */
 internal const val DEFAULT_ZOOM_WINDOW_MS: Long = 30_000L
 
-/** 拡大波形で高解像度の近傍レンダリングに切り替える表示窓の閾値（10 秒 = 10,000ms）。 */
-internal const val HIGH_RES_ZOOM_THRESHOLD_MS: Long = 10_000L
+/** 拡大波形で、15 秒の解像度の近傍画像に切り替える表示窓の閾値（15 秒 = 15,000ms）。 */
+internal const val HIGH_RES_ZOOM_THRESHOLD_MS: Long = 15_000L
+
+/** 拡大波形で、さらに細かい 7.5 秒の解像度の近傍画像に切り替える表示窓の閾値（7.5 秒 = 7,500ms）。 */
+internal const val FINE_ZOOM_THRESHOLD_MS: Long = 7_500L
 
 /** 拡大波形の最小表示窓（2 秒 = 2,000ms、§7.5.4）。 */
 internal const val MIN_ZOOM_WINDOW_MS: Long = 2_000L
@@ -127,14 +143,40 @@ internal const val ZOOM_SETTLE_DELAY_MS: Long = 200L
 private const val MAX_BITMAP_TILE_WIDTH_PX: Int = 2048
 private const val MAX_TOTAL_STRIP_WIDTH_PX: Int = 16_384
 
+/** 近傍画像の幅の上限（px）。 */
+private const val MAX_LOCAL_STRIP_WIDTH_PX: Int = 8_192
+
+/** 近傍画像で描く時間幅（解像度の何倍か）。 */
+internal const val LOCAL_STRIP_SPAN_FACTOR: Long = 4L
+
+/** 近傍画像の中心時刻を見直す間隔（ミリ秒）。 */
+private const val ANCHOR_POLL_INTERVAL_MS: Long = 100L
+
+/** 拡大波形で、1 つおきのチャンクの背景を薄くするときの濃さ（不透明度の倍率）。 */
+private const val ALTERNATE_CHUNK_BACKGROUND_EMPHASIS: Float = 0.55f
+
+/**
+ * 表示窓 [windowMs] に対して、近傍画像をレンダリングする解像度（その表示窓で画面幅いっぱいになる時間幅）を返す。
+ *
+ * [HIGH_RES_ZOOM_THRESHOLD_MS]（15 秒）以上では全体画像（30 秒の解像度）を使うため `null` を返す。
+ */
+internal fun zoomRenderLevelWindowMs(windowMs: Long): Long? = when {
+    windowMs < FINE_ZOOM_THRESHOLD_MS -> FINE_ZOOM_THRESHOLD_MS
+    windowMs < HIGH_RES_ZOOM_THRESHOLD_MS -> HIGH_RES_ZOOM_THRESHOLD_MS
+    else -> null
+}
+
 /**
  * プレイヤー画面の波形セクション（全体波形 + 拡大波形。F4.1、F4.2、F6.2、§7.5.4）。
  *
  * - [positionProvider] は描画フェーズ（`onDrawBehind`）でのみ読み取り、再生位置の変化で再コンポーズしない（§6.2）。
  * - 再生中のみ `withFrameNanos` で描画レイヤーの無効化を行う。
  * - 拡大波形は [DEFAULT_ZOOM_WINDOW_MS]（30 秒）の解像度で全体波形をアルファチャンネル付き画像（[ImageBitmap]）として
- *   レンダリング・キャッシュし、水平方向の拡大縮小でスライス表示する。表示幅が [HIGH_RES_ZOOM_THRESHOLD_MS]（10 秒）より
- *   短くなった場合のみ、現在位置付近の波形を高解像度画像として再レンダリング・キャッシュして表示する。
+ *   レンダリング・キャッシュし、水平方向の拡大縮小でスライス表示する。表示幅が [HIGH_RES_ZOOM_THRESHOLD_MS]（15 秒）より
+ *   短くなったら 15 秒の解像度、[FINE_ZOOM_THRESHOLD_MS]（7.5 秒）より短くなったら 7.5 秒の解像度で現在位置付近の波形を
+ *   画像として作り直し、それを拡大縮小して表示する。
+ * - 拡大波形のチャンクは背景色で区別し、タップでそのチャンクの冒頭から再生、長押しで選択（チャンクリストのチェックボックスと連動）する。
+ *   長押ししたまま指を動かすと、通ったチャンクもまとめて選択（または選択解除）する。
  * - 画面端のドラッグがシステムの「戻る」ジェスチャーと競合しないよう `Modifier.systemGestureExclusion()` を適用する。
  */
 @Composable
@@ -156,6 +198,7 @@ fun WaveformSection(
     modifier: Modifier = Modifier,
     seekBackSeconds: Int = 3,
     onSeekToChunk: (ChunkId) -> Unit = {},
+    onSetChunkSelected: (ChunkId, Boolean) -> Unit = { _, _ -> },
 ) {
     if (waveform == null || waveform.peak.isEmpty()) {
         WaveformPlaceholderCard(
@@ -197,7 +240,7 @@ fun WaveformSection(
         mutableLongStateOf(DEFAULT_ZOOM_WINDOW_MS.coerceIn(MIN_ZOOM_WINDOW_MS, maxWindowMs))
     }
 
-    // 10秒未満の拡大表示時に近傍高解像度画像をキャッシュする中心時刻
+    // 拡大波形の近傍画像（15 秒 / 7.5 秒の解像度）を描く範囲の中心時刻
     var cachedAnchorCenterMs by remember(waveform) {
         mutableLongStateOf(positionProvider.currentPositionMs().coerceIn(0L, effectiveDurationMs))
     }
@@ -228,9 +271,17 @@ fun WaveformSection(
     val unknownWavePeakColor = colorScheme.onSurfaceVariant.copy(alpha = 0.36f)
     val unknownWaveRmsColor = colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
     val unknownActiveBorderColor = colorScheme.primary.copy(alpha = 0.60f)
-    val chunkBoundaryLineColor = colorScheme.outlineVariant.copy(alpha = 0.55f)
     val abLoopHighlightColor = colorScheme.tertiary.copy(alpha = 0.30f)
     val abLoopBorderColor = colorScheme.tertiary
+    // 拡大波形のチャンク背景（言語の役割で色を分け、隣り合うチャンクは濃さを交互に変える）。
+    // ダークテーマではバッジの色が濃いため、波形が埋もれないよう薄めて使う
+    val chunkBackgroundAlpha = if (colorScheme.surface.luminance() < 0.5f) 0.60f else 1f
+    val targetChunkBackgroundColor = langPalette.targetBadgeContainer.copy(alpha = chunkBackgroundAlpha)
+    val baseChunkBackgroundColor = langPalette.baseBadgeContainer.copy(alpha = chunkBackgroundAlpha)
+    val unknownChunkBackgroundColor = colorScheme.surfaceVariant.copy(alpha = chunkBackgroundAlpha)
+    val selectedChunkBackgroundColor = colorScheme.primary.copy(alpha = 0.16f)
+    val selectedChunkBorderColor = colorScheme.primary
+    val selectedChunkCheckColor = colorScheme.onPrimary
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -296,9 +347,8 @@ fun WaveformSection(
                     onSeekTo(clamped)
                 },
                 onScrubChange = { targetMs ->
-                    val clamped = targetMs.coerceIn(0L, effectiveDurationMs)
-                    scrubPositionMs = clamped
-                    cachedAnchorCenterMs = clamped
+                    // ドラッグ中の中心時刻の更新は拡大波形の側で間引いて行う（イベントごとに近傍画像を作り直さない）
+                    scrubPositionMs = targetMs.coerceIn(0L, effectiveDurationMs)
                 },
                 onPreviousChunk = onPreviousChunk,
                 onNextChunk = onNextChunk,
@@ -349,36 +399,34 @@ fun WaveformSection(
                 baseWavePeakColor = baseWavePeakColor,
                 baseWaveRmsColor = baseWaveRmsColor,
                 playheadColor = playheadColor,
-                chunkBoundaryLineColor = chunkBoundaryLineColor,
                 targetActiveBorderColor = targetActiveBorderColor,
                 baseActiveBorderColor = baseActiveBorderColor,
                 unknownActiveBorderColor = unknownActiveBorderColor,
                 abLoopHighlightColor = abLoopHighlightColor,
                 abLoopBorderColor = abLoopBorderColor,
+                targetChunkBackgroundColor = targetChunkBackgroundColor,
+                baseChunkBackgroundColor = baseChunkBackgroundColor,
+                unknownChunkBackgroundColor = unknownChunkBackgroundColor,
+                selectedChunkBackgroundColor = selectedChunkBackgroundColor,
+                selectedChunkBorderColor = selectedChunkBorderColor,
+                selectedChunkCheckColor = selectedChunkCheckColor,
+                onSetChunkSelected = onSetChunkSelected,
                 contentDescriptionText = zoomedCd,
                 prevChunkActionLabel = prevChunkActionLabel,
                 nextChunkActionLabel = nextChunkActionLabel,
                 seekBackActionLabel = seekBackActionLabel,
+                // 拡大波形の中での移動は表示窓の近くに限られるため、近傍画像の中心時刻は拡大波形の側で
+                // 範囲から外れそうになったときだけ更新する（パンのイベントごとに近傍画像を作り直さない）
                 onSeekTo = { targetMs ->
-                    val clamped = targetMs.coerceIn(0L, effectiveDurationMs)
                     scrubPositionMs = null
-                    cachedAnchorCenterMs = clamped
-                    onSeekTo(clamped)
+                    onSeekTo(targetMs.coerceIn(0L, effectiveDurationMs))
                 },
                 onSeekToChunk = { chunkId ->
                     scrubPositionMs = null
-                    val targetChunk = chunks.firstOrNull { it.id == chunkId }
-                    if (targetChunk != null) {
-                        cachedAnchorCenterMs = targetChunk.startMs.coerceIn(0L, effectiveDurationMs)
-                    }
                     onSeekToChunk(chunkId)
                 },
                 onScrubChange = { targetMs ->
-                    val clamped = targetMs.coerceIn(0L, effectiveDurationMs)
-                    scrubPositionMs = clamped
-                    if (abs(clamped - cachedAnchorCenterMs) > zoomWindowMs) {
-                        cachedAnchorCenterMs = clamped
-                    }
+                    scrubPositionMs = targetMs.coerceIn(0L, effectiveDurationMs)
                 },
                 onZoomWindowChange = { newWindowMs ->
                     zoomWindowMs = newWindowMs.coerceIn(MIN_ZOOM_WINDOW_MS, maxWindowMs)
@@ -668,12 +716,18 @@ private fun ZoomedWaveformCanvas(
     baseWavePeakColor: Color,
     baseWaveRmsColor: Color,
     playheadColor: Color,
-    chunkBoundaryLineColor: Color,
     targetActiveBorderColor: Color,
     baseActiveBorderColor: Color,
     unknownActiveBorderColor: Color,
     abLoopHighlightColor: Color,
     abLoopBorderColor: Color,
+    targetChunkBackgroundColor: Color,
+    baseChunkBackgroundColor: Color,
+    unknownChunkBackgroundColor: Color,
+    selectedChunkBackgroundColor: Color,
+    selectedChunkBorderColor: Color,
+    selectedChunkCheckColor: Color,
+    onSetChunkSelected: (ChunkId, Boolean) -> Unit,
     contentDescriptionText: String,
     prevChunkActionLabel: String,
     nextChunkActionLabel: String,
@@ -688,46 +742,72 @@ private fun ZoomedWaveformCanvas(
     onNextChunk: () -> Unit,
     onSeekBack: () -> Unit,
 ) {
+    val isInspectionMode = LocalInspectionMode.current
+    val hapticFeedback = LocalHapticFeedback.current
+
+    // pointerInput や LaunchedEffect の中では、起動したときにキャプチャした古い値ではなく最新の値を読む
     val currentZoomWindowMs by rememberUpdatedState(zoomWindowMs)
     val currentChunks by rememberUpdatedState(chunks)
+    val currentScrubPositionMs by rememberUpdatedState(scrubPositionMs)
+    val currentAnchorCenterMs by rememberUpdatedState(cachedAnchorCenterMs)
+    val currentOnUpdateAnchorCenter by rememberUpdatedState(onUpdateAnchorCenter)
+    val currentOnSeekTo by rememberUpdatedState(onSeekTo)
+    val currentOnSeekToChunk by rememberUpdatedState(onSeekToChunk)
+    val currentOnScrubChange by rememberUpdatedState(onScrubChange)
+    val currentOnZoomWindowChange by rememberUpdatedState(onZoomWindowChange)
+    val currentOnAbDragUpdate by rememberUpdatedState(onAbDragUpdate)
+    val currentOnAbDragFinish by rememberUpdatedState(onAbDragFinish)
+    val currentOnSetChunkSelected by rememberUpdatedState(onSetChunkSelected)
 
-    // ピンチ操作中は既存のキャッシュ画像を水平スケーリングで即座に追従させ、
-    // 表示幅が 10 秒未満になった場合は 0.2 秒（200ms）後に近傍の高解像度キャッシュ画像を再構築する
+    // ピンチ操作中は既存の画像を水平方向に拡大縮小して即座に追従させ、操作が止まってから 0.2 秒（200ms）後に、
+    // 表示幅に応じた解像度（15 秒 / 7.5 秒）の近傍画像を作り直す
     var settledZoomWindowMs by remember(durationMs) { mutableLongStateOf(zoomWindowMs) }
     LaunchedEffect(zoomWindowMs) {
         if (zoomWindowMs != settledZoomWindowMs) {
             delay(ZOOM_SETTLE_DELAY_MS)
-            val pos = (scrubPositionMs ?: positionProvider.currentPositionMs()).coerceIn(0L, durationMs)
-            onUpdateAnchorCenter(pos)
+            val pos = (currentScrubPositionMs ?: positionProvider.currentPositionMs()).coerceIn(0L, durationMs)
+            currentOnUpdateAnchorCenter(pos)
             settledZoomWindowMs = zoomWindowMs
         }
     }
 
-    // 10秒未満の拡大表示中に再生位置やプログレスバー移動で近傍キャッシュから離れた場合は中心時刻を更新する
-    if (!LocalInspectionMode.current) {
-        LaunchedEffect(settledZoomWindowMs, durationMs) {
+    // Canvas のサイズ（レイアウトのあとで確定する）
+    var canvasWidthPx by remember { mutableIntStateOf(0) }
+    var canvasHeightPx by remember { mutableIntStateOf(0) }
+
+    // 30 秒の解像度で全体を描いた画像の本来の幅。長い音声では上限で縮むため、30 秒の表示でも近傍画像を使う
+    val defaultWindowMs = DEFAULT_ZOOM_WINDOW_MS.coerceAtMost(durationMs).coerceAtLeast(1L)
+    val idealFullStripWidthPx = (durationMs.toDouble() / defaultWindowMs.toDouble()) * canvasWidthPx.toDouble()
+    val renderLevelMs = localStripLevelMs(
+        settledWindowMs = settledZoomWindowMs,
+        isFullStripDownscaled = idealFullStripWidthPx > MAX_TOTAL_STRIP_WIDTH_PX,
+    )
+
+    // 再生位置やプログレスバーの移動で近傍画像の範囲から離れそうになったら、中心時刻を更新する
+    if (!isInspectionMode && renderLevelMs != null) {
+        LaunchedEffect(renderLevelMs, durationMs) {
+            val thresholdMs = renderLevelMs * 3L / 4L
             while (isActive) {
-                withFrameNanos {
-                    val pos = (scrubPositionMs ?: positionProvider.currentPositionMs()).coerceIn(0L, durationMs)
-                    val thresholdMs = max(settledZoomWindowMs, 3_000L)
-                    if (abs(pos - cachedAnchorCenterMs) > thresholdMs) {
-                        onUpdateAnchorCenter(pos)
-                    }
+                val pos = (currentScrubPositionMs ?: positionProvider.currentPositionMs()).coerceIn(0L, durationMs)
+                if (abs(pos - currentAnchorCenterMs) > thresholdMs) {
+                    currentOnUpdateAnchorCenter(pos)
                 }
+                delay(ANCHOR_POLL_INTERVAL_MS)
             }
         }
     }
 
-    // Canvas サイズを記憶して、デフォルト表示幅（30秒）の全体波形画像を 1 度だけ生成・キャッシュする
-    var canvasWidthPx by remember { mutableStateOf(0) }
-    var canvasHeightPx by remember { mutableStateOf(0) }
+    // 波形画像の色分けに使うのはチャンクの時刻と言語だけなので、選択状態や文字起こしの本文が変わっても作り直さない
+    val chunkColorKeys = remember(chunks) {
+        chunks.map { ChunkColorKey(startMs = it.startMs, endMs = it.endMs, language = it.language) }
+    }
 
     val fullWaveformStrip = remember(
         waveform,
         durationMs,
         canvasWidthPx,
         canvasHeightPx,
-        chunks,
+        chunkColorKeys,
         languagePair,
         unknownWavePeakColor,
         unknownWaveRmsColor,
@@ -739,16 +819,12 @@ private fun ZoomedWaveformCanvas(
         if (canvasWidthPx <= 0 || canvasHeightPx <= 0) {
             null
         } else {
-            val defaultWindowMs = DEFAULT_ZOOM_WINDOW_MS.coerceAtMost(durationMs).coerceAtLeast(1L)
-            val virtualTotalWidthPx = ((durationMs.toDouble() / defaultWindowMs.toDouble()) * canvasWidthPx.toDouble())
-                .roundToInt()
-                .coerceIn(canvasWidthPx, MAX_TOTAL_STRIP_WIDTH_PX)
             renderWaveformBitmapStrip(
                 waveform = waveform,
                 downsampler = downsampler,
                 startMs = 0L,
                 endMs = durationMs,
-                totalWidthPx = virtualTotalWidthPx,
+                totalWidthPx = idealFullStripWidthPx.roundToInt().coerceIn(canvasWidthPx, MAX_TOTAL_STRIP_WIDTH_PX),
                 heightPx = canvasHeightPx,
                 chunks = chunks,
                 languagePair = languagePair,
@@ -762,17 +838,19 @@ private fun ZoomedWaveformCanvas(
         }
     }
 
-    val isHighResMode = zoomWindowMs < HIGH_RES_ZOOM_THRESHOLD_MS || settledZoomWindowMs < HIGH_RES_ZOOM_THRESHOLD_MS
-    val highResWindowMs = min(zoomWindowMs, settledZoomWindowMs).coerceIn(MIN_ZOOM_WINDOW_MS, HIGH_RES_ZOOM_THRESHOLD_MS)
-    val highResStrip = remember(
-        isHighResMode,
+    // 近傍画像の解像度と範囲（中心時刻の前後に解像度の 4 倍の幅）。範囲が変わらなければ作り直さない
+    val localStripSpec: LocalStripSpec? = renderLevelMs?.let { levelMs ->
+        LocalStripSpec(
+            levelMs = levelMs,
+            range = localStripRangeFor(anchorMs = cachedAnchorCenterMs, levelMs = levelMs, durationMs = durationMs),
+        )
+    }
+    val localStrip = remember(
+        localStripSpec,
         waveform,
-        durationMs,
         canvasWidthPx,
         canvasHeightPx,
-        cachedAnchorCenterMs,
-        settledZoomWindowMs.coerceAtMost(HIGH_RES_ZOOM_THRESHOLD_MS),
-        chunks,
+        chunkColorKeys,
         languagePair,
         unknownWavePeakColor,
         unknownWaveRmsColor,
@@ -781,22 +859,19 @@ private fun ZoomedWaveformCanvas(
         baseWavePeakColor,
         baseWaveRmsColor,
     ) {
-        if (!isHighResMode || canvasWidthPx <= 0 || canvasHeightPx <= 0) {
+        val spec = localStripSpec
+        if (spec == null || canvasWidthPx <= 0 || canvasHeightPx <= 0) {
             null
         } else {
-            val baseWindowMs = settledZoomWindowMs.coerceIn(MIN_ZOOM_WINDOW_MS, HIGH_RES_ZOOM_THRESHOLD_MS)
-            val spanMs = max(baseWindowMs * 4L, 20_000L).coerceAtMost(durationMs)
-            val halfSpan = spanMs / 2L
-            val startMs = (cachedAnchorCenterMs - halfSpan).coerceIn(0L, (durationMs - spanMs).coerceAtLeast(0L))
-            val endMs = (startMs + spanMs).coerceAtMost(durationMs)
-            val stripWidthPx = ((spanMs.toDouble() / baseWindowMs.toDouble()) * canvasWidthPx.toDouble())
+            val spanMs = (spec.range.last - spec.range.first).coerceAtLeast(1L)
+            val stripWidthPx = ((spanMs.toDouble() / spec.levelMs.toDouble()) * canvasWidthPx.toDouble())
                 .roundToInt()
-                .coerceIn(canvasWidthPx, MAX_BITMAP_TILE_WIDTH_PX * 2)
+                .coerceIn(canvasWidthPx, MAX_LOCAL_STRIP_WIDTH_PX)
             renderWaveformBitmapStrip(
                 waveform = waveform,
                 downsampler = downsampler,
-                startMs = startMs,
-                endMs = endMs,
+                startMs = spec.range.first,
+                endMs = spec.range.last,
                 totalWidthPx = stripWidthPx,
                 heightPx = canvasHeightPx,
                 chunks = chunks,
@@ -817,6 +892,10 @@ private fun ZoomedWaveformCanvas(
             .height(64.dp)
             .clipToBounds()
             .systemGestureExclusion()
+            .onSizeChanged { newSize ->
+                canvasWidthPx = newSize.width
+                canvasHeightPx = newSize.height
+            }
             .semantics {
                 contentDescription = contentDescriptionText
                 progressBarRangeInfo = ProgressBarRangeInfo(
@@ -838,135 +917,162 @@ private fun ZoomedWaveformCanvas(
                     },
                 )
             }
+            // タップ: チャンクの上ならそのチャンクの冒頭から再生し、チャンクの外ならその位置へ移動する
             .pointerInput(durationMs) {
                 detectTapGestures(
                     onTap = { offset ->
                         if (size.width > 0) {
-                            val liveWindow = currentZoomWindowMs
-                            val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
-                            val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
-                            val targetMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
-                                .coerceIn(0L, durationMs)
-                            onSeekTo(targetMs)
-                        }
-                    },
-                    onDoubleTap = { offset ->
-                        if (size.width > 0) {
-                            val liveWindow = currentZoomWindowMs
-                            val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
-                            val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
-                            val targetMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
-                                .coerceIn(0L, durationMs)
-                            val targetChunk = currentChunks.firstOrNull { targetMs in it.startMs..it.endMs }
+                            val targetMs = zoomedTouchXToMs(
+                                x = offset.x,
+                                widthPx = size.width,
+                                centerMs = currentScrubPositionMs ?: positionProvider.currentPositionMs(),
+                                windowMs = currentZoomWindowMs,
+                                durationMs = durationMs,
+                            )
+                            val targetChunk = findChunkAt(currentChunks, targetMs)
                             if (targetChunk != null) {
-                                onSeekToChunk(targetChunk.id)
+                                currentOnSeekToChunk(targetChunk.id)
                             } else {
-                                onSeekTo(targetMs)
+                                currentOnSeekTo(targetMs)
                             }
                         }
                     },
                 )
             }
+            // ピンチで表示幅を変え、1 本指の左右ドラッグで再生位置を動かす
             .pointerInput(durationMs) {
-                var startTouchMs = 0L
-                var currentTouchMs = 0L
-                var initialChunkStartMs: Long? = null
-                var initialChunkEndMs: Long? = null
-                var totalDragPx = 0f
+                var activeScrubMs: Long? = null
+                detectZoomAndPanGestures(
+                    // パンの基準位置はジェスチャーごとに取り直す（前回のパンの終了位置に戻らないように）
+                    onGestureStart = { activeScrubMs = null },
+                    onGesture = { pan, zoom ->
+                        if (size.width > 0) {
+                            val liveWindow = currentZoomWindowMs
+                            if (abs(zoom - 1f) > 0.004f) {
+                                currentOnZoomWindowChange((liveWindow.toFloat() / zoom).roundToLong())
+                            } else if (abs(pan.x) > 0.5f) {
+                                val baseMs = activeScrubMs
+                                    ?: currentScrubPositionMs
+                                    ?: positionProvider.currentPositionMs()
+                                val deltaMs = ((-pan.x / size.width.toFloat()) * liveWindow).roundToLong()
+                                val nextMs = (baseMs + deltaMs).coerceIn(0L, durationMs)
+                                activeScrubMs = nextMs
+                                currentOnScrubChange(nextMs)
+                                currentOnSeekTo(nextMs)
+                            }
+                        }
+                    },
+                )
+            }
+            // 長押し: チャンクの上ならそのチャンクを選択し（押したまま指を動かすと、通ったチャンクもまとめて選択）、
+            // チャンクの外なら A-B 範囲を指定する。長押しが成立したあとの指の動きをピンチ・パンより先に受け取るため、
+            // いちばん内側（最後）に置く
+            .pointerInput(durationMs) {
+                var isSelectionSweep = false
+                var selectionValue = true
+                var lastSweepMs = 0L
+                val sweptChunkIds = mutableSetOf<ChunkId>()
+                var abStartMs = 0L
+                var abCurrentMs = 0L
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
                         if (size.width > 0) {
-                            val liveWindow = currentZoomWindowMs
-                            val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
-                            val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
-                            val touchMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
-                                .coerceIn(0L, durationMs)
-                            startTouchMs = touchMs
-                            currentTouchMs = touchMs
-                            totalDragPx = 0f
-                            val touchedChunk = currentChunks.firstOrNull { touchMs in it.startMs..it.endMs }
+                            val touchMs = zoomedTouchXToMs(
+                                x = offset.x,
+                                widthPx = size.width,
+                                centerMs = currentScrubPositionMs ?: positionProvider.currentPositionMs(),
+                                windowMs = currentZoomWindowMs,
+                                durationMs = durationMs,
+                            )
+                            val touchedChunk = findChunkAt(currentChunks, touchMs)
+                            sweptChunkIds.clear()
                             if (touchedChunk != null) {
-                                initialChunkStartMs = touchedChunk.startMs
-                                initialChunkEndMs = touchedChunk.endMs
-                                onAbDragUpdate(touchedChunk.startMs, touchedChunk.endMs)
+                                isSelectionSweep = true
+                                // 選択済みのチャンクを長押ししたときは、選択を外す方向でまとめて操作する
+                                selectionValue = !touchedChunk.isRepeatChecked
+                                sweptChunkIds += touchedChunk.id
+                                lastSweepMs = touchMs
+                                currentOnSetChunkSelected(touchedChunk.id, selectionValue)
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                             } else {
-                                initialChunkStartMs = null
-                                initialChunkEndMs = null
-                                onAbDragUpdate(startTouchMs, currentTouchMs)
+                                isSelectionSweep = false
+                                abStartMs = touchMs
+                                abCurrentMs = touchMs
+                                currentOnAbDragUpdate(abStartMs, abCurrentMs)
                             }
                         }
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
                         if (size.width > 0) {
-                            val liveWindow = currentZoomWindowMs
-                            totalDragPx += abs(dragAmount.x)
-                            val deltaMs = ((dragAmount.x / size.width.toFloat()) * liveWindow).roundToLong()
-                            currentTouchMs = (currentTouchMs + deltaMs).coerceIn(0L, durationMs)
-                            val chunkStart = initialChunkStartMs
-                            val chunkEnd = initialChunkEndMs
-                            if (chunkStart != null && chunkEnd != null) {
-                                if (totalDragPx < 8.dp.toPx()) {
-                                    onAbDragUpdate(chunkStart, chunkEnd)
-                                } else {
-                                    onAbDragUpdate(
-                                        min(chunkStart, currentTouchMs),
-                                        max(chunkEnd, currentTouchMs),
-                                    )
+                            if (isSelectionSweep) {
+                                val touchMs = zoomedTouchXToMs(
+                                    x = change.position.x,
+                                    widthPx = size.width,
+                                    centerMs = currentScrubPositionMs ?: positionProvider.currentPositionMs(),
+                                    windowMs = currentZoomWindowMs,
+                                    durationMs = durationMs,
+                                )
+                                var addedAny = false
+                                for (chunk in chunksInRange(currentChunks, lastSweepMs, touchMs)) {
+                                    if (sweptChunkIds.add(chunk.id)) {
+                                        currentOnSetChunkSelected(chunk.id, selectionValue)
+                                        addedAny = true
+                                    }
                                 }
+                                if (addedAny) {
+                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                                lastSweepMs = touchMs
                             } else {
-                                onAbDragUpdate(startTouchMs, currentTouchMs)
+                                val deltaMs = ((dragAmount.x / size.width.toFloat()) * currentZoomWindowMs).roundToLong()
+                                abCurrentMs = (abCurrentMs + deltaMs).coerceIn(0L, durationMs)
+                                currentOnAbDragUpdate(abStartMs, abCurrentMs)
                             }
                         }
                     },
-                    onDragEnd = { onAbDragFinish() },
-                    onDragCancel = { onAbDragFinish() },
+                    onDragEnd = {
+                        if (!isSelectionSweep) currentOnAbDragFinish()
+                        isSelectionSweep = false
+                    },
+                    onDragCancel = {
+                        if (!isSelectionSweep) currentOnAbDragFinish()
+                        isSelectionSweep = false
+                    },
                 )
-            }
-            .pointerInput(durationMs) {
-                var activeScrubMs: Long? = null
-                detectTransformGestures { _, pan, zoom, _ ->
-                    if (size.width <= 0) return@detectTransformGestures
-                    val liveWindow = currentZoomWindowMs
-                    if (abs(zoom - 1f) > 0.004f) {
-                        val scaledWindow = (liveWindow.toFloat() / zoom).roundToLong()
-                        onZoomWindowChange(scaledWindow)
-                    } else if (abs(pan.x) > 0.5f) {
-                        val baseMs = activeScrubMs ?: scrubPositionMs ?: positionProvider.currentPositionMs()
-                        val deltaMs = ((-pan.x / size.width.toFloat()) * liveWindow).roundToLong()
-                        val nextMs = (baseMs + deltaMs).coerceIn(0L, durationMs)
-                        activeScrubMs = nextMs
-                        onScrubChange(nextMs)
-                        onSeekTo(nextMs)
-                    }
-                }
             }
             .drawWithCache {
-                val wPx = size.width.roundToInt().coerceAtLeast(1)
-                val hPx = size.height.roundToInt().coerceAtLeast(1)
-                if (canvasWidthPx != wPx || canvasHeightPx != hPx) {
-                    canvasWidthPx = wPx
-                    canvasHeightPx = hPx
+                // プレビュー（スクリーンショット）では再コンポーズを待たずに描けるよう、その場で全体画像を作る
+                val fullStrip = fullWaveformStrip ?: if (isInspectionMode) {
+                    val wPx = size.width.roundToInt().coerceAtLeast(1)
+                    renderWaveformBitmapStrip(
+                        waveform = waveform,
+                        downsampler = downsampler,
+                        startMs = 0L,
+                        endMs = durationMs,
+                        totalWidthPx = ((durationMs.toDouble() / defaultWindowMs.toDouble()) * wPx.toDouble())
+                            .roundToInt()
+                            .coerceIn(wPx, MAX_TOTAL_STRIP_WIDTH_PX),
+                        heightPx = size.height.roundToInt().coerceAtLeast(1),
+                        chunks = chunks,
+                        languagePair = languagePair,
+                        unknownWavePeakColor = unknownWavePeakColor,
+                        unknownWaveRmsColor = unknownWaveRmsColor,
+                        targetWavePeakColor = targetWavePeakColor,
+                        targetWaveRmsColor = targetWaveRmsColor,
+                        baseWavePeakColor = baseWavePeakColor,
+                        baseWaveRmsColor = baseWaveRmsColor,
+                    )
+                } else {
+                    null
                 }
-
-                val fallbackFullStrip = fullWaveformStrip ?: renderWaveformBitmapStrip(
-                    waveform = waveform,
-                    downsampler = downsampler,
-                    startMs = 0L,
-                    endMs = durationMs,
-                    totalWidthPx = ((durationMs.toDouble() / DEFAULT_ZOOM_WINDOW_MS.coerceAtMost(durationMs).coerceAtLeast(1L).toDouble()) * wPx.toDouble())
-                        .roundToInt()
-                        .coerceIn(wPx, MAX_TOTAL_STRIP_WIDTH_PX),
-                    heightPx = hPx,
-                    chunks = chunks,
-                    languagePair = languagePair,
-                    unknownWavePeakColor = unknownWavePeakColor,
-                    unknownWaveRmsColor = unknownWaveRmsColor,
-                    targetWavePeakColor = targetWavePeakColor,
-                    targetWaveRmsColor = targetWaveRmsColor,
-                    baseWavePeakColor = baseWavePeakColor,
-                    baseWaveRmsColor = baseWaveRmsColor,
-                )
+                val chunkGapPx = 1.dp.toPx()
+                val chunkCorner = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                val selectedStrokePx = 2.dp.toPx()
+                val activeStrokePx = 1.5.dp.toPx()
+                val badgeRadiusPx = 7.dp.toPx()
+                val badgeMarginPx = 3.dp.toPx()
+                val activeChunk = activeChunkIndex?.let { chunks.getOrNull(it) }
 
                 onDrawBehind {
                     frameTick()
@@ -974,83 +1080,118 @@ private fun ZoomedWaveformCanvas(
                     val currentPosMs = (scrubPositionMs ?: positionProvider.currentPositionMs())
                         .coerceIn(0L, durationMs)
                     val windowStartMs = currentPosMs - liveWindowMs / 2L
-                    val windowEndMs = currentPosMs + liveWindowMs / 2L
+                    val windowEndMs = windowStartMs + liveWindowMs
+                    val pxPerMs = size.width / liveWindowMs.toFloat()
                     val centerX = size.width * 0.5f
 
-                    val activeId: ChunkId? = activeChunkIndex?.let { chunks.getOrNull(it)?.id }
+                    fun chunkRect(chunk: ChunkUi): Rect? = chunkRectOnCanvas(
+                        leftX = (chunk.startMs - windowStartMs) * pxPerMs,
+                        rightX = (chunk.endMs - windowStartMs) * pxPerMs,
+                        heightPx = size.height,
+                        gapPx = chunkGapPx,
+                    )
 
-                    // 1. チャンク境界線（背景色は付けず、波形自体の色分けを際立たせる）
-                    for (chunk in chunks) {
-                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
-                        val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
-                        val rightX = ((chunk.endMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
-                        if (leftX in 0f..size.width) {
-                            drawLine(
-                                color = chunkBoundaryLineColor,
-                                start = Offset(leftX, 0f),
-                                end = Offset(leftX, size.height),
-                                strokeWidth = 1.dp.toPx(),
-                            )
+                    // 1. チャンクの背景（言語の役割で色を分け、隣り合うチャンクは濃さを交互に変えて区別しやすくする）
+                    chunks.forEachIndexed { index, chunk ->
+                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) return@forEachIndexed
+                        val rect = chunkRect(chunk) ?: return@forEachIndexed
+                        val roleColor = when {
+                            matchesLanguageRole(chunk.language, languagePair?.target) -> targetChunkBackgroundColor
+                            matchesLanguageRole(chunk.language, languagePair?.base) -> baseChunkBackgroundColor
+                            else -> unknownChunkBackgroundColor
                         }
-                        if (rightX in 0f..size.width) {
-                            drawLine(
-                                color = chunkBoundaryLineColor,
-                                start = Offset(rightX, 0f),
-                                end = Offset(rightX, size.height),
-                                strokeWidth = 1.dp.toPx(),
-                            )
-                        }
-                    }
-
-                    // 2. アルファチャンネル付き波形キャッシュ画像を水平方向に拡大縮小して描画
-                    // 表示幅が10秒未満かつ近傍高解像度キャッシュの範囲内なら高解像度画像を使い、
-                    // 全体波形やプログレスバー移動直後などで近傍範囲外に飛んだ場合も全体キャッシュ画像で空白なく即座に描画する
-                    val localStrip = highResStrip
-                    if (liveWindowMs < HIGH_RES_ZOOM_THRESHOLD_MS &&
-                        localStrip != null &&
-                        windowStartMs >= localStrip.startMs &&
-                        windowEndMs <= localStrip.endMs
-                    ) {
-                        drawWaveformBitmapStrip(
-                            strip = localStrip,
-                            windowStartMs = windowStartMs,
-                            windowEndMs = windowEndMs,
-                        )
-                    } else {
-                        drawWaveformBitmapStrip(
-                            strip = fallbackFullStrip,
-                            windowStartMs = windowStartMs,
-                            windowEndMs = windowEndMs,
-                        )
-                    }
-
-                    // 3. アクティブチャンクの枠線
-                    for (chunk in chunks) {
-                        if (chunk.id != activeId) continue
-                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
-                        val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
-                        val rightX = ((chunk.endMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
-                        val clampedLeft = leftX.coerceIn(0f, size.width)
-                        val clampedRight = rightX.coerceIn(clampedLeft, size.width)
-                        if (clampedRight <= clampedLeft) continue
-
-                        val isTargetChunk = matchesLanguageRole(chunk.language, languagePair?.target)
-                        val isBaseChunk = matchesLanguageRole(chunk.language, languagePair?.base)
-                        val borderColor = when {
-                            isTargetChunk -> targetActiveBorderColor
-                            isBaseChunk -> baseActiveBorderColor
-                            else -> unknownActiveBorderColor
-                        }
+                        val emphasis = if (index % 2 == 0) 1f else ALTERNATE_CHUNK_BACKGROUND_EMPHASIS
                         drawRoundRect(
-                            color = borderColor,
-                            topLeft = Offset(clampedLeft, 0f),
-                            size = Size(clampedRight - clampedLeft, size.height),
-                            cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
-                            style = Stroke(width = 1.5.dp.toPx()),
+                            color = roleColor.copy(alpha = roleColor.alpha * emphasis),
+                            topLeft = rect.topLeft,
+                            size = rect.size,
+                            cornerRadius = chunkCorner,
+                        )
+                        if (chunk.isRepeatChecked) {
+                            drawRoundRect(
+                                color = selectedChunkBackgroundColor,
+                                topLeft = rect.topLeft,
+                                size = rect.size,
+                                cornerRadius = chunkCorner,
+                            )
+                        }
+                    }
+
+                    // 2. 波形画像を水平方向に拡大縮小して描く。表示幅が近傍画像の解像度の 2 倍以内で、
+                    // 表示範囲が近傍画像に収まっていれば近傍画像を、それ以外（ピンチ中・大きな移動の直後など）は全体画像を使う
+                    val visibleStartMs = windowStartMs.coerceAtLeast(0L)
+                    val visibleEndMs = windowEndMs.coerceAtMost(durationMs)
+                    val nearStrip = localStrip
+                    val nearLevelMs = localStripSpec?.levelMs
+                    val stripToDraw = if (
+                        nearStrip != null &&
+                        nearLevelMs != null &&
+                        liveWindowMs <= nearLevelMs * 2L &&
+                        visibleStartMs >= nearStrip.startMs &&
+                        visibleEndMs <= nearStrip.endMs
+                    ) {
+                        nearStrip
+                    } else {
+                        fullStrip
+                    }
+                    stripToDraw?.let { strip ->
+                        drawWaveformBitmapStrip(
+                            strip = strip,
+                            windowStartMs = windowStartMs,
+                            windowEndMs = windowEndMs,
                         )
                     }
 
-                    // A-B リピートまたはドラッグ中の A-B 範囲を強調
+                    // 3. 選択中のチャンクの枠線とチェックの印（チャンクリストのチェックボックスと連動）
+                    for (chunk in chunks) {
+                        if (!chunk.isRepeatChecked) continue
+                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
+                        val rect = chunkRect(chunk) ?: continue
+                        val half = selectedStrokePx / 2f
+                        drawRoundRect(
+                            color = selectedChunkBorderColor,
+                            topLeft = Offset(rect.left + half, rect.top + half),
+                            size = Size((rect.width - selectedStrokePx).coerceAtLeast(0f), rect.height - selectedStrokePx),
+                            cornerRadius = chunkCorner,
+                            style = Stroke(width = selectedStrokePx),
+                        )
+                        // チャンクの左端が画面の外にあっても、見えている部分の左上に印を出す
+                        val visibleLeft = max(rect.left, 0f)
+                        val visibleRight = min(rect.right, size.width)
+                        if (visibleRight - visibleLeft >= (badgeRadiusPx + badgeMarginPx) * 2f) {
+                            drawSelectionCheckBadge(
+                                center = Offset(visibleLeft + badgeMarginPx + badgeRadiusPx, badgeMarginPx + badgeRadiusPx),
+                                radius = badgeRadiusPx,
+                                badgeColor = selectedChunkBorderColor,
+                                checkColor = selectedChunkCheckColor,
+                            )
+                        }
+                    }
+
+                    // 4. 再生中のチャンクの枠線（選択中のチャンクでは、選択の枠線の内側に描く）
+                    if (activeChunk != null && activeChunk.endMs > windowStartMs && activeChunk.startMs < windowEndMs) {
+                        chunkRect(activeChunk)?.let { rect ->
+                            val inset = if (activeChunk.isRepeatChecked) selectedStrokePx + activeStrokePx / 2f else activeStrokePx / 2f
+                            val borderColor = when {
+                                matchesLanguageRole(activeChunk.language, languagePair?.target) -> targetActiveBorderColor
+                                matchesLanguageRole(activeChunk.language, languagePair?.base) -> baseActiveBorderColor
+                                else -> unknownActiveBorderColor
+                            }
+                            val width = rect.width - inset * 2f
+                            val height = rect.height - inset * 2f
+                            if (width > 0f && height > 0f) {
+                                drawRoundRect(
+                                    color = borderColor,
+                                    topLeft = Offset(rect.left + inset, rect.top + inset),
+                                    size = Size(width, height),
+                                    cornerRadius = chunkCorner,
+                                    style = Stroke(width = activeStrokePx),
+                                )
+                            }
+                        }
+                    }
+
+                    // 5. A-B リピートまたはドラッグ中の A-B 範囲を強調
                     val abRange: Pair<Long, Long>? = when {
                         abDragStartMs != null && abDragCurrentMs != null ->
                             min(abDragStartMs, abDragCurrentMs) to max(abDragStartMs, abDragCurrentMs)
@@ -1062,10 +1203,8 @@ private fun ZoomedWaveformCanvas(
                     }
                     abRange?.let { (abStart, abEnd) ->
                         if (abEnd > windowStartMs && abStart < windowEndMs) {
-                            val leftX = (((abStart - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width)
-                                .coerceIn(0f, size.width)
-                            val rightX = (((abEnd - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width)
-                                .coerceIn(leftX, size.width)
+                            val leftX = ((abStart - windowStartMs) * pxPerMs).coerceIn(0f, size.width)
+                            val rightX = ((abEnd - windowStartMs) * pxPerMs).coerceIn(leftX, size.width)
                             drawRect(
                                 color = abLoopHighlightColor,
                                 topLeft = Offset(leftX, 0f),
@@ -1080,7 +1219,7 @@ private fun ZoomedWaveformCanvas(
                         }
                     }
 
-                    // 中央の再生ヘッド
+                    // 6. 中央の再生ヘッド
                     drawLine(
                         color = playheadColor,
                         start = Offset(centerX, 0f),
@@ -1090,6 +1229,145 @@ private fun ZoomedWaveformCanvas(
                 }
             },
     )
+}
+
+/** 波形画像の色分けに使うチャンクの情報（時刻と言語）。これが変わったときだけ画像を作り直す。 */
+private data class ChunkColorKey(
+    val startMs: Long,
+    val endMs: Long,
+    val language: LanguageTag?,
+)
+
+/** 近傍画像の解像度 [levelMs]（その表示窓で画面幅いっぱいになる時間幅）と、描く時間範囲 [range]。 */
+private data class LocalStripSpec(
+    val levelMs: Long,
+    val range: LongRange,
+)
+
+/**
+ * 近傍画像の解像度（その表示窓で画面幅いっぱいになる時間幅）を、操作が落ち着いたあとの表示窓 [settledWindowMs] から決める。
+ *
+ * 表示窓が 15 秒未満なら [zoomRenderLevelWindowMs] に従う（15 秒 / 7.5 秒）。全体画像が幅の上限で縮んでいる（長い音声）
+ * [isFullStripDownscaled] ときは、既定の 30 秒以下の表示でも 30 秒の解像度の近傍画像を使う。それ以外は `null`（全体画像を使う）。
+ */
+internal fun localStripLevelMs(
+    settledWindowMs: Long,
+    isFullStripDownscaled: Boolean,
+): Long? = zoomRenderLevelWindowMs(settledWindowMs)
+    ?: DEFAULT_ZOOM_WINDOW_MS.takeIf { isFullStripDownscaled && settledWindowMs <= DEFAULT_ZOOM_WINDOW_MS }
+
+/**
+ * 解像度 [levelMs] の近傍画像で描く時間範囲を返す。中心時刻 [anchorMs] の前後に、解像度の [LOCAL_STRIP_SPAN_FACTOR] 倍の幅を取り、
+ * 音声の範囲 `[0, durationMs]` に収める。
+ */
+internal fun localStripRangeFor(
+    anchorMs: Long,
+    levelMs: Long,
+    durationMs: Long,
+): LongRange {
+    val safeDurationMs = durationMs.coerceAtLeast(1L)
+    val spanMs = (levelMs * LOCAL_STRIP_SPAN_FACTOR).coerceIn(1L, safeDurationMs)
+    val startMs = (anchorMs - spanMs / 2L).coerceIn(0L, safeDurationMs - spanMs)
+    return startMs..(startMs + spanMs)
+}
+
+/**
+ * 拡大波形の上の x 座標 [x] を、中心 [centerMs]・表示幅 [windowMs] の表示窓での時刻（ミリ秒）に変換する。
+ */
+internal fun zoomedTouchXToMs(
+    x: Float,
+    widthPx: Int,
+    centerMs: Long,
+    windowMs: Long,
+    durationMs: Long,
+): Long {
+    if (widthPx <= 0) return centerMs.coerceIn(0L, durationMs.coerceAtLeast(0L))
+    val deltaFraction = (x / widthPx.toFloat()) - 0.5f
+    return (centerMs + (deltaFraction * windowMs).roundToLong()).coerceIn(0L, durationMs.coerceAtLeast(0L))
+}
+
+/**
+ * チャンクの左右の x 座標から、隣のチャンクとの間に [gapPx] のすき間を空けた描画用の矩形を返す。
+ *
+ * 幅が狭いチャンクはすき間を空けずに描き、最低でも 1px の幅を確保する。幅が 0 以下なら `null`。
+ */
+private fun chunkRectOnCanvas(
+    leftX: Float,
+    rightX: Float,
+    heightPx: Float,
+    gapPx: Float,
+): Rect? {
+    val width = rightX - leftX
+    if (width <= 0f) return null
+    val inset = if (width > gapPx * 4f) gapPx else 0f
+    val left = leftX + inset
+    val right = max(rightX - inset, left + 1f)
+    return Rect(left, 0f, right, heightPx)
+}
+
+/** 選択中のチャンクの左上に出す、チェックの印（丸の中にチェック）を描く。 */
+private fun DrawScope.drawSelectionCheckBadge(
+    center: Offset,
+    radius: Float,
+    badgeColor: Color,
+    checkColor: Color,
+) {
+    drawCircle(color = badgeColor, radius = radius, center = center)
+    val checkPath = Path().apply {
+        moveTo(center.x - radius * 0.45f, center.y + radius * 0.02f)
+        lineTo(center.x - radius * 0.12f, center.y + radius * 0.36f)
+        lineTo(center.x + radius * 0.48f, center.y - radius * 0.32f)
+    }
+    drawPath(
+        path = checkPath,
+        color = checkColor,
+        style = Stroke(width = radius * 0.3f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+    )
+}
+
+/**
+ * ピンチ（拡大縮小）と 1 本指のパンを検出する。
+ *
+ * 判定は `detectTransformGestures` と同じ（タッチスロップを超えてから反応し、反応したら位置の変化を消費する）。
+ * それに加えて、ジェスチャーの開始時に [onGestureStart] を呼ぶ。
+ */
+private suspend fun PointerInputScope.detectZoomAndPanGestures(
+    onGestureStart: () -> Unit,
+    onGesture: (pan: Offset, zoom: Float) -> Unit,
+) {
+    awaitEachGesture {
+        var zoom = 1f
+        var pan = Offset.Zero
+        var pastTouchSlop = false
+        val touchSlop = viewConfiguration.touchSlop
+        awaitFirstDown(requireUnconsumed = false)
+        onGestureStart()
+        do {
+            val event = awaitPointerEvent()
+            val canceled = event.changes.any { it.isConsumed }
+            if (!canceled) {
+                val zoomChange = event.calculateZoom()
+                val panChange = event.calculatePan()
+                if (!pastTouchSlop) {
+                    zoom *= zoomChange
+                    pan += panChange
+                    val centroidSize = event.calculateCentroidSize(useCurrent = false)
+                    val zoomMotion = abs(1f - zoom) * centroidSize
+                    if (zoomMotion > touchSlop || pan.getDistance() > touchSlop) {
+                        pastTouchSlop = true
+                    }
+                }
+                if (pastTouchSlop) {
+                    if (zoomChange != 1f || panChange != Offset.Zero) {
+                        onGesture(panChange, zoomChange)
+                    }
+                    event.changes.forEach { change ->
+                        if (change.positionChanged()) change.consume()
+                    }
+                }
+            }
+        } while (!canceled && event.changes.any { it.pressed })
+    }
 }
 
 private class WaveformBitmapTile(
