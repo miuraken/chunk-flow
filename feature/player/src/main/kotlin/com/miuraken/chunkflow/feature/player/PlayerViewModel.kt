@@ -1091,7 +1091,6 @@ class PlayerViewModel @Inject constructor(
     override fun onCleared() {
         lookaheadLoopJob?.cancel()
         lookaheadLoopJob = null
-        super.onCleared()
     }
 
     private fun isChunkUndetected(chunk: ChunkUi): Boolean = chunk.text.isNullOrBlank() ||
@@ -1195,11 +1194,21 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekToChunk(chunkId: ChunkId) {
+        val wasPlaying = playbackController.status.value.isPlaying
         playbackController.seekToChunk(chunkId)
         if (playbackController is FakePlaybackController) {
             val targetChunk = uiState.value.chunks.firstOrNull { it.id == chunkId }
             if (targetChunk != null) {
                 playbackController.position.positionMs = targetChunk.startMs
+            }
+            if (!wasPlaying) {
+                playbackController.statusState.update {
+                    it.copy(
+                        isPlaying = true,
+                        currentChunkId = chunkId,
+                        autoPauseEndsAtMs = null,
+                    )
+                }
             }
         }
         val id = resolveActiveMediaId()

@@ -691,4 +691,33 @@ class PlayerViewModelTest {
         assertNull(viewModel.uiState.value.chunks[1].text)
         assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to secondChunkId))
     }
+
+    @Test
+    fun `一時停止中のチャンク選択_SeekToChunkで対象チャンク先頭へシークし再生開始状態になる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 停止中（自動ポーズ待機中を含む）の状態からチャンク 1 をクリック
+        playback.statusState.value = playback.statusState.value.copy(
+            isPlaying = false,
+            autoPauseEndsAtMs = 5_000L,
+        )
+        assertFalse(viewModel.uiState.value.isPlaying)
+
+        val secondChunk = sample.chunks[1]
+        viewModel.onEvent(PlayerEvent.SeekToChunk(secondChunk.id))
+
+        assertEquals(listOf(secondChunk.id), playback.seekedChunkIds)
+        assertEquals(secondChunk.startMs, viewModel.positionProvider.currentPositionMs())
+        assertEquals(1, viewModel.uiState.value.activeChunkIndex)
+        assertTrue(viewModel.uiState.value.isPlaying)
+        assertNull(viewModel.uiState.value.autoPauseEndsAtMs)
+    }
 }
