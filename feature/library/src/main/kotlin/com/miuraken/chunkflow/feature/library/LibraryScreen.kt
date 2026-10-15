@@ -1087,6 +1087,17 @@ private fun LibraryItemRow(
                     }
                 }
             }
+            IconButton(
+                onClick = onEditMetadataClick,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Edit,
+                    contentDescription = editCd,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         Spacer(modifier = Modifier.height(4.dp))
         FlowRow(
