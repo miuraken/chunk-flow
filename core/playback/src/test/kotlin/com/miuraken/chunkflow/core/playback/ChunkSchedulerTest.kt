@@ -601,6 +601,38 @@ class ChunkSchedulerTest {
         assertFalse(scheduler.isSingleChunkPlaybackActive)
     }
 
+    @Test
+    fun `LanguageFilterとAutoPauseScope_サブタグ付き言語コードzh_cnと主言語コードzhの互換比較が機能し異なる地域サブタグzh_twは区別される`() {
+        assertTrue(ChunkScheduler.isSameOrCompatibleLanguage(LanguageTag("zh-cn"), LanguageTag("zh")))
+        assertTrue(ChunkScheduler.isSameOrCompatibleLanguage(LanguageTag("zh"), LanguageTag("zh-TW")))
+        assertTrue(ChunkScheduler.isSameOrCompatibleLanguage(LanguageTag("zh-CN"), LanguageTag("zh-cn")))
+        assertTrue(ChunkScheduler.isSameOrCompatibleLanguage(LanguageTag("ja-JP"), LanguageTag("ja")))
+        assertFalse(ChunkScheduler.isSameOrCompatibleLanguage(LanguageTag("zh-cn"), LanguageTag("zh-tw")))
+        assertFalse(ChunkScheduler.isSameOrCompatibleLanguage(LanguageTag("zh-cn"), LanguageTag("ja")))
+
+        scheduler.setChunks(sampleChunks)
+        // 教材の言語ペアが target = zh-cn, base = ja-JP で、ASR チャンクの言語が zh / ja のケース
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("zh-cn"), base = LanguageTag("ja-JP")))
+        scheduler.setTranscripts(
+            mapOf(
+                chunk1.id to sampleTranscript(chunk1.id, "你好", "zh"),
+                chunk2.id to sampleTranscript(chunk2.id, "こんにちは", "ja"),
+                chunk3.id to sampleTranscript(chunk3.id, "谢谢", "zh-CN"),
+            ),
+        )
+        practiceController.update {
+            it.copy(languageFilter = LanguageFilter.TARGET_ONLY)
+        }
+
+        // chunk1 (zh == zh-cn 互換) の終端で chunk2 (ja) をスキップし chunk3 (zh-CN) へシークする
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition >= chunk3.startMs)
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,

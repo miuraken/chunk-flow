@@ -740,7 +740,7 @@ class ChunkScheduler(
             AutoPauseScope.AFTER_BASE_LANGUAGE -> {
                 val baseLang = languagePair?.base
                 val chunkLang = transcripts[chunk.id]?.language
-                baseLang != null && chunkLang == baseLang
+                baseLang != null && chunkLang != null && isSameOrCompatibleLanguage(chunkLang, baseLang)
             }
         }
         if (!scopeMatches) return 0L
@@ -905,8 +905,8 @@ class ChunkScheduler(
         val chunkLang = transcripts[chunkId]?.language ?: return false
         return when (filter) {
             LanguageFilter.ALL -> true
-            LanguageFilter.TARGET_ONLY -> chunkLang == pair.target
-            LanguageFilter.BASE_ONLY -> pair.base != null && chunkLang == pair.base
+            LanguageFilter.TARGET_ONLY -> isSameOrCompatibleLanguage(chunkLang, pair.target)
+            LanguageFilter.BASE_ONLY -> pair.base?.let { isSameOrCompatibleLanguage(chunkLang, it) } == true
         }
     }
 
@@ -955,5 +955,27 @@ class ChunkScheduler(
         const val WAKE_LOCK_MARGIN_MS: Long = 5_000L
 
         private const val WAKE_LOCK_TAG: String = "ChunkFlow:AutoPauseWakeLock"
+
+        /**
+         * 2 つの [LanguageTag] が同一または互換の言語を表すかを判定する。
+         *
+         * - 大文字小文字および区切り文字（`-` / `_`）の違いを無視して完全一致する場合は `true`。
+         * - 片方のみがサブタグを持たない主言語コード（例: `zh` と `zh-cn`、`ja` と `ja-JP`）の場合は主言語の一致を許容する。
+         * - 両方が異なるサブタグを持つ場合（例: `zh-cn` と `zh-tw`）は `false` とする。
+         */
+        internal fun isSameOrCompatibleLanguage(
+            a: com.miuraken.chunkflow.core.model.LanguageTag,
+            b: com.miuraken.chunkflow.core.model.LanguageTag,
+        ): Boolean {
+            val rawA = a.value.trim().replace('_', '-')
+            val rawB = b.value.trim().replace('_', '-')
+            if (rawA.equals(rawB, ignoreCase = true)) return true
+            val hasSubtagA = rawA.contains('-')
+            val hasSubtagB = rawB.contains('-')
+            if (hasSubtagA && hasSubtagB) return false
+            val primaryA = rawA.substringBefore('-')
+            val primaryB = rawB.substringBefore('-')
+            return primaryA.isNotEmpty() && primaryA.equals(primaryB, ignoreCase = true)
+        }
     }
 }
