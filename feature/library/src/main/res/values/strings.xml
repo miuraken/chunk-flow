@@ -63,7 +63,7 @@
     <string name="library_edit_course_label">コース名（フォルダ名）</string>
     <string name="library_edit_target_lang_label">学習言語コード（例: ko, zh, yue, id, en）</string>
     <string name="library_edit_base_lang_label">母語・解説言語コード（単一言語なら空欄、例: ja, en）</string>
-    <string name="library_edit_base_lang_none">単一言語（なし）</string>
+    <string name="library_edit_base_lang_none">なし（単一言語）</string>
     <string name="library_edit_save">保存</string>
     <string name="library_edit_cancel">キャンセル</string>
     <string name="library_item_missing_audio">音声なし（再取り込み待ち）</string>

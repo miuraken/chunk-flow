@@ -148,16 +148,20 @@ data class ChunkUi(
      * `textVariants` に該当スクリプトがない場合でも、端末の ICU `Transliterator`（`Hans-Hant` / `Hant-Hans`）が
      * 利用可能であれば自動的に簡体字・繁体字へ変換する。
      */
+    private fun resolveMandarinScript(fallback: ChineseScript): ChineseScript = explicitChineseScriptForTag(language?.value) ?: fallback
+
     fun resolveDisplayText(
         chineseScript: ChineseScript,
         cantoneseScript: ChineseScript,
     ): String? {
         val raw = text?.takeIf { it.isNotBlank() } ?: return null
         return when {
-            PhoneticGuideKind.isMandarinChinese(language) ->
-                textVariants[chineseScript.iso15924]
-                    ?: transliterateChineseScript(raw, chineseScript)
+            PhoneticGuideKind.isMandarinChinese(language) -> {
+                val script = resolveMandarinScript(chineseScript)
+                textVariants[script.iso15924]
+                    ?: transliterateChineseScript(raw, script)
                     ?: raw
+            }
 
             PhoneticGuideKind.isCantonese(language) ->
                 textVariants[cantoneseScript.iso15924]
@@ -213,10 +217,26 @@ data class ChunkUi(
         val rawTag = language?.value?.trim().orEmpty()
         if (rawTag.isEmpty() || rawTag.equals("und", ignoreCase = true)) return null
         return when {
-            PhoneticGuideKind.isMandarinChinese(language) -> "zh-${chineseScript.iso15924}"
+            PhoneticGuideKind.isMandarinChinese(language) -> {
+                val script = resolveMandarinScript(chineseScript)
+                "zh-${script.iso15924}"
+            }
+
             PhoneticGuideKind.isCantonese(language) -> "yue-${cantoneseScript.iso15924}"
+
             else -> rawTag
         }
+    }
+}
+
+internal fun explicitChineseScriptForTag(rawTag: String?): ChineseScript? {
+    val normalized = rawTag?.trim()?.lowercase(Locale.ROOT)?.replace('_', '-') ?: return null
+    if (!normalized.startsWith("zh-") && !normalized.startsWith("cmn-")) return null
+    val subtags = normalized.split('-').drop(1)
+    return when {
+        subtags.any { it == "hans" || it == "cn" || it == "sg" } -> ChineseScript.HANS
+        subtags.any { it == "hant" || it == "tw" || it == "hk" || it == "mo" } -> ChineseScript.HANT
+        else -> null
     }
 }
 
@@ -943,11 +963,15 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.RetranscribeChunk -> {
                 val id = resolveActiveMediaId() ?: return
-                localUiState.update { state ->
-                    state.copy(languageOverrides = state.languageOverrides - event.chunkId)
-                }
                 viewModelScope.launch {
                     analysisRepository.retranscribeChunk(id, event.chunkId)
+                    val hasTranscript =
+                        analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
+                    if (hasTranscript) {
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                        }
+                    }
                     if (uiState.value.lookaheadStatus.enabled) {
                         analysisRepository.triggerLookaheadAt(id, event.chunkId)
                     }
@@ -1342,7 +1366,9 @@ class PlayerViewModel @Inject constructor(
             error = status.error,
             blindMode = local.blindMode,
             revealedChunkIds = local.revealedChunkIds,
-            chineseScript = settings.chineseScript,
+            chineseScript = explicitChineseScriptForTag(item?.languagePair?.target?.value)
+                ?: explicitChineseScriptForTag(item?.languagePair?.base?.value)
+                ?: settings.chineseScript,
             cantoneseScript = settings.cantoneseScript,
             showTargetRomanization = settings.showTargetRomanization,
             chunkSource = resolvedOrigin,

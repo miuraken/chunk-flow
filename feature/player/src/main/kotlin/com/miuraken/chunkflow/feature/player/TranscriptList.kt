@@ -405,10 +405,6 @@ fun TranscriptList(
                         onToggleRepeatChunk = {
                             onToggleRepeatChunk(chunk.id)
                         },
-                        onRepeatSingle3 = {
-                            onSetLoopMode(LoopMode.SingleChunk(chunk.id, times = 3))
-                            onSeekToChunk(chunk.id)
-                        },
                         onRepeatSingleInfinite = {
                             onSetLoopMode(LoopMode.SingleChunk(chunk.id, times = null))
                             onSeekToChunk(chunk.id)
@@ -664,7 +660,6 @@ private fun TranscriptChunkRow(
     onTimestampClick: () -> Unit,
     onToggleBookmark: () -> Unit,
     onToggleRepeatChunk: () -> Unit,
-    onRepeatSingle3: () -> Unit,
     onRepeatSingleInfinite: () -> Unit,
     onStartRangeSelection: () -> Unit,
     onUpdateLanguage: (LanguageTag?) -> Unit,
@@ -965,20 +960,6 @@ private fun TranscriptChunkRow(
             onDismissRequest = { menuExpanded = false },
         ) {
             DropdownMenuItem(
-                text = { Text(text = repeatCheckCd) },
-                onClick = {
-                    menuExpanded = false
-                    onToggleRepeatChunk()
-                },
-            )
-            DropdownMenuItem(
-                text = { Text(text = bookmarkCd) },
-                onClick = {
-                    menuExpanded = false
-                    onToggleBookmark()
-                },
-            )
-            DropdownMenuItem(
                 text = { Text(text = stringResource(R.string.player_chunk_edit_text)) },
                 onClick = {
                     menuExpanded = false
@@ -993,13 +974,6 @@ private fun TranscriptChunkRow(
                 },
             )
             HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(text = stringResource(R.string.player_chunk_repeat_3)) },
-                onClick = {
-                    menuExpanded = false
-                    onRepeatSingle3()
-                },
-            )
             DropdownMenuItem(
                 text = { Text(text = stringResource(R.string.player_chunk_repeat_infinite)) },
                 onClick = {

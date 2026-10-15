@@ -42,11 +42,15 @@ data class ChunkFlowLanguagePalette(
     val baseLoopRowBackground: Color,
     val baseBadgeContainer: Color,
     val onBaseBadgeContainer: Color,
+    val baseWaveformPeak: Color,
+    val baseWaveformRms: Color,
     val targetRowBackground: Color,
     val targetActiveRowBackground: Color,
     val targetLoopRowBackground: Color,
     val targetBadgeContainer: Color,
     val onTargetBadgeContainer: Color,
+    val targetWaveformPeak: Color,
+    val targetWaveformRms: Color,
 )
 
 /** ライトテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク系）。 */
@@ -56,11 +60,15 @@ val LightChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
     baseLoopRowBackground = Color(0xFFE0EFFF),
     baseBadgeContainer = Color(0xFFD4E8FF),
     onBaseBadgeContainer = Color(0xFF0A3966),
+    baseWaveformPeak = Color(0xFF1E88E5).copy(alpha = 0.55f),
+    baseWaveformRms = Color(0xFF1565C0),
     targetRowBackground = Color(0xFFFFEFF5),
     targetActiveRowBackground = Color(0xFFFFDCE9),
     targetLoopRowBackground = Color(0xFFFFE5EF),
     targetBadgeContainer = Color(0xFFFFD6E5),
     onTargetBadgeContainer = Color(0xFF6B0F36),
+    targetWaveformPeak = Color(0xFFE91E63).copy(alpha = 0.55f),
+    targetWaveformRms = Color(0xFFD81B60),
 )
 
 /** ダークテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク系）。 */
@@ -70,11 +78,15 @@ val DarkChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
     baseLoopRowBackground = Color(0xFF64B5F6).copy(alpha = 0.22f),
     baseBadgeContainer = Color(0xFF144272),
     onBaseBadgeContainer = Color(0xFFD4E8FF),
+    baseWaveformPeak = Color(0xFF64B5F6).copy(alpha = 0.55f),
+    baseWaveformRms = Color(0xFF42A5F5),
     targetRowBackground = Color(0xFFF48FB1).copy(alpha = 0.14f),
     targetActiveRowBackground = Color(0xFFF48FB1).copy(alpha = 0.28f),
     targetLoopRowBackground = Color(0xFFF48FB1).copy(alpha = 0.22f),
     targetBadgeContainer = Color(0xFF6A1B3D),
     onTargetBadgeContainer = Color(0xFFFFD6E5),
+    targetWaveformPeak = Color(0xFFF48FB1).copy(alpha = 0.55f),
+    targetWaveformRms = Color(0xFFF06292),
 )
 
 internal val LocalChunkFlowLanguagePalette = staticCompositionLocalOf {

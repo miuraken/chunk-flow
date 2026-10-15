@@ -743,4 +743,48 @@ class PlayerViewModelTest {
         assertTrue(viewModel.uiState.value.localTranscriptExported)
         assertTrue(item.id in libraryRepo.exportedTranscriptIds)
     }
+
+    @Test
+    fun `中国語サブタグ_zh_cnとzh_twの字体優先とmatchesLanguageRoleの判定が機能する`() {
+        assertEquals(
+            com.miuraken.chunkflow.core.model.ChineseScript.HANS,
+            explicitChineseScriptForTag("zh-cn"),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.ChineseScript.HANT,
+            explicitChineseScriptForTag("zh-tw"),
+        )
+        assertNull(explicitChineseScriptForTag("zh"))
+
+        val cnChunk = ChunkUi(
+            id = ChunkId(201L),
+            startMs = 0L,
+            endMs = 1_000L,
+            text = "今天天气很好",
+            language = LanguageTag("zh-cn"),
+            textVariants = mapOf("Hans" to "今天天气很好", "Hant" to "今天天氣很好"),
+        )
+        val twChunk = cnChunk.copy(id = ChunkId(202L), language = LanguageTag("zh-tw"))
+
+        // zh-cn は設定が HANT でも Hans を優先し、zh-tw は設定が HANS でも Hant を優先する
+        assertEquals(
+            "今天天气很好",
+            cnChunk.resolveDisplayText(
+                chineseScript = com.miuraken.chunkflow.core.model.ChineseScript.HANT,
+                cantoneseScript = com.miuraken.chunkflow.core.model.ChineseScript.HANT,
+            ),
+        )
+        assertEquals(
+            "今天天氣很好",
+            twChunk.resolveDisplayText(
+                chineseScript = com.miuraken.chunkflow.core.model.ChineseScript.HANS,
+                cantoneseScript = com.miuraken.chunkflow.core.model.ChineseScript.HANT,
+            ),
+        )
+
+        // matchesLanguageRole: zh と zh-cn は一致、zh-cn と zh-tw は不一致
+        assertTrue(matchesLanguageRole(LanguageTag("zh"), LanguageTag("zh-cn")))
+        assertTrue(matchesLanguageRole(LanguageTag("zh-cn"), LanguageTag("zh-cn")))
+        assertFalse(matchesLanguageRole(LanguageTag("zh-tw"), LanguageTag("zh-cn")))
+    }
 }

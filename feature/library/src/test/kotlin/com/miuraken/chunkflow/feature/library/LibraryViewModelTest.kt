@@ -476,4 +476,26 @@ class LibraryViewModelTest {
         assertTrue(viewModel.uiState.value.items.all { it.item.course == "新中国語コース" })
         assertTrue(viewModel.uiState.value.items.all { it.item.languagePair == newPair })
     }
+
+    @Test
+    fun `言語選択プルダウン候補_アルファベット順とzh正規化とベース言語なし選択肢が機能する`() {
+        assertEquals("zh-cn", normalizeDialogLanguageCode("zh"))
+        assertEquals("zh-cn", normalizeDialogLanguageCode("zh-CN"))
+        assertEquals("zh-tw", normalizeDialogLanguageCode("zh-TW"))
+        assertEquals("ko", normalizeDialogLanguageCode("KO"))
+
+        val targetOptions = buildDialogLanguageOptions(currentCode = "ko", noneLabel = null)
+        assertEquals(targetOptions.map { it.code }.sorted(), targetOptions.map { it.code })
+        assertTrue(targetOptions.any { it.code == "ko" && it.label == "ko - 韓国語" })
+        assertTrue(targetOptions.any { it.code == "zh-cn" && it.label == "zh-cn - 簡体中国語" })
+        assertTrue(targetOptions.any { it.code == "zh-tw" && it.label == "zh-tw - 繁体中国語" })
+
+        val baseOptions = buildDialogLanguageOptions(currentCode = "", noneLabel = "なし（単一言語）")
+        assertEquals("", baseOptions.first().code)
+        assertEquals("なし（単一言語）", baseOptions.first().label)
+        assertEquals(
+            baseOptions.drop(1).map { it.code }.sorted(),
+            baseOptions.drop(1).map { it.code },
+        )
+    }
 }
