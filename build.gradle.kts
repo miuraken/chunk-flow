@@ -27,3 +27,8 @@ spotless {
         ktlint(ktlintVersion)
     }
 }
+
+// Android Studio 等が実行する `updateDaemonJvm` タスクが Toolchain download repository 未設定で失敗するのを防ぐ（ADR 0001）。
+tasks.withType<org.gradle.buildconfiguration.tasks.UpdateDaemonJvm>().configureEach {
+    toolchainPlatforms.empty()
+}
