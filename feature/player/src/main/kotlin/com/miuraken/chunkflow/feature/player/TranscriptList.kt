@@ -405,12 +405,12 @@ fun TranscriptList(
                             onToggleRepeatChunk(chunk.id)
                         },
                         onRepeatSingle3 = {
-                            onSeekToChunk(chunk.id)
                             onSetLoopMode(LoopMode.SingleChunk(chunk.id, times = 3))
+                            onSeekToChunk(chunk.id)
                         },
                         onRepeatSingleInfinite = {
-                            onSeekToChunk(chunk.id)
                             onSetLoopMode(LoopMode.SingleChunk(chunk.id, times = null))
+                            onSeekToChunk(chunk.id)
                         },
                         onStartRangeSelection = {
                             rangeSelectionStartChunkId = chunk.id
