@@ -58,6 +58,7 @@ import java.text.Normalizer
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -121,6 +122,7 @@ class DefaultAnalysisRepository(
         @Dispatcher(ChunkFlowDispatchers.IO) ioDispatcher: CoroutineDispatcher,
         onDeviceChunkTranscriber: OnDeviceChunkTranscriber,
         bookmarkDao: BookmarkDao,
+        userSettingsRepository: UserSettingsRepository,
     ) : this(
         context = context,
         analysisStateDao = analysisStateDao,
@@ -133,6 +135,20 @@ class DefaultAnalysisRepository(
         onDeviceChunkTranscriber = onDeviceChunkTranscriber,
         bookmarkDao = bookmarkDao,
         clock = System::currentTimeMillis,
+        userSettingsRepository = userSettingsRepository,
+    )
+
+    private data class ChunkLangCacheKey(
+        val mediaId: String,
+        val startMs: Long,
+        val endMs: Long,
+        val language: String,
+    )
+
+    private data class CachedChunkTranscript(
+        val text: String,
+        val confidence: Float?,
+        val engine: String,
     )
 
     private val chunkSegmenter: ChunkSegmenter = ChunkSegmenter()
@@ -140,7 +156,9 @@ class DefaultAnalysisRepository(
     private val lookaheadMutex: Mutex = Mutex()
     private val waveformRefreshEvents = MutableSharedFlow<MediaId>(extraBufferCapacity = 16)
     private val lookaheadStates = ConcurrentHashMap<MediaId, MutableStateFlow<LookaheadTranscriptionStatus>>()
+    private val explicitlyConfiguredLookaheadMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
     private val attemptedEmptyChunkIds = ConcurrentHashMap<MediaId, MutableSet<Long>>()
+    private val chunkTranscriptByLangCache = ConcurrentHashMap<ChunkLangCacheKey, CachedChunkTranscript>()
 
     override fun observeStatus(id: MediaId): Flow<Map<AnalysisStage, StageStatus>> = analysisStateDao.observeByMediaId(id.value)
         .map { entities ->
@@ -579,38 +597,56 @@ class DefaultAnalysisRepository(
 
     override suspend fun updateChunkLanguage(id: MediaId, chunkId: ChunkId, language: LanguageTag?) {
         withContext(ioDispatcher) {
-            val existing = transcriptDao.getByChunkId(chunkId.value)
-            if (existing != null) {
-                transcriptDao.updateLanguage(chunkId.value, language?.value)
-            } else {
-                // AUTO チャンク等で直接の TranscriptEntity が未作成の場合、
-                // 重なる IMPORTED チャンクがあればその文字起こしを引き継ぎつつ言語を更新し、
-                // なければ空テキストの TranscriptEntity（userEdited = true）を作成する（§7.4.5、§7.4.6）。
-                val allChunks = chunkDao.observeByMediaId(id.value).first()
-                val targetChunk = allChunks.firstOrNull { it.id == chunkId.value }
-                val mediaItem = mediaItemDao.getById(id.value)
-                val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
-                val overlappingImported = if (targetChunk != null) {
-                    val importedChunks = allChunks.filter { it.origin == ChunkOrigin.IMPORTED.name }
-                    val importedTranscripts = transcriptDao.getByChunkIds(importedChunks.map { it.id })
-                        .associateBy { it.chunkId }
-                    findBestOverlappingTranscript(
-                        target = targetChunk,
-                        sourceChunks = importedChunks,
-                        transcriptsByChunkId = importedTranscripts,
-                        offsetMs = offsetMs,
-                    )
-                } else {
-                    null
-                }
+            attemptedEmptyChunkIds[id]?.remove(chunkId.value)
 
-                if (overlappingImported != null) {
-                    transcriptDao.updateLanguage(overlappingImported.chunkId, language?.value)
+            val allChunks = chunkDao.observeByMediaId(id.value).first()
+            val targetChunk = allChunks.firstOrNull { it.id == chunkId.value }
+            val existing = transcriptDao.getByChunkId(chunkId.value)
+            val mediaItem = mediaItemDao.getById(id.value)
+            val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
+            val overlappingImported = if (existing == null && targetChunk != null) {
+                val importedChunks = allChunks.filter { it.origin == ChunkOrigin.IMPORTED.name }
+                val importedTranscripts = transcriptDao.getByChunkIds(importedChunks.map { it.id })
+                    .associateBy { it.chunkId }
+                findBestOverlappingTranscript(
+                    target = targetChunk,
+                    sourceChunks = importedChunks,
+                    transcriptsByChunkId = importedTranscripts,
+                    offsetMs = offsetMs,
+                )
+            } else {
+                null
+            }
+
+            val baseExisting = existing ?: overlappingImported
+            if (targetChunk != null && baseExisting != null) {
+                val prevLang = baseExisting.language?.trim()?.lowercase(Locale.ROOT)
+                if (baseExisting.text.isNotBlank() && !prevLang.isNullOrBlank() && prevLang != "und") {
+                    chunkTranscriptByLangCache[
+                        ChunkLangCacheKey(
+                            mediaId = id.value,
+                            startMs = targetChunk.startMs,
+                            endMs = targetChunk.endMs,
+                            language = prevLang,
+                        ),
+                    ] = CachedChunkTranscript(
+                        text = baseExisting.text,
+                        confidence = baseExisting.languageConfidence,
+                        engine = baseExisting.engine,
+                    )
+                }
+            }
+
+            if (language == null) {
+                if (existing != null) {
+                    transcriptDao.updateLanguage(chunkId.value, null)
+                } else if (overlappingImported != null) {
+                    transcriptDao.updateLanguage(overlappingImported.chunkId, null)
                     transcriptDao.upsert(
                         overlappingImported.copy(
                             chunkId = chunkId.value,
-                            language = language?.value,
-                            languageConfidence = if (language != null) 1.0f else null,
+                            language = null,
+                            languageConfidence = null,
                             userEdited = true,
                         ),
                     )
@@ -620,8 +656,8 @@ class DefaultAnalysisRepository(
                             chunkId = chunkId.value,
                             text = "",
                             textVariants = "{}",
-                            language = language?.value,
-                            languageConfidence = if (language != null) 1.0f else null,
+                            language = null,
+                            languageConfidence = null,
                             words = "[]",
                             engine = MANUAL_LANGUAGE_ENGINE_ID,
                             userEdited = true,
@@ -629,7 +665,130 @@ class DefaultAnalysisRepository(
                         ),
                     )
                 }
+                persistTranscriptBackupFile(id)
+                return@withContext
             }
+
+            val normalizedNewLang = language.value.trim().lowercase(Locale.ROOT)
+            val cached = targetChunk?.let { chunk ->
+                chunkTranscriptByLangCache[
+                    ChunkLangCacheKey(
+                        mediaId = id.value,
+                        startMs = chunk.startMs,
+                        endMs = chunk.endMs,
+                        language = normalizedNewLang,
+                    ),
+                ]
+            }
+
+            if (cached != null) {
+                if (existing == null && overlappingImported != null) {
+                    transcriptDao.updateLanguage(overlappingImported.chunkId, language.value)
+                }
+                transcriptDao.upsert(
+                    TranscriptEntity(
+                        chunkId = chunkId.value,
+                        text = cached.text,
+                        textVariants = baseExisting?.textVariants ?: "{}",
+                        language = language.value,
+                        languageConfidence = 1.0f,
+                        words = baseExisting?.words ?: "[]",
+                        engine = cached.engine,
+                        userEdited = true,
+                        createdAt = clock(),
+                    ),
+                )
+                persistTranscriptBackupFile(id)
+                return@withContext
+            }
+
+            // キャッシュミス時: まず即座に言語バッジを反映する
+            if (existing != null) {
+                transcriptDao.updateLanguage(chunkId.value, language.value)
+            } else if (overlappingImported != null) {
+                transcriptDao.updateLanguage(overlappingImported.chunkId, language.value)
+                transcriptDao.upsert(
+                    overlappingImported.copy(
+                        chunkId = chunkId.value,
+                        language = language.value,
+                        languageConfidence = 1.0f,
+                        userEdited = true,
+                    ),
+                )
+            } else {
+                transcriptDao.upsert(
+                    TranscriptEntity(
+                        chunkId = chunkId.value,
+                        text = "",
+                        textVariants = "{}",
+                        language = language.value,
+                        languageConfidence = 1.0f,
+                        words = "[]",
+                        engine = MANUAL_LANGUAGE_ENGINE_ID,
+                        userEdited = true,
+                        createdAt = clock(),
+                    ),
+                )
+            }
+
+            // オンデバイス音声認識が利用可能かつ音声ファイルが存在する場合は指定言語単体で再認識する
+            val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
+            val audioFile = mediaFileResolver.resolveAudioFile(id)
+            if (available && audioFile != null && audioFile.isFile && targetChunk != null && targetChunk.endMs > targetChunk.startMs) {
+                val stateFlow = lookaheadStateFor(id)
+                val recognized = lookaheadMutex.withLock {
+                    stateFlow.update {
+                        it.copy(
+                            engineAvailable = true,
+                            inFlightChunkId = chunkId,
+                        )
+                    }
+                    try {
+                        onDeviceChunkTranscriber.transcribeChunk(
+                            audioFile = audioFile,
+                            startMs = targetChunk.startMs,
+                            endMs = targetChunk.endMs,
+                            languagePair = LanguagePair(target = language, base = null),
+                        )
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (_: Exception) {
+                        null
+                    } finally {
+                        stateFlow.update { it.copy(inFlightChunkId = null) }
+                    }
+                }
+
+                if (recognized != null && recognized.text.isNotBlank()) {
+                    chunkTranscriptByLangCache[
+                        ChunkLangCacheKey(
+                            mediaId = id.value,
+                            startMs = targetChunk.startMs,
+                            endMs = targetChunk.endMs,
+                            language = normalizedNewLang,
+                        ),
+                    ] = CachedChunkTranscript(
+                        text = recognized.text,
+                        confidence = recognized.confidence,
+                        engine = recognized.engineId.value,
+                    )
+                    val currentEntity = transcriptDao.getByChunkId(chunkId.value) ?: baseExisting
+                    transcriptDao.upsert(
+                        TranscriptEntity(
+                            chunkId = chunkId.value,
+                            text = recognized.text,
+                            textVariants = currentEntity?.textVariants ?: "{}",
+                            language = language.value,
+                            languageConfidence = 1.0f,
+                            words = currentEntity?.words ?: "[]",
+                            engine = recognized.engineId.value,
+                            userEdited = true,
+                            createdAt = clock(),
+                        ),
+                    )
+                }
+            }
+
             persistTranscriptBackupFile(id)
         }
     }
@@ -678,6 +837,7 @@ class DefaultAnalysisRepository(
     override fun observeLookaheadStatus(id: MediaId): Flow<LookaheadTranscriptionStatus> = lookaheadStateFor(id).asStateFlow()
 
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
+        explicitlyConfiguredLookaheadMediaIds.add(id)
         attemptedEmptyChunkIds.remove(id)
         val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
         lookaheadStateFor(id).update { current ->
@@ -706,7 +866,7 @@ class DefaultAnalysisRepository(
     }
 
     /**
-     * アクティブチャンクのインデックス [currentChunkIndex] 以降から、未文字起こし（かつ空結果として試行済みでない）チャンクを
+     * アクティブチャンクのインデックス [currentChunkIndex] 以降から、未文字起こし・または言語未確定（かつ空結果として試行済みでない）チャンクを
      * 最大 `LOOKAHEAD_WINDOW_AHEAD + 1`（6）件ずつ順番に先読み認識する（F6.2、§7.4.5）。
      */
     suspend fun triggerLookaheadAt(id: MediaId, currentChunkIndex: Int) {
@@ -714,6 +874,14 @@ class DefaultAnalysisRepository(
         withContext(ioDispatcher) {
             lookaheadMutex.withLock {
                 val stateFlow = lookaheadStateFor(id)
+                if (id !in explicitlyConfiguredLookaheadMediaIds && userSettingsRepository != null) {
+                    val defaultEnabled = runCatching {
+                        userSettingsRepository.settings.first().lookaheadTranscriptionEnabled
+                    }.getOrDefault(true)
+                    if (stateFlow.value.enabled != defaultEnabled) {
+                        stateFlow.update { it.copy(enabled = defaultEnabled) }
+                    }
+                }
                 val currentStatus = stateFlow.value
                 val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
                 if (!currentStatus.enabled) return@withLock
@@ -740,10 +908,15 @@ class DefaultAnalysisRepository(
                 val existingTranscripts = transcriptDao.getByChunkIds(candidateSlice.map { it.id })
                     .associateBy { it.chunkId }
 
-                // まだ文字起こしテキストがなく、かつ無音・チャイム等で空結果として試行済みでないチャンクを先頭から最大 6 件取得する
+                // まだ文字起こしテキストがないか言語未確定（null / "und"）であり、かつ空結果として試行済みでないチャンクを先頭から最大 6 件取得する
                 val targetChunks = candidateSlice.filter { chunk ->
                     val existing = existingTranscripts[chunk.id]
-                    val needsTranscript = existing == null || (existing.text.isBlank() && !existing.userEdited)
+                    val hasUndetectedLanguage = existing != null &&
+                        (existing.language.isNullOrBlank() || existing.language == "und") &&
+                        !(existing.userEdited && existing.text.isNotBlank())
+                    val needsTranscript = existing == null ||
+                        (existing.text.isBlank() && !(existing.userEdited && existing.language == null)) ||
+                        hasUndetectedLanguage
                     needsTranscript && !skippedEmptyIds.contains(chunk.id)
                 }.take(LOOKAHEAD_WINDOW_AHEAD + 1)
 
@@ -794,13 +967,26 @@ class DefaultAnalysisRepository(
                         )
                     }
 
+                    val existingBefore = transcriptDao.getByChunkId(chunk.id)
+                    val existingBeforeLang = existingBefore?.language
+                    val effectiveLanguagePair = if (
+                        existingBefore != null &&
+                        existingBefore.text.isBlank() &&
+                        !existingBeforeLang.isNullOrBlank() &&
+                        existingBeforeLang != "und"
+                    ) {
+                        LanguagePair(target = LanguageTag(existingBeforeLang), base = null)
+                    } else {
+                        languagePair
+                    }
+
                     // チャンク区間 [startMs, endMs] のみを切り出して認識し、チャンク間の無音はスキップする（F6.2）
                     val result: OnDeviceChunkTranscriptionResult? = try {
                         onDeviceChunkTranscriber.transcribeChunk(
                             audioFile = audioFile,
                             startMs = chunk.startMs,
                             endMs = chunk.endMs,
-                            languagePair = languagePair,
+                            languagePair = effectiveLanguagePair,
                         )
                     } catch (ce: CancellationException) {
                         throw ce
@@ -813,11 +999,25 @@ class DefaultAnalysisRepository(
                         val existing = transcriptDao.getByChunkId(chunk.id)
                         val resolvedLanguage = existing?.language?.takeIf { it.isNotBlank() && it != "und" }
                             ?: result.language?.value
-                            ?: languagePair?.target?.value
+                            ?: effectiveLanguagePair?.target?.value
                         val resolvedConfidence = if (existing?.userEdited == true) {
                             existing.languageConfidence ?: 1.0f
                         } else {
                             result.confidence
+                        }
+                        if (!resolvedLanguage.isNullOrBlank() && resolvedLanguage != "und") {
+                            chunkTranscriptByLangCache[
+                                ChunkLangCacheKey(
+                                    mediaId = id.value,
+                                    startMs = chunk.startMs,
+                                    endMs = chunk.endMs,
+                                    language = resolvedLanguage.trim().lowercase(Locale.ROOT),
+                                ),
+                            ] = CachedChunkTranscript(
+                                text = result.text,
+                                confidence = resolvedConfidence,
+                                engine = result.engineId.value,
+                            )
                         }
                         transcriptDao.upsert(
                             TranscriptEntity(
@@ -1262,7 +1462,12 @@ class DefaultAnalysisRepository(
 
     private fun lookaheadStateFor(id: MediaId): MutableStateFlow<LookaheadTranscriptionStatus> = lookaheadStates.computeIfAbsent(id) {
         val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-        MutableStateFlow(LookaheadTranscriptionStatus(engineAvailable = available))
+        MutableStateFlow(
+            LookaheadTranscriptionStatus(
+                enabled = true,
+                engineAvailable = available,
+            ),
+        )
     }
 
     private fun readWaveformFromDisk(id: MediaId): Waveform? {
