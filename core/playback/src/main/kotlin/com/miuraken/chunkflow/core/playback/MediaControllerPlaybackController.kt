@@ -308,10 +308,26 @@ class MediaControllerPlaybackController(
     override fun seekToChunk(chunkId: ChunkId) {
         scope.launch {
             val targetChunk = currentChunks.firstOrNull { it.id == chunkId } ?: return@launch
-            chunkScheduler?.cancelAutoPause()
-            learningPlayerInstance?.seekTo(targetChunk.startMs)
+            val lp = learningPlayerInstance
+            val scheduler = chunkScheduler
+            val shouldStartSingleChunkPlayback =
+                lp?.isPlaying != true || scheduler?.isSingleChunkPlaybackActive == true
+
+            if (shouldStartSingleChunkPlayback) {
+                if (scheduler != null) {
+                    scheduler.startSingleChunkPlayback(chunkId)
+                } else {
+                    lp?.seekTo(targetChunk.startMs)
+                    lp?.play()
+                }
+            } else {
+                scheduler?.cancelAutoPause()
+                lp.seekTo(targetChunk.startMs)
+            }
+
             _status.update {
                 it.copy(
+                    isPlaying = lp?.isPlaying == true,
                     currentChunkId = chunkId,
                     autoPauseEndsAtMs = null,
                 )

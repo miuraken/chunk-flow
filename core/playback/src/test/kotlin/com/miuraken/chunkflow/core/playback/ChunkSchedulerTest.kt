@@ -518,6 +518,89 @@ class ChunkSchedulerTest {
         assertEquals(setOf(chunk1.id), practiceController.settings.value.repeatChunkIds)
     }
 
+    @Test
+    fun `startSingleChunkPlayback_リピートマークなしの場合は対象チャンクを1回だけ再生して終端で自動停止する`() {
+        scheduler.setChunks(sampleChunks)
+        // AutoPause が ON でも再開せずそのまま終端で停止することを確認する
+        practiceController.update {
+            it.copy(
+                autoPause = AutoPause.Fixed(pauseMs = 1_000L),
+                autoPauseScope = AutoPauseScope.ALL_CHUNKS,
+            )
+        }
+        pumpLoopers()
+
+        assertFalse(exoPlayer.playWhenReady)
+        scheduler.startSingleChunkPlayback(chunk2.id)
+        pumpLoopers()
+
+        assertTrue(exoPlayer.playWhenReady)
+        assertTrue(scheduler.isSingleChunkPlaybackActive)
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in chunk2.startMs..(chunk2.startMs + 200L))
+
+        // chunk2 終端 (4_500ms) に達すると 1 回だけで自動停止し、AutoPause タイマーも予約されない
+        runUntil { !exoPlayer.playWhenReady }
+        pumpLoopers()
+
+        assertFalse(exoPlayer.playWhenReady)
+        assertFalse(scheduler.isSingleChunkPlaybackActive)
+        assertNull(scheduler.autoPauseEndsAtMs.value)
+        assertTrue(exoPlayer.currentPosition in chunk2.endMs..(chunk2.endMs + 200L))
+    }
+
+    @Test
+    fun `startSingleChunkPlayback_対象チャンクにリピートマークがある場合は他チャンクへ移らずそのチャンクのみを繰り返し解除で停止する`() {
+        scheduler.setChunks(sampleChunks)
+        practiceController.update {
+            it.copy(repeatChunkIds = setOf(chunk1.id, chunk2.id))
+        }
+        pumpLoopers()
+
+        var seekToChunk2StartCount = 0
+        exoPlayer.addListener(
+            object : Player.Listener {
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs == chunk2.startMs) {
+                        seekToChunk2StartCount += 1
+                    }
+                }
+            },
+        )
+
+        // 停止中に chunk2 をクリックして単一チャンク再生を開始
+        scheduler.startSingleChunkPlayback(chunk2.id)
+        pumpLoopers()
+        seekToChunk2StartCount = 0
+
+        assertTrue(exoPlayer.playWhenReady)
+        assertTrue(scheduler.isSingleChunkPlaybackActive)
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+
+        // chunk1 にもリピートマークがついているが chunk1 へは移動せず、chunk2 のみを 2 回以上リピートする
+        runUntil { seekToChunk2StartCount >= 2 }
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+        assertTrue(scheduler.isSingleChunkPlaybackActive)
+
+        // 再生途中に chunk2 のリピートマークを外すと、その周の終端で自動停止する
+        practiceController.update {
+            it.copy(repeatChunkIds = setOf(chunk1.id))
+        }
+        pumpLoopers()
+        assertTrue(scheduler.isSingleChunkPlaybackActive)
+
+        runUntil { !exoPlayer.playWhenReady }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertFalse(scheduler.isSingleChunkPlaybackActive)
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,

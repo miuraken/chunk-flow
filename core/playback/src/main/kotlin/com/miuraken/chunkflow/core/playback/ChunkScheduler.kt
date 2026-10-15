@@ -93,6 +93,12 @@ class ChunkScheduler(
     var completedLoopCount: Int = 0
         private set
 
+    internal var singleChunkPlaybackId: ChunkId? = null
+
+    /** 単一チャンク再生モード（停止中のチャンククリック再生）が有効かどうか。 */
+    val isSingleChunkPlaybackActive: Boolean
+        get() = singleChunkPlaybackId != null
+
     private var isUpdatingLoopInternally: Boolean = false
     private var isHandlingAutoPause: Boolean = false
     private var isResumingFromAutoPause: Boolean = false
@@ -132,6 +138,7 @@ class ChunkScheduler(
         mediaObservationJob = null
         cancelAutoPause()
         completedLoopCount = 0
+        singleChunkPlaybackId = null
         languagePair = initialLanguagePair
 
         if (mediaId == null) {
@@ -215,9 +222,30 @@ class ChunkScheduler(
     }
 
     /**
+     * 再生停止中にチャンクリストの項目がクリックされた際、指定した [chunkId] のチャンクのみを再生する。
+     *
+     * - 対象チャンクにリピートマークがついている場合は、ユーザが停止するまでそのチャンクのみを繰り返す。
+     * - リピートマークがついていない場合は、そのチャンクを 1 回だけ再生して終端で停止する。
+     */
+    fun startSingleChunkPlayback(chunkId: ChunkId) {
+        val targetChunk = chunks.firstOrNull { it.id == chunkId } ?: return
+        cancelAutoPause()
+        completedLoopCount = 0
+        singleChunkPlaybackId = targetChunk.id
+        seekInternal(targetChunk.startMs)
+        updateState(chunkId = targetChunk.id, autoPauseEndsAt = null)
+        scheduleBoundaryMessage(
+            payload = BoundaryPayload.ChunkEnd(targetChunk),
+            persistent = false,
+        )
+        exoPlayer.play()
+    }
+
+    /**
      * ユーザの手動による再生・一時停止操作を通知する。自動ポーズ中であれば即座にタイマーを取り消す（§7.2.4）。
      */
     fun onUserPlayPauseCommand() {
+        singleChunkPlaybackId = null
         if (_autoPauseEndsAtMs.value != null && !isHandlingAutoPause && !isResumingFromAutoPause) {
             val resumeAfterMs = lastAutoPausedChunkEndMs
             cancelAutoPause()
@@ -254,8 +282,9 @@ class ChunkScheduler(
             return
         }
 
-        // ユーザによる手動シーク: リピート回数をリセットし、自動ポーズ中なら解除して次の境界を予約し直す（§7.2.4、ADR 0007）
+        // ユーザによる手動シーク: リピート回数と単一チャンク再生をリセットし、自動ポーズ中なら解除して次の境界を予約し直す（§7.2.4、ADR 0007）
         completedLoopCount = 0
+        singleChunkPlaybackId = null
         if (_autoPauseEndsAtMs.value != null) {
             cancelAutoPause()
         }
@@ -267,13 +296,20 @@ class ChunkScheduler(
     }
 
     override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        if (!playWhenReady && !isHandlingAutoPause && !isResumingFromAutoPause) {
+            singleChunkPlaybackId = null
+        }
         if (_autoPauseEndsAtMs.value != null && !isHandlingAutoPause && !isResumingFromAutoPause) {
             val resumeAfterMs = lastAutoPausedChunkEndMs
             cancelAutoPause()
             reschedule(minBoundaryAfterMs = resumeAfterMs)
             return
         }
-        if (playWhenReady && _autoPauseEndsAtMs.value == null && practiceSettings.loop !is LoopMode.AbRange) {
+        if (playWhenReady &&
+            singleChunkPlaybackId == null &&
+            _autoPauseEndsAtMs.value == null &&
+            practiceSettings.loop !is LoopMode.AbRange
+        ) {
             val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
             if (repeatChunks.isNotEmpty()) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -293,6 +329,7 @@ class ChunkScheduler(
 
     override fun onPlaybackStateChanged(playbackState: Int) {
         if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
+            singleChunkPlaybackId = null
             if (_autoPauseEndsAtMs.value != null) {
                 cancelAutoPause()
             }
@@ -328,7 +365,10 @@ class ChunkScheduler(
             return
         }
 
-        if (newSettings.loop !is LoopMode.AbRange && oldRepeatChunkIds != newSettings.repeatChunkIds) {
+        if (singleChunkPlaybackId == null &&
+            newSettings.loop !is LoopMode.AbRange &&
+            oldRepeatChunkIds != newSettings.repeatChunkIds
+        ) {
             val repeatChunks = chunks.filter { it.id in newSettings.repeatChunkIds }
             if (repeatChunks.isNotEmpty()) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -502,6 +542,10 @@ class ChunkScheduler(
 
     private fun handleChunkEndBoundary(chunk: Chunk) {
         val postAction = determinePostChunkAction(chunk)
+        if (postAction is PostChunkAction.PauseAtChunkEnd) {
+            executePostChunkAction(postAction)
+            return
+        }
         val pauseDurationMs = computeAutoPauseDurationMs(chunk)
 
         if (pauseDurationMs > 0L) {
@@ -521,6 +565,31 @@ class ChunkScheduler(
      * 優先順位: `AbRange > SingleChunk / ChunkRange > LanguageFilter`。
      */
     private fun determinePostChunkAction(chunk: Chunk): PostChunkAction {
+        if (singleChunkPlaybackId == chunk.id) {
+            val singleLoop = (practiceSettings.loop as? LoopMode.SingleChunk)?.takeIf { it.chunkId == chunk.id }
+            if (singleLoop != null) {
+                val maxTimes = singleLoop.times
+                if (maxTimes == null) {
+                    return PostChunkAction.SeekToChunk(chunk)
+                }
+                completedLoopCount += 1
+                return if (completedLoopCount < maxTimes) {
+                    PostChunkAction.SeekToChunk(chunk)
+                } else {
+                    completedLoopCount = 0
+                    resetLoopModeInternally()
+                    singleChunkPlaybackId = null
+                    PostChunkAction.PauseAtChunkEnd
+                }
+            }
+            return if (chunk.id in practiceSettings.repeatChunkIds) {
+                PostChunkAction.SeekToChunk(chunk)
+            } else {
+                singleChunkPlaybackId = null
+                PostChunkAction.PauseAtChunkEnd
+            }
+        }
+
         when (val loop = practiceSettings.loop) {
             is LoopMode.AbRange -> {
                 return PostChunkAction.SeekToPosition(loop.startMs)
@@ -653,6 +722,11 @@ class ChunkScheduler(
             is PostChunkAction.AdvanceAfter -> {
                 reschedule(minBoundaryAfterMs = action.finishedChunkEndMs)
             }
+
+            PostChunkAction.PauseAtChunkEnd -> {
+                singleChunkPlaybackId = null
+                exoPlayer.pause()
+            }
         }
     }
 
@@ -743,6 +817,11 @@ class ChunkScheduler(
                 is PostChunkAction.AdvanceAfter -> {
                     resumePlayerFromAutoPause()
                     reschedule(minBoundaryAfterMs = action.finishedChunkEndMs)
+                }
+
+                PostChunkAction.PauseAtChunkEnd -> {
+                    singleChunkPlaybackId = null
+                    exoPlayer.pause()
                 }
             }
         } else {
@@ -868,6 +947,7 @@ class ChunkScheduler(
         data class SeekToPosition(val positionMs: Long) : PostChunkAction
         data class SeekToChunk(val targetChunk: Chunk) : PostChunkAction
         data class AdvanceAfter(val finishedChunkEndMs: Long) : PostChunkAction
+        data object PauseAtChunkEnd : PostChunkAction
     }
 
     companion object {
