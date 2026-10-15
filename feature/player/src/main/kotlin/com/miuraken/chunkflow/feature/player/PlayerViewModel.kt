@@ -121,6 +121,7 @@ sealed interface TranscriptExportBannerState {
  * @property text 文字起こしテキスト（なければ `null`）。
  * @property language 言語タグ（未判定または信頼度が低い場合は `null`）。
  * @property isBookmarked ブックマーク済みかどうか（F8.1）。
+ * @property isRepeatChecked チャンクごとの連続無限リピート対象としてチェックされているかどうか（F6.1）。
  * @property textVariants 別の字体のテキスト（キーは `"Hans"` / `"Hant"`）。
  * @property words 単語ごとのタイムスタンプ（カラオケ強調用、F7.7）。
  * @property origin チャンクの出どころ。
@@ -132,6 +133,7 @@ data class ChunkUi(
     val text: String?,
     val language: LanguageTag?,
     val isBookmarked: Boolean = false,
+    val isRepeatChecked: Boolean = false,
     val textVariants: Map<String, String> = emptyMap(),
     val words: List<WordTiming> = emptyList(),
     val origin: ChunkOrigin = ChunkOrigin.AUTO,
@@ -278,6 +280,9 @@ sealed interface PlayerEvent {
 
     /** 指定したチャンクのブックマークを追加または解除する（F8.1）。 */
     data class ToggleBookmark(val chunkId: ChunkId) : PlayerEvent
+
+    /** 指定したチャンクの連続無限リピートチェック（`PracticeSettings.repeatChunkIds`）をトグルする（F6.1）。 */
+    data class ToggleChunkRepeat(val chunkId: ChunkId) : PlayerEvent
 
     /** ブラインドモードを変更する（F7.2）。 */
     data class SetBlindMode(val blindMode: BlindMode) : PlayerEvent
@@ -531,7 +536,12 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetLoopMode -> {
-                playbackController.updatePractice { it.copy(loop = event.loopMode) }
+                playbackController.updatePractice {
+                    it.copy(
+                        loop = event.loopMode,
+                        repeatChunkIds = if (event.loopMode is LoopMode.Off) emptySet() else it.repeatChunkIds,
+                    )
+                }
             }
 
             is PlayerEvent.SetAutoPause -> {
@@ -609,6 +619,17 @@ class PlayerViewModel @Inject constructor(
                 val id = resolveActiveMediaId() ?: return
                 viewModelScope.launch {
                     analysisRepository.toggleChunkBookmark(id, event.chunkId)
+                }
+            }
+
+            is PlayerEvent.ToggleChunkRepeat -> {
+                playbackController.updatePractice { current ->
+                    val nextIds = if (event.chunkId in current.repeatChunkIds) {
+                        current.repeatChunkIds - event.chunkId
+                    } else {
+                        current.repeatChunkIds + event.chunkId
+                    }
+                    current.copy(repeatChunkIds = nextIds)
                 }
             }
 
@@ -918,6 +939,7 @@ class PlayerViewModel @Inject constructor(
                 text = transcript?.text,
                 language = transcript?.language,
                 isBookmarked = isBookmarked,
+                isRepeatChecked = chunk.id in practice.repeatChunkIds,
                 textVariants = transcript?.textVariants.orEmpty(),
                 words = transcript?.words.orEmpty(),
                 origin = chunk.origin,

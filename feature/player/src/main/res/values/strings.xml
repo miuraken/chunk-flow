@@ -116,4 +116,10 @@
     <string name="player_export_txt">TXT 書き出し</string>
     <string name="player_export_done">%1$s ファイルを書き出しました</string>
     <string name="player_export_failed">ファイルの書き出しに失敗しました</string>
+    <string name="player_prev_chunk_label">prev chunk</string>
+    <string name="player_next_chunk_label">next chunk</string>
+    <string name="player_chip_repeat_checked_count">選択リピート (%1$d件)</string>
+    <string name="player_repeat_check_add">連続リピート対象に追加</string>
+    <string name="player_repeat_check_remove">連続リピート対象から外す</string>
+    <string name="player_start_lookahead_stt">端末で文字起こし</string>
 </resources>

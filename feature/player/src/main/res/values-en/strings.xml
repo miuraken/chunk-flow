@@ -116,4 +116,10 @@
     <string name="player_export_txt">Export TXT</string>
     <string name="player_export_done">Exported %1$s file</string>
     <string name="player_export_failed">Failed to export file</string>
+    <string name="player_prev_chunk_label">prev chunk</string>
+    <string name="player_next_chunk_label">next chunk</string>
+    <string name="player_chip_repeat_checked_count">Checked Repeat (%1$d)</string>
+    <string name="player_repeat_check_add">Add to sequential repeat</string>
+    <string name="player_repeat_check_remove">Remove from sequential repeat</string>
+    <string name="player_start_lookahead_stt">Auto-transcribe</string>
 </resources>

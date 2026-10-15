@@ -30,7 +30,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -303,6 +302,7 @@ fun PlayerScreen(
                         transcriptExportBanner = state.transcriptExportBanner,
                         onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
                         onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
+                        onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
                         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
                         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
@@ -392,6 +392,7 @@ fun PlayerScreen(
                         transcriptExportBanner = state.transcriptExportBanner,
                         onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
                         onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
+                        onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
                         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
                         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
                         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
@@ -560,18 +561,27 @@ private fun PlayerPracticeControlStrip(
     var pendingAbStartMs by remember { mutableStateOf<Long?>(null) }
 
     val loop = state.practice.loop
-    val repeatLabel = when (loop) {
-        LoopMode.Off -> stringResource(R.string.player_chip_repeat_off)
+    val hasCheckedRepeat = state.practice.repeatChunkIds.isNotEmpty()
+    val isRepeatActive = loop !is LoopMode.Off || hasCheckedRepeat
+    val repeatLabel = when {
+        hasCheckedRepeat && loop is LoopMode.Off -> stringResource(
+            R.string.player_chip_repeat_checked_count,
+            state.practice.repeatChunkIds.size,
+        )
 
-        is LoopMode.SingleChunk -> if (loop.times != null) {
+        loop is LoopMode.Off -> stringResource(R.string.player_chip_repeat_off)
+
+        loop is LoopMode.SingleChunk -> if (loop.times != null) {
             stringResource(R.string.player_chip_repeat_single_3)
         } else {
             stringResource(R.string.player_chip_repeat_single_inf)
         }
 
-        is LoopMode.ChunkRange -> stringResource(R.string.player_chip_repeat_range)
+        loop is LoopMode.ChunkRange -> stringResource(R.string.player_chip_repeat_range)
 
-        is LoopMode.AbRange -> stringResource(R.string.player_chip_repeat_ab)
+        loop is LoopMode.AbRange -> stringResource(R.string.player_chip_repeat_ab)
+
+        else -> stringResource(R.string.player_chip_repeat_off)
     }
 
     val autoPause = state.practice.autoPause
@@ -624,7 +634,7 @@ private fun PlayerPracticeControlStrip(
         // 1. リピートチップ + メニュー
         Column {
             FilterChip(
-                selected = loop !is LoopMode.Off,
+                selected = isRepeatActive,
                 onClick = { repeatMenuExpanded = true },
                 label = { Text(text = repeatLabel, maxLines = 1) },
                 leadingIcon = {
@@ -697,7 +707,7 @@ private fun PlayerPracticeControlStrip(
             },
             label = { Text(text = stringResource(R.string.player_ab_set_b), maxLines = 1) },
         )
-        if (loop !is LoopMode.Off) {
+        if (isRepeatActive) {
             FilterChip(
                 selected = false,
                 onClick = {
@@ -1157,38 +1167,54 @@ private fun PlayerTransportControls(
 
     Row(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FilledTonalIconButton(
-            onClick = onPreviousChunk,
-            enabled = hasChunks,
-            modifier = Modifier.size(48.dp),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.SkipPrevious,
-                contentDescription = prevChunkCd,
-                modifier = Modifier.size(22.dp),
-            )
-        }
-
         FilledTonalButton(
             onClick = onSeekBack,
             modifier = Modifier
+                .weight(1f, fill = false)
                 .heightIn(min = 48.dp)
                 .semantics { contentDescription = seekBackCd },
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
         ) {
-            Icon(
-                imageVector = ChunkFlowIcons.SeekBack,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = stringResource(R.string.player_seek_back_label, seekBackSeconds),
-                maxLines = 1,
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SeekBack,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = stringResource(R.string.player_seek_back_label, seekBackSeconds),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        FilledTonalButton(
+            onClick = onPreviousChunk,
+            enabled = hasChunks,
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .heightIn(min = 48.dp)
+                .semantics { contentDescription = prevChunkCd },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SkipPrevious,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = stringResource(R.string.player_prev_chunk_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         FilledIconButton(
@@ -1203,34 +1229,50 @@ private fun PlayerTransportControls(
         }
 
         FilledTonalButton(
-            onClick = onSeekForward,
-            modifier = Modifier
-                .heightIn(min = 48.dp)
-                .semantics { contentDescription = seekForwardCd },
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-        ) {
-            Text(
-                text = stringResource(R.string.player_seek_forward_label, seekForwardSeconds),
-                maxLines = 1,
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Icon(
-                imageVector = ChunkFlowIcons.SeekForward,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-        }
-
-        FilledTonalIconButton(
             onClick = onNextChunk,
             enabled = hasChunks,
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .heightIn(min = 48.dp)
+                .semantics { contentDescription = nextChunkCd },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
         ) {
-            Icon(
-                imageVector = ChunkFlowIcons.SkipNext,
-                contentDescription = nextChunkCd,
-                modifier = Modifier.size(22.dp),
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SkipNext,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = stringResource(R.string.player_next_chunk_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        FilledTonalButton(
+            onClick = onSeekForward,
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .heightIn(min = 48.dp)
+                .semantics { contentDescription = seekForwardCd },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SeekForward,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = stringResource(R.string.player_seek_forward_label, seekForwardSeconds),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -1574,6 +1616,7 @@ internal fun SampleMaterial.toPlayerUiState(
             endMs = chunk.endMs,
             text = transcript?.text,
             language = transcript?.language,
+            isRepeatChecked = chunk.id in practice.repeatChunkIds,
             textVariants = transcript?.textVariants.orEmpty(),
             words = transcript?.words.orEmpty(),
             origin = chunk.origin,

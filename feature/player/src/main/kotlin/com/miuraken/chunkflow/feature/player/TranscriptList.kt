@@ -2,11 +2,14 @@ package com.miuraken.chunkflow.feature.player
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -54,6 +58,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -191,6 +198,7 @@ fun TranscriptList(
     transcriptExportBanner: TranscriptExportBannerState? = null,
     onDismissExportBanner: () -> Unit = {},
     onToggleBookmark: (ChunkId) -> Unit = {},
+    onToggleRepeatChunk: (ChunkId) -> Unit = {},
     onUpdateChunkLanguage: (ChunkId, LanguageTag?) -> Unit = { _, _ -> },
     onUpdateChunkText: (ChunkId, String) -> Unit = { _, _ -> },
     onSplitChunk: (ChunkId, Long) -> Unit = { _, _ -> },
@@ -314,6 +322,8 @@ fun TranscriptList(
             if (!hasAnyTranscript) {
                 NoTranscriptBannerCard(
                     onPickTranscriptJson = onPickTranscriptJson,
+                    lookaheadEnabled = lookaheadStatus.enabled,
+                    onStartLookahead = { onSetLookaheadEnabled(true) },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
@@ -331,6 +341,7 @@ fun TranscriptList(
                 ) { index, chunk ->
                     val isActive = index == activeChunkIndex
                     val isInLoopRange = chunk.id in loopHighlightedIds ||
+                        chunk.isRepeatChecked ||
                         chunk.id == rangeSelectionStartChunkId
                     val isMasked = isChunkMasked(
                         chunk = chunk,
@@ -375,6 +386,9 @@ fun TranscriptList(
                         },
                         onToggleBookmark = {
                             onToggleBookmark(chunk.id)
+                        },
+                        onToggleRepeatChunk = {
+                            onToggleRepeatChunk(chunk.id)
                         },
                         onRepeatSingle3 = {
                             onSeekToChunk(chunk.id)
@@ -629,6 +643,7 @@ private fun TranscriptChunkRow(
     onRowClick: () -> Unit,
     onTimestampClick: () -> Unit,
     onToggleBookmark: () -> Unit,
+    onToggleRepeatChunk: () -> Unit,
     onRepeatSingle3: () -> Unit,
     onRepeatSingleInfinite: () -> Unit,
     onStartRangeSelection: () -> Unit,
@@ -706,6 +721,11 @@ private fun TranscriptChunkRow(
         stringResource(R.string.player_bookmark_toggle_remove)
     } else {
         stringResource(R.string.player_bookmark_toggle_add)
+    }
+    val repeatCheckCd = if (chunk.isRepeatChecked) {
+        stringResource(R.string.player_repeat_check_remove)
+    } else {
+        stringResource(R.string.player_repeat_check_add)
     }
 
     Box(modifier = Modifier.fillMaxWidth()) {
@@ -854,6 +874,12 @@ private fun TranscriptChunkRow(
                 )
             }
 
+            RepeatChunkCheckbox(
+                checked = chunk.isRepeatChecked,
+                contentDescription = repeatCheckCd,
+                onToggle = onToggleRepeatChunk,
+            )
+
             IconButton(
                 onClick = onToggleBookmark,
                 modifier = Modifier.size(36.dp),
@@ -879,6 +905,13 @@ private fun TranscriptChunkRow(
             expanded = menuExpanded,
             onDismissRequest = { menuExpanded = false },
         ) {
+            DropdownMenuItem(
+                text = { Text(text = repeatCheckCd) },
+                onClick = {
+                    menuExpanded = false
+                    onToggleRepeatChunk()
+                },
+            )
             DropdownMenuItem(
                 text = { Text(text = bookmarkCd) },
                 onClick = {
@@ -1086,9 +1119,83 @@ internal fun ChunkLanguageBadge(
 }
 
 @Composable
+private fun RepeatChunkCheckbox(
+    checked: Boolean,
+    contentDescription: String,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val containerColor = if (checked) {
+        colorScheme.tertiaryContainer
+    } else {
+        colorScheme.surfaceContainerLow
+    }
+    val contentColor = if (checked) {
+        colorScheme.onTertiaryContainer
+    } else {
+        colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+    }
+    val boxBorderColor = if (checked) {
+        colorScheme.tertiary
+    } else {
+        colorScheme.outline.copy(alpha = 0.7f)
+    }
+
+    Surface(
+        color = containerColor,
+        contentColor = contentColor,
+        shape = RoundedCornerShape(6.dp),
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .toggleable(
+                value = checked,
+                role = Role.Checkbox,
+                onValueChange = { onToggle() },
+            )
+            .semantics(mergeDescendants = true) {
+                this.contentDescription = contentDescription
+            },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(14.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(if (checked) colorScheme.tertiary else colorScheme.surface)
+                    .border(1.dp, boxBorderColor, RoundedCornerShape(3.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (checked) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Check,
+                        contentDescription = null,
+                        tint = colorScheme.onTertiary,
+                        modifier = Modifier.size(11.dp),
+                    )
+                }
+            }
+            Icon(
+                imageVector = ChunkFlowIcons.Repeat,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun NoTranscriptBannerCard(
     onPickTranscriptJson: () -> Unit,
     modifier: Modifier = Modifier,
+    lookaheadEnabled: Boolean = false,
+    onStartLookahead: () -> Unit = {},
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -1096,33 +1203,53 @@ private fun NoTranscriptBannerCard(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
                 text = stringResource(R.string.player_no_transcript_banner),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
             )
-            FilledTonalButton(
-                onClick = onPickTranscriptJson,
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Description,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.player_pick_transcript_json),
-                    style = MaterialTheme.typography.labelMedium,
-                )
+                if (!lookaheadEnabled) {
+                    FilledTonalButton(
+                        onClick = onStartLookahead,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Bolt,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.player_start_lookahead_stt),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+                FilledTonalButton(
+                    onClick = onPickTranscriptJson,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.player_pick_transcript_json),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
     }
