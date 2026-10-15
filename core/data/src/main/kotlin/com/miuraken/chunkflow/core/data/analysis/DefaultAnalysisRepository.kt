@@ -999,6 +999,39 @@ class DefaultAnalysisRepository(
         }
     }
 
+    override suspend fun clearTranscriptsForMedia(id: MediaId) {
+        withContext(ioDispatcher) {
+            attemptedEmptyChunkIds.remove(id)
+            chunkTranscriptByLangCache.keys.removeIf { it.mediaId == id.value }
+
+            transcriptDao.deleteByMediaId(id.value)
+            chunkDao.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.IMPORTED.name)
+
+            val existingState = itemStateDao.getByMediaId(id.value)
+            if (existingState != null && existingState.chunkSource == ChunkOrigin.IMPORTED.name) {
+                itemStateDao.updateChunkSource(
+                    mediaId = id.value,
+                    chunkSource = ChunkOrigin.AUTO.name,
+                    updatedAt = clock(),
+                )
+            }
+
+            deleteTranscriptBackupFiles(id)
+        }
+    }
+
+    private fun deleteTranscriptBackupFiles(mediaId: MediaId) {
+        if (!MediaFileLocator.isSafeIdentifier(mediaId.value)) return
+        val mediaDir = File(context.filesDir, "media")
+        if (!mediaDir.exists() || !mediaDir.isDirectory) return
+        val prefix = "${mediaId.value}.transcript."
+        mediaDir.listFiles()?.forEach { file ->
+            if (file.name.startsWith(prefix)) {
+                runCatching { file.delete() }
+            }
+        }
+    }
+
     private fun evictChunkTranscriptCache(mediaId: String, startMs: Long, endMs: Long) {
         chunkTranscriptByLangCache.keys.removeIf { key ->
             key.mediaId == mediaId && key.startMs == startMs && key.endMs == endMs

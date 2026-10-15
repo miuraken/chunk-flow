@@ -180,6 +180,19 @@ class FakeAnalysisRepository : AnalysisRepository {
         retranscribeChunkRequests += id to chunkId
     }
 
+    override suspend fun clearTranscriptsForMedia(id: MediaId) {
+        update(id) { entry ->
+            val autoChunks = entry.chunksByOrigin[ChunkOrigin.AUTO]
+                ?: entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED }
+            entry.copy(
+                chunks = autoChunks,
+                transcripts = emptyMap(),
+                chunksByOrigin = entry.chunksByOrigin - ChunkOrigin.IMPORTED,
+            )
+        }
+        chunkSources[id] = ChunkOrigin.AUTO
+    }
+
     override suspend fun toggleChunkBookmark(id: MediaId, chunkId: ChunkId, note: String): Boolean {
         var added = false
         update(id) { entry ->

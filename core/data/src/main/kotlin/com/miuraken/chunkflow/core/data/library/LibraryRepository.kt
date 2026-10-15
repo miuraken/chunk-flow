@@ -66,6 +66,18 @@ interface LibraryRepository {
     /** 文字起こしファイルだけを取り込み、SHA-256 が一致する既存の教材に付ける。 */
     suspend fun importTranscript(uri: Uri): TranscriptImportResult
 
+    /**
+     * 指定した教材 [id] に対して、任意の場所にある文字起こし・字幕ファイル（JSON / SRT / VTT / LRC）を直接取り込んで紐付ける。
+     *
+     * ファイル名や SHA-256 が一致しない場合でも、対象教材 [id] の文字起こしとして取り込む。
+     */
+    suspend fun importTranscriptForMedia(id: MediaId, uri: Uri): TranscriptImportResult = importTranscript(uri)
+
+    /**
+     * 指定した教材 [id] の文字起こしをすべてリセットし、保存済みの文字起こしファイルも削除する。
+     */
+    suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean = false
+
     /** Drive の `ChunkFlow/` フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
     fun syncFromDrive(): Flow<SyncProgress>
 

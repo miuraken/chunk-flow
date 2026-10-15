@@ -73,4 +73,8 @@ interface TranscriptDao {
     /** 指定したチャンク ID の文字起こしを削除する。 */
     @Query("DELETE FROM transcript WHERE chunk_id = :chunkId")
     suspend fun deleteByChunkId(chunkId: Long)
+
+    /** 指定した教材に紐づくすべての文字起こしを削除する。 */
+    @Query("DELETE FROM transcript WHERE chunk_id IN (SELECT id FROM chunk WHERE media_id = :mediaId)")
+    suspend fun deleteByMediaId(mediaId: String)
 }

@@ -133,6 +133,22 @@ class MediaFileLocator(
         }
     }
 
+    /**
+     * 指定した [mediaId] の文字起こし原本ファイル（`filesDir/media/<id>.transcript.*`）をすべて削除する。
+     */
+    fun deleteTranscriptFiles(mediaId: MediaId) {
+        if (!isSafeIdentifier(mediaId.value)) return
+        val mDir = mediaDir
+        if (mDir.exists() && mDir.isDirectory) {
+            val prefix = "${mediaId.value}.transcript."
+            mDir.listFiles()?.forEach { file ->
+                if (file.name.startsWith(prefix) && isChildOf(file, mDir)) {
+                    file.delete()
+                }
+            }
+        }
+    }
+
     private fun isChildOf(target: File, parentDir: File): Boolean = try {
         val parentCanonical = parentDir.canonicalFile
         val targetCanonical = target.canonicalFile

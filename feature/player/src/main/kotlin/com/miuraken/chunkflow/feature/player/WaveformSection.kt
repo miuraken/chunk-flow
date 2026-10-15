@@ -40,11 +40,15 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Canvas as ComposeCanvas
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ImageBitmapConfig
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
@@ -54,6 +58,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
@@ -71,6 +77,7 @@ import com.miuraken.chunkflow.core.testing.fake.FakePositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -105,8 +112,11 @@ internal fun matchesLanguageRole(
     return true
 }
 
-/** 拡大波形の既定の表示窓（2 分 = 120,000ms、§7.5.4）。 */
-internal const val DEFAULT_ZOOM_WINDOW_MS: Long = 120_000L
+/** 拡大波形の既定の表示窓（30 秒 = 30,000ms）。 */
+internal const val DEFAULT_ZOOM_WINDOW_MS: Long = 30_000L
+
+/** 拡大波形で高解像度の近傍レンダリングに切り替える表示窓の閾値（10 秒 = 10,000ms）。 */
+internal const val HIGH_RES_ZOOM_THRESHOLD_MS: Long = 10_000L
 
 /** 拡大波形の最小表示窓（2 秒 = 2,000ms、§7.5.4）。 */
 internal const val MIN_ZOOM_WINDOW_MS: Long = 2_000L
@@ -114,12 +124,17 @@ internal const val MIN_ZOOM_WINDOW_MS: Long = 2_000L
 /** ピンチイン・ピンチアウト完了後に高精度波形を再描画するまでの遅延（0.2 秒 = 200ms）。 */
 internal const val ZOOM_SETTLE_DELAY_MS: Long = 200L
 
+private const val MAX_BITMAP_TILE_WIDTH_PX: Int = 2048
+private const val MAX_TOTAL_STRIP_WIDTH_PX: Int = 16_384
+
 /**
  * プレイヤー画面の波形セクション（全体波形 + 拡大波形。F4.1、F4.2、F6.2、§7.5.4）。
  *
  * - [positionProvider] は描画フェーズ（`onDrawBehind`）でのみ読み取り、再生位置の変化で再コンポーズしない（§6.2）。
  * - 再生中のみ `withFrameNanos` で描画レイヤーの無効化を行う。
- * - 波形のバーの [Path] は `Modifier.drawWithCache` と [WaveformDownsampler] でキャッシュする。
+ * - 拡大波形は [DEFAULT_ZOOM_WINDOW_MS]（30 秒）の解像度で全体波形をアルファチャンネル付き画像（[ImageBitmap]）として
+ *   レンダリング・キャッシュし、水平方向の拡大縮小でスライス表示する。表示幅が [HIGH_RES_ZOOM_THRESHOLD_MS]（10 秒）より
+ *   短くなった場合のみ、現在位置付近の波形を高解像度画像として再レンダリング・キャッシュして表示する。
  * - 画面端のドラッグがシステムの「戻る」ジェスチャーと競合しないよう `Modifier.systemGestureExclusion()` を適用する。
  */
 @Composable
@@ -171,7 +186,7 @@ fun WaveformSection(
         mutableLongStateOf(DEFAULT_ZOOM_WINDOW_MS.coerceIn(MIN_ZOOM_WINDOW_MS, maxWindowMs))
     }
 
-    // 拡大波形の 3 倍幅キャッシュの中心時刻（はみ出したときだけ更新して Path を作り直す）
+    // 10秒未満の拡大表示時に近傍高解像度画像をキャッシュする中心時刻
     var cachedAnchorCenterMs by remember(waveform) {
         mutableLongStateOf(positionProvider.currentPositionMs().coerceIn(0L, effectiveDurationMs))
     }
@@ -189,24 +204,19 @@ fun WaveformSection(
 
     val colorScheme = MaterialTheme.colorScheme
     val langPalette = chunkFlowLanguagePalette()
-    val wavePeakColor = colorScheme.primary.copy(alpha = 0.55f)
-    val waveRmsColor = colorScheme.primary
     val playheadColor = colorScheme.error
     val boundaryTickColor = colorScheme.outline
     val viewportStrokeColor = colorScheme.secondary
     val viewportFillColor = colorScheme.secondary.copy(alpha = 0.14f)
     val targetWavePeakColor = langPalette.targetWaveformPeak
     val targetWaveRmsColor = langPalette.targetWaveformRms
-    val targetActiveChunkColor = langPalette.targetActiveRowBackground.copy(alpha = 0.32f)
-    val targetActiveBorderColor = langPalette.onTargetBadgeContainer.copy(alpha = 0.55f)
+    val targetActiveBorderColor = langPalette.onTargetBadgeContainer.copy(alpha = 0.65f)
     val baseWavePeakColor = langPalette.baseWaveformPeak
     val baseWaveRmsColor = langPalette.baseWaveformRms
-    val baseActiveChunkColor = langPalette.baseActiveRowBackground.copy(alpha = 0.32f)
-    val baseActiveBorderColor = langPalette.onBaseBadgeContainer.copy(alpha = 0.55f)
-    val unknownWavePeakColor = colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-    val unknownWaveRmsColor = colorScheme.onSurfaceVariant.copy(alpha = 0.68f)
-    val unknownActiveChunkColor = colorScheme.primaryContainer.copy(alpha = 0.28f)
-    val unknownActiveBorderColor = colorScheme.primary.copy(alpha = 0.50f)
+    val baseActiveBorderColor = langPalette.onBaseBadgeContainer.copy(alpha = 0.65f)
+    val unknownWavePeakColor = colorScheme.onSurfaceVariant.copy(alpha = 0.36f)
+    val unknownWaveRmsColor = colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+    val unknownActiveBorderColor = colorScheme.primary.copy(alpha = 0.60f)
     val chunkBoundaryLineColor = colorScheme.outlineVariant.copy(alpha = 0.55f)
     val abLoopHighlightColor = colorScheme.tertiary.copy(alpha = 0.30f)
     val abLoopBorderColor = colorScheme.tertiary
@@ -246,13 +256,18 @@ fun WaveformSection(
                 durationMs = effectiveDurationMs,
                 zoomWindowMs = zoomWindowMs,
                 chunks = chunks,
+                languagePair = languagePair,
                 loopMode = loopMode,
                 downsampler = downsampler,
                 positionProvider = positionProvider,
                 scrubPositionMs = scrubPositionMs,
                 frameTick = { frameTick.longValue },
-                wavePeakColor = wavePeakColor,
-                waveRmsColor = waveRmsColor,
+                unknownWavePeakColor = unknownWavePeakColor,
+                unknownWaveRmsColor = unknownWaveRmsColor,
+                targetWavePeakColor = targetWavePeakColor,
+                targetWaveRmsColor = targetWaveRmsColor,
+                baseWavePeakColor = baseWavePeakColor,
+                baseWaveRmsColor = baseWaveRmsColor,
                 playheadColor = playheadColor,
                 boundaryTickColor = boundaryTickColor,
                 viewportStrokeColor = viewportStrokeColor,
@@ -271,6 +286,7 @@ fun WaveformSection(
                 onScrubChange = { targetMs ->
                     val clamped = targetMs.coerceIn(0L, effectiveDurationMs)
                     scrubPositionMs = clamped
+                    cachedAnchorCenterMs = clamped
                 },
                 onPreviousChunk = onPreviousChunk,
                 onNextChunk = onNextChunk,
@@ -322,11 +338,8 @@ fun WaveformSection(
                 baseWaveRmsColor = baseWaveRmsColor,
                 playheadColor = playheadColor,
                 chunkBoundaryLineColor = chunkBoundaryLineColor,
-                targetActiveChunkColor = targetActiveChunkColor,
                 targetActiveBorderColor = targetActiveBorderColor,
-                baseActiveChunkColor = baseActiveChunkColor,
                 baseActiveBorderColor = baseActiveBorderColor,
-                unknownActiveChunkColor = unknownActiveChunkColor,
                 unknownActiveBorderColor = unknownActiveBorderColor,
                 abLoopHighlightColor = abLoopHighlightColor,
                 abLoopBorderColor = abLoopBorderColor,
@@ -389,13 +402,18 @@ private fun OverviewWaveformCanvas(
     durationMs: Long,
     zoomWindowMs: Long,
     chunks: List<ChunkUi>,
+    languagePair: LanguagePair?,
     loopMode: LoopMode,
     downsampler: WaveformDownsampler,
     positionProvider: PositionProvider,
     scrubPositionMs: Long?,
     frameTick: () -> Long,
-    wavePeakColor: Color,
-    waveRmsColor: Color,
+    unknownWavePeakColor: Color,
+    unknownWaveRmsColor: Color,
+    targetWavePeakColor: Color,
+    targetWaveRmsColor: Color,
+    baseWavePeakColor: Color,
+    baseWaveRmsColor: Color,
     playheadColor: Color,
     boundaryTickColor: Color,
     viewportStrokeColor: Color,
@@ -472,22 +490,23 @@ private fun OverviewWaveformCanvas(
                 )
             }
             .drawWithCache {
-                val columnCount = max(1, (size.width / 3f).roundToInt())
-                val downsampled = downsampler.downsample(
+                val widthPx = size.width.roundToInt().coerceAtLeast(1)
+                val heightPx = size.height.roundToInt().coerceAtLeast(1)
+                val overviewStrip = renderWaveformBitmapStrip(
                     waveform = waveform,
+                    downsampler = downsampler,
                     startMs = 0L,
                     endMs = durationMs,
-                    columnCount = columnCount,
-                )
-                val peakPath = buildWaveformBarsPath(
-                    amplitudes = downsampled.peak,
-                    canvasWidth = size.width,
-                    canvasHeight = size.height,
-                )
-                val rmsPath = buildWaveformBarsPath(
-                    amplitudes = downsampled.rms,
-                    canvasWidth = size.width,
-                    canvasHeight = size.height,
+                    totalWidthPx = widthPx,
+                    heightPx = heightPx,
+                    chunks = chunks,
+                    languagePair = languagePair,
+                    unknownWavePeakColor = unknownWavePeakColor,
+                    unknownWaveRmsColor = unknownWaveRmsColor,
+                    targetWavePeakColor = targetWavePeakColor,
+                    targetWaveRmsColor = targetWaveRmsColor,
+                    baseWavePeakColor = baseWavePeakColor,
+                    baseWaveRmsColor = baseWaveRmsColor,
                 )
 
                 onDrawBehind {
@@ -516,9 +535,12 @@ private fun OverviewWaveformCanvas(
                         )
                     }
 
-                    // 波形バー（キャッシュ済み Path）
-                    drawPath(path = peakPath, color = wavePeakColor)
-                    drawPath(path = rmsPath, color = waveRmsColor)
+                    // アルファチャンネル画像としてキャッシュ済みの全体波形を描画
+                    drawWaveformBitmapStrip(
+                        strip = overviewStrip,
+                        windowStartMs = 0L,
+                        windowEndMs = durationMs,
+                    )
 
                     // 拡大波形の表示範囲枠（ビューポート矩形）
                     val halfWindow = zoomWindowMs / 2L
@@ -576,11 +598,8 @@ private fun ZoomedWaveformCanvas(
     baseWaveRmsColor: Color,
     playheadColor: Color,
     chunkBoundaryLineColor: Color,
-    targetActiveChunkColor: Color,
     targetActiveBorderColor: Color,
-    baseActiveChunkColor: Color,
     baseActiveBorderColor: Color,
-    unknownActiveChunkColor: Color,
     unknownActiveBorderColor: Color,
     abLoopHighlightColor: Color,
     abLoopBorderColor: Color,
@@ -601,8 +620,8 @@ private fun ZoomedWaveformCanvas(
     val currentZoomWindowMs by rememberUpdatedState(zoomWindowMs)
     val currentChunks by rememberUpdatedState(chunks)
 
-    // ピンチ操作中は既存の波形 Path を水平スケーリングで即座に追従させ、
-    // 操作停止から 0.2 秒（200ms）後に高精度なダウンサンプル波形 Path を再構築する
+    // ピンチ操作中は既存のキャッシュ画像を水平スケーリングで即座に追従させ、
+    // 表示幅が 10 秒未満になった場合は 0.2 秒（200ms）後に近傍の高解像度キャッシュ画像を再構築する
     var settledZoomWindowMs by remember(durationMs) { mutableLongStateOf(zoomWindowMs) }
     LaunchedEffect(zoomWindowMs) {
         if (zoomWindowMs != settledZoomWindowMs) {
@@ -613,17 +632,111 @@ private fun ZoomedWaveformCanvas(
         }
     }
 
-    // 再生中にアンカー中心から大きく離れたときだけ、緩やかにアンカー中心を更新して Path キャッシュを再構築する
+    // 10秒未満の拡大表示中に再生位置やプログレスバー移動で近傍キャッシュから離れた場合は中心時刻を更新する
     if (!LocalInspectionMode.current) {
         LaunchedEffect(settledZoomWindowMs, durationMs) {
             while (isActive) {
                 withFrameNanos {
-                    val pos = positionProvider.currentPositionMs().coerceIn(0L, durationMs)
-                    if (abs(pos - cachedAnchorCenterMs) > (settledZoomWindowMs * 3L) / 4L) {
+                    val pos = (scrubPositionMs ?: positionProvider.currentPositionMs()).coerceIn(0L, durationMs)
+                    val thresholdMs = max(settledZoomWindowMs, 3_000L)
+                    if (abs(pos - cachedAnchorCenterMs) > thresholdMs) {
                         onUpdateAnchorCenter(pos)
                     }
                 }
             }
+        }
+    }
+
+    // Canvas サイズを記憶して、デフォルト表示幅（30秒）の全体波形画像を 1 度だけ生成・キャッシュする
+    var canvasWidthPx by remember { mutableStateOf(0) }
+    var canvasHeightPx by remember { mutableStateOf(0) }
+
+    val fullWaveformStrip = remember(
+        waveform,
+        durationMs,
+        canvasWidthPx,
+        canvasHeightPx,
+        chunks,
+        languagePair,
+        unknownWavePeakColor,
+        unknownWaveRmsColor,
+        targetWavePeakColor,
+        targetWaveRmsColor,
+        baseWavePeakColor,
+        baseWaveRmsColor,
+    ) {
+        if (canvasWidthPx <= 0 || canvasHeightPx <= 0) {
+            null
+        } else {
+            val defaultWindowMs = DEFAULT_ZOOM_WINDOW_MS.coerceAtMost(durationMs).coerceAtLeast(1L)
+            val virtualTotalWidthPx = ((durationMs.toDouble() / defaultWindowMs.toDouble()) * canvasWidthPx.toDouble())
+                .roundToInt()
+                .coerceIn(canvasWidthPx, MAX_TOTAL_STRIP_WIDTH_PX)
+            renderWaveformBitmapStrip(
+                waveform = waveform,
+                downsampler = downsampler,
+                startMs = 0L,
+                endMs = durationMs,
+                totalWidthPx = virtualTotalWidthPx,
+                heightPx = canvasHeightPx,
+                chunks = chunks,
+                languagePair = languagePair,
+                unknownWavePeakColor = unknownWavePeakColor,
+                unknownWaveRmsColor = unknownWaveRmsColor,
+                targetWavePeakColor = targetWavePeakColor,
+                targetWaveRmsColor = targetWaveRmsColor,
+                baseWavePeakColor = baseWavePeakColor,
+                baseWaveRmsColor = baseWaveRmsColor,
+            )
+        }
+    }
+
+    val isHighResMode = zoomWindowMs < HIGH_RES_ZOOM_THRESHOLD_MS || settledZoomWindowMs < HIGH_RES_ZOOM_THRESHOLD_MS
+    val highResWindowMs = min(zoomWindowMs, settledZoomWindowMs).coerceIn(MIN_ZOOM_WINDOW_MS, HIGH_RES_ZOOM_THRESHOLD_MS)
+    val highResStrip = remember(
+        isHighResMode,
+        waveform,
+        durationMs,
+        canvasWidthPx,
+        canvasHeightPx,
+        cachedAnchorCenterMs,
+        settledZoomWindowMs.coerceAtMost(HIGH_RES_ZOOM_THRESHOLD_MS),
+        chunks,
+        languagePair,
+        unknownWavePeakColor,
+        unknownWaveRmsColor,
+        targetWavePeakColor,
+        targetWaveRmsColor,
+        baseWavePeakColor,
+        baseWaveRmsColor,
+    ) {
+        if (!isHighResMode || canvasWidthPx <= 0 || canvasHeightPx <= 0) {
+            null
+        } else {
+            val baseWindowMs = settledZoomWindowMs.coerceIn(MIN_ZOOM_WINDOW_MS, HIGH_RES_ZOOM_THRESHOLD_MS)
+            val spanMs = max(baseWindowMs * 4L, 20_000L).coerceAtMost(durationMs)
+            val halfSpan = spanMs / 2L
+            val startMs = (cachedAnchorCenterMs - halfSpan).coerceIn(0L, (durationMs - spanMs).coerceAtLeast(0L))
+            val endMs = (startMs + spanMs).coerceAtMost(durationMs)
+            val stripWidthPx = ((spanMs.toDouble() / baseWindowMs.toDouble()) * canvasWidthPx.toDouble())
+                .roundToInt()
+                .coerceIn(canvasWidthPx, MAX_BITMAP_TILE_WIDTH_PX * 2)
+            renderWaveformBitmapStrip(
+                waveform = waveform,
+                downsampler = downsampler,
+                startMs = startMs,
+                endMs = endMs,
+                totalWidthPx = stripWidthPx,
+                heightPx = canvasHeightPx,
+                chunks = chunks,
+                languagePair = languagePair,
+                unknownWavePeakColor = unknownWavePeakColor,
+                unknownWaveRmsColor = unknownWaveRmsColor,
+                targetWavePeakColor = targetWavePeakColor,
+                targetWaveRmsColor = targetWaveRmsColor,
+                baseWavePeakColor = baseWavePeakColor,
+                baseWaveRmsColor = baseWaveRmsColor,
+            )
         }
     }
 
@@ -758,30 +871,30 @@ private fun ZoomedWaveformCanvas(
                 }
             }
             .drawWithCache {
-                // ピンチ操作中は settledZoomWindowMs のキャッシュを維持し、0.2 秒後に高精度 Path を再構築する（§7.5.4）
-                val cachedWindowMs = settledZoomWindowMs.coerceAtLeast(1L)
-                val cachedSpanMs = cachedWindowMs * 3L
-                val cachedStartMs = cachedAnchorCenterMs - cachedSpanMs / 2L
-                val cachedEndMs = cachedAnchorCenterMs + cachedSpanMs / 2L
-                val singleWindowColumns = max(1, (size.width / 3f).roundToInt())
-                val cachedColumns = singleWindowColumns * 3
+                val wPx = size.width.roundToInt().coerceAtLeast(1)
+                val hPx = size.height.roundToInt().coerceAtLeast(1)
+                if (canvasWidthPx != wPx || canvasHeightPx != hPx) {
+                    canvasWidthPx = wPx
+                    canvasHeightPx = hPx
+                }
 
-                val downsampled = downsampler.downsample(
+                val fallbackFullStrip = fullWaveformStrip ?: renderWaveformBitmapStrip(
                     waveform = waveform,
-                    startMs = cachedStartMs,
-                    endMs = cachedEndMs,
-                    columnCount = cachedColumns,
-                )
-                val cachedCanvasWidth = size.width * 3f
-                val peakPath = buildWaveformBarsPath(
-                    amplitudes = downsampled.peak,
-                    canvasWidth = cachedCanvasWidth,
-                    canvasHeight = size.height,
-                )
-                val rmsPath = buildWaveformBarsPath(
-                    amplitudes = downsampled.rms,
-                    canvasWidth = cachedCanvasWidth,
-                    canvasHeight = size.height,
+                    downsampler = downsampler,
+                    startMs = 0L,
+                    endMs = durationMs,
+                    totalWidthPx = ((durationMs.toDouble() / DEFAULT_ZOOM_WINDOW_MS.coerceAtMost(durationMs).coerceAtLeast(1L).toDouble()) * wPx.toDouble())
+                        .roundToInt()
+                        .coerceIn(wPx, MAX_TOTAL_STRIP_WIDTH_PX),
+                    heightPx = hPx,
+                    chunks = chunks,
+                    languagePair = languagePair,
+                    unknownWavePeakColor = unknownWavePeakColor,
+                    unknownWaveRmsColor = unknownWaveRmsColor,
+                    targetWavePeakColor = targetWavePeakColor,
+                    targetWaveRmsColor = targetWaveRmsColor,
+                    baseWavePeakColor = baseWavePeakColor,
+                    baseWaveRmsColor = baseWaveRmsColor,
                 )
 
                 onDrawBehind {
@@ -791,34 +904,15 @@ private fun ZoomedWaveformCanvas(
                         .coerceIn(0L, durationMs)
                     val windowStartMs = currentPosMs - liveWindowMs / 2L
                     val windowEndMs = currentPosMs + liveWindowMs / 2L
+                    val centerX = size.width * 0.5f
 
                     val activeId: ChunkId? = activeChunkIndex?.let { chunks.getOrNull(it)?.id }
 
-                    // 1. アクティブチャンクの控えめな背景ハイライトとチャンク境界線
+                    // 1. チャンク境界線（背景色は付けず、波形自体の色分けを際立たせる）
                     for (chunk in chunks) {
                         if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
                         val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
                         val rightX = ((chunk.endMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
-                        val clampedLeft = leftX.coerceIn(0f, size.width)
-                        val clampedRight = rightX.coerceIn(clampedLeft, size.width)
-                        if (clampedRight <= clampedLeft) continue
-
-                        val isTargetChunk = matchesLanguageRole(chunk.language, languagePair?.target)
-                        val isBaseChunk = matchesLanguageRole(chunk.language, languagePair?.base)
-                        val isActiveChunk = chunk.id == activeId
-                        if (isActiveChunk) {
-                            val activeFill = when {
-                                isTargetChunk -> targetActiveChunkColor
-                                isBaseChunk -> baseActiveChunkColor
-                                else -> unknownActiveChunkColor
-                            }
-                            drawRoundRect(
-                                color = activeFill,
-                                topLeft = Offset(clampedLeft, 0f),
-                                size = Size(clampedRight - clampedLeft, size.height),
-                                cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
-                            )
-                        }
                         if (leftX in 0f..size.width) {
                             drawLine(
                                 color = chunkBoundaryLineColor,
@@ -837,62 +931,26 @@ private fun ZoomedWaveformCanvas(
                         }
                     }
 
-                    // 2. 3 倍幅のキャッシュ Path を平行移動（およびピンチ中の即時水平スケール）して描画（§7.5.4）
-                    // チャンク外・未検出チャンクは落ち着いた色、学習言語チャンクはピンク、ベース言語チャンクはブルーで波形バー自体を色分け
-                    val centerX = size.width * 0.5f
-                    val currentPosInCachedPx =
-                        ((currentPosMs - cachedStartMs).toFloat() / cachedWindowMs.toFloat()) * size.width
-                    val translationX = centerX - currentPosInCachedPx
-                    val zoomScaleX = cachedWindowMs.toFloat() / liveWindowMs.toFloat()
-                    withTransform({
-                        if (abs(zoomScaleX - 1f) > 0.001f) {
-                            scale(
-                                scaleX = zoomScaleX,
-                                scaleY = 1f,
-                                pivot = Offset(centerX, size.height * 0.5f),
-                            )
-                        }
-                        translate(left = translationX)
-                    }) {
-                        drawPath(path = peakPath, color = unknownWavePeakColor)
-                        drawPath(path = rmsPath, color = unknownWaveRmsColor)
-                    }
-
-                    for (chunk in chunks) {
-                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
-                        val isTargetChunk = matchesLanguageRole(chunk.language, languagePair?.target)
-                        val isBaseChunk = matchesLanguageRole(chunk.language, languagePair?.base)
-                        if (!isTargetChunk && !isBaseChunk) continue
-
-                        val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
-                        val rightX = ((chunk.endMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
-                        val clampedLeft = leftX.coerceIn(0f, size.width)
-                        val clampedRight = rightX.coerceIn(clampedLeft, size.width)
-                        if (clampedRight <= clampedLeft) continue
-
-                        val chunkPeakColor = if (isTargetChunk) targetWavePeakColor else baseWavePeakColor
-                        val chunkRmsColor = if (isTargetChunk) targetWaveRmsColor else baseWaveRmsColor
-
-                        clipRect(
-                            left = clampedLeft,
-                            top = 0f,
-                            right = clampedRight,
-                            bottom = size.height,
-                        ) {
-                            withTransform({
-                                if (abs(zoomScaleX - 1f) > 0.001f) {
-                                    scale(
-                                        scaleX = zoomScaleX,
-                                        scaleY = 1f,
-                                        pivot = Offset(centerX, size.height * 0.5f),
-                                    )
-                                }
-                                translate(left = translationX)
-                            }) {
-                                drawPath(path = peakPath, color = chunkPeakColor)
-                                drawPath(path = rmsPath, color = chunkRmsColor)
-                            }
-                        }
+                    // 2. アルファチャンネル付き波形キャッシュ画像を水平方向に拡大縮小して描画
+                    // 表示幅が10秒未満かつ近傍高解像度キャッシュの範囲内なら高解像度画像を使い、
+                    // 全体波形やプログレスバー移動直後などで近傍範囲外に飛んだ場合も全体キャッシュ画像で空白なく即座に描画する
+                    val localStrip = highResStrip
+                    if (liveWindowMs < HIGH_RES_ZOOM_THRESHOLD_MS &&
+                        localStrip != null &&
+                        windowStartMs >= localStrip.startMs &&
+                        windowEndMs <= localStrip.endMs
+                    ) {
+                        drawWaveformBitmapStrip(
+                            strip = localStrip,
+                            windowStartMs = windowStartMs,
+                            windowEndMs = windowEndMs,
+                        )
+                    } else {
+                        drawWaveformBitmapStrip(
+                            strip = fallbackFullStrip,
+                            windowStartMs = windowStartMs,
+                            windowEndMs = windowEndMs,
+                        )
                     }
 
                     // 3. アクティブチャンクの枠線
@@ -963,7 +1021,228 @@ private fun ZoomedWaveformCanvas(
     )
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLoopRangeOnOverview(
+private class WaveformBitmapTile(
+    val bitmap: ImageBitmap,
+    val startPx: Int,
+    val widthPx: Int,
+)
+
+private class WaveformBitmapStrip(
+    val startMs: Long,
+    val endMs: Long,
+    val totalWidthPx: Int,
+    val heightPx: Int,
+    val tiles: List<WaveformBitmapTile>,
+)
+
+/**
+ * 指定された時間範囲 `[startMs, endMs]` の波形を、言語役割別の色（ベース言語: 青、対象言語: 赤、不明領域: グレイ）で
+ * アルファチャンネル付き [ImageBitmap] ストリップとしてレンダリングする。
+ */
+private fun renderWaveformBitmapStrip(
+    waveform: Waveform,
+    downsampler: WaveformDownsampler,
+    startMs: Long,
+    endMs: Long,
+    totalWidthPx: Int,
+    heightPx: Int,
+    chunks: List<ChunkUi>,
+    languagePair: LanguagePair?,
+    unknownWavePeakColor: Color,
+    unknownWaveRmsColor: Color,
+    targetWavePeakColor: Color,
+    targetWaveRmsColor: Color,
+    baseWavePeakColor: Color,
+    baseWaveRmsColor: Color,
+): WaveformBitmapStrip {
+    val safeWidthPx = totalWidthPx.coerceIn(1, MAX_TOTAL_STRIP_WIDTH_PX)
+    val safeHeightPx = heightPx.coerceAtLeast(1)
+    val spanMs = (endMs - startMs).coerceAtLeast(1L)
+    val columnCount = max(1, (safeWidthPx / 3f).roundToInt())
+    val downsampled = downsampler.downsample(
+        waveform = waveform,
+        startMs = startMs,
+        endMs = endMs,
+        columnCount = columnCount,
+    )
+
+    val stepX = safeWidthPx.toFloat() / columnCount.toFloat()
+    val barWidth = max(1f, stepX * 0.68f)
+    val centerY = safeHeightPx * 0.5f
+    val maxHalfHeight = safeHeightPx * 0.46f
+    val minHalfHeight = 1.5f
+    val cornerRadius = barWidth * 0.5f
+
+    val tileCount = ceil(safeWidthPx.toDouble() / MAX_BITMAP_TILE_WIDTH_PX.toDouble()).toInt().coerceAtLeast(1)
+    val tiles = ArrayList<WaveformBitmapTile>(tileCount)
+
+    val unknownPeakPaint = Paint().apply {
+        color = unknownWavePeakColor
+        isAntiAlias = true
+    }
+    val unknownRmsPaint = Paint().apply {
+        color = unknownWaveRmsColor
+        isAntiAlias = true
+    }
+    val targetPeakPaint = Paint().apply {
+        color = targetWavePeakColor
+        isAntiAlias = true
+    }
+    val targetRmsPaint = Paint().apply {
+        color = targetWaveRmsColor
+        isAntiAlias = true
+    }
+    val basePeakPaint = Paint().apply {
+        color = baseWavePeakColor
+        isAntiAlias = true
+    }
+    val baseRmsPaint = Paint().apply {
+        color = baseWaveRmsColor
+        isAntiAlias = true
+    }
+
+    var chunkSearchIndex = 0
+    for (tileIdx in 0 until tileCount) {
+        val tileStartPx = tileIdx * MAX_BITMAP_TILE_WIDTH_PX
+        val tileWidthPx = min(MAX_BITMAP_TILE_WIDTH_PX, safeWidthPx - tileStartPx)
+        if (tileWidthPx <= 0) break
+        val tileEndPx = tileStartPx + tileWidthPx
+
+        val bitmap = ImageBitmap(tileWidthPx, safeHeightPx, ImageBitmapConfig.Argb8888)
+        val canvas = ComposeCanvas(bitmap)
+
+        val firstCol = max(0, ((tileStartPx - stepX) / stepX).toInt())
+        val lastCol = min(columnCount - 1, ceil(tileEndPx.toDouble() / stepX.toDouble()).toInt())
+
+        for (i in firstCol..lastCol) {
+            val globalLeft = i * stepX + (stepX - barWidth) * 0.5f
+            val localLeft = globalLeft - tileStartPx
+            val localRight = localLeft + barWidth
+            if (localRight <= 0f || localLeft >= tileWidthPx.toFloat()) continue
+
+            val colCenterMs = startMs + (((i + 0.5) / columnCount.toDouble()) * spanMs.toDouble()).roundToLong()
+            while (chunkSearchIndex < chunks.size && chunks[chunkSearchIndex].endMs < colCenterMs) {
+                chunkSearchIndex++
+            }
+            val matchedChunk = chunks.getOrNull(chunkSearchIndex)?.takeIf {
+                colCenterMs in it.startMs..it.endMs
+            } ?: chunks.firstOrNull { colCenterMs in it.startMs..it.endMs }
+
+            val isTarget = matchedChunk != null && matchesLanguageRole(matchedChunk.language, languagePair?.target)
+            val isBase = matchedChunk != null && matchesLanguageRole(matchedChunk.language, languagePair?.base)
+
+            val peakPaint = when {
+                isTarget -> targetPeakPaint
+                isBase -> basePeakPaint
+                else -> unknownPeakPaint
+            }
+            val rmsPaint = when {
+                isTarget -> targetRmsPaint
+                isBase -> baseRmsPaint
+                else -> unknownRmsPaint
+            }
+
+            val peakAmp = downsampled.peak[i].coerceIn(0f, 1f)
+            val peakHalfH = max(minHalfHeight, peakAmp * maxHalfHeight)
+            canvas.drawRoundRect(
+                left = localLeft,
+                top = centerY - peakHalfH,
+                right = localRight,
+                bottom = centerY + peakHalfH,
+                radiusX = cornerRadius,
+                radiusY = cornerRadius,
+                paint = peakPaint,
+            )
+
+            val rmsAmp = downsampled.rms[i].coerceIn(0f, 1f)
+            val rmsHalfH = max(minHalfHeight, rmsAmp * maxHalfHeight)
+            canvas.drawRoundRect(
+                left = localLeft,
+                top = centerY - rmsHalfH,
+                right = localRight,
+                bottom = centerY + rmsHalfH,
+                radiusX = cornerRadius,
+                radiusY = cornerRadius,
+                paint = rmsPaint,
+            )
+        }
+
+        tiles.add(
+            WaveformBitmapTile(
+                bitmap = bitmap,
+                startPx = tileStartPx,
+                widthPx = tileWidthPx,
+            ),
+        )
+    }
+
+    return WaveformBitmapStrip(
+        startMs = startMs,
+        endMs = endMs,
+        totalWidthPx = safeWidthPx,
+        heightPx = safeHeightPx,
+        tiles = tiles,
+    )
+}
+
+/**
+ * キャッシュ済みの [WaveformBitmapStrip] から `[windowStartMs, windowEndMs]` の範囲を切り出し、
+ * 水平方向に拡大縮小して現在の [DrawScope] に描画する。
+ */
+private fun DrawScope.drawWaveformBitmapStrip(
+    strip: WaveformBitmapStrip,
+    windowStartMs: Long,
+    windowEndMs: Long,
+) {
+    val stripSpanMs = (strip.endMs - strip.startMs).coerceAtLeast(1L)
+    val windowSpanMs = (windowEndMs - windowStartMs).coerceAtLeast(1L)
+    val visibleStartMs = max(windowStartMs, strip.startMs)
+    val visibleEndMs = min(windowEndMs, strip.endMs)
+    if (visibleEndMs <= visibleStartMs) return
+
+    val srcStartPx = (((visibleStartMs - strip.startMs).toDouble() / stripSpanMs.toDouble()) * strip.totalWidthPx.toDouble())
+        .roundToInt()
+        .coerceIn(0, strip.totalWidthPx - 1)
+    val srcEndPx = (((visibleEndMs - strip.startMs).toDouble() / stripSpanMs.toDouble()) * strip.totalWidthPx.toDouble())
+        .roundToInt()
+        .coerceIn(srcStartPx + 1, strip.totalWidthPx)
+    val totalSrcSpanPx = (srcEndPx - srcStartPx).coerceAtLeast(1)
+
+    val dstStartX = (((visibleStartMs - windowStartMs).toDouble() / windowSpanMs.toDouble()) * size.width.toDouble())
+        .roundToInt()
+        .coerceIn(0, size.width.roundToInt())
+    val dstEndX = (((visibleEndMs - windowStartMs).toDouble() / windowSpanMs.toDouble()) * size.width.toDouble())
+        .roundToInt()
+        .coerceIn(dstStartX + 1, size.width.roundToInt().coerceAtLeast(1))
+    val totalDstSpanPx = (dstEndX - dstStartX).coerceAtLeast(1)
+    val dstHeightPx = size.height.roundToInt().coerceAtLeast(1)
+
+    for (tile in strip.tiles) {
+        val tileStartPx = tile.startPx
+        val tileEndPx = tile.startPx + tile.widthPx
+        val overlapStartPx = max(srcStartPx, tileStartPx)
+        val overlapEndPx = min(srcEndPx, tileEndPx)
+        if (overlapEndPx <= overlapStartPx) continue
+
+        val localSrcX = overlapStartPx - tileStartPx
+        val localSrcW = overlapEndPx - overlapStartPx
+
+        val tileDstLeft = dstStartX + (((overlapStartPx - srcStartPx).toDouble() / totalSrcSpanPx.toDouble()) * totalDstSpanPx.toDouble()).roundToInt()
+        val tileDstRight = dstStartX + (((overlapEndPx - srcStartPx).toDouble() / totalSrcSpanPx.toDouble()) * totalDstSpanPx.toDouble()).roundToInt()
+        val tileDstW = (tileDstRight - tileDstLeft).coerceAtLeast(1)
+
+        drawImage(
+            image = tile.bitmap,
+            srcOffset = IntOffset(localSrcX, 0),
+            srcSize = IntSize(localSrcW, strip.heightPx),
+            dstOffset = IntOffset(tileDstLeft, 0),
+            dstSize = IntSize(tileDstW, dstHeightPx),
+            filterQuality = FilterQuality.Low,
+        )
+    }
+}
+
+private fun DrawScope.drawLoopRangeOnOverview(
     loopMode: LoopMode,
     chunks: List<ChunkUi>,
     durationMs: Long,
@@ -998,41 +1277,6 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLoopRangeOnOver
             )
         }
     }
-}
-
-private fun buildWaveformBarsPath(
-    amplitudes: FloatArray,
-    canvasWidth: Float,
-    canvasHeight: Float,
-): Path {
-    val path = Path()
-    val count = amplitudes.size
-    if (count <= 0 || canvasWidth <= 0f || canvasHeight <= 0f) return path
-
-    val stepX = canvasWidth / count.toFloat()
-    val barWidth = max(1f, stepX * 0.68f)
-    val centerY = canvasHeight * 0.5f
-    val maxHalfHeight = canvasHeight * 0.46f
-    val minHalfHeight = 1.5f
-    val cornerRadius = CornerRadius(barWidth * 0.5f, barWidth * 0.5f)
-
-    for (i in 0 until count) {
-        val amp = amplitudes[i].coerceIn(0f, 1f)
-        val halfH = max(minHalfHeight, amp * maxHalfHeight)
-        val left = i * stepX + (stepX - barWidth) * 0.5f
-        path.addRoundRect(
-            RoundRect(
-                rect = Rect(
-                    left = left,
-                    top = centerY - halfH,
-                    right = left + barWidth,
-                    bottom = centerY + halfH,
-                ),
-                cornerRadius = cornerRadius,
-            ),
-        )
-    }
-    return path
 }
 
 @Composable

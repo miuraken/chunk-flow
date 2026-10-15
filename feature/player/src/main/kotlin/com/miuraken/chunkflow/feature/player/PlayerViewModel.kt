@@ -112,6 +112,9 @@ sealed interface TranscriptExportBannerState {
      */
     data class Exported(val format: TranscriptExportFormat) : TranscriptExportBannerState
 
+    /** 文字起こしをリセットし、保存済みファイルを削除した。 */
+    data object ResetCompleted : TranscriptExportBannerState
+
     /** 書き出しに失敗した。 */
     data object Failed : TranscriptExportBannerState
 }
@@ -577,6 +580,9 @@ sealed interface PlayerEvent {
 
     /** 文字起こし JSON / 字幕ファイルを取り込む（F1.3、F1.4、§7.5.5）。 */
     data class ImportTranscript(val uri: Uri) : PlayerEvent
+
+    /** 現在の教材の文字起こしをリセットし、保存済み文字起こしファイルを削除する。 */
+    data object ResetTranscripts : PlayerEvent
 
     /** 文字起こし取り込み結果のバナーを閉じる。 */
     data object DismissTranscriptBanner : PlayerEvent
@@ -1112,8 +1118,19 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.ImportTranscript -> {
+                val activeId = resolveActiveMediaId()
                 viewModelScope.launch {
-                    val result = libraryRepository.importTranscript(event.uri)
+                    val result = if (activeId != null) {
+                        libraryRepository.importTranscriptForMedia(activeId, event.uri)
+                    } else {
+                        libraryRepository.importTranscript(event.uri)
+                    }
+                    if (result is TranscriptImportResult.Attached && activeId != null) {
+                        analysisRepository.setChunkSource(activeId, ChunkOrigin.IMPORTED)
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = emptyMap())
+                        }
+                    }
                     val banner = when (result) {
                         is TranscriptImportResult.Attached ->
                             TranscriptImportBannerState.Attached(
@@ -1128,6 +1145,27 @@ class PlayerViewModel @Inject constructor(
                             TranscriptImportBannerState.Invalid(result.error)
                     }
                     localUiState.update { it.copy(transcriptImportBanner = banner) }
+                }
+            }
+
+            PlayerEvent.ResetTranscripts -> {
+                val id = resolveActiveMediaId() ?: return
+                viewModelScope.launch {
+                    val success = libraryRepository.resetTranscriptsAndDeleteFiles(id)
+                    analysisRepository.clearTranscriptsForMedia(id)
+                    analysisRepository.setChunkSource(id, ChunkOrigin.AUTO)
+                    localUiState.update { state ->
+                        state.copy(
+                            languageOverrides = emptyMap(),
+                            localTranscriptExported = false,
+                            transcriptImportBanner = null,
+                            transcriptExportBanner = if (success) {
+                                TranscriptExportBannerState.ResetCompleted
+                            } else {
+                                TranscriptExportBannerState.Failed
+                            },
+                        )
+                    }
                 }
             }
 

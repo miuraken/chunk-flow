@@ -801,6 +801,7 @@ private fun autoPauseLabel(autoPause: AutoPause): String = when (autoPause) {
     is AutoPause.Proportional -> stringResource(R.string.settings_auto_pause_proportional, autoPause.factor)
 }
 
+@Suppress("NonObservableLocale")
 @Composable
 private fun languageDisplayName(language: LanguageTag): String = when (language.value) {
     "en" -> stringResource(R.string.settings_lang_en)

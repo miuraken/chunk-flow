@@ -221,5 +221,13 @@ class DatabaseEntityAndTransactionTest {
                 transcripts.remove(id)
             }
         }
+
+        override suspend fun deleteByMediaIdAndOrigin(mediaId: String, origin: String) {
+            val idsToRemove = chunks.filter { it.mediaId == mediaId && it.origin == origin }.map { it.id }.toSet()
+            chunks.removeAll { it.id in idsToRemove }
+            for (id in idsToRemove) {
+                transcripts.remove(id)
+            }
+        }
     }
 }

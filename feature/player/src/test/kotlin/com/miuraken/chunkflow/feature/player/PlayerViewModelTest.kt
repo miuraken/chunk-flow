@@ -787,4 +787,46 @@ class PlayerViewModelTest {
         assertTrue(matchesLanguageRole(LanguageTag("zh-cn"), LanguageTag("zh-cn")))
         assertFalse(matchesLanguageRole(LanguageTag("zh-tw"), LanguageTag("zh-cn")))
     }
+
+    @Test
+    fun `文字起こしの指定教材インポートとリセット削除が機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. 教材を開いている状態で ImportTranscript を発火すると importTranscriptForMedia が呼ばれる
+        val fakeUri = StubUri.create()
+        libraryRepo.importTranscriptResult = {
+            TranscriptImportResult.Attached(
+                mediaId = item.id,
+                chunkCount = 12,
+                durationMismatch = false,
+            )
+        }
+        viewModel.onEvent(PlayerEvent.ImportTranscript(fakeUri))
+        assertEquals(1, libraryRepo.importedTranscriptsForMedia.size)
+        assertEquals(item.id, libraryRepo.importedTranscriptsForMedia.single().first)
+        assertSame(fakeUri, libraryRepo.importedTranscriptsForMedia.single().second)
+        assertEquals(
+            TranscriptImportBannerState.Attached(chunkCount = 12, durationMismatch = false),
+            viewModel.uiState.value.transcriptImportBanner,
+        )
+        assertEquals(ChunkOrigin.IMPORTED, analysisRepo.chunkSources[item.id])
+
+        // 2. ResetTranscripts を発火すると文字起こしがクリアされ、バナーが ResetCompleted になる
+        viewModel.onEvent(PlayerEvent.ResetTranscripts)
+        assertEquals(listOf(item.id), libraryRepo.resetTranscriptMediaIds)
+        assertEquals(ChunkOrigin.AUTO, analysisRepo.chunkSources[item.id])
+        assertFalse(viewModel.uiState.value.hasTranscript)
+        assertEquals(
+            TranscriptExportBannerState.ResetCompleted,
+            viewModel.uiState.value.transcriptExportBanner,
+        )
+    }
 }

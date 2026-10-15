@@ -720,6 +720,13 @@ class DefaultTranscriptImporterTest {
             // ON DELETE CASCADE の模擬
             transcripts.update { it - idSet }
         }
+
+        override suspend fun deleteByMediaIdAndOrigin(mediaId: String, origin: String) {
+            val targetIds = chunks.value.values
+                .filter { it.mediaId == mediaId && it.origin == origin }
+                .map { it.id }
+            deleteByIds(targetIds)
+        }
     }
 
     private class InMemoryItemStateDao : ItemStateDao {

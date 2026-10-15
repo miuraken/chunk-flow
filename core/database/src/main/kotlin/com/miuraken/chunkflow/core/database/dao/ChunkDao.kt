@@ -53,6 +53,10 @@ interface ChunkDao {
     @Query("DELETE FROM chunk WHERE id IN (:chunkIds)")
     suspend fun deleteByIds(chunkIds: List<Long>)
 
+    /** 指定した教材・出どころのチャンクをすべて削除する。 */
+    @Query("DELETE FROM chunk WHERE media_id = :mediaId AND origin = :origin")
+    suspend fun deleteByMediaIdAndOrigin(mediaId: String, origin: String)
+
     /**
      * チャンクの作り直しトランザクション（§6.4、§7.4.6）。
      *

@@ -84,6 +84,11 @@ interface AnalysisRepository {
      */
     suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) = Unit
 
+    /**
+     * 指定した教材のすべての文字起こしとメモリ上の文字起こしキャッシュを消去し、取り込みチャンク（[ChunkOrigin.IMPORTED]）があれば削除して自動分割チャンクへ戻す。
+     */
+    suspend fun clearTranscriptsForMedia(id: MediaId) = Unit
+
     /** 指定した教材のブックマーク一覧を時刻の昇順で購読する（F8.1）。 */
     fun observeBookmarks(id: MediaId): Flow<List<Bookmark>> = flowOf(emptyList())
 

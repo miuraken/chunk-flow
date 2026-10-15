@@ -112,7 +112,13 @@
     <string name="player_chunk_boundary_start_plus">Move start +100ms</string>
     <string name="player_chunk_boundary_end_minus">Move end -100ms</string>
     <string name="player_chunk_boundary_end_plus">Move end +100ms</string>
-    <string name="player_export_section_title">Export transcript / subtitles</string>
+    <string name="player_export_section_title">Transcript files</string>
+    <string name="player_transcript_file_import">Import transcript / subtitle file</string>
+    <string name="player_transcript_reset_button">Reset transcripts and delete files</string>
+    <string name="player_transcript_reset_confirm_title">Reset transcripts?</string>
+    <string name="player_transcript_reset_confirm_message">This will clear all current transcript data and delete saved transcript files. This action cannot be undone.</string>
+    <string name="player_transcript_reset_confirm_ok">Reset and delete</string>
+    <string name="player_transcript_reset_done">Reset transcripts and deleted files</string>
     <string name="player_export_srt">Export SRT</string>
     <string name="player_export_lrc">Export LRC</string>
     <string name="player_export_txt">Export TXT</string>

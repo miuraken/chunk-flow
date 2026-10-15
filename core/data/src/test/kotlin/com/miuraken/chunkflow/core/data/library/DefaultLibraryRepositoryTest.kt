@@ -1457,6 +1457,12 @@ class DefaultLibraryRepositoryTest {
             records.update { it - driveFileId }
         }
 
+        override suspend fun deleteByMediaIdAndKind(mediaId: String, kind: String) {
+            records.update { current ->
+                current.filterValues { !(it.mediaId == mediaId && it.kind == kind) }
+            }
+        }
+
         fun deleteByMediaId(mediaId: String) {
             records.update { current -> current.filterValues { it.mediaId != mediaId } }
         }
@@ -1689,6 +1695,13 @@ class DefaultLibraryRepositoryTest {
             val idSet = chunkIds.toSet()
             chunks.update { list -> list.filterNot { it.id in idSet } }
             transcripts.update { map -> map.filterKeys { it !in idSet } }
+        }
+
+        override suspend fun deleteByMediaIdAndOrigin(mediaId: String, origin: String) {
+            val targetIds = chunks.value
+                .filter { it.mediaId == mediaId && it.origin == origin }
+                .map { it.id }
+            deleteByIds(targetIds)
         }
 
         fun deleteByMediaId(mediaId: String) {

@@ -418,6 +418,57 @@ class DefaultLibraryRepository(
         )
     }
 
+    override suspend fun importTranscriptForMedia(id: MediaId, uri: Uri): TranscriptImportResult = withContext(ioDispatcher) {
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
+            return@withContext TranscriptImportResult.Invalid(TranscriptError.UNKNOWN_FORMAT)
+        }
+        val targetEntity = mediaItemDao.getById(id.value)
+            ?: return@withContext TranscriptImportResult.NoMatchingAudio(audioFileName = null)
+        val meta = queryContentMetadata(uri)
+        val parseOutcome = readAndParseTranscript(uri, meta)
+        val parsed = when (parseOutcome) {
+            is InternalTranscriptParseOutcome.Ok -> parseOutcome.parsed
+
+            is InternalTranscriptParseOutcome.Invalid -> {
+                return@withContext TranscriptImportResult.Invalid(parseOutcome.error)
+            }
+        }
+
+        val chunkCount = attachTranscriptToMediaItem(targetEntity, parsed)
+            ?: return@withContext TranscriptImportResult.Invalid(TranscriptError.SCHEMA_VIOLATION)
+        val docDurationMs = parsed.document.durationMs
+        val durationMismatch = docDurationMs != null &&
+            abs(targetEntity.durationMs - docDurationMs) >= DURATION_MISMATCH_THRESHOLD_MS
+        TranscriptImportResult.Attached(
+            mediaId = id,
+            chunkCount = chunkCount,
+            durationMismatch = durationMismatch,
+        )
+    }
+
+    override suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean = withContext(ioDispatcher) {
+        val entity = mediaItemDao.getById(id.value)
+        analysisRepository.clearTranscriptsForMedia(id)
+        chunkDao?.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.IMPORTED.name)
+        val existingState = itemStateDao.getByMediaId(id.value)
+        if (existingState != null && existingState.chunkSource == ChunkOrigin.IMPORTED.name) {
+            itemStateDao.updateChunkSource(
+                mediaId = id.value,
+                chunkSource = ChunkOrigin.AUTO.name,
+                updatedAt = clock(),
+            )
+        }
+        mediaFileLocator.deleteTranscriptFiles(id)
+        driveFileDao?.deleteByMediaIdAndKind(id.value, DriveFileKind.TRANSCRIPT.name)
+        if (entity != null) {
+            loadLinkedSyncFolderConfig()?.let { linked ->
+                val targetFileName = "${sanitizeDisplayName(entity.title).ifBlank { entity.id }}.chunkflow.json"
+                deleteTranscriptJsonFromSafTree(linked.treeUri, targetFileName)
+            }
+        }
+        true
+    }
+
     override suspend fun updateItemMetadata(
         id: MediaId,
         course: String?,
@@ -1973,6 +2024,7 @@ class DefaultLibraryRepository(
         }
     }
 
+    @SuppressLint("UseKtx")
     private fun loadLinkedSyncFolderConfig(): LinkedSyncFolderConfig? = runCatching {
         val file = linkedSyncConfigFile
         if (!file.isFile) return null
@@ -2292,6 +2344,29 @@ class DefaultLibraryRepository(
             out.flush()
         }
         true
+    }.getOrDefault(false)
+
+    private fun deleteTranscriptJsonFromSafTree(
+        treeUri: Uri,
+        fileName: String,
+    ): Boolean = runCatching {
+        if (!isTreeUriSafe(treeUri)) return false
+        val rootDocId = DocumentsContract.getTreeDocumentId(treeUri) ?: return false
+        val transcriptionDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = rootDocId,
+            targetName = TRANSCRIPTION_DIR_NAME,
+            requireDirectory = true,
+        ) ?: return false
+        val existingFileDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = transcriptionDocId,
+            targetName = fileName,
+            requireDirectory = false,
+        ) ?: return false
+        val targetDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, existingFileDocId)
+            ?: return false
+        DocumentsContract.deleteDocument(context.contentResolver, targetDocUri)
     }.getOrDefault(false)
 
     private fun findChildDocumentIdByName(

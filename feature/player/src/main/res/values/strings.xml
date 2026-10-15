@@ -112,7 +112,13 @@
     <string name="player_chunk_boundary_start_plus">開始を 100ms 遅らせる (+100ms)</string>
     <string name="player_chunk_boundary_end_minus">終了を 100ms 早める (-100ms)</string>
     <string name="player_chunk_boundary_end_plus">終了を 100ms 遅らせる (+100ms)</string>
-    <string name="player_export_section_title">文字起こし・字幕のエクスポート</string>
+    <string name="player_export_section_title">文字起こしファイル</string>
+    <string name="player_transcript_file_import">文字起こし・字幕ファイルをインポート</string>
+    <string name="player_transcript_reset_button">文字起こしをリセットしてファイルを削除</string>
+    <string name="player_transcript_reset_confirm_title">文字起こしをリセットしますか？</string>
+    <string name="player_transcript_reset_confirm_message">現在の文字起こしデータをすべて消去し、保存済みの文字起こしファイルも削除します。この操作は元に戻せません。</string>
+    <string name="player_transcript_reset_confirm_ok">リセットして削除</string>
+    <string name="player_transcript_reset_done">文字起こしをリセットし、ファイルを削除しました</string>
     <string name="player_export_srt">SRT 書き出し</string>
     <string name="player_export_lrc">LRC 書き出し</string>
     <string name="player_export_txt">TXT 書き出し</string>

@@ -31,4 +31,8 @@ interface DriveFileDao {
     /** 指定した Drive ファイル ID の情報を削除する。 */
     @Query("DELETE FROM drive_file WHERE drive_file_id = :driveFileId")
     suspend fun deleteById(driveFileId: String)
+
+    /** 指定した教材 ID と種別（`AUDIO` / `TRANSCRIPT`）の Drive 同期ファイル情報を削除する。 */
+    @Query("DELETE FROM drive_file WHERE media_id = :mediaId AND kind = :kind")
+    suspend fun deleteByMediaIdAndKind(mediaId: String, kind: String)
 }

@@ -24,7 +24,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -187,7 +189,7 @@ fun PlayerRoute(
         },
         onPickTranscriptJson = {
             transcriptPickerLauncher.launch(
-                arrayOf("application/json", "text/vtt", "application/x-subrip", "text/plain", "*/*"),
+                arrayOf("*/*"),
             )
         },
         onRequestExportTranscript = { format ->
@@ -549,9 +551,17 @@ fun PlayerScreen(
                 onAutoAlignTranscriptOffset = {
                     onEvent(PlayerEvent.AutoAlignTranscriptOffset)
                 },
+                onImportTranscript = {
+                    showResegmentSheet = false
+                    onPickTranscriptJson()
+                },
                 onExportTranscript = { format ->
                     showResegmentSheet = false
                     onRequestExportTranscript(format)
+                },
+                onResetTranscripts = {
+                    showResegmentSheet = false
+                    onEvent(PlayerEvent.ResetTranscripts)
                 },
                 onApply = { params ->
                     onEvent(PlayerEvent.Resegment(params))
@@ -1538,7 +1548,9 @@ private fun ResegmentSheetContent(
     transcriptOffsetMs: Int,
     onAdjustTranscriptOffset: (Int) -> Unit,
     onAutoAlignTranscriptOffset: () -> Unit,
+    onImportTranscript: () -> Unit,
     onExportTranscript: (TranscriptExportFormat) -> Unit,
+    onResetTranscripts: () -> Unit,
     onApply: (SegmentationParams) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -1546,6 +1558,7 @@ private fun ResegmentSheetContent(
     var prePaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.prePaddingMs) }
     var postPaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.postPaddingMs) }
     var thresholdRatio by remember(initialParams) { mutableFloatStateOf(initialParams.thresholdRatio) }
+    var showResetConfirmDialog by remember { mutableStateOf(false) }
 
     val formattedOffset = if (transcriptOffsetMs >= 0) {
         "+$transcriptOffsetMs"
@@ -1600,12 +1613,24 @@ private fun ResegmentSheetContent(
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-        // 文字起こし・字幕のエクスポート (F7.5)
+        // 文字起こしファイル (F1.3, F1.4, F7.5)
         Text(
             text = stringResource(R.string.player_export_section_title),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
+        FilledTonalButton(
+            onClick = onImportTranscript,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Description,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = stringResource(R.string.player_transcript_file_import))
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1658,6 +1683,21 @@ private fun ResegmentSheetContent(
                     style = MaterialTheme.typography.labelMedium,
                 )
             }
+        }
+        OutlinedButton(
+            onClick = { showResetConfirmDialog = true },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Delete,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = stringResource(R.string.player_transcript_reset_button))
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -1737,6 +1777,36 @@ private fun ResegmentSheetContent(
                 Text(text = stringResource(R.string.player_resegment_apply))
             }
         }
+    }
+
+    if (showResetConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirmDialog = false },
+            title = {
+                Text(text = stringResource(R.string.player_transcript_reset_confirm_title))
+            },
+            text = {
+                Text(text = stringResource(R.string.player_transcript_reset_confirm_message))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showResetConfirmDialog = false
+                        onResetTranscripts()
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text(text = stringResource(R.string.player_transcript_reset_confirm_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirmDialog = false }) {
+                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
+                }
+            },
+        )
     }
 }
 

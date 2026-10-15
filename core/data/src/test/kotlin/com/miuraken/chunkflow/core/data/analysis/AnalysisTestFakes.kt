@@ -116,6 +116,11 @@ internal class FakeTranscriptDao : TranscriptDao {
         store.update { current -> current - chunkId }
     }
 
+    override suspend fun deleteByMediaId(mediaId: String) {
+        val mediaChunkIds = chunksProvider().filter { it.mediaId == mediaId }.map { it.id }.toSet()
+        store.update { current -> current - mediaChunkIds }
+    }
+
     fun deleteByChunkIds(chunkIds: List<Long>) {
         store.update { current -> current - chunkIds.toSet() }
     }
@@ -177,6 +182,13 @@ internal class FakeChunkDao(
     override suspend fun deleteByIds(chunkIds: List<Long>) {
         store.update { current -> current - chunkIds.toSet() }
         transcriptDao.deleteByChunkIds(chunkIds)
+    }
+
+    override suspend fun deleteByMediaIdAndOrigin(mediaId: String, origin: String) {
+        val targetIds = store.value.values
+            .filter { it.mediaId == mediaId && it.origin == origin }
+            .map { it.id }
+        deleteByIds(targetIds)
     }
 }
 

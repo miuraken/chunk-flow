@@ -53,40 +53,40 @@ data class ChunkFlowLanguagePalette(
     val targetWaveformRms: Color,
 )
 
-/** ライトテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク系）。 */
+/** ライトテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク/レッド系）。 */
 val LightChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
     baseRowBackground = Color(0xFFEDF5FF),
     baseActiveRowBackground = Color(0xFFD6EAFF),
     baseLoopRowBackground = Color(0xFFE0EFFF),
     baseBadgeContainer = Color(0xFFD4E8FF),
     onBaseBadgeContainer = Color(0xFF0A3966),
-    baseWaveformPeak = Color(0xFF1E88E5).copy(alpha = 0.55f),
+    baseWaveformPeak = Color(0xFF42A5F5).copy(alpha = 0.65f),
     baseWaveformRms = Color(0xFF1565C0),
     targetRowBackground = Color(0xFFFFEFF5),
     targetActiveRowBackground = Color(0xFFFFDCE9),
     targetLoopRowBackground = Color(0xFFFFE5EF),
     targetBadgeContainer = Color(0xFFFFD6E5),
     onTargetBadgeContainer = Color(0xFF6B0F36),
-    targetWaveformPeak = Color(0xFFE91E63).copy(alpha = 0.55f),
-    targetWaveformRms = Color(0xFFD81B60),
+    targetWaveformPeak = Color(0xFFEF5350).copy(alpha = 0.65f),
+    targetWaveformRms = Color(0xFFD32F2F),
 )
 
-/** ダークテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク系）。 */
+/** ダークテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク/レッド系）。 */
 val DarkChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
     baseRowBackground = Color(0xFF64B5F6).copy(alpha = 0.14f),
     baseActiveRowBackground = Color(0xFF64B5F6).copy(alpha = 0.28f),
     baseLoopRowBackground = Color(0xFF64B5F6).copy(alpha = 0.22f),
     baseBadgeContainer = Color(0xFF144272),
     onBaseBadgeContainer = Color(0xFFD4E8FF),
-    baseWaveformPeak = Color(0xFF64B5F6).copy(alpha = 0.55f),
+    baseWaveformPeak = Color(0xFF90CAF9).copy(alpha = 0.65f),
     baseWaveformRms = Color(0xFF42A5F5),
     targetRowBackground = Color(0xFFF48FB1).copy(alpha = 0.14f),
     targetActiveRowBackground = Color(0xFFF48FB1).copy(alpha = 0.28f),
     targetLoopRowBackground = Color(0xFFF48FB1).copy(alpha = 0.22f),
     targetBadgeContainer = Color(0xFF6A1B3D),
     onTargetBadgeContainer = Color(0xFFFFD6E5),
-    targetWaveformPeak = Color(0xFFF48FB1).copy(alpha = 0.55f),
-    targetWaveformRms = Color(0xFFF06292),
+    targetWaveformPeak = Color(0xFFE57373).copy(alpha = 0.65f),
+    targetWaveformRms = Color(0xFFEF5350),
 )
 
 internal val LocalChunkFlowLanguagePalette = staticCompositionLocalOf {

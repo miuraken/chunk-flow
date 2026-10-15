@@ -783,7 +783,15 @@ private fun TranscriptChunkRow(
                     .background(indicatorColor),
             )
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+
+            RepeatChunkCheckbox(
+                checked = chunk.isRepeatChecked,
+                contentDescription = repeatCheckCd,
+                onToggle = onToggleRepeatChunk,
+            )
+
+            Spacer(modifier = Modifier.width(4.dp))
 
             // タイムスタンプ（ブラインド中もタップで頭出し可能）
             Text(
@@ -927,12 +935,6 @@ private fun TranscriptChunkRow(
                         .padding(vertical = 10.dp),
                 )
             }
-
-            RepeatChunkCheckbox(
-                checked = chunk.isRepeatChecked,
-                contentDescription = repeatCheckCd,
-                onToggle = onToggleRepeatChunk,
-            )
 
             IconButton(
                 onClick = onToggleBookmark,
@@ -1236,34 +1238,23 @@ private fun RepeatChunkCheckbox(
                 this.contentDescription = contentDescription
             },
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 5.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        Box(
+            modifier = Modifier
+                .padding(horizontal = 5.dp, vertical = 5.dp)
+                .size(16.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(if (checked) colorScheme.tertiary else colorScheme.surface)
+                .border(1.dp, boxBorderColor, RoundedCornerShape(3.dp)),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(14.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(if (checked) colorScheme.tertiary else colorScheme.surface)
-                    .border(1.dp, boxBorderColor, RoundedCornerShape(3.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (checked) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Check,
-                        contentDescription = null,
-                        tint = colorScheme.onTertiary,
-                        modifier = Modifier.size(11.dp),
-                    )
-                }
+            if (checked) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Check,
+                    contentDescription = null,
+                    tint = colorScheme.onTertiary,
+                    modifier = Modifier.size(12.dp),
+                )
             }
-            Icon(
-                imageVector = ChunkFlowIcons.Repeat,
-                contentDescription = null,
-                tint = contentColor,
-                modifier = Modifier.size(14.dp),
-            )
         }
     }
 }
@@ -1446,6 +1437,9 @@ private fun TranscriptExportStatusBanner(
                 R.string.player_export_done,
                 banner.format.name,
             )
+
+        TranscriptExportBannerState.ResetCompleted ->
+            stringResource(R.string.player_transcript_reset_done)
 
         TranscriptExportBannerState.Failed ->
             stringResource(R.string.player_export_failed)

@@ -54,6 +54,15 @@ class FakeLibraryRepository(
     /** [importTranscript] の結果を決める。既定は「対応する音声がない」。 */
     var importTranscriptResult: (Uri) -> TranscriptImportResult = { TranscriptImportResult.NoMatchingAudio(null) }
 
+    /** [importTranscriptForMedia] の呼び出し履歴（呼ばれた順）。 */
+    val importedTranscriptsForMedia: MutableList<Pair<MediaId, Uri>> = mutableListOf()
+
+    /** [resetTranscriptsAndDeleteFiles] が返す結果。 */
+    var resetTranscriptsResult: Boolean = true
+
+    /** [resetTranscriptsAndDeleteFiles] の呼び出し履歴（呼ばれた順）。 */
+    val resetTranscriptMediaIds: MutableList<MediaId> = mutableListOf()
+
     /** [syncFromDrive] が流す進捗を決める。既定はすぐに「0 件で完了」。 */
     var syncResult: () -> Flow<SyncProgress> = {
         flowOf(
@@ -139,6 +148,16 @@ class FakeLibraryRepository(
     }
 
     override suspend fun importTranscript(uri: Uri): TranscriptImportResult = importTranscriptResult(uri)
+
+    override suspend fun importTranscriptForMedia(id: MediaId, uri: Uri): TranscriptImportResult {
+        importedTranscriptsForMedia += id to uri
+        return importTranscriptResult(uri)
+    }
+
+    override suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean {
+        resetTranscriptMediaIds += id
+        return resetTranscriptsResult
+    }
 
     override fun syncFromDrive(): Flow<SyncProgress> = syncResult()
 
