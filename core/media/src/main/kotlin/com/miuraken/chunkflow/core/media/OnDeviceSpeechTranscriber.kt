@@ -208,6 +208,19 @@ object ChunkPcmExtractor {
     }
 
     /**
+     * 16-bit リトルエンディアン PCM（[pcm16LeBytes]）を [ShortArray] へ変換する。
+     */
+    fun pcm16LeBytesToShorts(pcm16LeBytes: ByteArray): ShortArray {
+        val shortCount = pcm16LeBytes.size / 2
+        val shorts = ShortArray(shortCount)
+        val byteBuffer = ByteBuffer.wrap(pcm16LeBytes, 0, shortCount * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until shortCount) {
+            shorts[i] = byteBuffer.short
+        }
+        return shorts
+    }
+
+    /**
      * 16-bit リトルエンディアン PCM（[pcm16LeBytes]）の先頭と末尾に無音（0 バイト列）を付加する。
      */
     internal fun padPcmWithSilence(
@@ -672,12 +685,20 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             preferOnDevice: Boolean,
         ) -> SpeechRecognitionAttemptResult?
     )? = null,
+    private val languageDetector: (
+        (
+            pcm16kMono: ShortArray,
+            targetTag: String,
+            baseTag: String,
+        ) -> LanguagePairPrediction?
+    )? = null,
 ) : OnDeviceChunkTranscriber {
 
     @Inject
     constructor(
         @ApplicationContext context: Context,
         audioStreamDecoder: AudioStreamDecoder,
+        whisperTinyLanguageDetector: WhisperTinyLanguageDetector,
     ) : this(
         context = context,
         audioStreamDecoder = audioStreamDecoder,
@@ -688,6 +709,16 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             runCatching { SpeechRecognizer.isRecognitionAvailable(context) }.getOrDefault(false)
         },
         attemptRunner = null,
+        languageDetector = whisperTinyLanguageDetector::detectLanguagePair,
+    )
+
+    internal constructor(
+        context: Context,
+        audioStreamDecoder: AudioStreamDecoder,
+    ) : this(
+        context = context,
+        audioStreamDecoder = audioStreamDecoder,
+        whisperTinyLanguageDetector = WhisperTinyLanguageDetector(context),
     )
 
     private data class ChunkAudioCacheScope(
@@ -747,6 +778,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             if (cached != null) {
                 logInfo("singleLang cacheHit startMs=$startMs endMs=$endMs lang=${singleLang?.value ?: "default"}")
                 return cached
+            }
+        } else {
+            getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
+                logInfo("bilingual bothCacheHit startMs=$startMs endMs=$endMs winner=${cachedBoth.language?.value}")
+                return cachedBoth
             }
         }
 
@@ -826,19 +862,45 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 )
                 return cached
             }
+        } else {
+            getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
+                return cachedBoth
+            }
+        }
+
+        val lidPrediction = if (targetLang != null && baseLang != null && languageDetector != null) {
+            val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
+            runCatching {
+                languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
+            }.getOrNull()
+        } else {
+            null
         }
 
         return recognitionMutex.withLock {
             if (targetLang != null && baseLang != null) {
-                transcribeWithTwoSecondLanguageProbe(
-                    pcm16LeBytes = pcm16LeBytes,
-                    sampleRateHz = sampleRateHz,
-                    chunkDurationMs = chunkDurationMs,
-                    targetLang = targetLang,
-                    baseLang = baseLang,
-                    preferOnDevice = preferOnDevice,
-                    cacheScope = cacheScope,
-                )
+                if (lidPrediction != null) {
+                    transcribeWithWhisperLidPrediction(
+                        pcm16LeBytes = pcm16LeBytes,
+                        sampleRateHz = sampleRateHz,
+                        chunkDurationMs = chunkDurationMs,
+                        targetLang = targetLang,
+                        baseLang = baseLang,
+                        prediction = lidPrediction,
+                        preferOnDevice = preferOnDevice,
+                        cacheScope = cacheScope,
+                    )
+                } else {
+                    transcribeWithTwoSecondLanguageProbe(
+                        pcm16LeBytes = pcm16LeBytes,
+                        sampleRateHz = sampleRateHz,
+                        chunkDurationMs = chunkDurationMs,
+                        targetLang = targetLang,
+                        baseLang = baseLang,
+                        preferOnDevice = preferOnDevice,
+                        cacheScope = cacheScope,
+                    )
+                }
             } else {
                 val singleLang = targetLang ?: baseLang
                 getCachedSttResult(cacheScope, singleLang)?.let { cached ->
@@ -872,6 +934,114 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 }
             }
         }
+    }
+
+    private suspend fun transcribeWithWhisperLidPrediction(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        chunkDurationMs: Long,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+        prediction: LanguagePairPrediction,
+        preferOnDevice: Boolean,
+        cacheScope: ChunkAudioCacheScope,
+    ): OnDeviceChunkTranscriptionResult? {
+        val selectedLang = if (prediction.selectedTag.equals(baseLang.value, ignoreCase = true)) {
+            baseLang
+        } else {
+            targetLang
+        }
+        val fallbackLang = if (selectedLang == targetLang) baseLang else targetLang
+
+        logDebug(
+            "whisperLid selected=${selectedLang.value} prob=${prediction.selectedProbability} " +
+                "targetProb=${prediction.targetProbability} baseProb=${prediction.baseProbability} " +
+                "lidMs=${prediction.inferenceTimeMs} chunkDurationMs=$chunkDurationMs",
+        )
+
+        val primaryResult = getCachedSttResult(cacheScope, selectedLang) ?: run {
+            val selectedBcp47 = toBcp47LocaleTag(selectedLang.value)
+            val attempt = executeAttempt(
+                pcm16LeBytes = pcm16LeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = selectedBcp47,
+                preferOnDevice = preferOnDevice,
+                isProbe = false,
+            )?.takeIf { it.text.isNotBlank() }
+            attempt?.let {
+                OnDeviceChunkTranscriptionResult(
+                    text = it.text.trim(),
+                    language = selectedLang,
+                    confidence = it.confidence,
+                ).also { res ->
+                    putCachedSttResult(cacheScope, selectedLang.value, res)
+                }
+            }
+        }
+
+        val isAmbiguousAndLowConfidence = primaryResult != null &&
+            prediction.selectedProbability < AMBIGUOUS_LID_PROB_THRESHOLD &&
+            primaryResult.confidence != null &&
+            primaryResult.confidence < LOW_STT_CONFIDENCE_THRESHOLD
+
+        if (primaryResult != null && !isAmbiguousAndLowConfidence) {
+            return primaryResult
+        }
+
+        val fallbackResult = getCachedSttResult(cacheScope, fallbackLang) ?: run {
+            val fallbackBcp47 = toBcp47LocaleTag(fallbackLang.value)
+            val attempt = executeAttempt(
+                pcm16LeBytes = pcm16LeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = fallbackBcp47,
+                preferOnDevice = preferOnDevice,
+                isProbe = false,
+            )?.takeIf { it.text.isNotBlank() }
+            attempt?.let {
+                OnDeviceChunkTranscriptionResult(
+                    text = it.text.trim(),
+                    language = fallbackLang,
+                    confidence = it.confidence,
+                ).also { res ->
+                    putCachedSttResult(cacheScope, fallbackLang.value, res)
+                }
+            }
+        }
+
+        if (primaryResult == null) {
+            return fallbackResult
+        }
+        if (fallbackResult == null) {
+            return primaryResult
+        }
+
+        val primaryScore = scoreProbeCandidateForLanguage(
+            SpeechRecognitionAttemptResult(text = primaryResult.text, confidence = primaryResult.confidence),
+            selectedLang.value,
+        )
+        val fallbackScore = scoreProbeCandidateForLanguage(
+            SpeechRecognitionAttemptResult(text = fallbackResult.text, confidence = fallbackResult.confidence),
+            fallbackLang.value,
+        )
+        return if (fallbackScore > primaryScore) fallbackResult else primaryResult
+    }
+
+    private fun getCachedBilingualResultIfBothPresent(
+        cacheScope: ChunkAudioCacheScope,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): OnDeviceChunkTranscriptionResult? {
+        val cachedTarget = getCachedSttResult(cacheScope, targetLang) ?: return null
+        val cachedBase = getCachedSttResult(cacheScope, baseLang) ?: return null
+        val targetScore = scoreProbeCandidateForLanguage(
+            SpeechRecognitionAttemptResult(text = cachedTarget.text, confidence = cachedTarget.confidence),
+            targetLang.value,
+        )
+        val baseScore = scoreProbeCandidateForLanguage(
+            SpeechRecognitionAttemptResult(text = cachedBase.text, confidence = cachedBase.confidence),
+            baseLang.value,
+        )
+        return if (baseScore > targetScore) cachedBase else cachedTarget
     }
 
     private suspend fun transcribeWithTwoSecondLanguageProbe(
@@ -1311,7 +1481,17 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
     private fun logInfo(message: String) {
         runCatching {
-            Log.i(LOG_TAG, message)
+            if (Log.isLoggable(LOG_TAG, Log.INFO)) {
+                Log.i(LOG_TAG, message)
+            }
+        }
+    }
+
+    private fun logDebug(message: String) {
+        runCatching {
+            if (Log.isLoggable(LOG_TAG, Log.DEBUG)) {
+                Log.d(LOG_TAG, message)
+            }
         }
     }
 
@@ -1326,6 +1506,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         internal const val INTER_RECOGNITION_SETTLE_DELAY_MS: Long = 200L
         private const val RECOGNITION_TIMEOUT_MS: Long = 12_000L
         private const val MAX_STT_CACHE_ENTRIES: Int = 2_048
+        private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.60f
+        private const val LOW_STT_CONFIDENCE_THRESHOLD: Float = 0.30f
 
         /**
          * `onResults` または `onError` コールバック時点で最終結果テキストと `onPartialResults` の保持テキストを統合する。

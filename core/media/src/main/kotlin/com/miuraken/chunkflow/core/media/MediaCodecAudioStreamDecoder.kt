@@ -496,7 +496,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 override fun getTrackFormat(index: Int): MediaFormat = extractor.getTrackFormat(index)
                 override fun selectTrack(index: Int) = extractor.selectTrack(index)
                 override fun seekTo(timeUs: Long) {
-                    extractor.seekTo(timeUs, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                    extractor.seekTo(timeUs, MediaExtractorCompat.SEEK_TO_PREVIOUS_SYNC)
                 }
                 override fun readSampleData(buffer: ByteBuffer, offset: Int): Int = extractor.readSampleData(buffer, offset)
                 override val sampleTime: Long get() = extractor.sampleTime

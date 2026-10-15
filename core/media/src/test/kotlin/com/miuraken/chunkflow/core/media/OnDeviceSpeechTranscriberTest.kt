@@ -681,4 +681,77 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals(LanguageTag("ko"), toggleAgainKo.language)
         assertEquals(4, runnerCalls.size)
     }
+
+    @Test
+    fun `transcribeChunk_WhisperTinyLanguageDetector判定時はSpeechRecognizerを勝った言語で1回だけ呼び出す`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dummyFile = tempFolder.newFile("whisper_lid_single_stt.wav").apply { writeBytes(byteArrayOf(21, 22, 23, 24)) }
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                // 3.5秒 (56,000 サンプル = 112,000 bytes)
+                val samples = FloatArray((outputSampleRate * 3.5).toInt()) { 0.35f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = 3_500L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/wav",
+                )
+            }
+        }
+
+        val runnerCalls = mutableListOf<Pair<String, Int>>()
+        var lidCalls = 0
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = fakeDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { pcmBytes, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag to pcmBytes.size
+                SpeechRecognitionAttemptResult(
+                    text = "それでは日本語という言い方です",
+                    confidence = 0.93f,
+                )
+            },
+            languageDetector = { pcmShorts, targetTag, baseTag ->
+                lidCalls += 1
+                assertEquals(56_000, pcmShorts.size)
+                assertEquals("ko", targetTag)
+                assertEquals("ja", baseTag)
+                LanguagePairPrediction(
+                    selectedTag = "ja",
+                    fallbackTag = "ko",
+                    selectedProbability = 0.99f,
+                    targetProbability = 0.01f,
+                    baseProbability = 0.99f,
+                    inferenceTimeMs = 12L,
+                )
+            },
+        )
+
+        val result = transcriber.transcribeChunk(
+            audioFile = dummyFile,
+            startMs = 0L,
+            endMs = 3_500L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        assertNotNull(result)
+        assertEquals("それでは日本語という言い方です", result.text)
+        assertEquals(LanguageTag("ja"), result.language)
+        assertEquals(0.93f, result.confidence)
+        assertEquals(1, lidCalls)
+        // 2秒プローブを行わず、LID が選んだ ja-JP でチャンク全体 (112,000 bytes) を 1 回だけ SpeechRecognizer に渡す
+        assertEquals(listOf("ja-JP" to 112_000), runnerCalls)
+    }
 }
