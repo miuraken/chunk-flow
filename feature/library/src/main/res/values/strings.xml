@@ -61,4 +61,11 @@
     <string name="library_edit_save">保存</string>
     <string name="library_edit_cancel">キャンセル</string>
     <string name="library_item_missing_audio">音声なし（再取り込み待ち）</string>
+    <string name="library_import_config_title">取り込み設定（言語・コース名）</string>
+    <string name="library_import_config_hint">選択した %1$d 件の項目に共通で設定するコース名・対象言語・ベース言語を指定してください。</string>
+    <string name="library_import_config_confirm">この設定で読み込む</string>
+    <string name="library_drive_sync_config_title">Drive 同期フォルダの設定</string>
+    <string name="library_drive_sync_config_hint">選択したフォルダと同期する際に適用するコース名・対象言語・ベース言語を指定してください。</string>
+    <string name="library_drive_sync_config_confirm">この設定で同期する</string>
+    <string name="library_drive_sync_select_folder_action">同期フォルダを選択</string>
 </resources>

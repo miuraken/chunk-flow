@@ -73,7 +73,7 @@ class LibraryViewModelTest {
     }
 
     @Test
-    fun `ImportUris_進捗と完了とエラーを反映しバナー消去でIdleに戻る`() = runTest {
+    fun `ImportUris_設定ダイアログを経て進捗と完了とエラーを反映しバナー消去でIdleに戻る`() = runTest {
         val item = SampleMaterials.jaKo.item
         val repo = FakeLibraryRepository()
         val playback = FakePlaybackController()
@@ -81,16 +81,31 @@ class LibraryViewModelTest {
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
         val fakeUri = StubUri.create()
+        val selectedPair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
         repo.importResult = { flowOf(ImportProgress.Copying(0.5f)) }
         viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
+        assertSame(fakeUri, viewModel.uiState.value.pendingImportConfig?.uris?.single())
+        assertFalse(viewModel.uiState.value.pendingImportConfig?.isDriveSyncFolder ?: true)
+
+        viewModel.onEvent(
+            LibraryEvent.ConfirmImportConfig(
+                course = "初級韓国語",
+                languages = selectedPair,
+            ),
+        )
+        assertNull(viewModel.uiState.value.pendingImportConfig)
         assertEquals(LibraryImportUiState.Copying(0.5f), viewModel.uiState.value.importState)
         assertEquals(1, repo.importedUris.size)
         assertSame(fakeUri, repo.importedUris.single().single())
+        assertSame(fakeUri, repo.importedConfigs.single().first.single())
+        assertEquals("初級韓国語", repo.importedConfigs.single().second)
+        assertEquals(selectedPair, repo.importedConfigs.single().third)
 
         repo.importResult = {
             flowOf(ImportProgress.Done(mediaIds = listOf(item.id), duplicates = 1, transcriptsAttached = 0))
         }
         viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
+        viewModel.onEvent(LibraryEvent.ConfirmImportConfig(course = "初級韓国語", languages = selectedPair))
         assertEquals(
             LibraryImportUiState.Done(addedCount = 1, duplicates = 1),
             viewModel.uiState.value.importState,
@@ -98,6 +113,7 @@ class LibraryViewModelTest {
 
         repo.importResult = { flowOf(ImportProgress.Failed(ImportError.UNSUPPORTED_FORMAT)) }
         viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
+        viewModel.onEvent(LibraryEvent.ConfirmImportConfig(course = "初級韓国語", languages = selectedPair))
         assertEquals(
             LibraryImportUiState.Error(ImportError.UNSUPPORTED_FORMAT),
             viewModel.uiState.value.importState,
@@ -105,6 +121,56 @@ class LibraryViewModelTest {
 
         viewModel.onEvent(LibraryEvent.DismissImportStatus)
         assertEquals(LibraryImportUiState.Idle, viewModel.uiState.value.importState)
+    }
+
+    @Test
+    fun `SelectDriveSyncFolder_設定ダイアログで同期フォルダとコースと言語ペアを登録して同期を実行する`() = runTest {
+        val repo = FakeLibraryRepository()
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val treeUri = StubUri.create()
+        val syncPair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja"))
+        repo.syncResult = {
+            flowOf(SyncProgress.Done(newAudio = 3, newTranscripts = 2, failed = 0, uploadedTranscripts = 0))
+        }
+
+        viewModel.onEvent(
+            LibraryEvent.SelectDriveSyncFolder(
+                directoryName = "ChunkFlowSync",
+                treeUri = treeUri,
+            ),
+        )
+        assertEquals("ChunkFlowSync", viewModel.uiState.value.pendingImportConfig?.initialCourse)
+        assertEquals(true, viewModel.uiState.value.pendingImportConfig?.isDriveSyncFolder)
+
+        // キャンセル時は同期せず閉じる
+        viewModel.onEvent(LibraryEvent.CancelImportConfig)
+        assertNull(viewModel.uiState.value.pendingImportConfig)
+        assertNull(repo.linkedSyncFolderUri)
+
+        // 再度選択して確定すると syncFromLinkedFolder が呼ばれる
+        viewModel.onEvent(
+            LibraryEvent.SelectDriveSyncFolder(
+                directoryName = "ChunkFlowSync",
+                treeUri = treeUri,
+            ),
+        )
+        viewModel.onEvent(
+            LibraryEvent.ConfirmImportConfig(
+                course = "中国語リスニング",
+                languages = syncPair,
+            ),
+        )
+        assertNull(viewModel.uiState.value.pendingImportConfig)
+        assertSame(treeUri, repo.linkedSyncFolderUri)
+        assertEquals("中国語リスニング", repo.linkedSyncCourse)
+        assertEquals(syncPair, repo.linkedSyncLanguages)
+        assertEquals(
+            DriveSyncUiState.Done(newAudio = 3, newTranscripts = 2, failed = 0, uploadedTranscripts = 0),
+            viewModel.uiState.value.syncState,
+        )
     }
 
     @Test

@@ -10,6 +10,7 @@ import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.SyncError
 import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
+import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.Chunk
@@ -26,6 +27,7 @@ import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.playback.PlaybackController
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
+import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -226,6 +228,24 @@ data class MiniPlayerUiState(
 )
 
 /**
+ * ファイルまたはディレクトリ選択後、取り込み開始前に表示する共通設定ダイアログの状態。
+ *
+ * @property uris 取り込み対象の URI 一覧。
+ * @property initialCourse 初期コース名（ディレクトリ名など）。
+ * @property initialLanguages 初期言語ペア（対象言語・ベース言語）。
+ * @property isDriveSyncFolder Drive 同期フォルダの連携設定かどうか。
+ */
+data class PendingImportConfig(
+    val uris: List<Uri>,
+    val initialCourse: String? = null,
+    val initialLanguages: LanguagePair = LanguagePair(
+        target = LanguageTag("ko"),
+        base = LanguageTag("ja"),
+    ),
+    val isDriveSyncFolder: Boolean = false,
+)
+
+/**
  * ライブラリ画面の状態（F1.1〜F2.4、F7.1、§7.5.1）。
  *
  * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無を含む）。
@@ -235,6 +255,7 @@ data class MiniPlayerUiState(
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
  * @property pendingDeleteItem 削除確認ダイアログで対象になっている教材（表示中でなければ `null`）。
  * @property pendingEditItem コース・言語ペア編集ダイアログで対象になっている教材（表示中でなければ `null`）。
+ * @property pendingImportConfig 取り込み・同期フォルダ選択後の共通設定ダイアログ状態（表示中でなければ `null`）。
  * @property selectedDirectoryName フォルダ指定で選択されたディレクトリ名。
  * @property collapsedDirectories 折りたたまれているディレクトリ名の集合。
  */
@@ -246,6 +267,7 @@ data class LibraryUiState(
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
     val pendingEditItem: AudioItem? = null,
+    val pendingImportConfig: PendingImportConfig? = null,
     val selectedDirectoryName: String? = null,
     val collapsedDirectories: Set<String?> = emptySet(),
 ) {
@@ -284,6 +306,21 @@ sealed interface LibraryEvent {
 
     /** Google Drive の `ChunkFlow/` フォルダと同期する（F1.5）。 */
     data object SyncFromDrive : LibraryEvent
+
+    /** SAF フォルダピッカーを開いて Drive 同期フォルダを選択する。 */
+    data object RequestSelectDriveSyncFolder : LibraryEvent
+
+    /** Drive 同期用のフォルダ（Tree URI）が選択されたときに設定ダイアログを開く。 */
+    data class SelectDriveSyncFolder(val directoryName: String?, val treeUri: Uri) : LibraryEvent
+
+    /** 取り込み・同期フォルダの設定ダイアログ（コース名・対象言語・ベース言語）を確定して実行する。 */
+    data class ConfirmImportConfig(
+        val course: String?,
+        val languages: LanguagePair,
+    ) : LibraryEvent
+
+    /** 取り込み・同期フォルダの設定ダイアログをキャンセルする。 */
+    data object CancelImportConfig : LibraryEvent
 
     /** 取り込み・同期の完了・エラーバナーを閉じる。 */
     data object DismissImportStatus : LibraryEvent
@@ -345,6 +382,7 @@ private data class DialogAndImportSnapshot(
     val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val pendingDeleteItem: AudioItem? = null,
     val pendingEditItem: AudioItem? = null,
+    val pendingImportConfig: PendingImportConfig? = null,
 )
 
 private object EmptyAnalysisRepository : AnalysisRepository {
@@ -368,15 +406,18 @@ class LibraryViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
     private val playbackController: PlaybackController,
     private val analysisRepository: AnalysisRepository,
+    private val userSettingsRepository: UserSettingsRepository,
 ) : ViewModel() {
 
     constructor(
         libraryRepository: LibraryRepository,
         playbackController: PlaybackController,
+        analysisRepository: AnalysisRepository = EmptyAnalysisRepository,
     ) : this(
         libraryRepository = libraryRepository,
         playbackController = playbackController,
-        analysisRepository = EmptyAnalysisRepository,
+        analysisRepository = analysisRepository,
+        userSettingsRepository = FakeUserSettingsRepository(),
     )
 
     private val importState = MutableStateFlow<LibraryImportUiState>(LibraryImportUiState.Idle)
@@ -385,10 +426,23 @@ class LibraryViewModel @Inject constructor(
     private val syncState = MutableStateFlow<DriveSyncUiState>(DriveSyncUiState.Idle)
     private val pendingDeleteItem = MutableStateFlow<AudioItem?>(null)
     private val pendingEditItem = MutableStateFlow<AudioItem?>(null)
+    private val pendingImportConfig = MutableStateFlow<PendingImportConfig?>(null)
     private val selectedDirectoryName = MutableStateFlow<String?>(null)
     private val collapsedDirectories = MutableStateFlow<Set<String?>>(emptySet())
+    private var defaultLanguagePair: LanguagePair = LanguagePair(
+        target = LanguageTag("en"),
+        base = LanguageTag("ja"),
+    )
     private var importJob: Job? = null
     private var syncJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            userSettingsRepository.settings.collect { settings ->
+                defaultLanguagePair = settings.defaultLanguagePair
+            }
+        }
+    }
 
     private val analysisSummaries: Flow<Map<MediaId, ItemAnalysisSummary>> =
         libraryRepository.observeItems().flatMapLatest { items ->
@@ -414,18 +468,24 @@ class LibraryViewModel @Inject constructor(
         }
 
     private val dialogAndImportFlow: Flow<DialogAndImportSnapshot> = combine(
-        importState,
-        transcriptImportState,
-        syncState,
+        combine(
+            importState,
+            transcriptImportState,
+            syncState,
+        ) { currentImport, currentTranscript, currentSync ->
+            Triple(currentImport, currentTranscript, currentSync)
+        },
         pendingDeleteItem,
         pendingEditItem,
-    ) { currentImport, currentTranscript, currentSync, deleteTarget, editTarget ->
+        pendingImportConfig,
+    ) { (currentImport, currentTranscript, currentSync), deleteTarget, editTarget, importConfig ->
         DialogAndImportSnapshot(
             importState = currentImport,
             transcriptImportState = currentTranscript,
             syncState = currentSync,
             pendingDeleteItem = deleteTarget,
             pendingEditItem = editTarget,
+            pendingImportConfig = importConfig,
         )
     }
 
@@ -469,13 +529,79 @@ class LibraryViewModel @Inject constructor(
     fun onEvent(event: LibraryEvent) {
         when (event) {
             is LibraryEvent.ImportDirectory -> {
-                if (!event.directoryName.isNullOrBlank()) {
-                    selectedDirectoryName.value = event.directoryName
+                val trimmedDir = event.directoryName?.trim()?.ifBlank { null }
+                if (trimmedDir != null) {
+                    selectedDirectoryName.value = trimmedDir
                 }
-                importUris(event.uris)
+                if (event.uris.isNotEmpty()) {
+                    pendingImportConfig.value = PendingImportConfig(
+                        uris = event.uris,
+                        initialCourse = trimmedDir ?: selectedDirectoryName.value,
+                        initialLanguages = defaultLanguagePair,
+                        isDriveSyncFolder = false,
+                    )
+                }
             }
 
-            is LibraryEvent.ImportUris -> importUris(event.uris)
+            is LibraryEvent.ImportUris -> {
+                if (event.uris.isNotEmpty()) {
+                    pendingImportConfig.value = PendingImportConfig(
+                        uris = event.uris,
+                        initialCourse = selectedDirectoryName.value,
+                        initialLanguages = defaultLanguagePair,
+                        isDriveSyncFolder = false,
+                    )
+                }
+            }
+
+            is LibraryEvent.SelectDriveSyncFolder -> {
+                val trimmedDir = event.directoryName?.trim()?.ifBlank { null }
+                if (trimmedDir != null) {
+                    selectedDirectoryName.value = trimmedDir
+                }
+                pendingImportConfig.value = PendingImportConfig(
+                    uris = listOf(event.treeUri),
+                    initialCourse = trimmedDir ?: selectedDirectoryName.value ?: "ChunkFlow",
+                    initialLanguages = defaultLanguagePair,
+                    isDriveSyncFolder = true,
+                )
+            }
+
+            is LibraryEvent.ConfirmImportConfig -> {
+                val config = pendingImportConfig.value ?: return
+                pendingImportConfig.value = null
+                val normalizedCourse = event.course?.trim()?.ifBlank { null }
+                val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
+                val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
+                val normalizedLanguages = LanguagePair(
+                    target = LanguageTag(normalizedTarget),
+                    base = normalizedBase?.let { LanguageTag(it) },
+                )
+                if (normalizedCourse != null) {
+                    selectedDirectoryName.value = normalizedCourse
+                }
+                defaultLanguagePair = normalizedLanguages
+                viewModelScope.launch {
+                    userSettingsRepository.setDefaultLanguagePair(normalizedLanguages)
+                }
+                if (config.isDriveSyncFolder) {
+                    syncFromLinkedFolder(
+                        treeUri = config.uris.firstOrNull(),
+                        course = normalizedCourse,
+                        languages = normalizedLanguages,
+                    )
+                } else {
+                    importUris(
+                        uris = config.uris,
+                        course = normalizedCourse,
+                        languages = normalizedLanguages,
+                    )
+                }
+            }
+
+            LibraryEvent.CancelImportConfig -> {
+                pendingImportConfig.value = null
+            }
 
             is LibraryEvent.ImportTranscriptUri -> importTranscriptUri(event.uri)
 
@@ -541,18 +667,27 @@ class LibraryViewModel @Inject constructor(
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.RequestImportTranscript,
+            LibraryEvent.RequestSelectDriveSyncFolder,
             is LibraryEvent.OpenItem,
             LibraryEvent.OpenSettings,
             -> Unit
         }
     }
 
-    private fun importUris(uris: List<Uri>) {
+    private fun importUris(
+        uris: List<Uri>,
+        course: String?,
+        languages: LanguagePair,
+    ) {
         if (uris.isEmpty()) return
         transcriptImportState.value = TranscriptImportUiState.Idle
         importJob?.cancel()
         importJob = viewModelScope.launch {
-            libraryRepository.import(uris).collect { progress ->
+            libraryRepository.import(
+                uris = uris,
+                course = course,
+                languages = languages,
+            ).collect { progress ->
                 importState.value = when (progress) {
                     is ImportProgress.Copying -> LibraryImportUiState.Copying(progress.fraction)
 
@@ -594,25 +729,44 @@ class LibraryViewModel @Inject constructor(
         syncJob?.cancel()
         syncJob = viewModelScope.launch {
             libraryRepository.syncFromDrive().collect { progress ->
-                syncState.value = when (progress) {
-                    SyncProgress.Listing -> DriveSyncUiState.Listing
-
-                    is SyncProgress.Downloading -> DriveSyncUiState.Downloading(
-                        done = progress.done,
-                        total = progress.total,
-                    )
-
-                    is SyncProgress.Done -> DriveSyncUiState.Done(
-                        newAudio = progress.newAudio,
-                        newTranscripts = progress.newTranscripts,
-                        failed = progress.failed,
-                        uploadedTranscripts = progress.uploadedTranscripts,
-                    )
-
-                    is SyncProgress.Failed -> DriveSyncUiState.Error(progress.error)
-                }
+                syncState.value = mapSyncProgress(progress)
             }
         }
+    }
+
+    private fun syncFromLinkedFolder(
+        treeUri: Uri?,
+        course: String?,
+        languages: LanguagePair,
+    ) {
+        syncJob?.cancel()
+        syncJob = viewModelScope.launch {
+            libraryRepository.syncFromLinkedFolder(
+                treeUri = treeUri,
+                course = course,
+                languages = languages,
+            ).collect { progress ->
+                syncState.value = mapSyncProgress(progress)
+            }
+        }
+    }
+
+    private fun mapSyncProgress(progress: SyncProgress): DriveSyncUiState = when (progress) {
+        SyncProgress.Listing -> DriveSyncUiState.Listing
+
+        is SyncProgress.Downloading -> DriveSyncUiState.Downloading(
+            done = progress.done,
+            total = progress.total,
+        )
+
+        is SyncProgress.Done -> DriveSyncUiState.Done(
+            newAudio = progress.newAudio,
+            newTranscripts = progress.newTranscripts,
+            failed = progress.failed,
+            uploadedTranscripts = progress.uploadedTranscripts,
+        )
+
+        is SyncProgress.Failed -> DriveSyncUiState.Error(progress.error)
     }
 
     private fun confirmDelete() {
@@ -698,6 +852,7 @@ class LibraryViewModel @Inject constructor(
             miniPlayer = miniPlayer,
             pendingDeleteItem = dialogAndImport.pendingDeleteItem,
             pendingEditItem = dialogAndImport.pendingEditItem,
+            pendingImportConfig = dialogAndImport.pendingImportConfig,
             selectedDirectoryName = selectedDirectoryName,
             collapsedDirectories = collapsedDirectories,
         )

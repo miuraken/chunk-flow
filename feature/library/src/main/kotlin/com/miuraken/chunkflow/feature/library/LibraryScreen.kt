@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.library
 
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -41,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -95,15 +97,47 @@ fun LibraryRoute(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { treeUri ->
         if (treeUri != null) {
-            val scanned = scanDocumentTree(context.contentResolver, treeUri)
-            if (scanned.documentUris.isNotEmpty()) {
-                viewModel.onEvent(
-                    LibraryEvent.ImportDirectory(
-                        directoryName = scanned.directoryName,
-                        uris = scanned.documentUris,
-                    ),
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
             }
+            val scanned = scanDocumentTree(context.contentResolver, treeUri)
+            val targetUris = scanned.documentUris.ifEmpty { listOf(treeUri) }
+            viewModel.onEvent(
+                LibraryEvent.ImportDirectory(
+                    directoryName = scanned.directoryName,
+                    uris = targetUris,
+                ),
+            )
+        }
+    }
+
+    val driveSyncFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        if (treeUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }.onFailure {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        treeUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+            }
+            val scanned = scanDocumentTree(context.contentResolver, treeUri)
+            viewModel.onEvent(
+                LibraryEvent.SelectDriveSyncFolder(
+                    directoryName = scanned.directoryName,
+                    treeUri = treeUri,
+                ),
+            )
         }
     }
 
@@ -123,11 +157,20 @@ fun LibraryRoute(
         }
     }
 
+    LaunchedEffect(state.syncState) {
+        val currentSync = state.syncState
+        if (currentSync is DriveSyncUiState.Error && currentSync.error == SyncError.NOT_AUTHORIZED) {
+            driveSyncFolderLauncher.launch(null)
+        }
+    }
+
     LibraryScreen(
         state = state,
         onEvent = { event ->
             when (event) {
                 LibraryEvent.RequestImportDirectory -> directoryPickerLauncher.launch(null)
+
+                LibraryEvent.RequestSelectDriveSyncFolder -> driveSyncFolderLauncher.launch(null)
 
                 LibraryEvent.RequestImport -> filePickerLauncher.launch(
                     arrayOf(
@@ -232,6 +275,7 @@ fun LibraryScreen(
                 importState = state.importState,
                 transcriptImportState = state.transcriptImportState,
                 syncState = state.syncState,
+                onSelectDriveSyncFolder = { onEvent(LibraryEvent.RequestSelectDriveSyncFolder) },
                 onDismiss = { onEvent(LibraryEvent.DismissImportStatus) },
             )
 
@@ -274,6 +318,21 @@ fun LibraryScreen(
                 }
             }
         }
+    }
+
+    state.pendingImportConfig?.let { config ->
+        ImportConfigDialog(
+            config = config,
+            onConfirm = { course, languages ->
+                onEvent(
+                    LibraryEvent.ConfirmImportConfig(
+                        course = course,
+                        languages = languages,
+                    ),
+                )
+            },
+            onDismiss = { onEvent(LibraryEvent.CancelImportConfig) },
+        )
     }
 
     state.pendingEditItem?.let { itemToEdit ->
@@ -508,6 +567,7 @@ private fun ImportStatusBanner(
     syncState: DriveSyncUiState,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    onSelectDriveSyncFolder: () -> Unit = {},
 ) {
     when (importState) {
         LibraryImportUiState.Idle -> Unit
@@ -710,10 +770,18 @@ private fun ImportStatusBanner(
                 SyncError.IO -> stringResource(R.string.library_drive_sync_error_io)
                 SyncError.CANCELLED -> stringResource(R.string.library_drive_sync_error_cancelled)
             }
+            val needsFolderAction = syncState.error == SyncError.NOT_AUTHORIZED ||
+                syncState.error == SyncError.FOLDER_NOT_FOUND
             StatusBannerCard(
                 message = errorText,
                 isError = true,
                 onDismiss = onDismiss,
+                actionLabel = if (needsFolderAction) {
+                    stringResource(R.string.library_drive_sync_select_folder_action)
+                } else {
+                    null
+                },
+                onAction = if (needsFolderAction) onSelectDriveSyncFolder else null,
                 modifier = modifier,
             )
         }
@@ -726,6 +794,8 @@ private fun StatusBannerCard(
     isError: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
 ) {
     val containerColor = if (isError) {
         MaterialTheme.colorScheme.errorContainer
@@ -757,6 +827,14 @@ private fun StatusBannerCard(
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
             )
+            if (actionLabel != null && onAction != null) {
+                TextButton(onClick = onAction) {
+                    Text(
+                        text = actionLabel,
+                        color = contentColor,
+                    )
+                }
+            }
             IconButton(onClick = onDismiss) {
                 Icon(
                     imageVector = ChunkFlowIcons.Close,
@@ -935,6 +1013,130 @@ private fun LibraryItemRow(
             )
         }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ImportConfigDialog(
+    config: PendingImportConfig,
+    onConfirm: (String?, LanguagePair) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var courseText by remember(config) { mutableStateOf(config.initialCourse.orEmpty()) }
+    var targetLangText by remember(config) { mutableStateOf(config.initialLanguages.target.value) }
+    var baseLangText by remember(config) { mutableStateOf(config.initialLanguages.base?.value.orEmpty()) }
+
+    val dialogTitle = if (config.isDriveSyncFolder) {
+        stringResource(R.string.library_drive_sync_config_title)
+    } else {
+        stringResource(R.string.library_import_config_title)
+    }
+    val dialogHint = if (config.isDriveSyncFolder) {
+        stringResource(R.string.library_drive_sync_config_hint)
+    } else {
+        stringResource(R.string.library_import_config_hint, config.uris.size)
+    }
+    val confirmLabel = if (config.isDriveSyncFolder) {
+        stringResource(R.string.library_drive_sync_config_confirm)
+    } else {
+        stringResource(R.string.library_import_config_confirm)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = dialogTitle) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = dialogHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                OutlinedTextField(
+                    value = courseText,
+                    onValueChange = { courseText = it },
+                    label = { Text(text = stringResource(R.string.library_edit_course_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                OutlinedTextField(
+                    value = targetLangText,
+                    onValueChange = { targetLangText = it },
+                    label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    TARGET_LANGUAGE_PRESETS.forEach { code ->
+                        FilterChip(
+                            selected = targetLangText.trim().equals(code, ignoreCase = true),
+                            onClick = { targetLangText = code },
+                            label = { Text(text = code.uppercase(Locale.ROOT)) },
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = baseLangText,
+                    onValueChange = { baseLangText = it },
+                    label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    BASE_LANGUAGE_PRESETS.forEach { code ->
+                        val isSelected = if (code == null) {
+                            baseLangText.isBlank()
+                        } else {
+                            baseLangText.trim().equals(code, ignoreCase = true)
+                        }
+                        val label = code?.uppercase(Locale.ROOT)
+                            ?: stringResource(R.string.library_edit_base_lang_none)
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { baseLangText = code.orEmpty() },
+                            label = { Text(text = label) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleanTarget = targetLangText.trim().lowercase(Locale.ROOT).ifBlank { "en" }
+                    val cleanBase = baseLangText.trim().lowercase(Locale.ROOT).ifBlank { null }
+                    onConfirm(
+                        courseText.trim().ifBlank { null },
+                        LanguagePair(
+                            target = LanguageTag(cleanTarget),
+                            base = cleanBase?.let { LanguageTag(it) },
+                        ),
+                    )
+                },
+            ) {
+                Text(text = confirmLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.library_edit_cancel))
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -1175,6 +1377,37 @@ private fun LibraryScreenImportErrorPreview() {
                     ),
                 ),
                 importState = LibraryImportUiState.Error(ImportError.UNSUPPORTED_FORMAT),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun LibraryScreenImportConfigDialogPreview() {
+    val first = SampleMaterials.jaKo.item
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = listOf(
+                    LibraryItemUiModel(
+                        item = first,
+                        positionMs = 15_000L,
+                        speed = 1.0f,
+                        chunkCount = 6,
+                        hasTranscript = true,
+                    ),
+                ),
+                pendingImportConfig = PendingImportConfig(
+                    uris = emptyList(),
+                    initialCourse = "韓国語講座",
+                    initialLanguages = LanguagePair(
+                        target = LanguageTag("ko"),
+                        base = LanguageTag("ja"),
+                    ),
+                    isDriveSyncFolder = false,
+                ),
             ),
             onEvent = {},
         )
