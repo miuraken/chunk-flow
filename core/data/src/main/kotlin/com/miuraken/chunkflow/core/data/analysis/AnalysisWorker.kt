@@ -28,6 +28,8 @@ import com.miuraken.chunkflow.core.model.StageStatus
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 音声ファイルをストリーミングデコードし、波形・特徴量（`waveform.bin`, `features.bin`）と
@@ -59,6 +61,15 @@ class AnalysisWorker(
         val mediaId = MediaId(rawMediaId)
         val requestedStages = parseRequestedStages(inputData.getStringArray(KEY_STAGES))
 
+        return pipelineMutex.withLock {
+            runPipeline(mediaId, requestedStages)
+        }
+    }
+
+    private suspend fun runPipeline(
+        mediaId: MediaId,
+        requestedStages: Set<AnalysisStage>,
+    ): Result {
         val audioFile = mediaFileResolver.resolveAudioFile(mediaId)
         val analysisDir = resolveAnalysisDir(mediaId, audioFile)
         if (audioFile == null || !audioFile.isFile || analysisDir == null) {
@@ -291,9 +302,15 @@ class AnalysisWorker(
         const val KEY_MEDIA_ID: String = "media_id"
         const val KEY_STAGES: String = "stages"
 
+        /** 複数ファイルの解析を 1 件ずつ順番に直列実行するための WorkManager ユニークワーク名。 */
+        const val SEQUENTIAL_WORK_NAME: String = "chunkflow_analysis_sequential_queue"
+
         internal const val TARGET_SAMPLE_RATE_HZ: Int = 16_000
         internal const val PROGRESS_SAVE_INTERVAL_MS: Long = 2_000L
         internal const val PROGRESS_DB_INTERVAL_MS: Long = 500L
+
+        /** 複数ファイルの解析パイプラインが同時に走らないよう直列化する Mutex（FIFO 順）。 */
+        internal val pipelineMutex: Mutex = Mutex()
 
         /** WorkManager のユニークワーク名を返す。 */
         fun uniqueWorkName(mediaId: MediaId): String = "analysis_${mediaId.value}"

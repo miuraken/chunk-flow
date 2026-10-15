@@ -27,6 +27,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -235,5 +239,117 @@ class AnalysisWorkerTest {
             .toMap()
         assertEquals(StageStatus.Failed(AnalysisError.DECODE_FAILED), statuses[AnalysisStage.FEATURES])
         assertEquals(StageStatus.Failed(AnalysisError.DECODE_FAILED), statuses[AnalysisStage.SEGMENTATION])
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `doWork_複数のAnalysisWorkerが同時に起動されてもpipelineMutexにより1件ずつ順番に直列実行される`() = runTest {
+        assertEquals("chunkflow_analysis_sequential_queue", AnalysisWorker.SEQUENTIAL_WORK_NAME)
+
+        val mediaIds = listOf(
+            MediaId("media_worker_seq_1"),
+            MediaId("media_worker_seq_2"),
+            MediaId("media_worker_seq_3"),
+        )
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        for (id in mediaIds) {
+            File(mediaDir, "${id.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+            mediaItemDao.upsert(
+                MediaItemEntity(
+                    id = id.value,
+                    title = "Worker Seq ${id.value}",
+                    durationMs = 1_000L,
+                    mimeType = "audio/mpeg",
+                    sizeBytes = 4L,
+                    sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    course = null,
+                    targetLang = "en",
+                    baseLang = "ja",
+                    transcriptOffsetMs = 0,
+                    importedAt = currentEpochMs,
+                ),
+            )
+        }
+
+        var activeDecodes = 0
+        var maxActiveDecodes = 0
+        val executionLog = mutableListOf<String>()
+
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val idName = file.nameWithoutExtension
+                activeDecodes += 1
+                if (activeDecodes > maxActiveDecodes) {
+                    maxActiveDecodes = activeDecodes
+                }
+                executionLog += "start:$idName"
+                delay(40L)
+
+                val totalSamples = outputSampleRate
+                val samples = FloatArray(totalSamples) { i ->
+                    val timeSec = i.toDouble() / outputSampleRate
+                    (0.5 * sin(2.0 * PI * 440.0 * timeSec)).toFloat()
+                }
+                sink.onSamples(samples, samples.size)
+
+                executionLog += "end:$idName"
+                activeDecodes -= 1
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = totalSamples.toLong(),
+                    resampledSamples = totalSamples.toLong(),
+                    durationMs = 1_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+
+        val deferreds = mediaIds.map { id ->
+            val inputData = Data.Builder()
+                .putString(AnalysisWorker.KEY_MEDIA_ID, id.value)
+                .putStringArray(
+                    AnalysisWorker.KEY_STAGES,
+                    arrayOf(AnalysisStage.FEATURES.name, AnalysisStage.SEGMENTATION.name),
+                )
+                .build()
+            val worker = AnalysisWorker(
+                appContext = context,
+                workerParams = createWorkerParameters(inputData),
+                audioStreamDecoder = fakeDecoder,
+                analysisStateDao = analysisStateDao,
+                chunkDao = chunkDao,
+                mediaItemDao = mediaItemDao,
+                mediaFileResolver = mediaFileLocator,
+                userSettingsRepository = userSettingsRepository,
+                clock = { currentEpochMs },
+            )
+            async(UnconfinedTestDispatcher(testScheduler)) {
+                worker.doWork()
+            }
+        }
+
+        val results = deferreds.map { it.await() }
+        assertTrue(results.all { it == ListenableWorker.Result.success() })
+        assertEquals(1, maxActiveDecodes)
+        assertEquals(
+            listOf(
+                "start:media_worker_seq_1",
+                "end:media_worker_seq_1",
+                "start:media_worker_seq_2",
+                "end:media_worker_seq_2",
+                "start:media_worker_seq_3",
+                "end:media_worker_seq_3",
+            ),
+            executionLog,
+        )
     }
 }

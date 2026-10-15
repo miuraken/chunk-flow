@@ -3,12 +3,16 @@ package com.miuraken.chunkflow.core.data.analysis
 import android.content.Context
 import com.miuraken.chunkflow.core.audio.AnalysisBinaryFormat
 import com.miuraken.chunkflow.core.audio.CURRENT_ALGORITHM_VERSION
+import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.audio.StoredFeatures
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
+import com.miuraken.chunkflow.core.media.AudioDecodeResult
+import com.miuraken.chunkflow.core.media.AudioStreamDecoder
+import com.miuraken.chunkflow.core.media.DecodeProgress
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
@@ -26,6 +30,8 @@ import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.transcript.ChunkFlowTranscriptParser
 import com.miuraken.chunkflow.core.transcript.TranscriptParseResult
 import java.io.File
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -35,7 +41,9 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -840,5 +848,146 @@ class DefaultAnalysisRepositoryTest {
 
         val availableOrigins = repository.observeAvailableChunkOrigins(mediaId).first()
         assertTrue(ChunkOrigin.MANUAL in availableOrigins)
+    }
+
+    @Test
+    fun `requestAnalysis_複数ファイルを一括要求したとき同時に走らず1件ずつ順番に直列実行される`() = runTest {
+        val mediaIds = listOf(
+            MediaId("media_seq_1"),
+            MediaId("media_seq_2"),
+            MediaId("media_seq_3"),
+        )
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        for (id in mediaIds) {
+            File(mediaDir, "${id.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+            mediaItemDao.upsert(
+                MediaItemEntity(
+                    id = id.value,
+                    title = "Sequential ${id.value}",
+                    durationMs = 1_000L,
+                    mimeType = "audio/mpeg",
+                    sizeBytes = 4L,
+                    sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    course = null,
+                    targetLang = "en",
+                    baseLang = "ja",
+                    transcriptOffsetMs = 0,
+                    importedAt = currentEpochMs,
+                ),
+            )
+        }
+
+        var activeDecodes = 0
+        var maxActiveDecodes = 0
+        val executionLog = mutableListOf<String>()
+        val statusDuringFirstDecode = mutableMapOf<MediaId, Map<AnalysisStage, StageStatus>>()
+
+        lateinit var repository: DefaultAnalysisRepository
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val idName = file.nameWithoutExtension
+                activeDecodes += 1
+                if (activeDecodes > maxActiveDecodes) {
+                    maxActiveDecodes = activeDecodes
+                }
+                executionLog += "start:$idName"
+
+                delay(50L)
+                if (idName == "media_seq_1") {
+                    for (id in mediaIds) {
+                        statusDuringFirstDecode[id] = repository.observeStatus(id).first()
+                    }
+                }
+
+                val totalSamples = outputSampleRate
+                val samples = FloatArray(totalSamples) { i ->
+                    val timeSec = i.toDouble() / outputSampleRate
+                    (0.4 * sin(2.0 * PI * 440.0 * timeSec)).toFloat()
+                }
+                sink.onSamples(samples, samples.size)
+                onProgress(
+                    DecodeProgress(
+                        decodedDurationMs = 1_000L,
+                        totalDurationMs = 1_000L,
+                        fraction = 1.0f,
+                    ),
+                )
+
+                executionLog += "end:$idName"
+                activeDecodes -= 1
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = totalSamples.toLong(),
+                    resampledSamples = totalSamples.toLong(),
+                    durationMs = 1_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+
+        repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            audioStreamDecoder = fakeDecoder,
+        )
+
+        val stages = setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION)
+        val jobs = mediaIds.map { id ->
+            launch(UnconfinedTestDispatcher(testScheduler)) {
+                repository.requestAnalysis(id, stages)
+            }
+        }
+        for (job in jobs) {
+            job.join()
+        }
+
+        assertEquals(1, maxActiveDecodes)
+        assertEquals(
+            listOf(
+                "start:media_seq_1",
+                "end:media_seq_1",
+                "start:media_seq_2",
+                "end:media_seq_2",
+                "start:media_seq_3",
+                "end:media_seq_3",
+            ),
+            executionLog,
+        )
+
+        // 1件目のデコード中は2件目・3件目が NotStarted（待機中）であること
+        assertTrue(statusDuringFirstDecode[MediaId("media_seq_1")]?.get(AnalysisStage.FEATURES) is StageStatus.Running)
+        assertEquals(
+            StageStatus.NotStarted,
+            statusDuringFirstDecode[MediaId("media_seq_2")]?.get(AnalysisStage.FEATURES),
+        )
+        assertEquals(
+            StageStatus.NotStarted,
+            statusDuringFirstDecode[MediaId("media_seq_3")]?.get(AnalysisStage.FEATURES),
+        )
+
+        for (id in mediaIds) {
+            val finalStatus = repository.observeStatus(id).first()
+            assertEquals(StageStatus.Done, finalStatus[AnalysisStage.FEATURES])
+            assertEquals(StageStatus.Done, finalStatus[AnalysisStage.SEGMENTATION])
+            assertNotNull(repository.observeWaveform(id).first())
+            assertTrue(repository.observeChunks(id).first().isNotEmpty())
+        }
     }
 }

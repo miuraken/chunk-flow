@@ -8,6 +8,10 @@ import androidx.work.WorkManager
 import com.miuraken.chunkflow.core.audio.AnalysisBinaryFormat
 import com.miuraken.chunkflow.core.audio.CURRENT_ALGORITHM_VERSION
 import com.miuraken.chunkflow.core.audio.ChunkSegmenter
+import com.miuraken.chunkflow.core.audio.FeatureAccumulator
+import com.miuraken.chunkflow.core.audio.FrameFeatureExtractor
+import com.miuraken.chunkflow.core.audio.SampleSink
+import com.miuraken.chunkflow.core.audio.StoredFeatures
 import com.miuraken.chunkflow.core.audio.TranscriptOffsetAligner
 import com.miuraken.chunkflow.core.data.di.ChunkFlowDispatchers
 import com.miuraken.chunkflow.core.data.di.Dispatcher
@@ -26,6 +30,9 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
 import com.miuraken.chunkflow.core.database.entity.toExternalModel
 import com.miuraken.chunkflow.core.database.entity.toStageAndStatus
+import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
+import com.miuraken.chunkflow.core.media.AudioDecodeResult
+import com.miuraken.chunkflow.core.media.AudioStreamDecoder
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
 import com.miuraken.chunkflow.core.model.AnalysisError
@@ -69,6 +76,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -96,6 +105,8 @@ class DefaultAnalysisRepository(
     private val onDeviceChunkTranscriber: OnDeviceChunkTranscriber = NoOpOnDeviceChunkTranscriber,
     private val bookmarkDao: BookmarkDao = NoOpBookmarkDao,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val audioStreamDecoder: AudioStreamDecoder? = null,
+    private val userSettingsRepository: UserSettingsRepository? = null,
 ) : AnalysisRepository {
 
     @Inject
@@ -125,6 +136,7 @@ class DefaultAnalysisRepository(
     )
 
     private val chunkSegmenter: ChunkSegmenter = ChunkSegmenter()
+    private val pipelineMutex: Mutex = AnalysisWorker.pipelineMutex
     private val waveformRefreshEvents = MutableSharedFlow<MediaId>(extraBufferCapacity = 16)
     private val lookaheadStates = ConcurrentHashMap<MediaId, MutableStateFlow<LookaheadTranscriptionStatus>>()
 
@@ -215,7 +227,7 @@ class DefaultAnalysisRepository(
 
             val initialEntities = stages.map { stage ->
                 val existing = existingByStage[stage]
-                val status = if (existing is StageStatus.Running) {
+                val status = if (existing is StageStatus.Running || existing is StageStatus.Done) {
                     existing
                 } else {
                     StageStatus.NotStarted
@@ -240,14 +252,234 @@ class DefaultAnalysisRepository(
                 val request = OneTimeWorkRequestBuilder<AnalysisWorker>()
                     .setInputData(inputData)
                     .addTag(AnalysisWorker.tagForMedia(id))
+                    .addTag(AnalysisWorker.uniqueWorkName(id))
                     .build()
                 WorkManager.getInstance(context).enqueueUniqueWork(
-                    AnalysisWorker.uniqueWorkName(id),
-                    ExistingWorkPolicy.KEEP,
+                    AnalysisWorker.SEQUENTIAL_WORK_NAME,
+                    ExistingWorkPolicy.APPEND_OR_REPLACE,
                     request,
                 )
             }
+
+            val decoder = audioStreamDecoder
+            if (decoder != null) {
+                pipelineMutex.withLock {
+                    runAnalysisPipeline(id, stages, decoder)
+                }
+            }
         }
+    }
+
+    private suspend fun runAnalysisPipeline(
+        mediaId: MediaId,
+        requestedStages: Set<AnalysisStage>,
+        decoder: AudioStreamDecoder,
+    ) {
+        val audioFile = mediaFileResolver.resolveAudioFile(mediaId)
+        val analysisDir = resolveAnalysisDir(mediaId)?.apply { mkdirs() }
+        if (audioFile == null || !audioFile.isFile || analysisDir == null || !analysisDir.exists()) {
+            markStagesFailed(mediaId, requestedStages, AnalysisError.IO)
+            return
+        }
+
+        val waveformFile = File(analysisDir, WAVEFORM_FILE_NAME)
+        val featuresFile = File(analysisDir, FEATURES_FILE_NAME)
+        val needDecode = AnalysisStage.FEATURES in requestedStages || !featuresFile.isFile
+
+        try {
+            var decodedDurationMs: Long? = null
+            if (needDecode) {
+                val now = clock()
+                analysisStateDao.upsert(
+                    StageStatus.Running(progress = 0f).toEntity(
+                        mediaId = mediaId,
+                        stage = AnalysisStage.FEATURES,
+                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                        updatedAtEpochMs = now,
+                    ),
+                )
+
+                val mediaItem = mediaItemDao.getById(mediaId.value)
+                val expectedDurationMs = mediaItem?.durationMs?.takeIf { it > 0L }
+
+                val accumulator = FeatureAccumulator(binMs = ChunkSegmenter.DEFAULT_BIN_MS)
+                val extractor = FrameFeatureExtractor(
+                    sampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                    sink = accumulator,
+                )
+
+                var lastCheckpointMs = now
+                var lastProgressUpdateMs = now
+
+                val decodeResult = decoder.decode(
+                    file = audioFile,
+                    sink = SampleSink { samples, count ->
+                        extractor.process(samples, count)
+                    },
+                    outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = { progress ->
+                        val currentMs = clock()
+                        val shouldSaveWaveform =
+                            currentMs - lastCheckpointMs >= AnalysisWorker.PROGRESS_SAVE_INTERVAL_MS
+                        val shouldUpdateProgress =
+                            currentMs - lastProgressUpdateMs >= AnalysisWorker.PROGRESS_DB_INTERVAL_MS
+
+                        if (shouldSaveWaveform && accumulator.size > 0) {
+                            AnalysisBinaryFormat.writeWaveformAtomic(
+                                file = waveformFile,
+                                waveform = accumulator.toWaveform(),
+                            )
+                            lastCheckpointMs = currentMs
+                            notifyWaveformUpdated(mediaId)
+                        }
+
+                        if (shouldUpdateProgress || shouldSaveWaveform) {
+                            lastProgressUpdateMs = currentMs
+                            analysisStateDao.upsert(
+                                StageStatus.Running(progress = progress.fraction).toEntity(
+                                    mediaId = mediaId,
+                                    stage = AnalysisStage.FEATURES,
+                                    algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                    updatedAtEpochMs = currentMs,
+                                ),
+                            )
+                        }
+                    },
+                )
+
+                when (decodeResult) {
+                    is AudioDecodeResult.Failure -> {
+                        markStagesFailed(mediaId, requestedStages, decodeResult.error)
+                        return
+                    }
+
+                    is AudioDecodeResult.Success -> {
+                        extractor.finish()
+                        decodedDurationMs = decodeResult.durationMs
+
+                        val waveformSaved = AnalysisBinaryFormat.writeWaveformAtomic(
+                            file = waveformFile,
+                            waveform = accumulator.toWaveform(),
+                        )
+                        val featuresSaved = AnalysisBinaryFormat.writeFeaturesAtomic(
+                            file = featuresFile,
+                            features = StoredFeatures(
+                                binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                                logEnergyDb = accumulator.logEnergyDb(),
+                            ),
+                        )
+                        if (!waveformSaved || !featuresSaved) {
+                            markStagesFailed(mediaId, requestedStages, AnalysisError.IO)
+                            return
+                        }
+                        notifyWaveformUpdated(mediaId)
+
+                        if (decodeResult.durationMs > 0L) {
+                            val currentItem = mediaItemDao.getById(mediaId.value)
+                            if (currentItem != null && currentItem.durationMs != decodeResult.durationMs) {
+                                mediaItemDao.update(
+                                    currentItem.copy(durationMs = decodeResult.durationMs),
+                                )
+                            }
+                        }
+
+                        analysisStateDao.upsert(
+                            StageStatus.Done.toEntity(
+                                mediaId = mediaId,
+                                stage = AnalysisStage.FEATURES,
+                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                updatedAtEpochMs = clock(),
+                            ),
+                        )
+                    }
+                }
+            }
+
+            if (AnalysisStage.SEGMENTATION in requestedStages) {
+                val segStartMs = clock()
+                analysisStateDao.upsert(
+                    StageStatus.Running(progress = 0f).toEntity(
+                        mediaId = mediaId,
+                        stage = AnalysisStage.SEGMENTATION,
+                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                        updatedAtEpochMs = segStartMs,
+                    ),
+                )
+
+                val storedFeatures = AnalysisBinaryFormat.readFeatures(featuresFile)
+                if (storedFeatures == null) {
+                    analysisStateDao.upsert(
+                        StageStatus.Failed(AnalysisError.IO).toEntity(
+                            mediaId = mediaId,
+                            stage = AnalysisStage.SEGMENTATION,
+                            algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                            updatedAtEpochMs = clock(),
+                        ),
+                    )
+                    return
+                }
+
+                val params = runCatching {
+                    userSettingsRepository?.settings?.first()?.defaultSegmentationParams
+                }.getOrNull() ?: SegmentationParams()
+
+                val durationMs = decodedDurationMs?.takeIf { it > 0L }
+                    ?: mediaItemDao.getById(mediaId.value)?.durationMs?.takeIf { it > 0L }
+                    ?: storedFeatures.durationMs
+
+                val autoChunks = chunkSegmenter.segment(
+                    logEnergyDb = storedFeatures.logEnergyDb,
+                    params = params,
+                    binMs = storedFeatures.binMs,
+                    durationMs = durationMs,
+                )
+                val chunkEntities = autoChunks.map {
+                    it.toEntity(
+                        mediaId = mediaId,
+                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                    )
+                }
+
+                chunkDao.replaceChunksTransaction(
+                    mediaId = mediaId.value,
+                    origin = ChunkOrigin.AUTO.name,
+                    newChunks = chunkEntities,
+                    newTranscriptsByIndex = emptyMap(),
+                    preserveAllOldTranscripts = true,
+                )
+
+                analysisStateDao.upsert(
+                    StageStatus.Done.toEntity(
+                        mediaId = mediaId,
+                        stage = AnalysisStage.SEGMENTATION,
+                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                        updatedAtEpochMs = clock(),
+                    ),
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            markStagesFailed(mediaId, requestedStages, AnalysisError.DECODE_FAILED)
+        }
+    }
+
+    private suspend fun markStagesFailed(
+        mediaId: MediaId,
+        stages: Set<AnalysisStage>,
+        error: AnalysisError,
+    ) {
+        val now = clock()
+        val entities = stages.map { stage ->
+            StageStatus.Failed(error).toEntity(
+                mediaId = mediaId,
+                stage = stage,
+                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                updatedAtEpochMs = now,
+            )
+        }
+        analysisStateDao.upsertAll(entities)
     }
 
     override suspend fun resegment(id: MediaId, params: SegmentationParams) {
