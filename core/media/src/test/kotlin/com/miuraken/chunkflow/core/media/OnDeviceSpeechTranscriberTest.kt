@@ -133,7 +133,10 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals("de-DE", toBcp47LocaleTag("de"))
         assertEquals("pt-BR", toBcp47LocaleTag("pt"))
         assertEquals("en-GB", toBcp47LocaleTag("en-GB"))
+        assertEquals("zh-CN", toBcp47LocaleTag("zh-cn"))
+        assertEquals("zh-TW", toBcp47LocaleTag("zh-tw"))
         assertEquals("zh-TW", toBcp47LocaleTag("zh_TW"))
+        assertEquals("el-GR", toBcp47LocaleTag("el"))
     }
 
     @Test

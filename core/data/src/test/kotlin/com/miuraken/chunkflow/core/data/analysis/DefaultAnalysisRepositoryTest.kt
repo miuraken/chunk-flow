@@ -1331,7 +1331,7 @@ class DefaultAnalysisRepositoryTest {
     }
 
     @Test
-    fun `retranscribeChunk_キャッシュを破棄してforceRefreshかつhighPriorityで再認識し手動言語設定時はその言語で再認識する`() = runTest {
+    fun `retranscribeChunk_既割当言語がある場合はuserEditedにかかわらず単一言語指定で再認識し言語未割当時のみmediaLanguagePairで再認識する`() = runTest {
         data class CallRecord(
             val startMs: Long,
             val endMs: Long,
@@ -1417,19 +1417,8 @@ class DefaultAnalysisRepositoryTest {
             ),
         )
 
-        // 初期状態: userEdited = false の既存文字起こしを配置し、言語トグルで chunkTranscriptByLangCache にも載せる
-        transcriptDao.upsert(
-            Transcript(
-                chunkId = chunkId,
-                text = "初期テキスト",
-                language = LanguageTag("ko"),
-                languageConfidence = 0.80f,
-                engine = EngineId("android-on-device-speech"),
-                userEdited = false,
-            ).toEntity(),
-        )
-
-        // 1. userEdited == false の状態で retranscribeChunk を呼ぶと、mediaItem の languagePair (ko/ja) かつ forceRefresh=true, highPriority=true で再認識される
+        // 1. まだ文字起こし（言語）が割り当てられていない状態で retranscribeChunk を呼ぶと、
+        //    mediaItem の languagePair (target=ko, base=ja) で言語推定＋文字起こしが実行される
         repository.retranscribeChunk(mediaId, chunkId)
         assertEquals(1, calls.size)
         assertEquals(
@@ -1442,20 +1431,41 @@ class DefaultAnalysisRepositoryTest {
             ),
             calls.last(),
         )
-        val afterFirstRetranscribe = repository.observeTranscripts(mediaId).first()[chunkId]
-        assertNotNull(afterFirstRetranscribe)
-        assertEquals("再認識_1_ko", afterFirstRetranscribe.text)
-        assertFalse(afterFirstRetranscribe.userEdited)
+        val afterUnassignedRetranscribe = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(afterUnassignedRetranscribe)
+        assertEquals("再認識_1_ko", afterUnassignedRetranscribe.text)
+        assertEquals(LanguageTag("ko"), afterUnassignedRetranscribe.language)
+        assertFalse(afterUnassignedRetranscribe.userEdited)
 
-        // 2. ユーザーが手動で ja に言語変更する（userEdited = true, language = "ja" になり、ja と ko がキャッシュされる）
-        repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ja"))
-        assertEquals(2, calls.size)
-        assertEquals("再認識_2_ja", repository.observeTranscripts(mediaId).first()[chunkId]?.text)
-
-        // 3. userEdited == true かつ language == "ja" の状態で retranscribeChunk を呼ぶと、
-        //    キャッシュを破棄して手動指定言語 (target=ja, base=null) で強制再認識される
+        // 2. 自動検出済み (userEdited = false, language = "ko") の状態で再度 retranscribeChunk を呼ぶと、
+        //    言語推定をやり直さず、既に割り当てられている "ko" 単一言語 (target=ko, base=null) で再認識され、言語 "ko" が維持される
         repository.retranscribeChunk(mediaId, chunkId)
+        assertEquals(2, calls.size)
+        assertEquals(
+            CallRecord(
+                startMs = 0L,
+                endMs = 2_000L,
+                languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+                forceRefresh = true,
+                highPriority = true,
+            ),
+            calls.last(),
+        )
+        val afterAutoAssignedRetranscribe = repository.observeTranscripts(mediaId).first()[chunkId]
+        assertNotNull(afterAutoAssignedRetranscribe)
+        assertEquals("再認識_2_ko", afterAutoAssignedRetranscribe.text)
+        assertEquals(LanguageTag("ko"), afterAutoAssignedRetranscribe.language)
+        assertFalse(afterAutoAssignedRetranscribe.userEdited)
+
+        // 3. ユーザーが手動で ja に言語変更する（userEdited = true, language = "ja" になり、ja と ko がキャッシュされる）
+        repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ja"))
         assertEquals(3, calls.size)
+        assertEquals("再認識_3_ja", repository.observeTranscripts(mediaId).first()[chunkId]?.text)
+
+        // 4. userEdited == true かつ language == "ja" の状態で retranscribeChunk を呼ぶと、
+        //    キャッシュを破棄して指定言語 (target=ja, base=null) で強制再認識される
+        repository.retranscribeChunk(mediaId, chunkId)
+        assertEquals(4, calls.size)
         assertEquals(
             CallRecord(
                 startMs = 0L,
@@ -1468,14 +1478,14 @@ class DefaultAnalysisRepositoryTest {
         )
         val afterManualRetranscribe = repository.observeTranscripts(mediaId).first()[chunkId]
         assertNotNull(afterManualRetranscribe)
-        assertEquals("再認識_3_ja", afterManualRetranscribe.text)
+        assertEquals("再認識_4_ja", afterManualRetranscribe.text)
         assertEquals(LanguageTag("ja"), afterManualRetranscribe.language)
         assertTrue(afterManualRetranscribe.userEdited)
 
-        // 4. retranscribeChunk によって旧キャッシュ ("再認識_1_ko") も破棄されているため、ko に切り替えるとキャッシュヒットせず新規認識が走る
+        // 5. retranscribeChunk によって旧キャッシュ ("再認識_2_ko") も破棄されているため、ko に切り替えるとキャッシュヒットせず新規認識が走る
         repository.updateChunkLanguage(mediaId, chunkId, LanguageTag("ko"))
-        assertEquals(4, calls.size)
-        assertEquals("再認識_4_ko", repository.observeTranscripts(mediaId).first()[chunkId]?.text)
+        assertEquals(5, calls.size)
+        assertEquals("再認識_5_ko", repository.observeTranscripts(mediaId).first()[chunkId]?.text)
     }
 
     @Test

@@ -900,16 +900,31 @@ class DefaultAnalysisRepository(
 
                 val existing = transcriptDao.getByChunkId(chunkId.value)
                 val mediaItem = mediaItemDao.getById(id.value)
+                val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
+                val overlappingImported = if (existing == null) {
+                    val importedChunks = allChunks.filter { it.origin == ChunkOrigin.IMPORTED.name }
+                    val importedTranscripts = transcriptDao.getByChunkIds(importedChunks.map { it.id })
+                        .associateBy { it.chunkId }
+                    findBestOverlappingTranscript(
+                        target = targetChunk,
+                        sourceChunks = importedChunks,
+                        transcriptsByChunkId = importedTranscripts,
+                        offsetMs = offsetMs,
+                    )
+                } else {
+                    null
+                }
+                val baseExisting = existing ?: overlappingImported
+                val assignedLang = baseExisting?.language?.trim()?.takeIf {
+                    it.isNotEmpty() && it != "und"
+                }
                 val mediaLanguagePair = mediaItem?.let { item ->
                     val target = item.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
                     val base = item.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
                     target?.let { LanguagePair(target = it, base = base) }
                 }
-                val manualLang = existing?.language?.trim()?.takeIf {
-                    existing.userEdited && it.isNotEmpty() && it != "und"
-                }
-                val effectiveLanguagePair = if (manualLang != null) {
-                    LanguagePair(target = LanguageTag(manualLang), base = null)
+                val effectiveLanguagePair = if (assignedLang != null) {
+                    LanguagePair(target = LanguageTag(assignedLang), base = null)
                 } else {
                     mediaLanguagePair
                 }
@@ -938,14 +953,14 @@ class DefaultAnalysisRepository(
                 }
 
                 if (recognized != null && recognized.text.isNotBlank()) {
-                    val currentEntity = transcriptDao.getByChunkId(chunkId.value) ?: existing
-                    val resolvedLanguage = manualLang
+                    val currentEntity = transcriptDao.getByChunkId(chunkId.value) ?: baseExisting
+                    val resolvedLanguage = assignedLang
                         ?: recognized.language?.value?.takeIf { it.isNotBlank() && it != "und" }
                         ?: effectiveLanguagePair?.target?.value
-                    val resolvedConfidence = if (manualLang != null) {
-                        currentEntity?.languageConfidence ?: 1.0f
+                    val resolvedConfidence = if (currentEntity?.userEdited == true) {
+                        currentEntity.languageConfidence ?: recognized.confidence ?: 1.0f
                     } else {
-                        recognized.confidence
+                        recognized.confidence ?: currentEntity?.languageConfidence
                     }
                     if (!resolvedLanguage.isNullOrBlank() && resolvedLanguage != "und") {
                         chunkTranscriptByLangCache[

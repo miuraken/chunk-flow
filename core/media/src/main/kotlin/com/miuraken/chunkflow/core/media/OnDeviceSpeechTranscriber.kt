@@ -154,6 +154,8 @@ internal fun toBcp47LocaleTag(lang: String): String {
 
         "id" -> "id-ID"
 
+        "el" -> "el-GR"
+
         else -> {
             val localeTag = Locale.forLanguageTag(normalized).toLanguageTag()
             if (localeTag.isNotBlank() && localeTag != "und") localeTag else normalized
