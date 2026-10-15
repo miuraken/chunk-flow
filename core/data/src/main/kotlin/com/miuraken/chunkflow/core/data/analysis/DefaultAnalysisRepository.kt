@@ -137,6 +137,7 @@ class DefaultAnalysisRepository(
 
     private val chunkSegmenter: ChunkSegmenter = ChunkSegmenter()
     private val pipelineMutex: Mutex = AnalysisWorker.pipelineMutex
+    private val lookaheadMutex: Mutex = Mutex()
     private val waveformRefreshEvents = MutableSharedFlow<MediaId>(extraBufferCapacity = 16)
     private val lookaheadStates = ConcurrentHashMap<MediaId, MutableStateFlow<LookaheadTranscriptionStatus>>()
 
@@ -707,132 +708,145 @@ class DefaultAnalysisRepository(
     suspend fun triggerLookaheadAt(id: MediaId, currentChunkIndex: Int) {
         if (currentChunkIndex < 0) return
         withContext(ioDispatcher) {
-            val stateFlow = lookaheadStateFor(id)
-            val currentStatus = stateFlow.value
-            val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-            if (!currentStatus.enabled) return@withContext
-            if (!available) {
-                stateFlow.update { it.copy(engineAvailable = false, inFlightChunkId = null) }
-                return@withContext
-            }
+            lookaheadMutex.withLock {
+                val stateFlow = lookaheadStateFor(id)
+                val currentStatus = stateFlow.value
+                val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
+                if (!currentStatus.enabled) return@withLock
+                if (!available) {
+                    stateFlow.update { it.copy(engineAvailable = false, inFlightChunkId = null) }
+                    return@withLock
+                }
 
-            val allChunks = chunkDao.observeByMediaId(id.value).first()
-            val itemState = itemStateDao.getByMediaId(id.value)
-            val activeChunks = selectActiveChunkEntities(itemState, allChunks)
-            if (currentChunkIndex >= activeChunks.size) return@withContext
+                val allChunks = chunkDao.observeByMediaId(id.value).first()
+                val itemState = itemStateDao.getByMediaId(id.value)
+                val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+                if (currentChunkIndex >= activeChunks.size) return@withLock
 
-            val audioFile = mediaFileResolver.resolveAudioFile(id)
-            if (audioFile == null || !audioFile.isFile) return@withContext
+                val audioFile = mediaFileResolver.resolveAudioFile(id)
+                if (audioFile == null || !audioFile.isFile) return@withLock
 
-            val endIndex = min(activeChunks.lastIndex, currentChunkIndex + LOOKAHEAD_WINDOW_AHEAD)
-            val windowChunks = activeChunks.subList(currentChunkIndex, endIndex + 1)
-            val existingTranscripts = transcriptDao.getByChunkIds(windowChunks.map { it.id })
-                .associateBy { it.chunkId }
+                val endIndex = min(activeChunks.lastIndex, currentChunkIndex + LOOKAHEAD_WINDOW_AHEAD)
+                val windowChunks = activeChunks.subList(currentChunkIndex, endIndex + 1)
+                val existingTranscripts = transcriptDao.getByChunkIds(windowChunks.map { it.id })
+                    .associateBy { it.chunkId }
 
-            // 既に認識済み（テキストが空でない、またはユーザー編集済み）のチャンクはスキップする
-            val targetChunks = windowChunks.filter { chunk ->
-                val existing = existingTranscripts[chunk.id]
-                existing == null || (existing.text.isBlank() && !existing.userEdited)
-            }
+                // 既に認識済み（テキストが空でない、またはユーザー編集済み）のチャンクはスキップする
+                var targetChunks = windowChunks.filter { chunk ->
+                    val existing = existingTranscripts[chunk.id]
+                    existing == null || (existing.text.isBlank() && !existing.userEdited)
+                }
 
-            if (targetChunks.isEmpty()) {
+                // 直近ウィンドウがすべて文字起こし済みの場合、後続の未文字起こしチャンクがあれば次のバッチを取得する
+                if (targetChunks.isEmpty() && endIndex + 1 < activeChunks.size) {
+                    val remainingChunks = activeChunks.subList(endIndex + 1, activeChunks.size)
+                    val remainingTranscripts = transcriptDao.getByChunkIds(remainingChunks.map { it.id })
+                        .associateBy { it.chunkId }
+                    targetChunks = remainingChunks.filter { chunk ->
+                        val existing = remainingTranscripts[chunk.id]
+                        existing == null || (existing.text.isBlank() && !existing.userEdited)
+                    }.take(LOOKAHEAD_WINDOW_AHEAD + 1)
+                }
+
+                if (targetChunks.isEmpty()) {
+                    stateFlow.update {
+                        it.copy(
+                            engineAvailable = true,
+                            inFlightChunkId = null,
+                            completedCount = windowChunks.size,
+                            totalTargetCount = windowChunks.size,
+                        )
+                    }
+                    return@withLock
+                }
+
+                val mediaItem = mediaItemDao.getById(id.value)
+                val languagePair = mediaItem?.let { item ->
+                    val target = item.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                    val base = item.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                    target?.let { LanguagePair(target = it, base = base) }
+                }
+
+                var completed = 0
+                val totalTargets = targetChunks.size
                 stateFlow.update {
                     it.copy(
                         engineAvailable = true,
-                        inFlightChunkId = null,
-                        completedCount = windowChunks.size,
-                        totalTargetCount = windowChunks.size,
-                    )
-                }
-                return@withContext
-            }
-
-            val mediaItem = mediaItemDao.getById(id.value)
-            val languagePair = mediaItem?.let { item ->
-                val target = item.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
-                val base = item.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
-                target?.let { LanguagePair(target = it, base = base) }
-            }
-
-            var completed = 0
-            val totalTargets = targetChunks.size
-            stateFlow.update {
-                it.copy(
-                    engineAvailable = true,
-                    inFlightChunkId = ChunkId(targetChunks.first().id),
-                    completedCount = 0,
-                    totalTargetCount = totalTargets,
-                )
-            }
-
-            var anyTranscribed = false
-            for (chunk in targetChunks) {
-                if (!stateFlow.value.enabled) break
-                if (chunk.endMs <= chunk.startMs) {
-                    completed += 1
-                    continue
-                }
-
-                stateFlow.update {
-                    it.copy(
-                        inFlightChunkId = ChunkId(chunk.id),
-                        completedCount = completed,
+                        inFlightChunkId = ChunkId(targetChunks.first().id),
+                        completedCount = 0,
                         totalTargetCount = totalTargets,
                     )
                 }
 
-                // チャンク区間 [startMs, endMs] のみを切り出して認識し、チャンク間の無音はスキップする（F6.2）
-                val result: OnDeviceChunkTranscriptionResult? = try {
-                    onDeviceChunkTranscriber.transcribeChunk(
-                        audioFile = audioFile,
-                        startMs = chunk.startMs,
-                        endMs = chunk.endMs,
-                        languagePair = languagePair,
-                    )
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (_: Exception) {
-                    null
-                }
-
-                if (result != null && result.text.isNotBlank()) {
-                    val existing = transcriptDao.getByChunkId(chunk.id)
-                    val resolvedLanguage = existing?.language?.takeIf { it.isNotBlank() && it != "und" }
-                        ?: result.language?.value
-                        ?: languagePair?.target?.value
-                    val resolvedConfidence = if (existing?.userEdited == true) {
-                        existing.languageConfidence ?: 1.0f
-                    } else {
-                        result.confidence
+                var anyTranscribed = false
+                for (chunk in targetChunks) {
+                    if (!stateFlow.value.enabled) break
+                    if (chunk.endMs <= chunk.startMs) {
+                        completed += 1
+                        continue
                     }
-                    transcriptDao.upsert(
-                        TranscriptEntity(
-                            chunkId = chunk.id,
-                            text = result.text,
-                            textVariants = existing?.textVariants ?: "{}",
-                            language = resolvedLanguage,
-                            languageConfidence = resolvedConfidence,
-                            words = existing?.words ?: "[]",
-                            engine = result.engineId.value,
-                            userEdited = existing?.userEdited ?: false,
-                            createdAt = clock(),
-                        ),
-                    )
-                    anyTranscribed = true
+
+                    stateFlow.update {
+                        it.copy(
+                            inFlightChunkId = ChunkId(chunk.id),
+                            completedCount = completed,
+                            totalTargetCount = totalTargets,
+                        )
+                    }
+
+                    // チャンク区間 [startMs, endMs] のみを切り出して認識し、チャンク間の無音はスキップする（F6.2）
+                    val result: OnDeviceChunkTranscriptionResult? = try {
+                        onDeviceChunkTranscriber.transcribeChunk(
+                            audioFile = audioFile,
+                            startMs = chunk.startMs,
+                            endMs = chunk.endMs,
+                            languagePair = languagePair,
+                        )
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (_: Exception) {
+                        null
+                    }
+
+                    if (result != null && result.text.isNotBlank()) {
+                        val existing = transcriptDao.getByChunkId(chunk.id)
+                        val resolvedLanguage = existing?.language?.takeIf { it.isNotBlank() && it != "und" }
+                            ?: result.language?.value
+                            ?: languagePair?.target?.value
+                        val resolvedConfidence = if (existing?.userEdited == true) {
+                            existing.languageConfidence ?: 1.0f
+                        } else {
+                            result.confidence
+                        }
+                        transcriptDao.upsert(
+                            TranscriptEntity(
+                                chunkId = chunk.id,
+                                text = result.text,
+                                textVariants = existing?.textVariants ?: "{}",
+                                language = resolvedLanguage,
+                                languageConfidence = resolvedConfidence,
+                                words = existing?.words ?: "[]",
+                                engine = result.engineId.value,
+                                userEdited = existing?.userEdited ?: false,
+                                createdAt = clock(),
+                            ),
+                        )
+                        anyTranscribed = true
+                    }
+
+                    completed += 1
+                    stateFlow.update {
+                        it.copy(
+                            inFlightChunkId = null,
+                            completedCount = completed,
+                            totalTargetCount = totalTargets,
+                        )
+                    }
                 }
 
-                completed += 1
-                stateFlow.update {
-                    it.copy(
-                        inFlightChunkId = null,
-                        completedCount = completed,
-                        totalTargetCount = totalTargets,
-                    )
+                if (anyTranscribed) {
+                    persistTranscriptBackupFile(id)
                 }
-            }
-
-            if (anyTranscribed) {
-                persistTranscriptBackupFile(id)
             }
         }
     }
