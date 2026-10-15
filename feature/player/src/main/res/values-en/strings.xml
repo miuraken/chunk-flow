@@ -101,6 +101,7 @@
     <string name="player_bookmark_toggle_add">Add bookmark</string>
     <string name="player_bookmark_toggle_remove">Remove bookmark</string>
     <string name="player_chunk_edit_text">Edit text</string>
+    <string name="player_chunk_retranscribe">Retranscribe</string>
     <string name="player_chunk_edit_text_dialog_title">Edit chunk #%1$d text</string>
     <string name="player_chunk_edit_text_label">Transcript text</string>
     <string name="player_chunk_edit_save">Save</string>

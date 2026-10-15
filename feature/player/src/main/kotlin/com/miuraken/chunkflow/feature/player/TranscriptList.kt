@@ -228,6 +228,7 @@ fun TranscriptList(
     onToggleRepeatChunk: (ChunkId) -> Unit = {},
     onUpdateChunkLanguage: (ChunkId, LanguageTag?) -> Unit = { _, _ -> },
     onUpdateChunkText: (ChunkId, String) -> Unit = { _, _ -> },
+    onRetranscribeChunk: (ChunkId) -> Unit = {},
     onSplitChunk: (ChunkId, Long) -> Unit = { _, _ -> },
     onMergeWithNextChunk: (ChunkId) -> Unit = {},
     onMoveChunkBoundary: (ChunkId, Long, Long) -> Unit = { _, _, _ -> },
@@ -420,6 +421,9 @@ fun TranscriptList(
                         },
                         onRequestEditText = {
                             editingTextChunk = index to chunk
+                        },
+                        onRetranscribeChunk = {
+                            onRetranscribeChunk(chunk.id)
                         },
                         onSplitChunk = {
                             val nowMs = positionProvider.currentPositionMs()
@@ -665,6 +669,7 @@ private fun TranscriptChunkRow(
     onStartRangeSelection: () -> Unit,
     onUpdateLanguage: (LanguageTag?) -> Unit,
     onRequestEditText: () -> Unit,
+    onRetranscribeChunk: () -> Unit = {},
     onSplitChunk: () -> Unit,
     onMergeWithNextChunk: () -> Unit,
     onMoveChunkBoundary: (Long, Long) -> Unit,
@@ -978,6 +983,13 @@ private fun TranscriptChunkRow(
                 onClick = {
                     menuExpanded = false
                     onRequestEditText()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_retranscribe)) },
+                onClick = {
+                    menuExpanded = false
+                    onRetranscribeChunk()
                 },
             )
             HorizontalDivider()
