@@ -449,9 +449,12 @@ class ChunkSchedulerTest {
         )
         scheduler.setChunks(listOf(chunk1, chunk2, chunk3, chunk4))
 
-        // 現在位置 0ms (chunk1) の状態で chunk2 と chunk4 にチェックを入れると、即座に最初の選択チャンク chunk2 へ移動する
+        // 現在位置 0ms (chunk1) の状態で chunk2 と chunk4 にチェックを入れ、repeatCheckedOnly を ON にすると、即座に最初の選択チャンク chunk2 へ移動する
         practiceController.update {
-            it.copy(repeatChunkIds = setOf(chunk2.id, chunk4.id))
+            it.copy(
+                repeatChunkIds = setOf(chunk2.id, chunk4.id),
+                repeatCheckedOnly = true,
+            )
         }
         pumpLoopers()
         assertEquals(chunk2.id, scheduler.currentChunkId.value)
@@ -474,11 +477,11 @@ class ChunkSchedulerTest {
         pumpLoopers()
         assertEquals(chunk4.id, scheduler.currentChunkId.value)
 
-        // すべてのチェックを外すと通常再生に戻り、chunk2 終端で chunk3 へ進む
+        // repeatCheckedOnly を OFF にすると（またはすべてのチェックを外すと）通常再生に戻り、chunk2 終端で chunk3 へ進む
         exoPlayer.seekTo(chunk2.startMs)
         pumpLoopers()
         practiceController.update {
-            it.copy(repeatChunkIds = emptySet())
+            it.copy(repeatCheckedOnly = false)
         }
         pumpLoopers()
         runUntil { scheduler.currentChunkId.value == chunk3.id }
@@ -490,7 +493,10 @@ class ChunkSchedulerTest {
     fun `RepeatChunkIds_1つのチャンクだけチェックした場合はそのチャンクを無限ループ再生する`() {
         scheduler.setChunks(sampleChunks)
         practiceController.update {
-            it.copy(repeatChunkIds = setOf(chunk1.id))
+            it.copy(
+                repeatChunkIds = setOf(chunk1.id),
+                repeatCheckedOnly = true,
+            )
         }
         pumpLoopers()
 

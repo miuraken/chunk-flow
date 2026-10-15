@@ -308,7 +308,8 @@ class ChunkScheduler(
         if (playWhenReady &&
             singleChunkPlaybackId == null &&
             _autoPauseEndsAtMs.value == null &&
-            practiceSettings.loop !is LoopMode.AbRange
+            practiceSettings.loop !is LoopMode.AbRange &&
+            practiceSettings.repeatCheckedOnly
         ) {
             val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
             if (repeatChunks.isNotEmpty()) {
@@ -351,6 +352,7 @@ class ChunkScheduler(
         val oldLoop = practiceSettings.loop
         val oldAutoPause = practiceSettings.autoPause
         val oldRepeatChunkIds = practiceSettings.repeatChunkIds
+        val oldRepeatCheckedOnly = practiceSettings.repeatCheckedOnly
         practiceSettings = newSettings
 
         if (!isUpdatingLoopInternally && oldLoop != newSettings.loop) {
@@ -367,7 +369,8 @@ class ChunkScheduler(
 
         if (singleChunkPlaybackId == null &&
             newSettings.loop !is LoopMode.AbRange &&
-            oldRepeatChunkIds != newSettings.repeatChunkIds
+            newSettings.repeatCheckedOnly &&
+            (oldRepeatChunkIds != newSettings.repeatChunkIds || !oldRepeatCheckedOnly)
         ) {
             val repeatChunks = chunks.filter { it.id in newSettings.repeatChunkIds }
             if (repeatChunks.isNotEmpty()) {
@@ -633,8 +636,12 @@ class ChunkScheduler(
             LoopMode.Off -> Unit
         }
 
-        // チェックボックスで選択されたチャンク（repeatChunkIds）の順次・無限リピート再生
-        val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
+        // チェックボックスで選択されたチャンク（repeatChunkIds）の順次・無限リピート再生（repeatCheckedOnly が ON のとき）
+        val repeatChunks = if (practiceSettings.repeatCheckedOnly) {
+            chunks.filter { it.id in practiceSettings.repeatChunkIds }
+        } else {
+            emptyList()
+        }
         if (repeatChunks.isNotEmpty()) {
             val nextTarget = if (chunk.id in practiceSettings.repeatChunkIds) {
                 val idx = repeatChunks.indexOfFirst { it.id == chunk.id }
