@@ -500,4 +500,37 @@ class PlayerViewModelTest {
         )
         assertNull(pinyinRanges)
     }
+
+    @Test
+    fun `チャンク別リピートチェック_ToggleChunkRepeatとSetLoopModeOffでrepeatChunkIdsとisRepeatCheckedが更新される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val firstChunkId = viewModel.uiState.value.chunks[0].id
+        val thirdChunkId = viewModel.uiState.value.chunks[2].id
+
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(firstChunkId))
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(thirdChunkId))
+        assertEquals(setOf(firstChunkId, thirdChunkId), viewModel.uiState.value.practice.repeatChunkIds)
+        assertTrue(viewModel.uiState.value.chunks[0].isRepeatChecked)
+        assertFalse(viewModel.uiState.value.chunks[1].isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks[2].isRepeatChecked)
+
+        // 再トグルで解除
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(firstChunkId))
+        assertEquals(setOf(thirdChunkId), viewModel.uiState.value.practice.repeatChunkIds)
+        assertFalse(viewModel.uiState.value.chunks[0].isRepeatChecked)
+
+        // LoopMode.Off で repeatChunkIds もクリアされる
+        viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.Off))
+        assertTrue(viewModel.uiState.value.practice.repeatChunkIds.isEmpty())
+        assertFalse(viewModel.uiState.value.chunks[2].isRepeatChecked)
+    }
 }
