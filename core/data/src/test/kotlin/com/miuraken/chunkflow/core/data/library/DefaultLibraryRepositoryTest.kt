@@ -1357,6 +1357,85 @@ class DefaultLibraryRepositoryTest {
         assertEquals(0, secondDone.newTranscripts)
     }
 
+    @Test
+    fun `import_ディレクトリ内の複数ファイルはファイル名の自然昇順に取り込まれ順番に解析がリクエストされる`() = runTest {
+        val treeUri = registerTreeDirectory(
+            rootDocId = "primary:ChunkFlow/NaturalOrderCourse",
+            rootDisplayName = "NaturalOrderCourse",
+            audioFiles = listOf(
+                "lesson10.mp3" to "audio-payload-10".encodeToByteArray(),
+                "lesson2.mp3" to "audio-payload-2".encodeToByteArray(),
+                "lesson1.mp3" to "audio-payload-1".encodeToByteArray(),
+            ),
+            transcriptionFiles = emptyList(),
+        )
+
+        val repo = createRepository()
+        val done = repo.import(listOf(treeUri)).toList().last() as ImportProgress.Done
+        assertEquals(3, done.mediaIds.size)
+
+        val importedTitles = done.mediaIds.mapNotNull { id -> repo.observeItem(id).first()?.title }
+        assertEquals(listOf("lesson1", "lesson2", "lesson10"), importedTitles)
+
+        val requestedIdsInOrder = analysisRepository.requestedAnalyses.map { it.first }
+        assertEquals(done.mediaIds, requestedIdsInOrder)
+    }
+
+    @Test
+    fun `updateDirectoryMetadataとmarkItemListened_ディレクトリ単位の一括設定と聴取完了フラグ更新が機能する`() = runTest {
+        val uri1 = registerContent("dir_a1", "a1.mp3", 10L, "payload-a1".encodeToByteArray())
+        val uri2 = registerContent("dir_a2", "a2.mp3", 10L, "payload-a2".encodeToByteArray())
+        val uriUncat = registerContent("dir_u1", "u1.mp3", 10L, "payload-u1".encodeToByteArray())
+
+        val repo = createRepository()
+        val doneCourseA = repo.import(
+            uris = listOf(uri1, uri2),
+            course = "CourseA",
+            languages = LanguagePair(LanguageTag("en"), LanguageTag("ja")),
+        ).toList().last() as ImportProgress.Done
+        val doneUncat = repo.import(
+            uris = listOf(uriUncat),
+            course = null,
+            languages = LanguagePair(LanguageTag("en"), LanguageTag("ja")),
+        ).toList().last() as ImportProgress.Done
+
+        // CourseA のコース名と言語ペアを一括更新
+        val newLangsB = LanguagePair(LanguageTag("fr"), LanguageTag("en"))
+        repo.updateDirectoryMetadata(
+            currentCourse = "CourseA",
+            newCourse = "  CourseB  ",
+            languages = newLangsB,
+        )
+
+        for (mediaId in doneCourseA.mediaIds) {
+            val item = repo.observeItem(mediaId).first()
+            assertNotNull(item)
+            assertEquals("CourseB", item.course)
+            assertEquals(newLangsB, item.languagePair)
+        }
+
+        // 未分類（course == null）の教材を一括更新
+        val newLangsC = LanguagePair(LanguageTag("ko"), LanguageTag("ja"))
+        repo.updateDirectoryMetadata(
+            currentCourse = null,
+            newCourse = "CourseC",
+            languages = newLangsC,
+        )
+        val uncatItem = repo.observeItem(doneUncat.mediaIds.single()).first()
+        assertNotNull(uncatItem)
+        assertEquals("CourseC", uncatItem.course)
+        assertEquals(newLangsC, uncatItem.languagePair)
+
+        // markItemListened で聴取完了（済）と最終アクセス日時を更新
+        val targetId = doneCourseA.mediaIds.first()
+        assertFalse(repo.observeItemState(targetId).first()?.isListened ?: true)
+        repo.markItemListened(id = targetId, isListened = true, updatedAtEpochMs = 1_800_000_000_000L)
+        val updatedState = repo.observeItemState(targetId).first()
+        assertNotNull(updatedState)
+        assertTrue(updatedState.isListened)
+        assertEquals(1_800_000_000_000L, updatedState.updatedAtEpochMs)
+    }
+
     private class InMemoryDriveFileDao : DriveFileDao {
         private val records = MutableStateFlow<Map<String, DriveFileEntity>>(emptyMap())
 

@@ -245,7 +245,13 @@ class DefaultLibraryRepository(
             return@flow
         }
 
-        val (transcriptCandidates, audioCandidates) = candidates.partition(::isTranscriptCandidate)
+        val (transcriptCandidates, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
+        val audioCandidates = rawAudioCandidates.sortedWith { left, right ->
+            naturalFileNameComparator.compare(
+                left.meta?.displayName ?: left.uri.lastPathSegment.orEmpty(),
+                right.meta?.displayName ?: right.uri.lastPathSegment.orEmpty(),
+            )
+        }
         val totalAudio = audioCandidates.size
         val mediaIds = mutableListOf<MediaId>()
         val batchAudioByStemAndCourse = LinkedHashMap<Pair<String?, String>, MediaId>()
@@ -428,6 +434,44 @@ class DefaultLibraryRepository(
         }
     }
 
+    override suspend fun updateDirectoryMetadata(
+        currentCourse: String?,
+        newCourse: String?,
+        languages: LanguagePair,
+    ) {
+        withContext(ioDispatcher) {
+            val normalizedNewCourse = sanitizeCourseName(newCourse).takeIf { it.isNotBlank() }
+            if (currentCourse != null) {
+                mediaItemDao.updateCourseMetadata(
+                    oldCourse = currentCourse,
+                    newCourse = normalizedNewCourse,
+                    targetLang = languages.target.value,
+                    baseLang = languages.base?.value,
+                )
+            } else {
+                mediaItemDao.updateUncategorizedCourseMetadata(
+                    newCourse = normalizedNewCourse,
+                    targetLang = languages.target.value,
+                    baseLang = languages.base?.value,
+                )
+            }
+        }
+    }
+
+    override suspend fun markItemListened(
+        id: MediaId,
+        isListened: Boolean,
+        updatedAtEpochMs: Long,
+    ) {
+        withContext(ioDispatcher) {
+            itemStateDao.updateListenedStatus(
+                mediaId = id.value,
+                isListened = isListened,
+                updatedAt = updatedAtEpochMs,
+            )
+        }
+    }
+
     override suspend fun exportLocalTranscriptJson(id: MediaId): Boolean = withContext(ioDispatcher) {
         val entity = mediaItemDao.getById(id.value) ?: return@withContext false
         val jsonBytes = buildLocalTranscriptJsonBytes(entity) ?: return@withContext false
@@ -553,6 +597,9 @@ class DefaultLibraryRepository(
             }
         }
 
+        audioToDownload.sortWith { left, right ->
+            naturalFileNameComparator.compare(left.second.name, right.second.name)
+        }
         val totalToDownload = audioToDownload.size + transcriptsToDownload.size
         var doneCount = 0
         var newAudioCount = 0
@@ -1971,7 +2018,13 @@ class DefaultLibraryRepository(
             rawCandidates
         }
 
-        val (transcriptCandidates, audioCandidates) = candidates.partition(::isTranscriptCandidate)
+        val (transcriptCandidates, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
+        val audioCandidates = rawAudioCandidates.sortedWith { left, right ->
+            naturalFileNameComparator.compare(
+                left.meta?.displayName ?: left.uri.lastPathSegment.orEmpty(),
+                right.meta?.displayName ?: right.uri.lastPathSegment.orEmpty(),
+            )
+        }
         val totalToProcess = audioCandidates.size + transcriptCandidates.size
         var doneCount = 0
         var newAudioCount = 0
@@ -2429,6 +2482,47 @@ class DefaultLibraryRepository(
                 "",
             )
             return sanitizeDisplayName(withoutTranscriptExt).lowercase()
+        }
+
+        internal val naturalFileNameComparator: Comparator<String> = Comparator(::compareFileNamesNaturally)
+
+        internal fun compareFileNamesNaturally(a: String, b: String): Int {
+            var i = 0
+            var j = 0
+            val lenA = a.length
+            val lenB = b.length
+            while (i < lenA && j < lenB) {
+                val ca = a[i]
+                val cb = b[j]
+                if (ca.isDigit() && cb.isDigit()) {
+                    val startA = i
+                    while (i < lenA && a[i].isDigit()) i++
+                    val startB = j
+                    while (j < lenB && b[j].isDigit()) j++
+
+                    val rawDigitsA = a.substring(startA, i)
+                    val rawDigitsB = b.substring(startB, j)
+                    val trimmedA = rawDigitsA.trimStart('0')
+                    val trimmedB = rawDigitsB.trimStart('0')
+
+                    val lenDiff = trimmedA.length.compareTo(trimmedB.length)
+                    if (lenDiff != 0) return lenDiff
+
+                    val valDiff = trimmedA.compareTo(trimmedB)
+                    if (valDiff != 0) return valDiff
+
+                    val rawLenDiff = rawDigitsA.length.compareTo(rawDigitsB.length)
+                    if (rawLenDiff != 0) return rawLenDiff
+                } else {
+                    val lowerDiff = ca.lowercaseChar().compareTo(cb.lowercaseChar())
+                    if (lowerDiff != 0) return lowerDiff
+                    i++
+                    j++
+                }
+            }
+            val remainingDiff = (lenA - i).compareTo(lenB - j)
+            if (remainingDiff != 0) return remainingDiff
+            return a.compareTo(b)
         }
 
         internal fun sanitizeCourseName(rawCourse: String?): String {

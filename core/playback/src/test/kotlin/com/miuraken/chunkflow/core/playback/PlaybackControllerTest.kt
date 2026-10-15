@@ -324,6 +324,78 @@ class PlaybackControllerTest {
         controller.release()
     }
 
+    @Test
+    fun `openと再生_ファイルを開いた時点で最終アクセス日時が記録され95パーセント以降を1秒以上再生するとListenedになる`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val item = sampleAudioItem(mediaId1, durationMs = 100_000L)
+        val savedState = ItemState(
+            mediaId = mediaId1,
+            positionMs = 40_000L,
+            speed = 1.0f,
+            isListened = false,
+            updatedAtEpochMs = 500L,
+        )
+        libraryRepository.items.value = listOf(item)
+        libraryRepository.itemStates.value = mapOf(mediaId1 to savedState)
+        mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+
+        nowEpochMs = 2_000L
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+
+        controller.open(mediaId1)
+        runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
+        runCurrent()
+
+        // 開いた時点で前回の位置 (40,000ms) が復元され、最終アクセス日時が 2,000L に更新されていること
+        assertEquals(40_000L, controller.position.currentPositionMs())
+        val stateOnOpen = libraryRepository.observeItemState(mediaId1).first()
+        assertNotNull(stateOnOpen)
+        assertEquals(40_000L, stateOnOpen.positionMs)
+        assertEquals(2_000L, stateOnOpen.updatedAtEpochMs)
+        assertFalse(stateOnOpen.isListened)
+
+        val player = controller.player.value
+        assertNotNull(player)
+        player.play()
+        shadowOf(Looper.getMainLooper()).idle()
+        runCurrent()
+
+        // 40% の位置で 2 秒再生しても Listened にはならない
+        advanceTimeBy(2_000L)
+        runCurrent()
+        assertFalse(libraryRepository.observeItemState(mediaId1).first()?.isListened ?: true)
+
+        // 96% (96,000ms) の位置へ移動して 800ms 再生した時点ではまだ 1,000ms 未満なので false
+        stubPlayer.setCurrentPosition(96_000L)
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceTimeBy(800L)
+        runCurrent()
+        assertFalse(libraryRepository.observeItemState(mediaId1).first()?.isListened ?: true)
+
+        // さらに 200ms 再生して合計 1,000ms に達すると Listened (済) が true になり最終アクセス日時も更新される
+        nowEpochMs = 7_500L
+        advanceTimeBy(200L)
+        runCurrent()
+
+        val listenedState = libraryRepository.observeItemState(mediaId1).first()
+        assertNotNull(listenedState)
+        assertTrue(listenedState.isListened)
+        assertEquals(7_500L, listenedState.updatedAtEpochMs)
+
+        controller.release()
+    }
+
     private fun sampleAudioItem(
         id: MediaId,
         durationMs: Long,
@@ -469,6 +541,25 @@ class PlaybackControllerTest {
                     mediaId = id,
                     positionMs = positionMs,
                     speed = speed,
+                    updatedAtEpochMs = updatedAtEpochMs,
+                )
+                current + (id to updated)
+            }
+        }
+
+        override suspend fun markItemListened(
+            id: MediaId,
+            isListened: Boolean,
+            updatedAtEpochMs: Long,
+        ) {
+            itemStates.update { current ->
+                val existing = current[id]
+                val updated = existing?.copy(
+                    isListened = isListened,
+                    updatedAtEpochMs = updatedAtEpochMs,
+                ) ?: ItemState(
+                    mediaId = id,
+                    isListened = isListened,
                     updatedAtEpochMs = updatedAtEpochMs,
                 )
                 current + (id to updated)

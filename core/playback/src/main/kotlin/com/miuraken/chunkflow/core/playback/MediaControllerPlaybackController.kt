@@ -105,6 +105,8 @@ class MediaControllerPlaybackController(
     private var currentChunks: List<Chunk> = emptyList()
     private var lastLookaheadTarget: Pair<MediaId, ChunkId?>? = null
     private var activeChunkSource: ChunkOrigin = ChunkOrigin.AUTO
+    private var tailPlayedMs: Long = 0L
+    private var isCurrentItemMarkedListened: Boolean = false
     private var learningPlayerInstance: LearningPlayer? = null
     private var rawPlayerInstance: Player? = null
     internal var chunkScheduler: ChunkScheduler? = null
@@ -234,8 +236,23 @@ class MediaControllerPlaybackController(
         val userSettings = userSettingsRepository.settings.first()
         val initialSpeed = (savedState?.speed ?: userSettings.defaultSpeed)
             .coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
-        val initialPositionMs = (savedState?.positionMs ?: 0L)
+        val rawSavedPositionMs = (savedState?.positionMs ?: 0L)
             .coerceIn(0L, item.durationMs.coerceAtLeast(0L))
+        val initialPositionMs = if (item.durationMs > 0L && rawSavedPositionMs >= item.durationMs - 500L) {
+            0L
+        } else {
+            rawSavedPositionMs
+        }
+        tailPlayedMs = 0L
+        isCurrentItemMarkedListened = savedState?.isListened ?: false
+
+        // ファイルを開いた時点で最終アクセス日時と再開位置を記録する
+        libraryRepository.updatePlaybackPosition(
+            id = mediaId,
+            positionMs = initialPositionMs,
+            speed = initialSpeed,
+            updatedAtEpochMs = clock(),
+        )
 
         // 保存済みの学習モード（オートポーズ・言語フィルタ・チャンク種別）を復元する（ループは常に Off、§7.2.5）
         if (savedState != null) {
@@ -326,6 +343,7 @@ class MediaControllerPlaybackController(
         scope.launch {
             val currentPos = learningPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: 0L
             val currentSpeed = _status.value.speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+            val existingState = libraryRepository.observeItemState(currentMediaId).first()
             libraryRepository.upsertItemState(
                 ItemState(
                     mediaId = currentMediaId,
@@ -335,6 +353,7 @@ class MediaControllerPlaybackController(
                     autoPause = updated.autoPause,
                     autoPauseScope = updated.autoPauseScope,
                     languageFilter = updated.languageFilter,
+                    isListened = isCurrentItemMarkedListened || (existingState?.isListened == true),
                     updatedAtEpochMs = clock(),
                 ),
             )
@@ -496,13 +515,69 @@ class MediaControllerPlaybackController(
     private fun startPeriodicPositionSave() {
         if (periodicSaveJob?.isActive == true) return
         periodicSaveJob = scope.launch {
+            var elapsedSinceSaveMs = 0L
             while (isActive) {
-                delay(POSITION_SAVE_INTERVAL_MS)
+                delay(LISTENED_CHECK_INTERVAL_MS)
                 val mediaId = _status.value.mediaId ?: continue
                 if (_status.value.isPlaying) {
-                    persistCurrentPositionNow(mediaId)
+                    checkAndMarkListenedOnTick(mediaId, LISTENED_CHECK_INTERVAL_MS)
+                    elapsedSinceSaveMs += LISTENED_CHECK_INTERVAL_MS
+                    if (elapsedSinceSaveMs >= POSITION_SAVE_INTERVAL_MS) {
+                        elapsedSinceSaveMs = 0L
+                        persistCurrentPositionNow(mediaId)
+                    }
                 }
             }
+        }
+    }
+
+    private suspend fun checkAndMarkListenedOnTick(mediaId: MediaId, deltaMs: Long) {
+        val lp = learningPlayerInstance ?: return
+        val durationMs = _status.value.durationMs.takeIf { it > 0L }
+            ?: lp.duration.takeIf { it > 0L }
+            ?: 0L
+        if (durationMs <= 0L) return
+        val posMs = lp.currentPosition.coerceAtLeast(0L)
+        val tailStartMs = (durationMs * LISTENED_TAIL_START_PERCENT) / 100L
+        if (posMs >= tailStartMs) {
+            tailPlayedMs += deltaMs
+            val requiredTailMs = minOf(
+                LISTENED_REQUIRED_PLAYED_MS,
+                (durationMs * (100L - LISTENED_TAIL_START_PERCENT) / 100L).coerceAtLeast(LISTENED_CHECK_INTERVAL_MS),
+            )
+            if (!isCurrentItemMarkedListened && tailPlayedMs >= requiredTailMs) {
+                isCurrentItemMarkedListened = true
+                libraryRepository.markItemListened(
+                    id = mediaId,
+                    isListened = true,
+                    updatedAtEpochMs = clock(),
+                )
+            }
+        }
+    }
+
+    private suspend fun checkAndMarkListenedOnEnded(mediaId: MediaId) {
+        val lp = learningPlayerInstance ?: return
+        val durationMs = _status.value.durationMs.takeIf { it > 0L }
+            ?: lp.duration.takeIf { it > 0L }
+            ?: 0L
+        if (durationMs <= 0L) return
+        val posMs = lp.currentPosition.coerceAtLeast(0L)
+        val tailStartMs = (durationMs * LISTENED_TAIL_START_PERCENT) / 100L
+        if (posMs >= tailStartMs) {
+            tailPlayedMs += LISTENED_CHECK_INTERVAL_MS
+        }
+        val requiredTailMs = minOf(
+            LISTENED_REQUIRED_PLAYED_MS,
+            (durationMs * (100L - LISTENED_TAIL_START_PERCENT) / 100L).coerceAtLeast(LISTENED_CHECK_INTERVAL_MS),
+        )
+        if (!isCurrentItemMarkedListened && tailPlayedMs >= requiredTailMs) {
+            isCurrentItemMarkedListened = true
+            libraryRepository.markItemListened(
+                id = mediaId,
+                isListened = true,
+                updatedAtEpochMs = clock(),
+            )
         }
     }
 
@@ -546,6 +621,16 @@ class MediaControllerPlaybackController(
         ?: currentChunks.lastOrNull { it.startMs <= positionMs }
 
     private inner class ControllerPlayerListener : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED) {
+                val mediaId = _status.value.mediaId ?: return
+                scope.launch {
+                    checkAndMarkListenedOnEnded(mediaId)
+                    persistCurrentPositionNow(mediaId)
+                }
+            }
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             val pos = learningPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: 0L
             _status.update {
@@ -620,5 +705,14 @@ class MediaControllerPlaybackController(
     companion object {
         /** 再生中にレジューム位置を DB に書き込む周期（§7.2.5: 5 秒ごと）。 */
         internal const val POSITION_SAVE_INTERVAL_MS: Long = 5_000L
+
+        /** 95%〜100% 領域の再生時間チェック周期（200ms）。 */
+        internal const val LISTENED_CHECK_INTERVAL_MS: Long = 200L
+
+        /** 聴取完了（Listened）と判定する末尾領域の開始割合（95%）。 */
+        internal const val LISTENED_TAIL_START_PERCENT: Long = 95L
+
+        /** 95%〜100% 領域で聴取完了（Listened）と判定するのに必要な累計再生時間（1,000ms）。 */
+        internal const val LISTENED_REQUIRED_PLAYED_MS: Long = 1_000L
     }
 }
