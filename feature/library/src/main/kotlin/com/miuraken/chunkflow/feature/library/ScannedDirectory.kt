@@ -33,7 +33,7 @@ internal fun scanDocumentTree(
         treeUri = treeUri,
         parentDocumentId = rootDocId,
         depth = 0,
-        maxDepth = 2,
+        maxDepth = 3,
         outUris = collected,
     )
     return ScannedDirectory(
@@ -105,6 +105,7 @@ private fun isSupportedImportFile(displayName: String, mimeType: String): Boolea
     val lower = displayName.lowercase()
     return lower.endsWith(".mp3") ||
         lower.endsWith(".m4a") ||
+        lower.endsWith(".aac") ||
         lower.endsWith(".ogg") ||
         lower.endsWith(".opus") ||
         lower.endsWith(".flac") ||

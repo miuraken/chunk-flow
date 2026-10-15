@@ -61,4 +61,11 @@
     <string name="library_edit_save">Save</string>
     <string name="library_edit_cancel">Cancel</string>
     <string name="library_item_missing_audio">Missing audio (re-import needed)</string>
+    <string name="library_import_config_title">Import settings (languages &amp; course)</string>
+    <string name="library_import_config_hint">Choose the shared course name, target language, and base language for the %1$d selected item(s).</string>
+    <string name="library_import_config_confirm">Import with these settings</string>
+    <string name="library_drive_sync_config_title">Drive sync folder settings</string>
+    <string name="library_drive_sync_config_hint">Choose the course name, target language, and base language for the selected sync folder.</string>
+    <string name="library_drive_sync_config_confirm">Sync with these settings</string>
+    <string name="library_drive_sync_select_folder_action">Select sync folder</string>
 </resources>
