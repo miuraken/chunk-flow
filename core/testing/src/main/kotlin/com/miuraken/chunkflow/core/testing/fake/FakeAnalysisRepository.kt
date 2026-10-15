@@ -72,6 +72,9 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [triggerLookaheadAt] の呼び出し履歴（呼ばれた順）。 */
     val lookaheadTriggers: MutableList<Pair<MediaId, ChunkId?>> = mutableListOf()
 
+    /** [retranscribeChunk] の呼び出し履歴（呼ばれた順）。 */
+    val retranscribeChunkRequests: MutableList<Pair<MediaId, ChunkId>> = mutableListOf()
+
     /** フィクスチャの解析結果を入れる。 */
     fun put(material: SampleMaterial) {
         update(material.item.id) {
@@ -171,6 +174,10 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
         lookaheadTriggers += id to currentChunkId
+    }
+
+    override suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) {
+        retranscribeChunkRequests += id to chunkId
     }
 
     override suspend fun toggleChunkBookmark(id: MediaId, chunkId: ChunkId, note: String): Boolean {

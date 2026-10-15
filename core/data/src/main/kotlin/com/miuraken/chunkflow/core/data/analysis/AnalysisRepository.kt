@@ -79,6 +79,11 @@ interface AnalysisRepository {
      */
     suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) = Unit
 
+    /**
+     * チャンク 1 件の文字起こしキャッシュを破棄し、最優先で再度オンデバイス文字起こしを実行する。
+     */
+    suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) = Unit
+
     /** 指定した教材のブックマーク一覧を時刻の昇順で購読する（F8.1）。 */
     fun observeBookmarks(id: MediaId): Flow<List<Bookmark>> = flowOf(emptyList())
 
