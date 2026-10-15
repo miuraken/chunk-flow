@@ -2,8 +2,8 @@
 
 | 項目 | 内容 |
 | --- | --- |
-| Status | Draft v0.6 |
-| Last updated | 2026-10-14 |
+| Status | Draft v0.7 |
+| Last updated | 2026-10-15 |
 | Owner | miuraken |
 | リポジトリ | https://github.com/miuraken/chunk-flow |
 | applicationId | `com.miuraken.chunkflow` |
@@ -19,6 +19,7 @@
 | v0.4 | PC ツールの対応環境（macOS: Apple Silicon、Linux / Windows 11: NVIDIA）、Drive との手動でのやり取り（監視モードは廃止）、Drive のフォルダ構成（文字起こしは `<コース>/transcription/`）、想定する言語と言語ごとの対策（中国語は簡体字が既定で繁体字も表示可、広東語は口語の表記）、教材の想定（BGM なし、2〜30 分）、minSdk 34 の維持、アプリ名（Chunk Flow）と applicationId、Drive の手動同期（同期ボタン）、自動バックアップによる DB と設定のバックアップを決定 |
 | v0.5 | 複数チャンクのリピート、拡大波形の既定範囲（前後 2 分）を反映。Android Studio と Android CLI を使った UI の確認・修正の進め方（§10.5）を追加 |
 | v0.6 | Phase 0 の技術検証で確定した設計判断（ADR 0001〜0009）を簡潔に反映し、今後のチューニング用の参考事項を §13 に整理 |
+| v0.7 | 実装済み機能を設計書に反映：端末内の先読み文字起こし・強制再文字起こし（Android `SpeechRecognizer` + 純 Kotlin 量子化 Whisper Tiny 2 言語判定、ADR 0010）、一時停止中のチャンクタップ単発再生、チャンク別リピートチェックボックス（`repeatChunkIds`）、言語役割別の統一カラーパレット（基準言語＝青系、学習言語＝ピンク系）、非ラテン文字学習言語の発音ガイド（ローマ字 / 拼音 / 粤拼 / IAST 等）、中国語・広東語有効時のみの簡体字・繁体字セレクタ表示 |
 
 本書は、人間と AI エージェントの双方が参照する設計の単一の情報源です。重要な判断は ADR（`docs/adr/`）に切り出し、本書には結論と理由の要約を残します。v0.1 からの変更点は[付録 A](#付録-a-v01-からの主な変更点) にまとめています。
 
@@ -34,8 +35,8 @@
 | D4 | 前/次ボタン（イヤホン・通知・アプリ内） | `ForwardingSimpleBasePlayer` で「前/次のチャンク」に再割り当てする | 画面オフの「ながら学習」で最も使う操作。標準コマンドに載せれば全経路で動作が一致する | §7.2.3 |
 | D5 | 波形データ | 10ms/ビンの固定時間分解能（dB スケール）で保存し、表示時に縮約する | 全体を 1,000 点に固定すると 30 分音声で 1 点 = 1.8 秒になり、0.5 秒の無音すら描けない | §7.3.2 |
 | D6 | 端末内の無音検出 | 適応閾値 + ヒステリシス + 最短/最長チャンク制約 + 前後パディング。VAD は差し替え可能にする。文字起こしファイルがない教材で使う | 固定 dBFS 閾値は BGM や録音レベルの差に弱い。発話端ぎりぎりで切ると子音が欠ける | §7.3.3 |
-| D7 | 文字起こし | GPU 搭載の PC 上で Whisper を使って生成し、決めた形式（`chunkflow-transcript` JSON）で音声と同じ Google Drive のフォルダに置いて、アプリで取り込む。端末内やクラウドでの文字起こしは当面しない | 大きなモデルを使えるので精度が高く、多言語に強い。アプリが単純になり、通信も課金も発生しない。個人利用なら PC での前処理の手間は許容できる | §7.4 |
-| D8 | 2 言語の判定方法 | PC 側でチャンクごとに、候補を教材の言語ペアに限定して判定する | Whisper は冒頭で言語を 1 つに決めると、もう一方の言語の発話を訳して書いてしまうことがある。両言語で認識して信頼度を比べる方式は、信頼度が較正されていないため使わない | §7.4.5 |
+| D7 | 文字起こし | 高精度な一括文字起こしは GPU 搭載 PC 上の Whisper で生成して `chunkflow-transcript` JSON として取り込む。加えて、文字起こし JSON がない教材や即時確認・個別チャンクの再認識向けに、端末内の Android `SpeechRecognizer`（`EXTRA_AUDIO_SOURCE`）と量子化 Whisper Tiny 2 言語判定による先読み文字起こし・言語切り替え時再認識・強制再文字起こしも提供する（ADR 0010） | PC 側の大きなモデルによる高精度な文字起こしと、PC なしで音声を取り込んだ直後からスクリプト・言語フィルタを使える即時性の両立 | §7.4、付録 C |
+| D8 | 2 言語の判定方法 | PC 側・端末内ともにチャンクごとに候補を教材の言語ペア（2 言語）に限定して Whisper の言語トークンロジット（確率）を比較し、さらに認識テキストの書記体系ヒューリスティックを組み合わせて判定する | Whisper は冒頭で言語を 1 つに決めると、もう一方の言語の発話を訳して書いてしまうことがある。候補を教材の 2 言語に絞ることで短いチャンクでも高い識別精度が得られる | §7.4.5、ADR 0010 |
 | D9 | UI 状態 | 関心ごとに状態を分け、高頻度で変わる再生位置は UiState に含めず描画フェーズで読む | 位置が変わるたびに画面全体が再コンポーズされるのを防ぐ | §6.2 |
 | D10 | モジュール分割 | 機能別（feature）+ 基盤（core）。信号処理は Android に依存しない純 Kotlin モジュールに置く | 並行開発時の衝突を避け、高速な JVM 単体テストを可能にする | §5.2 |
 | D11 | プライバシー | アプリの通信は、同期ボタンを押したときの Google Drive からの読み取り（読み取り専用の権限）だけで、アプリから外部へは送信しない。音声と文字起こしは、端末・自分の PC・自分の Google Drive の外に出ない | 教材音声は著作物や個人的な内容を含み得る | §8 |
@@ -80,13 +81,13 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 
 ### 1.4 Non-Goals（当面のスコープ外）
 
-- 端末内やクラウドでの文字起こし（PC で生成したファイルを取り込む。端末内で行う場合の選択肢は付録 C）
+- クラウド API へ音声を送信する文字起こし（プライバシーと課金回避のため。文字起こしは PC の Whisper JSON 取り込み、または端末内の量子化 Whisper Tiny LID + Android `SpeechRecognizer` で完結させる。付録 C、ADR 0010）
 - Google Play での公開（個人利用のため）
 - 音声ファイルの編集・トリミング・再エンコード保存（チャンク境界の手動調整はメタデータの編集なので対象内: M4）
 - ストリーミング再生、Podcast の購読（RSS）
 - 3 言語以上の同時判定（ただし、データモデルは任意の BCP-47 言語ペアを扱える設計にする）
 - アカウント、端末間の同期
-- 自分の声の録音・比較（当面は実装しない。`RECORD_AUDIO` 権限が必要になるため、加えるときに別途検討する）
+- 自分の声のマイク録音・比較（当面は実装しない。なお `RECORD_AUDIO` 権限自体は Android `SpeechRecognizer` へパイプ経由でチャンク PCM を渡す仕様上の要件として宣言済み。§8.2）
 - 母語の訳の付与
 - Google Drive との自動・定期的な同期（同期ボタンによる手動の同期だけを行う）
 - 動画の再生（動画ファイルから音声トラックだけを取り込む機能は将来の候補）
@@ -128,22 +129,23 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | F5.2 | 分割パラメータの調整と即時再分割 | P1 | M2 |
 | F5.3 | チャンクの手動編集（分割・結合・境界のドラッグ） | P1 | M4 |
 | F5.4 | チャンクの出どころの切り替え（文字起こしファイル / 端末内の自動分割） | P1 | M2 |
-| F6.1 | チャンク移動（前 / 次 / 頭出し）とチャンクリピート（1 つ、または連続する複数のチャンク。N 回 / 無限） | P0 | M2 |
+| F6.1 | チャンク移動（前 / 次 / 頭出し）、一時停止中のチャンクタップ単発再生（リピート対象チェックON時は無限リピート、OFF時は1回再生してチャンク終端で一時停止）、チャンクリピート（単一 / 連続範囲 / 各チャンク右端のチェックボックスで選択した任意複数チャンク `repeatChunkIds` の順次リピート） | P0 | M2 |
 | F6.2 | A-B リピート（A / B ボタン、または波形上で範囲を選択） | P0 | M2 |
 | F6.3 | 自動ポーズ（固定秒数 / チャンク長 × 係数） | P0 | M2 |
 | F6.4 | 言語フィルタ再生（学習言語のみ / 母語のみ） | P1 | M3 |
 | F6.5 | 瞬間作文モード（母語のチャンクの後にだけ自動ポーズ） | P1 | M3 |
 | F6.6 | 無音を短縮して再生 | P2 | — |
-| F7.1 | 再生位置に同期したスクリプト表示（言語ラベル付き） | P0 | M2 |
+| F7.1 | 再生位置に同期したスクリプト表示（言語役割別の統一カラーパレット：基準言語＝青系・学習言語＝ピンク系、非ラテン文字学習言語の発音ガイド表示：ローマ字 / 拼音 / 粤拼 / IAST 等） | P0 | M2 |
 | F7.2 | ブラインドモード（テキストを伏せ、タップで表示） | P1 | M2 |
-| F7.3 | 言語ラベルの手動修正 | P1 | M3 |
-| F7.4 | テキストの手動修正 | P2 | M4 |
+| F7.3 | 言語バッジのタップによる言語トグル（未判定 `"-"` → 基準言語 → 学習言語）と連動した音声再認識（キャッシュ優先・優先キュー制御） | P1 | M3 |
+| F7.4 | テキストの手動修正、および長押しメニュー「再度、文字起こしする」（`retranscribeChunk`）による優先割り込み強制再認識 | P1 | M3〜M4 |
 | F7.5 | 書き出し（SRT / LRC / TXT） | P2 | M4 |
 | F7.6 | 文字起こしと音声の時刻のずれの自動補正と手動調整 | P1 | M3 |
 | F7.7 | 単語単位のハイライト（カラオケ表示） | P2 | M4 |
 | F8.1 | チャンクのブックマークと、ブックマークしたチャンクだけの連続再生 | P2 | M4 |
-| F9.1 | 設定（既定の言語ペア、漢字の字体（中国語・広東語）、既定速度、スキップ秒数、自動ポーズ、分割パラメータ） | P0〜P1 | M1〜M3 |
+| F9.1 | 設定（有効な言語の選択、既定の言語ペア、中国語・広東語が有効な場合のみ表示する簡体字/繁体字セレクタ、学習言語の発音ガイド表示 ON/OFF、先読み文字起こし ON/OFF（既定 ON）、既定速度、スキップ秒数、自動ポーズ、分割パラメータ） | P0〜P1 | M1〜M3 |
 | F10.1 | PC ツール: ファイル / フォルダ単位で文字起こしし、JSON を出力する | P0 | M2 |
+| F10.2 | 端末内の先読み文字起こし・2 言語判定（量子化 Whisper Tiny LID + Android `SpeechRecognizer`、優先キュー割り込み対応） | P1 | M3 |
 
 ---
 
@@ -178,7 +180,7 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 - **compileSdk / targetSdk**: 最新の安定 API。Google Play の要件（2026-08-31 以降は API 36 以上）には縛られないが、最新の挙動に合わせておく。
 - **配布**: Android Studio または `adb install` で自分の端末に入れる。署名鍵はリポジトリの外で管理する。
 - targetSdk 35 / 36 の挙動変更に対応する: edge-to-edge の強制、予測型「戻る」、大画面での向き・リサイズ制限の無視（→ アダプティブレイアウトが必須。§7.5.6）。
-- **端末内で機械学習の推論はしない**（文字起こしは PC で行う）。
+- **端末内の推論・音声認識は軽量な純 Kotlin 実装と OS 標準 API で構成する**: 外部 C++ 推論ランタイム（ONNX Runtime / TFLite 等）は追加せず、`core:media` 内の純 Kotlin 量子化 Whisper Tiny モデル（`whisper_tiny_lid_q8q4.bin`、約 10.75 MB）による 2 言語音響判定と、Android 標準 `SpeechRecognizer`（`EXTRA_AUDIO_SOURCE` パイプ入力）によるチャンク単位の音声認識を組み合わせる（ADR 0010）。
 
 ### 4.2 ライブラリ
 
@@ -188,11 +190,12 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | UI | Jetpack Compose（BOM）、Material 3、material3-adaptive | Expressive 系の API は安定版に揃ってから段階的に採用する |
 | 画面遷移 | Navigation 3 | |
 | 再生 | Media3: `exoplayer`、`session`、`ui-compose`、`ui-compose-material3` | |
-| メディア解析 | `MediaCodec` + `MediaExtractor`（または `media3-inspector` の `MediaExtractorCompat`） | スパイク S3 で選ぶ |
+| メディア解析・端末内音声認識 | `MediaExtractorCompat` + `MediaCodec`、純 Kotlin 量子化 Whisper Tiny 2 言語判定（`WhisperTinyLanguageDetector`）、Android `SpeechRecognizer`（`EXTRA_AUDIO_SOURCE`） | ADR 0005、ADR 0010 |
 | DI | Hilt（KSP） | Worker（`@HiltWorker`）と Service への注入も Hilt で統一する |
 | 永続化 | Room（KSP）、DataStore | |
 | バックグラウンド処理 | WorkManager | |
-| 文字起こしの取り込み | kotlinx.serialization（JSON） | アプリは解析・検証して取り込むだけ（§7.4.6） |
+| 文字起こしの取り込み | kotlinx.serialization（JSON） | アプリは解析・検証して取り込む（§7.4.6） |
+| 発音ガイド・文字変換 | ICU4J（`com.ibm.icu:icu4j`）、Pinyin4j、内蔵粤拼（Jyutping）辞書・かなローマ字変換 | 学習言語の発音ガイド（ローマ字・拼音・粤拼・IAST・ラテン翻字）生成に使用 |
 | Drive の同期 | Google Play 開発者サービスの認可（`play-services-auth` の `AuthorizationClient`）、OkHttp | Drive API は REST で直接呼ぶ（クライアントライブラリは大きいので使わない。§7.1） |
 | PC ツール | Python 3.12 以上、uv、ffmpeg、faster-whisper（NVIDIA）/ mlx-whisper（Apple Silicon）、Silero VAD、OpenCC（中国語の字体の変換）、jsonschema、pytest | 環境ごとにエンジンを選ぶ（§7.4.4） |
 | ビルド | Gradle Kotlin DSL、Version Catalog、convention plugins（`build-logic/`） | |
@@ -269,7 +272,7 @@ flowchart TB
 - **UI 層**: Compose の画面。ViewModel の `StateFlow` を `collectAsStateWithLifecycle` で購読し、ユーザー操作はイベントとして ViewModel に渡す。
 - **データ層**: Repository が Room・ファイル・DataStore をまとめ、単一の情報源（SSOT）として Flow を公開する。取り込んだ JSON は `TranscriptImporter` が検証し、チャンクと文字起こしとして保存する。
 - **再生**: `PlaybackService`（`MediaSessionService`）が ExoPlayer を所有する。アプリの UI は `PlaybackController`（`MediaController` のラッパー）経由でのみ操作し、通知・ロック画面・イヤホンと同じ経路（MediaSession）を通る。
-- **解析**: WorkManager 上の Worker が波形と特徴量を作り（文字起こしがない教材ではチャンクも作り）、結果を Room / ファイルに書き込む。UI は Repository の Flow で結果を受け取り、Worker と UI は直接やり取りしない。
+- **解析と端末内先読み文字起こし**: WorkManager 上の `AnalysisWorker` が波形と特徴量を作り（文字起こし JSON がない教材では無音検出チャンクも作り）、結果を Room / ファイルに書き込む。さらに先読み文字起こし（既定 ON）が有効な場合、`AnalysisRepository` が再生・選択位置から前方のチャンクを `OnDeviceSpeechTranscriber`（量子化 Whisper Tiny 2 言語判定 + Android `SpeechRecognizer`）で順次バックグラウンド認識し、手動の言語切り替えや強制再文字起こし要求が来た際は優先キュー（`PriorityRecognitionLock`）で先読みに割り込んで即座に処理する（ADR 0010）。
 
 ### 5.2 モジュール構成
 
@@ -281,7 +284,7 @@ flowchart TB
 :core:model             ドメインモデル（純 Kotlin、Android 非依存）
 :core:audio             波形の縮約・特徴量・VAD・チャンク分割・リサンプラ（純 Kotlin、Android 非依存）
 :core:transcript        文字起こしファイル（Chunk Flow JSON / SRT / WebVTT / LRC）の解析・検証・チャンクへの対応付け（純 Kotlin）
-:core:media             デコード（MediaExtractor + MediaCodec）、メタデータ取得、形式検証
+:core:media             デコード（MediaExtractorCompat + MediaCodec）、メタデータ取得、形式検証、端末内チャンク音声認識・2 言語判定（OnDeviceSpeechTranscriber / WhisperTinyLanguageDetector）
 :core:drive             Google Drive の手動同期（認可、Drive API の呼び出し、ダウンロード）
 :core:playback          PlaybackService、LearningPlayer、ChunkScheduler、PracticeController、PlaybackController
 :core:database          Room（Entity / DAO / Migration）
@@ -467,6 +470,17 @@ data class PracticeSettings(
     val autoPause: AutoPause = AutoPause.Off,
     val autoPauseScope: AutoPauseScope = AutoPauseScope.ALL_CHUNKS,
     val languageFilter: LanguageFilter = LanguageFilter.ALL,
+    val bookmarksOnly: Boolean = false,
+    /** チェックボックスで選択されたリピート対象チャンク ID の集合（2 件以上かつ再生中の場合は開始時刻順に順次リピート） */
+    val repeatChunkIds: Set<ChunkId> = emptySet(),
+)
+
+/** 先読み文字起こしの実行状態 */
+data class LookaheadTranscriptionStatus(
+    val isRunning: Boolean = false,
+    val completedChunks: Int = 0,
+    val totalChunks: Int = 0,
+    val currentChunkIndex: Int? = null,
 )
 ```
 
@@ -495,8 +509,10 @@ data class ChunkUi(
     val startMs: Long,
     val endMs: Long,
     val text: String?,                  // null = 文字起こしがない
-    val language: LanguageTag?,         // null = 未判定、または信頼度が低い（UI では「?」と表示）
+    val romanizedText: String? = null,  // 学習言語の発音ガイド（ローマ字 / 拼音 / 粤拼 / IAST 等。設定 ON 時）
+    val language: LanguageTag?,         // null = 未判定（UI の言語バッジでは「-」と表示し、タップで切り替え可能）
     val isBookmarked: Boolean,
+    val isRepeatSelected: Boolean = false, // チャンク右端のリピート用チェックボックスの状態
 )
 ```
 
@@ -549,12 +565,26 @@ enum class PlaybackError { SOURCE_MISSING, DECODER, UNKNOWN }
 interface LibraryRepository {
     fun observeItems(): Flow<List<AudioItem>>
     fun observeItem(id: MediaId): Flow<AudioItem?>
-    /** 音声と文字起こしファイルをまとめて取り込む（名前と SHA-256 で対応付ける）。uris は SAF の content:// */
-    fun import(uris: List<Uri>): Flow<ImportProgress>
+    fun observeItemStates(): Flow<Map<MediaId, ItemState>>
+    fun observeMissingAudioIds(): Flow<Set<MediaId>>
+    /** 音声と文字起こしファイルをまとめて取り込む（コース名・言語ペア指定可、名前と SHA-256 で対応付ける） */
+    fun import(
+        uris: List<Uri>,
+        course: String? = null,
+        languagePair: LanguagePair? = null,
+    ): Flow<ImportProgress>
     /** 文字起こしファイルだけを取り込み、SHA-256 が一致する既存の教材に付ける */
     suspend fun importTranscript(uri: Uri): TranscriptImportResult
     /** Drive の ChunkFlow/ フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら NOT_AUTHORIZED で終わる */
     fun syncFromDrive(): Flow<SyncProgress>
+    /** リンク済み SAF フォルダが設定されているかどうかを返す */
+    suspend fun hasLinkedSyncFolder(): Boolean
+    /** リンク済みまたは新規選択した SAF フォルダ（treeUri）から音声と文字起こしを同期する */
+    fun syncFromLinkedFolder(treeUri: Uri? = null): Flow<SyncProgress>
+    suspend fun updateItemMetadata(id: MediaId, course: String?, languagePair: LanguagePair)
+    suspend fun updateDirectoryMetadata(oldCourse: String, newCourse: String?, languagePair: LanguagePair)
+    suspend fun markItemListened(id: MediaId, isListened: Boolean = true)
+    suspend fun exportTranscript(id: MediaId, format: ExportFormat): String?
     suspend fun delete(id: MediaId)
 }
 
@@ -586,10 +616,24 @@ interface AnalysisRepository {
     fun observeWaveform(id: MediaId): Flow<Waveform?>
     fun observeChunks(id: MediaId): Flow<List<Chunk>>
     fun observeTranscripts(id: MediaId): Flow<Map<ChunkId, Transcript>>
+    fun observeBookmarkedChunkIds(id: MediaId): Flow<Set<ChunkId>>
+    fun observeLookaheadStatus(id: MediaId): StateFlow<LookaheadTranscriptionStatus>
+    fun isLookaheadEnabled(id: MediaId): StateFlow<Boolean>
+    fun setLookaheadEnabled(id: MediaId, enabled: Boolean)
+    fun triggerLookaheadAt(id: MediaId, chunkIndex: Int)
     suspend fun requestAnalysis(id: MediaId, stages: Set<AnalysisStage>)
     suspend fun resegment(id: MediaId, params: SegmentationParams)   // 保存済みの特徴量から再計算（再デコード不要）
     suspend fun setChunkSource(id: MediaId, source: ChunkOrigin)      // IMPORTED / AUTO の切り替え（F5.4）
     suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int)       // 時刻の補正（F7.6）
+    /** チャンクの言語を更新し、必要に応じて切り替え後の言語で音声認識を実行してテキストを更新する（F7.3） */
+    suspend fun updateChunkLanguage(id: MediaId, chunkId: ChunkId, language: LanguageTag?)
+    /** 指定したチャンクを強制的に再文字起こしする。先読みタスクが実行中の場合は優先割り込みで即座に実行する（F7.4） */
+    suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId)
+    suspend fun updateTranscriptText(id: MediaId, chunkId: ChunkId, text: String)
+    suspend fun splitChunk(id: MediaId, chunkId: ChunkId, splitPositionMs: Long)
+    suspend fun mergeWithNextChunk(id: MediaId, chunkId: ChunkId)
+    suspend fun adjustChunkBoundary(id: MediaId, chunkId: ChunkId, newStartMs: Long, newEndMs: Long)
+    suspend fun toggleBookmark(id: MediaId, chunkId: ChunkId, note: String = "")
 }
 
 // ---------- core:transcript（純 Kotlin） ----------
@@ -640,7 +684,7 @@ Room のテーブル（概要。外部キーは ON DELETE CASCADE）:
 | テーブル | 主な列 |
 | --- | --- |
 | `media_item` | `id`（PK）、`title`、`duration_ms`、`mime_type`、`size_bytes`、`sha256`（UNIQUE）、`course`（NULL 可）、`target_lang`、`base_lang`（NULL 可）、`transcript_offset_ms`、`imported_at` |
-| `item_state` | `media_id`（PK）、`position_ms`、`speed`、`chunk_source`、`auto_pause`、`auto_pause_scope`、`language_filter`、`updated_at` |
+| `item_state` | `media_id`（PK）、`position_ms`、`speed`、`chunk_source`、`auto_pause`、`auto_pause_scope`、`language_filter`、`is_listened`、`updated_at` |
 | `analysis_state` | `media_id` + `stage`（PK）、`status`、`progress`、`error`、`algorithm_version`、`updated_at` |
 | `chunk` | `id`（PK）、`media_id`（`start_ms` との複合インデックス）、`start_ms`、`end_ms`、`origin`、`algorithm_version` |
 | `transcript` | `chunk_id`（PK）、`text`、`text_variants`（JSON 文字列）、`language`、`language_confidence`、`words`（JSON 文字列）、`engine`、`user_edited`、`created_at` |
@@ -734,10 +778,12 @@ PlaybackService : MediaSessionService
 | モード | 境界 | 動作 |
 | --- | --- | --- |
 | A-B リピート | B に到達 | A へシークする |
+| 一時停止中のチャンクタップ単発再生 | タップしたチャンクの終端 | 一時停止中にチャンク行をタップした際、そのチャンクが `repeatChunkIds` に含まれていれば無限単一チャンクリピートし、含まれていなければそのチャンクだけを 1 回再生して終端で自動的に一時停止する（`PauseAtChunkEnd`） |
+| チェックボックス選択リピート（`repeatChunkIds`） | 選択チャンクの終端 | チェックされたチャンクが 1 件ならそのチャンクを無限リピート、2 件以上なら開始時刻順に次のチェック済みチャンクへシークし、最後のチャンクの終端から最初のチェック済みチャンクへ戻って順次ループする |
 | チャンクリピート（N 回 / 無限） | チャンクの終端 | 回数を数えて開始位置へシークする。N 回終えたら次へ進み、モードを解除する |
 | 範囲リピート（複数のチャンク、N 回 / 無限） | 範囲の最後のチャンクの終端 | 範囲の最初のチャンクの開始位置へシークする。回数の扱いはチャンクリピートと同じ。自動ポーズは範囲内の各チャンクの終端に入る |
 | 自動ポーズ | チャンクの終端（`AutoPauseScope` に該当するチャンクのみ） | 一時停止し、ポーズ長が過ぎたら再生を再開する。途中でユーザーが操作したらタイマーを取り消す |
-| 言語フィルタ | チャンクの終端 | 次の対象言語のチャンクの開始位置へシークする |
+| 言語フィルタ / ブックマーク限定 | チャンクの終端 | 次の対象言語（またはブックマーク済み）のチャンクの開始位置へシークする |
 
 - **組み合わせの優先順位**: A-B > チャンクリピート / 範囲リピート > 言語フィルタ。自動ポーズは各終端での動作の前に適用する（リピートの間にもポーズが入るので、リピーティング練習になる）。
 - ユーザーによる手動のシークは常に優先し、言語フィルタは次の境界から適用する。
@@ -959,7 +1005,11 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 - **チャンクへの変換**: 各セグメントを `IMPORTED` のチャンクにし、前後のパディング（§7.3.3 の手順 7 と同じ規則）を付けて再生範囲にする。テキスト・言語・単語の時刻を `transcript` に保存し、`engine` には JSON の `generator.model` を入れる。
 - **再取り込み**（PC で作り直した場合）: §6.4 のトランザクションでチャンクを作り直す。手動で修正した文字起こし（`userEdited = true`）は、境界が一致する（±50ms 以内）チャンクに引き継ぐ。一致しないものも捨てずに、最も重なりの大きい新しいチャンクへ引き継ぐ。
 - **時刻のずれの補正**（F7.6）: 取り込み時に形式ごとの固定オフセットを `transcriptOffsetMs` の初期値として入れ（ADR 0008）、その上で文字起こしの発話の開始時刻と端末内の解析で求めた発話の立ち上がり（§7.3.1 の特徴量）を比べ、初期値を中心に ±500ms の範囲で最もよく一致するずれを自動で設定する。設定画面で 10ms 単位の手動調整もできる。
-- 端末内で文字起こしする場合の選択肢（現時点では採用しない）は付録 C にまとめる。
+- **端末内の先読み文字起こし・強制再文字起こし**（`core:media` / `core:data`、ADR 0010）:
+  - 文字起こし JSON がない教材（または未認識チャンクが残っている教材）では、設定 `lookaheadTranscriptionEnabled`（既定 ON）に従い、現在選択・再生しているチャンク位置から前方に向かってバックグラウンドで順次チャンク音声認識を実行する。
+  - チャンクの 2 言語判定には純 Kotlin 実装の量子化 Whisper Tiny モデル（`WhisperTinyLanguageDetector`、`whisper_tiny_lid_q8q4.bin`）を用い、教材の `base` と `target` の 2 言語ロジット比較および認識テキストの書記体系ヒューリスティック（`LanguageHeuristics`）で言語を決定する。
+  - チャンクのテキスト化には Android 標準の `SpeechRecognizer`（`EXTRA_AUDIO_SOURCE` パイプ入力）を用い、チャンク ID × 言語ごとの認識結果をインメモリキャッシュする。
+  - ユーザーが言語バッジをタップして言語を切り替えたとき（`updateChunkLanguage`）や、長押しメニューから「再度、文字起こしする」（`retranscribeChunk`）を実行したときは、優先キュー（`PriorityRecognitionLock`）によってバックグラウンドの先読みタスクに割り込み、対象チャンクの認識を最優先で実行する。詳細は ADR 0010 および付録 C を参照。
 
 ### 7.5 UI / UX（`feature:*`、`core:designsystem`）
 
@@ -979,9 +1029,9 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 │ 拡大波形（学習言語 / 母語で色分け）      │ ピンチでズーム、長押し＋ドラッグで A-B
 ├──────────────────────────────────────────┤
 │ チャンク / スクリプト一覧                │ 現在のチャンクを強調し、自動で追従
-│  00:12  [JA] では、聞いてみましょう。    │ タップ = 頭出し
-│  00:15  [KO] 안녕하세요. 만나서          │ 長押し = メニュー（リピート・ブックマーク・編集）
-│              반갑습니다.                 │ 長い文は折り返す。行ごとにその言語のロケールで表示
+│  00:12  [JA] では、聞いてみましょう。 [☐]│ 再生中タップ = 頭出し / 一時停止中タップ = 単発再生
+│  00:15  [KO] 안녕하세요. 만나서       [☑]│ 言語バッジタップ = 言語トグル（"-" / 基準 / 学習）
+│              annyeonghaseyo. mannaseo    │ 長押し = メニュー（再度文字起こし・範囲・分割・編集等）
 │                       [現在位置へ戻る]   │
 ├──────────────────────────────────────────┤
 │ [リピート×3] [自動ポーズ] [言語] [1.0x]  │ 学習モードの切り替え
@@ -1018,13 +1068,19 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 
 - `LazyColumn` の `key` にチャンク ID を使い、現在のチャンクを強調する（`ListItem` の色と左端のインジケーター）。
 - **自動追従**: 現在のチャンクが変わったら `animateScrollToItem` でスクロールする。ユーザーがスクロールしている間と、その後 5 秒間は追従を止め、「現在位置へ戻る」ボタンを表示する。
-- **言語のバッジ**: 言語コード（KO / JA / ID / EN など）のテキストと色の両方で示す（色覚の多様性への配慮）。色は言語ではなく役割（学習言語 / 母語）で決め、どの言語ペアの教材でも同じ配色にする。
+- **言語役割別の統一カラーパレットと言語バッジ**:
+  - 言語コード（KO / JA / ZH / EN 等、未判定時は `"-"`) のテキストと色の両方で示す。
+  - 色は言語名ではなく役割（**基準言語（母語）＝青系**、**学習言語＝ピンク系**）で統一し、スクリプト一覧の言語バッジ・拡大波形のチャンク背景色・設定画面・ライブラリ一覧・インポートダイアログのすべてで一貫した配色を用いる。
+  - **言語バッジのタップ切り替え（F7.3）**: バッジをタップすると、未判定（`"-"`) の場合は基準言語へ、基準言語と学習言語の間はトグルで即座に切り替わる。切り替え後の言語の認識テキストがキャッシュにあれば即反映し、なければ優先キューで再認識を実行する。
+- **学習言語の発音ガイド表示**:
+  - 学習言語が非ラテン文字（日本語：ローマ字、中国語普通話：拼音（Pinyin）、広東語：粤拼（Jyutping）、ヒンディー語：IAST、韓国語・ロシア語・ギリシャ語：ラテン文字翻字）の場合、設定 `showTargetRomanization`（既定 ON）に応じて本文の下に発音ガイドを表示する。英語・スペイン語・ドイツ語・ベトナム語などのラテン文字言語では冗長な発音ガイドを表示しない。
 - **言語に合った表示**: 各行の `TextStyle` に、その行の言語タグから作った `localeList` を指定する。日本語・中国語・韓国語で字形が異なる漢字や、言語ごとの改行の規則が正しく扱われる。言語が不明な行は端末の既定のロケールで表示する。
-- **漢字の字体**: 中国語は簡体字、広東語は繁体字を既定で表示し、設定で言語ごとに切り替えられる。選んだ字体が `textVariants` にあればそれを、なければ `text` を表示し、ロケールにも字体を反映する（例: `zh-Hant`、`yue-Hans`）。カラオケ表示（F7.7）で別の字体を表示するときは、単語のテキストを `textVariants` の文字列に文字数で対応付ける（OpenCC の変換はほぼ 1 文字ずつ対応する）。対応付けられない行は、単語ではなく行単位で強調する。
+- **漢字の字体と設定画面の表示制御**: 中国語は簡体字、広東語は繁体字を既定で表示し、設定で言語ごとに切り替えられる。なお設定画面の「簡体字 / 繁体字」セレクタは、有効な言語（`enabledLanguages`）に中国語（`zh`）または広東語（`yue`）が含まれている場合のみ表示する。選んだ字体が `textVariants` にあればそれを、なければ `text` を表示し、ロケールにも字体を反映する（例: `zh-Hant`、`yue-Hans`）。
 - **ブラインドモード**: テキストを伏せておき、タップで一時的に表示する（聞き取りの練習用）。学習言語の行だけを伏せることもできる（母語の文を見て、学習言語で言ってみる練習に使う）。
-- **文字起こしがない教材**: チャンクの時刻だけを表示し、「PC で文字起こしを作って取り込むと、スクリプトが表示されます」という案内と、文字起こしファイルを選ぶボタンを表示する。
-- 言語を判定できなかったチャンク（`Transcript.language` が `null`）は「?」と表示し、長押しのメニューから修正できる（F7.3）。
-- **範囲リピートの指定**（F6.1）: 行の長押しメニューの「ここから範囲を選ぶ」で選択モードに入り、終わりの行をタップして、連続する複数のチャンクを選ぶ。選んだ範囲はスクリプト一覧と拡大波形の両方で強調する。
+- **長押しメニューと「再度、文字起こしする」**: チャンク行の長押しメニューから「再度、文字起こしする」（`retranscribeChunk`）を選ぶと、先読み文字起こし実行中であっても優先割り込みで当該チャンクを再認識・言語再判定する。そのほかテキスト編集・境界調整・分割・次チャンクとの結合・ブックマークを行える。
+- **一時停止中の単発再生とチャンク別リピートチェックボックス（F6.1）**:
+  - 一時停止中にチャンク行をタップすると、そのチャンクの頭から再生を開始し、チャンク右端のリピートチェックボックスが ON ならそのチャンクを無限リピート、OFF ならそのチャンクだけを 1 回再生して終端で自動一時停止する。
+  - 各チャンク右端のチェックボックスで複数のチャンク（`repeatChunkIds`）を選択すると、チェックされたチャンクだけを開始時刻順に順次リピート再生する。また、長押しメニューの「ここから範囲を選ぶ」による連続範囲リピートも併用できる。
 
 #### 7.5.6 アダプティブ対応・テーマ・システム要件
 
@@ -1295,11 +1351,11 @@ M4  編集と仕上げ
 | 13 | 永続化 | 記載なし | Room / DataStore / ファイルの役割を定義 | ライブラリ、レジューム、解析結果を保持するため |
 | 14 | エージェントの権限 | 実装者は `run_command` を使えない | 担当モジュールのビルドとテストは実行できる | 実装者が自分で検証できない |
 | 15 | QA | 最終フェーズのみ | 各マイルストーンに品質ゲートを置く | 不具合を早く見つける |
-| 16 | 対象端末の記述 | Tensor の NPU が前提 | 端末内では機械学習の推論をしない（文字起こしは PC で行う） | NPU の直接利用は API と端末への依存が大きい。PC の GPU の方が大きなモデルを使える |
+| 16 | 対象端末の記述 | Tensor の NPU が前提 | NPU 固有 API には依存せず、PC の Whisper JSON 取り込みと、端末内の純 Kotlin 量子化 Whisper Tiny 2 言語判定 + Android `SpeechRecognizer` を併用する（ADR 0010） | NPU の直接利用は API と端末への依存が大きい。純 Kotlin の軽量量子化 LID と OS 標準 STT の組み合わせなら NDK なしで全対象端末で動く |
 | 17 | セキュリティ | 記載なし | 簡易な脅威モデルと実装ルールを追加 | 外部からの入力（音声・文字起こしファイル）と、エクスポートされたコンポーネントがあるため |
 | 18 | MP3 のシーク精度 | 記載なし | VBR を検出し、対策（詰め替え / 変換 / 自前の索引）を S2 の結果で選ぶ | フラグの指定だけでは VBR の正確なシークが保証されない |
 | 19 | バックグラウンド実行 | 記載なし | フォアグラウンドサービスの開始条件、ジョブの実行時間の割り当て、6 時間の上限、自動ポーズ中の WakeLock を考慮 | 画面オフやバックグラウンドでの停止・遅延を防ぐ |
-| 20 | 文字起こしの方式 | 端末内でチャンクごとに STT（エンジンは未定） | GPU 搭載 PC の Whisper で生成し、Google Drive 経由で JSON を取り込む | 精度が高く多言語に強い。アプリが単純になり、通信も課金もない |
+| 20 | 文字起こしの方式 | 端末内でチャンクごとに STT（エンジンは未定） | GPU 搭載 PC の Whisper で生成した JSON の取り込みを主としつつ、端末内の量子化 Whisper Tiny 2 言語判定 + Android `SpeechRecognizer` による先読み文字起こし・再文字起こしも搭載（ADR 0010） | PC での高精度な一括処理と、音声ファイル単体を取り込んだ直後の即時利用・手動言語切り替え時の再認識を両立するため |
 | 21 | 言語ペア | 「英語 / 日本語」などの 2 言語ペア（教材ごとの扱いは記載なし） | 教材ごとに任意の言語ペア（BCP-47）。母語側は省略できる | 英語と中国語・広東語・ヒンディー語など、日本語と中国語・韓国語など、教材ごとに組み合わせが異なる |
 | 22 | 通信と配布 | 記載なし | 通信は、同期ボタンを押したときの Drive からの読み取りだけ。個人利用でサイドロードする | 教材の音声を外に出さない。Google Play の申告やポリシーに縛られない |
 
@@ -1322,16 +1378,13 @@ M4  編集と仕上げ
 | ADR | Architecture Decision Record。設計判断の記録 |
 | スパイク | 実装方針を決めるための、使い捨て前提の短期間の技術検証 |
 
-## 付録 C: 将来の選択肢（端末内での文字起こし）
+## 付録 C: 端末内での文字起こし・2 言語判定アーキテクチャ（ADR 0010）と各方式の比較
 
-PC で生成する方式（§7.4）を採用したため、端末内やクラウドでの文字起こしは行いません。v0.2 で検討した候補と、その時点でわかっていた課題を、将来見直すときのために残します。
+PC の `chunkflow-transcribe` で事前生成した JSON を取り込む方式（§7.4）に加え、音声ファイル単体を取り込んだ直後の即時利用やチャンク単位の言語切り替え・再文字起こしを実現するため、**候補 A（Android `SpeechRecognizer` の `EXTRA_AUDIO_SOURCE` パイプ入力）と候補 C の軽量版（純 Kotlin 実装の量子化 Whisper Tiny 2 言語判定）を組み合わせたハイブリッド構成**を採用しています（詳細は ADR 0010）。
 
-| 候補 | 概要 | 主な課題 |
+| 候補 | 概要 | 採否と役割・課題 |
 | --- | --- | --- |
-| A. Android `SpeechRecognizer`（オンデバイス） | API 34 の言語判定のオプション（`EXTRA_ENABLE_LANGUAGE_DETECTION` など）と、API 33 の `EXTRA_AUDIO_SOURCE` によるファイル由来の PCM の入力 | これらの機能は認識エンジンの実装によっては無効。マイク入力（実時間）向けの API で、実時間より速い処理やバックグラウンドでの実行ができるか不明。呼び出し元の `RECORD_AUDIO` 権限を求められる可能性が高い |
-| B. ML Kit GenAI Speech Recognition | Google 公式の SDK。`AudioSource.fromPfd()` で PCM を入力できる | 確認時点では alpha 版。言語判定がない（認識器ごとに 1 ロケール）。`BACKGROUND_USE_BLOCKED` と `AUDIO_BUFFER_OVERFLOW` のエラーがあり、一括処理には向かない可能性が高い。対応端末とモデルのダウンロードに制約がある |
-| C. 端末内の Whisper（whisper.cpp、sherpa-onnx など） | 完全オフライン。言語トークンの確率を 2 言語に限定して比べられる。単語単位の時刻 | NDK / JNI の保守。数十〜数百 MB のモデルの管理（ダウンロードには `INTERNET` 権限が必要）。端末で実用的な速度で動く小さなモデルは精度が下がる |
-| D. Gemini（Firebase AI Logic 経由のクラウド） | 言語ラベル付きの書き起こしを JSON で得られる。混在した言語や句読点の整形に強い | 通信と従量課金、送信の同意、App Check が必要。音声中の時刻が粗いため、端末で切り出したチャンク単位で送る必要がある |
-
-- 見直すきっかけの例: PC を使わずに端末だけで完結させたくなった場合や、端末内のモデルの精度と速度が十分に上がった場合。
-- 見直す場合も出力は `chunkflow-transcript` 形式（§7.4.3）に揃え、アプリの取り込み処理（§7.4.6）をそのまま使う。
+| **採用: A + C ハイブリッド（`OnDeviceSpeechTranscriber`）** | **2 言語判定**: 純 Kotlin 実装の量子化 Whisper Tiny（`WhisperTinyLanguageDetector`、`whisper_tiny_lid_q8q4.bin` 約 10.75 MB）で教材の 2 言語のトークンロジットを比較し、書記体系ヒューリスティックと統合。<br>**音声認識**: チャンクの 16kHz PCM を `ParcelFileDescriptor.createPipe()` + `EXTRA_AUDIO_SOURCE` で Android `SpeechRecognizer` に供給 | **採用（ADR 0010）**。NDK / JNI を使わずに高精度な 2 言語音響判定が可能。`SpeechRecognizer` の直列制約に対しては、先読み（Lookahead）ワーカーに優先割り込みできる `PriorityRecognitionLock` とチャンク×言語のインメモリキャッシュで応答性を確保。`RECORD_AUDIO` 権限が必要 |
+| B. ML Kit GenAI Speech Recognition | Google 公式の SDK。`AudioSource.fromPfd()` で PCM を入力できる | 不採用。言語判定がなく、`BACKGROUND_USE_BLOCKED` や対応端末・モデルダウンロードの制約が大きい |
+| C（フルモデル）. 端末内の Whisper フル推論（whisper.cpp、sherpa-onnx など） | 完全オフラインでデコーダによる全文生成まで端末内で行う | フルデコードは不採用（エンコーダ＋1 ステップ目の言語トークンロジット抽出のみ純 Kotlin で採用）。多言語の全文生成を高精度に行うには大きなモデルが必要となるため、全文一括生成は PC ツール（§7.4）で担う |
+| D. Gemini（クラウド API） | 言語ラベル付きの書き起こしをクラウドで生成 | 不採用。プライバシー方針（音声を外部へ送信しない）および従量課金回避のため使用しない |
