@@ -1,5 +1,7 @@
 package com.miuraken.chunkflow.feature.player
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -55,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -63,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -111,7 +115,15 @@ fun PlayerRoute(
     LaunchedEffect(mediaId) {
         viewModel.open(mediaId)
     }
+    val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { isGranted ->
+        if (isGranted) {
+            viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        }
+    }
     val transcriptPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -135,8 +147,21 @@ fun PlayerRoute(
         state = state,
         positionProvider = viewModel.positionProvider,
         onEvent = { event ->
-            when (event) {
-                PlayerEvent.Back -> onBack()
+            when {
+                event is PlayerEvent.Back -> onBack()
+
+                event is PlayerEvent.SetLookaheadEnabled && event.enabled -> {
+                    if (ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO,
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        viewModel.onEvent(event)
+                    } else {
+                        recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+
                 else -> viewModel.onEvent(event)
             }
         },
