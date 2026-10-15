@@ -194,6 +194,7 @@ fun TranscriptList(
     onPickTranscriptJson: () -> Unit,
     onDismissTranscriptBanner: () -> Unit,
     modifier: Modifier = Modifier,
+    showTargetRomanization: Boolean = false,
     positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
     localTranscriptExported: Boolean = false,
@@ -362,6 +363,7 @@ fun TranscriptList(
                         languagePair = languagePair,
                         chineseScript = chineseScript,
                         cantoneseScript = cantoneseScript,
+                        showTargetRomanization = showTargetRomanization,
                         positionProvider = positionProvider,
                         onRowClick = {
                             val startId = rangeSelectionStartChunkId
@@ -641,6 +643,7 @@ private fun TranscriptChunkRow(
     languagePair: LanguagePair?,
     chineseScript: ChineseScript,
     cantoneseScript: ChineseScript,
+    showTargetRomanization: Boolean,
     positionProvider: PositionProvider,
     onRowClick: () -> Unit,
     onTimestampClick: () -> Unit,
@@ -841,42 +844,67 @@ private fun TranscriptChunkRow(
                     }
                 } else {
                     val currentActiveWord = activeWordRange
-                    if (currentActiveWord != null &&
-                        currentActiveWord.startCharIndex in 0 until displayText.length &&
-                        currentActiveWord.endCharIndex in (currentActiveWord.startCharIndex + 1)..displayText.length
+                    val shouldShowPhonetic = showTargetRomanization &&
+                        (isTargetLang || languagePair == null)
+                    val phoneticReading = remember(
+                        shouldShowPhonetic,
+                        chunk,
+                        chineseScript,
+                        cantoneseScript,
                     ) {
-                        val highlightedText: AnnotatedString = buildAnnotatedString {
-                            append(displayText)
-                            addStyle(
-                                style = SpanStyle(
-                                    background = colorScheme.primaryContainer,
-                                    color = colorScheme.onPrimaryContainer,
-                                    fontWeight = FontWeight.Bold,
-                                    textDecoration = TextDecoration.Underline,
-                                ),
-                                start = currentActiveWord.startCharIndex,
-                                end = currentActiveWord.endCharIndex,
+                        if (shouldShowPhonetic) {
+                            chunk.resolvePhoneticReading(
+                                chineseScript = chineseScript,
+                                cantoneseScript = cantoneseScript,
+                            )
+                        } else {
+                            null
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        if (currentActiveWord != null &&
+                            currentActiveWord.startCharIndex in 0 until displayText.length &&
+                            currentActiveWord.endCharIndex in (currentActiveWord.startCharIndex + 1)..displayText.length
+                        ) {
+                            val highlightedText: AnnotatedString = buildAnnotatedString {
+                                append(displayText)
+                                addStyle(
+                                    style = SpanStyle(
+                                        background = colorScheme.primaryContainer,
+                                        color = colorScheme.onPrimaryContainer,
+                                        fontWeight = FontWeight.Bold,
+                                        textDecoration = TextDecoration.Underline,
+                                    ),
+                                    start = currentActiveWord.startCharIndex,
+                                    end = currentActiveWord.endCharIndex,
+                                )
+                            }
+                            Text(
+                                text = highlightedText,
+                                style = localizedTextStyle,
+                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                color = colorScheme.onSurface,
+                            )
+                        } else {
+                            Text(
+                                text = displayText,
+                                style = localizedTextStyle,
+                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                color = colorScheme.onSurface,
                             )
                         }
-                        Text(
-                            text = highlightedText,
-                            style = localizedTextStyle,
-                            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                            color = colorScheme.onSurface,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(vertical = 8.dp),
-                        )
-                    } else {
-                        Text(
-                            text = displayText,
-                            style = localizedTextStyle,
-                            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                            color = colorScheme.onSurface,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(vertical = 8.dp),
-                        )
+                        if (phoneticReading != null) {
+                            Text(
+                                text = phoneticReading,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             } else {

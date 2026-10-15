@@ -79,6 +79,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
@@ -295,6 +296,7 @@ fun PlayerScreen(
                         revealedChunkIds = state.revealedChunkIds,
                         chineseScript = state.chineseScript,
                         cantoneseScript = state.cantoneseScript,
+                        showTargetRomanization = state.showTargetRomanization,
                         transcriptImportBanner = state.transcriptImportBanner,
                         positionProvider = positionProvider,
                         lookaheadStatus = state.lookaheadStatus,
@@ -385,6 +387,7 @@ fun PlayerScreen(
                         revealedChunkIds = state.revealedChunkIds,
                         chineseScript = state.chineseScript,
                         cantoneseScript = state.cantoneseScript,
+                        showTargetRomanization = state.showTargetRomanization,
                         transcriptImportBanner = state.transcriptImportBanner,
                         positionProvider = positionProvider,
                         lookaheadStatus = state.lookaheadStatus,
@@ -900,6 +903,49 @@ private fun PlayerPracticeControlStrip(
                     },
                 )
             }
+        }
+
+        // 5b. 学習言語の読み方ガイド（ローマ字 / IAST / Pinyin 等）トグルチップ
+        state.targetPhoneticGuideKind?.let { guideKind ->
+            val phoneticChipLabel = when (guideKind) {
+                PhoneticGuideKind.ROMAJI -> if (state.showTargetRomanization) {
+                    stringResource(R.string.player_chip_phonetic_romaji_on)
+                } else {
+                    stringResource(R.string.player_chip_phonetic_romaji_off)
+                }
+
+                PhoneticGuideKind.IAST -> if (state.showTargetRomanization) {
+                    stringResource(R.string.player_chip_phonetic_iast_on)
+                } else {
+                    stringResource(R.string.player_chip_phonetic_iast_off)
+                }
+
+                PhoneticGuideKind.PINYIN -> if (state.showTargetRomanization) {
+                    stringResource(R.string.player_chip_phonetic_pinyin_on)
+                } else {
+                    stringResource(R.string.player_chip_phonetic_pinyin_off)
+                }
+
+                PhoneticGuideKind.LATIN_TRANSLITERATION -> if (state.showTargetRomanization) {
+                    stringResource(R.string.player_chip_phonetic_latin_on)
+                } else {
+                    stringResource(R.string.player_chip_phonetic_latin_off)
+                }
+            }
+            FilterChip(
+                selected = state.showTargetRomanization,
+                onClick = {
+                    onEvent(PlayerEvent.SetShowTargetRomanization(!state.showTargetRomanization))
+                },
+                label = { Text(text = phoneticChipLabel, maxLines = 1) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Translate,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+            )
         }
 
         // 6. 端末内の先読み簡易文字起こしトグルチップ (F6.2)

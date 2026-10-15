@@ -4,12 +4,14 @@ import android.net.StubUri
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
+import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
+import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.UserSettings
@@ -532,5 +534,75 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.Off))
         assertTrue(viewModel.uiState.value.practice.repeatChunkIds.isEmpty())
         assertFalse(viewModel.uiState.value.chunks[2].isRepeatChecked)
+    }
+
+    @Test
+    fun `読み方ガイド_SetShowTargetRomanizationとChunkUiのresolvePhoneticReadingが機能する`() = runTest {
+        val sample = SampleMaterials.jaKo // target = ko, base = ja
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        assertEquals(PhoneticGuideKind.LATIN_TRANSLITERATION, viewModel.uiState.value.targetPhoneticGuideKind)
+        assertFalse(viewModel.uiState.value.showTargetRomanization)
+
+        viewModel.onEvent(PlayerEvent.SetShowTargetRomanization(true))
+        assertTrue(viewModel.uiState.value.showTargetRomanization)
+
+        // 1. textVariants に明示的なピンインがある場合
+        val zhChunk = ChunkUi(
+            id = ChunkId(101L),
+            startMs = 0L,
+            endMs = 1_000L,
+            text = "今天天气很好",
+            language = LanguageTag("zh"),
+            textVariants = mapOf("Latn" to "jīntiān tiānqì hěn hǎo"),
+        )
+        assertEquals("jīntiān tiānqì hěn hǎo", zhChunk.resolvePhoneticReading())
+
+        // 2. 韓国語ハングルの自動ローマ字転写
+        val koChunk = ChunkUi(
+            id = ChunkId(102L),
+            startMs = 0L,
+            endMs = 1_000L,
+            text = "안녕하세요",
+            language = LanguageTag("ko"),
+        )
+        assertEquals("annyeonghaseyo", koChunk.resolvePhoneticReading())
+
+        // 3. 日本語かなの自動ローマ字転写
+        val jaChunk = ChunkUi(
+            id = ChunkId(103L),
+            startMs = 0L,
+            endMs = 1_000L,
+            text = "ありがとう",
+            language = LanguageTag("ja"),
+        )
+        assertEquals("arigatou", jaChunk.resolvePhoneticReading())
+
+        // 4. ヒンディー語デーヴァナーガリーの自動 IAST 転写
+        val hiChunk = ChunkUi(
+            id = ChunkId(104L),
+            startMs = 0L,
+            endMs = 1_000L,
+            text = "नमस्ते",
+            language = LanguageTag("hi"),
+        )
+        assertEquals("namaste", hiChunk.resolvePhoneticReading())
+
+        // 5. ラテン文字言語 (en) は null を返す
+        val enChunk = ChunkUi(
+            id = ChunkId(105L),
+            startMs = 0L,
+            endMs = 1_000L,
+            text = "Hello world",
+            language = LanguageTag("en"),
+        )
+        assertNull(enChunk.resolvePhoneticReading())
     }
 }

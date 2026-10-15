@@ -57,6 +57,7 @@ import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import java.util.Locale
@@ -141,11 +142,20 @@ fun SettingsScreen(
                 onEvent = onEvent,
             )
 
-            ScriptPreferenceSection(
-                chineseScript = state.chineseScript,
-                cantoneseScript = state.cantoneseScript,
-                onEvent = onEvent,
-            )
+            if (state.showChineseScriptOption ||
+                state.showCantoneseScriptOption ||
+                state.targetPhoneticGuideKind != null
+            ) {
+                ScriptPreferenceSection(
+                    showChineseScriptOption = state.showChineseScriptOption,
+                    showCantoneseScriptOption = state.showCantoneseScriptOption,
+                    chineseScript = state.chineseScript,
+                    cantoneseScript = state.cantoneseScript,
+                    targetPhoneticGuideKind = state.targetPhoneticGuideKind,
+                    showTargetRomanization = state.showTargetRomanization,
+                    onEvent = onEvent,
+                )
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
         }
@@ -576,49 +586,105 @@ private fun EnabledLanguagesDialog(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ScriptPreferenceSection(
+    showChineseScriptOption: Boolean,
+    showCantoneseScriptOption: Boolean,
     chineseScript: ChineseScript,
     cantoneseScript: ChineseScript,
+    targetPhoneticGuideKind: PhoneticGuideKind?,
+    showTargetRomanization: Boolean,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_script)) {
-        Text(
-            text = stringResource(R.string.settings_chinese_script_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            ChineseScript.entries.forEach { script ->
+        if (showChineseScriptOption) {
+            Text(
+                text = stringResource(R.string.settings_chinese_script_label),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ChineseScript.entries.forEach { script ->
+                    FilterChip(
+                        selected = chineseScript == script,
+                        onClick = { onEvent(SettingsEvent.SetChineseScript(script)) },
+                        label = { Text(text = scriptDisplayName(script)) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        ),
+                    )
+                }
+            }
+        }
+
+        if (showChineseScriptOption && (showCantoneseScriptOption || targetPhoneticGuideKind != null)) {
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        if (showCantoneseScriptOption) {
+            Text(
+                text = stringResource(R.string.settings_cantonese_script_label),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ChineseScript.entries.forEach { script ->
+                    FilterChip(
+                        selected = cantoneseScript == script,
+                        onClick = { onEvent(SettingsEvent.SetCantoneseScript(script)) },
+                        label = { Text(text = scriptDisplayName(script)) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        ),
+                    )
+                }
+            }
+        }
+
+        if (showCantoneseScriptOption && targetPhoneticGuideKind != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        if (targetPhoneticGuideKind != null) {
+            val guideLabelRes = when (targetPhoneticGuideKind) {
+                PhoneticGuideKind.ROMAJI -> R.string.settings_phonetic_guide_romaji
+                PhoneticGuideKind.IAST -> R.string.settings_phonetic_guide_iast
+                PhoneticGuideKind.PINYIN -> R.string.settings_phonetic_guide_pinyin
+                PhoneticGuideKind.LATIN_TRANSLITERATION -> R.string.settings_phonetic_guide_latin
+            }
+            Text(
+                text = stringResource(guideLabelRes),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = stringResource(R.string.settings_phonetic_guide_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 FilterChip(
-                    selected = chineseScript == script,
-                    onClick = { onEvent(SettingsEvent.SetChineseScript(script)) },
-                    label = { Text(text = scriptDisplayName(script)) },
+                    selected = !showTargetRomanization,
+                    onClick = { onEvent(SettingsEvent.SetShowTargetRomanization(false)) },
+                    label = { Text(text = stringResource(R.string.settings_phonetic_guide_off)) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
                         selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     ),
                 )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Text(
-            text = stringResource(R.string.settings_cantonese_script_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            ChineseScript.entries.forEach { script ->
                 FilterChip(
-                    selected = cantoneseScript == script,
-                    onClick = { onEvent(SettingsEvent.SetCantoneseScript(script)) },
-                    label = { Text(text = scriptDisplayName(script)) },
+                    selected = showTargetRomanization,
+                    onClick = { onEvent(SettingsEvent.SetShowTargetRomanization(true)) },
+                    label = { Text(text = stringResource(R.string.settings_phonetic_guide_on)) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
                         selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
