@@ -68,4 +68,8 @@ class FakeUserSettingsRepository(
     override suspend fun setShowTargetRomanization(enabled: Boolean) {
         state.update { it.copy(showTargetRomanization = enabled) }
     }
+
+    override suspend fun setLookaheadTranscriptionEnabled(enabled: Boolean) {
+        state.update { it.copy(lookaheadTranscriptionEnabled = enabled) }
+    }
 }
