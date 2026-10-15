@@ -210,7 +210,8 @@ class AndroidSpeechRecognizerChunkTranscriber @Inject constructor(
 ) : OnDeviceChunkTranscriber {
 
     override fun isAvailable(): Boolean = runCatching {
-        SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        SpeechRecognizer.isOnDeviceRecognitionAvailable(context) ||
+            SpeechRecognizer.isRecognitionAvailable(context)
     }.getOrDefault(false)
 
     override suspend fun transcribeChunk(
@@ -320,7 +321,14 @@ class AndroidSpeechRecognizerChunkTranscriber @Inject constructor(
         mainHandler.post {
             if (!continuation.isActive) return@post
             try {
-                val created = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                val useOnDevice = runCatching {
+                    SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+                }.getOrDefault(false)
+                val created = if (useOnDevice) {
+                    SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                } else {
+                    SpeechRecognizer.createSpeechRecognizer(context)
+                }
                 recognizer = created
 
                 val listener = object : RecognitionListener {
@@ -374,7 +382,12 @@ class AndroidSpeechRecognizerChunkTranscriber @Inject constructor(
                 }
 
                 created.setRecognitionListener(listener)
-                val intent = buildRecognizerIntent(readSide, sampleRateHz, languagePair)
+                val intent = buildRecognizerIntent(
+                    readSide = readSide,
+                    sampleRateHz = sampleRateHz,
+                    languagePair = languagePair,
+                    useOnDevice = useOnDevice,
+                )
                 created.startListening(intent)
             } catch (_: Exception) {
                 cleanup.run()
@@ -389,10 +402,11 @@ class AndroidSpeechRecognizerChunkTranscriber @Inject constructor(
         readSide: ParcelFileDescriptor,
         sampleRateHz: Int,
         languagePair: LanguagePair?,
+        useOnDevice: Boolean,
     ): Intent {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, useOnDevice)
             putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, readSide)
             putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
             putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
