@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -49,10 +51,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewParameter
@@ -72,13 +76,51 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.testing.fixture.SampleLibraryPreviewParameterProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
-private val TARGET_LANGUAGE_PRESETS: List<String> =
-    listOf("ko", "zh", "yue", "id", "en", "ja", "hi", "ar")
+private val LAST_ACCESSED_FORMATTER: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm", Locale.ROOT)
 
-private val BASE_LANGUAGE_PRESETS: List<String?> =
-    listOf(null, "ja", "en", "zh", "ko")
+private fun formatEpochMsLocal(epochMs: Long): String = runCatching {
+    Instant.ofEpochMilli(epochMs)
+        .atZone(ZoneId.systemDefault())
+        .format(LAST_ACCESSED_FORMATTER)
+}.getOrDefault("")
+
+private fun buildTargetPresetCodes(
+    enabledLanguages: List<LanguageTag>,
+    currentCode: String,
+): List<String> {
+    val codes = LinkedHashSet<String>()
+    for (tag in enabledLanguages) {
+        if (tag.value.isNotBlank()) codes.add(tag.value.lowercase(Locale.ROOT))
+    }
+    val trimmed = currentCode.trim().lowercase(Locale.ROOT)
+    if (trimmed.isNotBlank()) codes.add(trimmed)
+    if (codes.isEmpty()) {
+        codes.add("ja")
+        codes.add("en")
+    }
+    return codes.toList()
+}
+
+private fun buildBasePresetCodes(
+    enabledLanguages: List<LanguageTag>,
+    currentCode: String,
+): List<String?> {
+    val codes = LinkedHashSet<String?>()
+    codes.add(null)
+    for (tag in enabledLanguages) {
+        if (tag.value.isNotBlank()) codes.add(tag.value.lowercase(Locale.ROOT))
+    }
+    val trimmed = currentCode.trim().lowercase(Locale.ROOT)
+    if (trimmed.isNotBlank()) codes.add(trimmed)
+    return codes.toList()
+}
 
 /**
  * ライブラリ画面の Route。画面遷移のコールバックと SAF ピッカー（フォルダ指定・ファイル選択・文字起こし追加）を扱い、[LibraryScreen] に状態を渡す。
@@ -214,6 +256,31 @@ fun LibraryScreen(
     onEvent: (LibraryEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val listState = rememberLazyListState()
+    var autoScrolledDirs by remember { mutableStateOf<Set<String?>>(emptySet()) }
+
+    val directories = state.directories
+    LaunchedEffect(directories) {
+        // 折りたたまれたディレクトリは次回展開時に再スクロールできるよう履歴から外す
+        val expandedNames = directories.filter { it.isExpanded }.map { it.name }.toSet()
+        autoScrolledDirs = autoScrolledDirs.intersect(expandedNames)
+
+        // 新たに展開表示され、かつ Listened ファイルを持つディレクトリがあれば
+        // 最後の Listened ファイルが上部に 1〜2 件だけ見える位置までスクロールする
+        val newlyExpandedWithListened = directories.firstOrNull { dir ->
+            dir.isExpanded &&
+                dir.name !in autoScrolledDirs &&
+                dir.initialVisibleItemIndexInDirectory != null
+        }
+        if (newlyExpandedWithListened != null) {
+            autoScrolledDirs = autoScrolledDirs + newlyExpandedWithListened.name
+            val targetLazyIdx = state.targetScrollLazyIndexForDirectory(newlyExpandedWithListened.name)
+            if (targetLazyIdx != null && targetLazyIdx > 0) {
+                listState.scrollToItem(targetLazyIdx)
+            }
+        }
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -294,26 +361,57 @@ fun LibraryScreen(
                     onSyncFromDrive = { onEvent(LibraryEvent.SyncFromDrive) },
                 )
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(
-                        items = state.directories,
-                        key = { it.name ?: "__uncategorized__" },
-                    ) { directory ->
-                        LibraryDirectoryCard(
-                            directory = directory,
-                            onToggleExpand = {
-                                onEvent(LibraryEvent.ToggleDirectory(directory.name))
-                            },
-                            onOpenItem = { mediaId ->
-                                onEvent(LibraryEvent.OpenItem(mediaId))
-                            },
-                            onEditItemMetadata = { item ->
-                                onEvent(LibraryEvent.RequestEditMetadata(item))
-                            },
-                        )
+                    directories.forEachIndexed { dirIndex, directory ->
+                        val dirKey = directory.name ?: "__uncategorized__"
+                        item(key = "dir_header_$dirKey") {
+                            LibraryDirectoryHeader(
+                                directory = directory,
+                                onToggleExpand = {
+                                    onEvent(LibraryEvent.ToggleDirectory(directory.name))
+                                },
+                                onEditDirectoryMetadata = {
+                                    onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
+                                },
+                                modifier = Modifier.padding(top = if (dirIndex == 0) 0.dp else 12.dp),
+                            )
+                        }
+                        if (directory.isExpanded) {
+                            itemsIndexed(
+                                items = directory.items,
+                                key = { _, itemModel -> "dir_item_${dirKey}_${itemModel.item.id.value}" },
+                            ) { index, itemModel ->
+                                val isLastInDir = index == directory.items.lastIndex
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    shape = if (isLastInDir) {
+                                        RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                                    } else {
+                                        RectangleShape
+                                    },
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        if (index == 0) {
+                                            HorizontalDivider()
+                                        }
+                                        LibraryItemRow(
+                                            itemModel = itemModel,
+                                            onClick = { onEvent(LibraryEvent.OpenItem(itemModel.item.id)) },
+                                            onEditMetadataClick = {
+                                                onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
+                                            },
+                                        )
+                                        if (!isLastInDir) {
+                                            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -323,6 +421,7 @@ fun LibraryScreen(
     state.pendingImportConfig?.let { config ->
         ImportConfigDialog(
             config = config,
+            enabledLanguages = state.enabledLanguages,
             onConfirm = { course, languages ->
                 onEvent(
                     LibraryEvent.ConfirmImportConfig(
@@ -338,6 +437,7 @@ fun LibraryScreen(
     state.pendingEditItem?.let { itemToEdit ->
         EditItemMetadataDialog(
             item = itemToEdit,
+            enabledLanguages = state.enabledLanguages,
             onConfirm = { course, languages ->
                 onEvent(
                     LibraryEvent.ConfirmEditMetadata(
@@ -348,6 +448,23 @@ fun LibraryScreen(
                 )
             },
             onDismiss = { onEvent(LibraryEvent.CancelEditMetadata) },
+        )
+    }
+
+    state.pendingEditDirectory?.let { directoryToEdit ->
+        EditDirectoryMetadataDialog(
+            directoryEdit = directoryToEdit,
+            enabledLanguages = state.enabledLanguages,
+            onConfirm = { newCourse, languages ->
+                onEvent(
+                    LibraryEvent.ConfirmEditDirectoryMetadata(
+                        currentCourse = directoryToEdit.currentCourse,
+                        newCourse = newCourse,
+                        languages = languages,
+                    ),
+                )
+            },
+            onDismiss = { onEvent(LibraryEvent.CancelEditDirectoryMetadata) },
         )
     }
 
@@ -468,11 +585,10 @@ private fun LibraryActionToolbar(
 }
 
 @Composable
-private fun LibraryDirectoryCard(
+private fun LibraryDirectoryHeader(
     directory: LibraryDirectoryUiModel,
     onToggleExpand: () -> Unit,
-    onOpenItem: (MediaId) -> Unit,
-    onEditItemMetadata: (AudioItem) -> Unit,
+    onEditDirectoryMetadata: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val directoryTitle = directory.name ?: stringResource(R.string.library_directory_uncategorized)
@@ -481,81 +597,92 @@ private fun LibraryDirectoryCard(
     } else {
         stringResource(R.string.library_directory_expand)
     }
+    val shape = if (directory.isExpanded && directory.items.isNotEmpty()) {
+        RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
+    } else {
+        RoundedCornerShape(12.dp)
+    }
 
-    Card(
+    Surface(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = shape,
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onToggleExpand)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Folder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp),
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = directoryTitle,
-                            style = MaterialTheme.typography.titleSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggleExpand)
+                .padding(start = 16.dp, top = 10.dp, bottom = 10.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = directoryTitle,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.library_directory_item_count,
+                            directory.items.size,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (directory.listenedCount > 0) {
                         Text(
                             text = stringResource(
-                                R.string.library_directory_item_count,
+                                R.string.library_directory_listened_count,
+                                directory.listenedCount,
                                 directory.items.size,
                             ),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
                         )
                     }
-                    Text(
-                        text = directory.transcriptionPathHint,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                 }
-                Icon(
-                    imageVector = if (directory.isExpanded) {
-                        ChunkFlowIcons.ExpandLess
-                    } else {
-                        ChunkFlowIcons.ExpandMore
-                    },
-                    contentDescription = toggleDescription,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                Text(
+                    text = directory.transcriptionPathHint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-
-            if (directory.isExpanded) {
-                HorizontalDivider()
-                directory.items.forEachIndexed { index, itemModel ->
-                    LibraryItemRow(
-                        itemModel = itemModel,
-                        onClick = { onOpenItem(itemModel.item.id) },
-                        onEditMetadataClick = { onEditItemMetadata(itemModel.item) },
-                    )
-                    if (index < directory.items.lastIndex) {
-                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                    }
-                }
+            IconButton(
+                onClick = onEditDirectoryMetadata,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Edit,
+                    contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
             }
+            Icon(
+                imageVector = if (directory.isExpanded) {
+                    ChunkFlowIcons.ExpandLess
+                } else {
+                    ChunkFlowIcons.ExpandMore
+                },
+                contentDescription = toggleDescription,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -924,12 +1051,43 @@ private fun LibraryItemRow(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Text(
-            text = item.title,
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (itemModel.isListened) {
+                Surface(
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    shape = RoundedCornerShape(6.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.library_item_listened_badge),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(4.dp))
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -989,28 +1147,49 @@ private fun LibraryItemRow(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (itemModel.positionMs > 0L) {
+        if (itemModel.positionMs > 0L || itemModel.lastAccessedAtEpochMs != null) {
             Spacer(modifier = Modifier.height(6.dp))
-            LinearProgressIndicator(
-                progress = { itemModel.progressFraction },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            val resumePositionText = stringResource(
-                R.string.library_item_resume_position,
-                formatDurationMs(itemModel.positionMs),
-                formattedDuration,
-            )
-            val speedSuffix = if (itemModel.speed != 1.0f) {
-                " · ${formatSpeed(itemModel.speed)}"
-            } else {
-                ""
+            if (itemModel.positionMs > 0L) {
+                LinearProgressIndicator(
+                    progress = { itemModel.progressFraction },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(2.dp))
             }
-            Text(
-                text = resumePositionText + speedSuffix,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            val progressPercent = (itemModel.progressFraction * 100f).roundToInt()
+            val resumePositionText = if (itemModel.positionMs > 0L) {
+                val baseResume = stringResource(
+                    R.string.library_item_resume_position,
+                    formatDurationMs(itemModel.positionMs),
+                    formattedDuration,
+                    progressPercent,
+                )
+                val speedSuffix = if (itemModel.speed != 1.0f) {
+                    " · ${formatSpeed(itemModel.speed)}"
+                } else {
+                    ""
+                }
+                baseResume + speedSuffix
+            } else {
+                null
+            }
+            val lastAccessedText = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
+                val formatted = formatEpochMsLocal(epochMs)
+                if (formatted.isNotEmpty()) {
+                    stringResource(R.string.library_item_last_accessed, formatted)
+                } else {
+                    null
+                }
+            }
+            val combinedStatus = listOfNotNull(resumePositionText, lastAccessedText)
+                .joinToString(separator = "  •  ")
+            if (combinedStatus.isNotEmpty()) {
+                Text(
+                    text = combinedStatus,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }
@@ -1019,12 +1198,20 @@ private fun LibraryItemRow(
 @Composable
 private fun ImportConfigDialog(
     config: PendingImportConfig,
+    enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var courseText by remember(config) { mutableStateOf(config.initialCourse.orEmpty()) }
     var targetLangText by remember(config) { mutableStateOf(config.initialLanguages.target.value) }
     var baseLangText by remember(config) { mutableStateOf(config.initialLanguages.base?.value.orEmpty()) }
+
+    val targetPresets = remember(enabledLanguages, targetLangText) {
+        buildTargetPresetCodes(enabledLanguages, targetLangText)
+    }
+    val basePresets = remember(enabledLanguages, baseLangText) {
+        buildBasePresetCodes(enabledLanguages, baseLangText)
+    }
 
     val dialogTitle = if (config.isDriveSyncFolder) {
         stringResource(R.string.library_drive_sync_config_title)
@@ -1077,7 +1264,7 @@ private fun ImportConfigDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    TARGET_LANGUAGE_PRESETS.forEach { code ->
+                    targetPresets.forEach { code ->
                         FilterChip(
                             selected = targetLangText.trim().equals(code, ignoreCase = true),
                             onClick = { targetLangText = code },
@@ -1097,7 +1284,7 @@ private fun ImportConfigDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    BASE_LANGUAGE_PRESETS.forEach { code ->
+                    basePresets.forEach { code ->
                         val isSelected = if (code == null) {
                             baseLangText.isBlank()
                         } else {
@@ -1143,12 +1330,20 @@ private fun ImportConfigDialog(
 @Composable
 private fun EditItemMetadataDialog(
     item: AudioItem,
+    enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var courseText by remember(item) { mutableStateOf(item.course.orEmpty()) }
     var targetLangText by remember(item) { mutableStateOf(item.languagePair.target.value) }
     var baseLangText by remember(item) { mutableStateOf(item.languagePair.base?.value.orEmpty()) }
+
+    val targetPresets = remember(enabledLanguages, targetLangText) {
+        buildTargetPresetCodes(enabledLanguages, targetLangText)
+    }
+    val basePresets = remember(enabledLanguages, baseLangText) {
+        buildBasePresetCodes(enabledLanguages, baseLangText)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1179,7 +1374,7 @@ private fun EditItemMetadataDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    TARGET_LANGUAGE_PRESETS.forEach { code ->
+                    targetPresets.forEach { code ->
                         FilterChip(
                             selected = targetLangText.trim().equals(code, ignoreCase = true),
                             onClick = { targetLangText = code },
@@ -1199,7 +1394,7 @@ private fun EditItemMetadataDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    BASE_LANGUAGE_PRESETS.forEach { code ->
+                    basePresets.forEach { code ->
                         val isSelected = if (code == null) {
                             baseLangText.isBlank()
                         } else {
@@ -1218,6 +1413,126 @@ private fun EditItemMetadataDialog(
         },
         confirmButton = {
             TextButton(
+                onClick = {
+                    val cleanTarget = targetLangText.trim().lowercase(Locale.ROOT).ifBlank { "en" }
+                    val cleanBase = baseLangText.trim().lowercase(Locale.ROOT).ifBlank { null }
+                    onConfirm(
+                        courseText.trim().ifBlank { null },
+                        LanguagePair(
+                            target = LanguageTag(cleanTarget),
+                            base = cleanBase?.let { LanguageTag(it) },
+                        ),
+                    )
+                },
+            ) {
+                Text(text = stringResource(R.string.library_edit_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.library_edit_cancel))
+            }
+        },
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun EditDirectoryMetadataDialog(
+    directoryEdit: PendingDirectoryEdit,
+    enabledLanguages: List<LanguageTag>,
+    onConfirm: (String?, LanguagePair) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var courseText by remember(directoryEdit) { mutableStateOf(directoryEdit.currentCourse.orEmpty()) }
+    var targetLangText by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.initialLanguages.target.value)
+    }
+    var baseLangText by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.initialLanguages.base?.value.orEmpty())
+    }
+
+    val targetPresets = remember(enabledLanguages, targetLangText) {
+        buildTargetPresetCodes(enabledLanguages, targetLangText)
+    }
+    val basePresets = remember(enabledLanguages, baseLangText) {
+        buildBasePresetCodes(enabledLanguages, baseLangText)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = stringResource(R.string.library_edit_directory_metadata_title)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.library_edit_directory_metadata_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                OutlinedTextField(
+                    value = courseText,
+                    onValueChange = { courseText = it },
+                    label = { Text(text = stringResource(R.string.library_edit_course_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                OutlinedTextField(
+                    value = targetLangText,
+                    onValueChange = { targetLangText = it },
+                    label = { Text(text = stringResource(R.string.library_edit_target_lang_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    targetPresets.forEach { code ->
+                        FilterChip(
+                            selected = targetLangText.trim().equals(code, ignoreCase = true),
+                            onClick = { targetLangText = code },
+                            label = { Text(text = code.uppercase(Locale.ROOT)) },
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = baseLangText,
+                    onValueChange = { baseLangText = it },
+                    label = { Text(text = stringResource(R.string.library_edit_base_lang_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    basePresets.forEach { code ->
+                        val isSelected = if (code == null) {
+                            baseLangText.isBlank()
+                        } else {
+                            baseLangText.trim().equals(code, ignoreCase = true)
+                        }
+                        val label = code?.uppercase(Locale.ROOT)
+                            ?: stringResource(R.string.library_edit_base_lang_none)
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { baseLangText = code.orEmpty() },
+                            label = { Text(text = label) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
                 onClick = {
                     val cleanTarget = targetLangText.trim().lowercase(Locale.ROOT).ifBlank { "en" }
                     val cleanBase = baseLangText.trim().lowercase(Locale.ROOT).ifBlank { null }
@@ -1339,6 +1654,8 @@ private fun LibraryScreenPreview(
             speed = if (index == 0) 1.25f else 1.0f,
             chunkCount = if (index == 0) 6 else 0,
             hasTranscript = index == 0,
+            isListened = index == 0,
+            lastAccessedAtEpochMs = if (index == 0) 1_760_000_000_000L else null,
         )
     }
     val miniPlayer = items.firstOrNull()?.let { first ->

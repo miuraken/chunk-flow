@@ -20,6 +20,13 @@
     <string name="settings_target_language_label">Target language</string>
     <string name="settings_base_language_label">Base / explanation language</string>
     <string name="settings_base_language_none">None (single language)</string>
+    <string name="settings_enabled_languages_button">Configure language options (%1$d)</string>
+    <string name="settings_enabled_languages_dialog_title">Enabled Language Options</string>
+    <string name="settings_enabled_languages_dialog_hint">Select which device-supported languages appear as choices (defaults to Japanese &amp; English).</string>
+    <string name="settings_enabled_languages_search_label">Search by language name or code</string>
+    <string name="settings_enabled_languages_reset_default">Reset to Japanese &amp; English</string>
+    <string name="settings_enabled_languages_save">Save</string>
+    <string name="settings_enabled_languages_cancel">Cancel</string>
     <string name="settings_section_script">Chinese Character Script</string>
     <string name="settings_chinese_script_label">Mandarin Chinese (zh) script</string>
     <string name="settings_cantonese_script_label">Cantonese (yue) script</string>

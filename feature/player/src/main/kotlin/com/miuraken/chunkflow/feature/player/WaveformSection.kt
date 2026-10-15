@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -70,6 +71,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 /** 拡大波形の既定の表示窓（2 分 = 120,000ms、§7.5.4）。 */
@@ -77,6 +79,9 @@ internal const val DEFAULT_ZOOM_WINDOW_MS: Long = 120_000L
 
 /** 拡大波形の最小表示窓（2 秒 = 2,000ms、§7.5.4）。 */
 internal const val MIN_ZOOM_WINDOW_MS: Long = 2_000L
+
+/** ピンチイン・ピンチアウト完了後に高精度波形を再描画するまでの遅延（0.2 秒 = 200ms）。 */
+internal const val ZOOM_SETTLE_DELAY_MS: Long = 200L
 
 /**
  * プレイヤー画面の波形セクション（全体波形 + 拡大波形。F4.1、F4.2、F6.2、§7.5.4）。
@@ -528,13 +533,27 @@ private fun ZoomedWaveformCanvas(
     onNextChunk: () -> Unit,
     onSeekBack: () -> Unit,
 ) {
+    val currentZoomWindowMs by rememberUpdatedState(zoomWindowMs)
+
+    // ピンチ操作中は既存の波形 Path を水平スケーリングで即座に追従させ、
+    // 操作停止から 0.2 秒（200ms）後に高精度なダウンサンプル波形 Path を再構築する
+    var settledZoomWindowMs by remember(durationMs) { mutableLongStateOf(zoomWindowMs) }
+    LaunchedEffect(zoomWindowMs) {
+        if (zoomWindowMs != settledZoomWindowMs) {
+            delay(ZOOM_SETTLE_DELAY_MS)
+            val pos = (scrubPositionMs ?: positionProvider.currentPositionMs()).coerceIn(0L, durationMs)
+            onUpdateAnchorCenter(pos)
+            settledZoomWindowMs = zoomWindowMs
+        }
+    }
+
     // 再生中にアンカー中心から大きく離れたときだけ、緩やかにアンカー中心を更新して Path キャッシュを再構築する
     if (!LocalInspectionMode.current) {
-        LaunchedEffect(zoomWindowMs, durationMs) {
+        LaunchedEffect(settledZoomWindowMs, durationMs) {
             while (isActive) {
                 withFrameNanos {
                     val pos = positionProvider.currentPositionMs().coerceIn(0L, durationMs)
-                    if (abs(pos - cachedAnchorCenterMs) > (zoomWindowMs * 3L) / 4L) {
+                    if (abs(pos - cachedAnchorCenterMs) > (settledZoomWindowMs * 3L) / 4L) {
                         onUpdateAnchorCenter(pos)
                     }
                 }
@@ -569,26 +588,28 @@ private fun ZoomedWaveformCanvas(
                     },
                 )
             }
-            .pointerInput(durationMs, zoomWindowMs) {
+            .pointerInput(durationMs) {
                 detectTapGestures { offset ->
                     if (size.width > 0) {
+                        val liveWindow = currentZoomWindowMs
                         val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
                         val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
-                        val targetMs = (centerMs + (deltaFraction * zoomWindowMs).roundToLong())
+                        val targetMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
                             .coerceIn(0L, durationMs)
                         onSeekTo(targetMs)
                     }
                 }
             }
-            .pointerInput(durationMs, zoomWindowMs) {
+            .pointerInput(durationMs) {
                 var startTouchMs = 0L
                 var currentTouchMs = 0L
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
                         if (size.width > 0) {
+                            val liveWindow = currentZoomWindowMs
                             val centerMs = scrubPositionMs ?: positionProvider.currentPositionMs()
                             val deltaFraction = (offset.x / size.width.toFloat()) - 0.5f
-                            startTouchMs = (centerMs + (deltaFraction * zoomWindowMs).roundToLong())
+                            startTouchMs = (centerMs + (deltaFraction * liveWindow).roundToLong())
                                 .coerceIn(0L, durationMs)
                             currentTouchMs = startTouchMs
                             onAbDragUpdate(startTouchMs, currentTouchMs)
@@ -597,7 +618,8 @@ private fun ZoomedWaveformCanvas(
                     onDrag = { change, dragAmount ->
                         change.consume()
                         if (size.width > 0) {
-                            val deltaMs = ((dragAmount.x / size.width.toFloat()) * zoomWindowMs).roundToLong()
+                            val liveWindow = currentZoomWindowMs
+                            val deltaMs = ((dragAmount.x / size.width.toFloat()) * liveWindow).roundToLong()
                             currentTouchMs = (currentTouchMs + deltaMs).coerceIn(0L, durationMs)
                             onAbDragUpdate(startTouchMs, currentTouchMs)
                         }
@@ -606,16 +628,17 @@ private fun ZoomedWaveformCanvas(
                     onDragCancel = { onAbDragFinish() },
                 )
             }
-            .pointerInput(durationMs, zoomWindowMs) {
+            .pointerInput(durationMs) {
                 var activeScrubMs: Long? = null
                 detectTransformGestures { _, pan, zoom, _ ->
                     if (size.width <= 0) return@detectTransformGestures
-                    if (abs(zoom - 1f) > 0.01f) {
-                        val scaledWindow = (zoomWindowMs.toFloat() / zoom).roundToLong()
+                    val liveWindow = currentZoomWindowMs
+                    if (abs(zoom - 1f) > 0.004f) {
+                        val scaledWindow = (liveWindow.toFloat() / zoom).roundToLong()
                         onZoomWindowChange(scaledWindow)
                     } else if (abs(pan.x) > 0.5f) {
                         val baseMs = activeScrubMs ?: scrubPositionMs ?: positionProvider.currentPositionMs()
-                        val deltaMs = ((-pan.x / size.width.toFloat()) * zoomWindowMs).roundToLong()
+                        val deltaMs = ((-pan.x / size.width.toFloat()) * liveWindow).roundToLong()
                         val nextMs = (baseMs + deltaMs).coerceIn(0L, durationMs)
                         activeScrubMs = nextMs
                         onScrubChange(nextMs)
@@ -624,8 +647,9 @@ private fun ZoomedWaveformCanvas(
                 }
             }
             .drawWithCache {
-                // 表示範囲の 3 倍の幅をキャッシュ（§7.5.4）
-                val cachedSpanMs = zoomWindowMs * 3L
+                // ピンチ操作中は settledZoomWindowMs のキャッシュを維持し、0.2 秒後に高精度 Path を再構築する（§7.5.4）
+                val cachedWindowMs = settledZoomWindowMs.coerceAtLeast(1L)
+                val cachedSpanMs = cachedWindowMs * 3L
                 val cachedStartMs = cachedAnchorCenterMs - cachedSpanMs / 2L
                 val cachedEndMs = cachedAnchorCenterMs + cachedSpanMs / 2L
                 val singleWindowColumns = max(1, (size.width / 3f).roundToInt())
@@ -651,17 +675,18 @@ private fun ZoomedWaveformCanvas(
 
                 onDrawBehind {
                     frameTick()
+                    val liveWindowMs = zoomWindowMs.coerceAtLeast(1L)
                     val currentPosMs = (scrubPositionMs ?: positionProvider.currentPositionMs())
                         .coerceIn(0L, durationMs)
-                    val windowStartMs = currentPosMs - zoomWindowMs / 2L
-                    val windowEndMs = currentPosMs + zoomWindowMs / 2L
+                    val windowStartMs = currentPosMs - liveWindowMs / 2L
+                    val windowEndMs = currentPosMs + liveWindowMs / 2L
 
                     // チャンク領域を役割別の色で描画（学習言語 / 母語 / 不明）
                     val activeId: ChunkId? = activeChunkIndex?.let { chunks.getOrNull(it)?.id }
                     for (chunk in chunks) {
                         if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
-                        val leftX = ((chunk.startMs - windowStartMs).toFloat() / zoomWindowMs.toFloat()) * size.width
-                        val rightX = ((chunk.endMs - windowStartMs).toFloat() / zoomWindowMs.toFloat()) * size.width
+                        val leftX = ((chunk.startMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
+                        val rightX = ((chunk.endMs - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width
                         val clampedLeft = leftX.coerceIn(0f, size.width)
                         val clampedRight = rightX.coerceIn(clampedLeft, size.width)
                         if (clampedRight <= clampedLeft) continue
@@ -687,10 +712,22 @@ private fun ZoomedWaveformCanvas(
                         }
                     }
 
-                    // 3 倍幅のキャッシュ Path を平行移動して描画（§7.5.4）
-                    val translationX =
-                        ((cachedStartMs - windowStartMs).toFloat() / zoomWindowMs.toFloat()) * size.width
-                    withTransform({ translate(left = translationX) }) {
+                    // 3 倍幅のキャッシュ Path を平行移動（およびピンチ中の即時水平スケール）して描画（§7.5.4）
+                    val centerX = size.width * 0.5f
+                    val currentPosInCachedPx =
+                        ((currentPosMs - cachedStartMs).toFloat() / cachedWindowMs.toFloat()) * size.width
+                    val translationX = centerX - currentPosInCachedPx
+                    val zoomScaleX = cachedWindowMs.toFloat() / liveWindowMs.toFloat()
+                    withTransform({
+                        if (abs(zoomScaleX - 1f) > 0.001f) {
+                            scale(
+                                scaleX = zoomScaleX,
+                                scaleY = 1f,
+                                pivot = Offset(centerX, size.height * 0.5f),
+                            )
+                        }
+                        translate(left = translationX)
+                    }) {
                         drawPath(path = peakPath, color = wavePeakColor)
                         drawPath(path = rmsPath, color = waveRmsColor)
                     }
@@ -707,9 +744,9 @@ private fun ZoomedWaveformCanvas(
                     }
                     abRange?.let { (abStart, abEnd) ->
                         if (abEnd > windowStartMs && abStart < windowEndMs) {
-                            val leftX = ((abStart - windowStartMs).toFloat() / zoomWindowMs.toFloat())
+                            val leftX = (((abStart - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width)
                                 .coerceIn(0f, size.width)
-                            val rightX = ((abEnd - windowStartMs).toFloat() / zoomWindowMs.toFloat())
+                            val rightX = (((abEnd - windowStartMs).toFloat() / liveWindowMs.toFloat()) * size.width)
                                 .coerceIn(leftX, size.width)
                             drawRect(
                                 color = abLoopHighlightColor,
@@ -726,7 +763,6 @@ private fun ZoomedWaveformCanvas(
                     }
 
                     // 中央の再生ヘッド
-                    val centerX = size.width * 0.5f
                     drawLine(
                         color = playheadColor,
                         start = Offset(centerX, 0f),

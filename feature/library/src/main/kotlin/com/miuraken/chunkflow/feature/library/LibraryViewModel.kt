@@ -23,6 +23,7 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
+import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.playback.PlaybackController
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
@@ -30,6 +31,7 @@ import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.math.BigInteger
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -45,6 +47,38 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
+ * ファイル名（タイトル）の自然順（数値部分を数値として比較し、大文字小文字を区別しない）の昇順比較関数。
+ */
+internal fun compareFileNamesAscending(a: String, b: String): Int {
+    var i = 0
+    var j = 0
+    while (i < a.length && j < b.length) {
+        val ca = a[i]
+        val cb = b[j]
+        if (ca.isDigit() && cb.isDigit()) {
+            val startA = i
+            while (i < a.length && a[i].isDigit()) i++
+            val startB = j
+            while (j < b.length && b[j].isDigit()) j++
+            val numA = BigInteger(a.substring(startA, i))
+            val numB = BigInteger(b.substring(startB, j))
+            val numCmp = numA.compareTo(numB)
+            if (numCmp != 0) return numCmp
+            val lenCmp = (i - startA).compareTo(j - startB)
+            if (lenCmp != 0) return lenCmp
+        } else {
+            val lowerA = ca.lowercaseChar()
+            val lowerB = cb.lowercaseChar()
+            if (lowerA != lowerB) return lowerA.compareTo(lowerB)
+            i++
+            j++
+        }
+    }
+    val lenDiff = a.length.compareTo(b.length)
+    return if (lenDiff != 0) lenDiff else a.compareTo(b)
+}
+
+/**
  * ライブラリ一覧の各教材の UI 表示モデル（F2.1〜F2.4、F7.1）。
  *
  * @property item 教材のメタデータ。
@@ -54,6 +88,8 @@ import kotlinx.coroutines.launch
  * @property hasTranscript 文字起こしが紐付いているかどうか。
  * @property isAnalyzing 端末内解析を実行中かどうか。
  * @property isAudioMissing バックアップ復元後などで音声ファイルが未取り込みかどうか（F2.4）。
+ * @property isListened ファイルの 95%〜100% の位置を 1 秒以上聴取した完了フラグ（済）。
+ * @property lastAccessedAtEpochMs 最終アクセス日時（ミリ秒、未アクセスの場合は `null`）。
  */
 data class LibraryItemUiModel(
     val item: AudioItem,
@@ -63,7 +99,13 @@ data class LibraryItemUiModel(
     val hasTranscript: Boolean = false,
     val isAnalyzing: Boolean = false,
     val isAudioMissing: Boolean = false,
+    val isListened: Boolean = false,
+    val lastAccessedAtEpochMs: Long? = null,
 ) {
+    /** 前回の再生位置（ミリ秒）。 */
+    val lastPositionMs: Long
+        get() = positionMs
+
     /** 再生進捗の割合（0.0..1.0）。 */
     val progressFraction: Float
         get() = if (item.durationMs > 0L) {
@@ -84,7 +126,7 @@ typealias LibraryItemUi = LibraryItemUiModel
  * ディレクトリ（フォルダ）単位の教材グループ表示モデル。
  *
  * @property name ディレクトリ名（未分類の場合は `null`）。
- * @property items このディレクトリ内の教材一覧。
+ * @property items このディレクトリ内の教材一覧（ファイル名昇順）。
  * @property isExpanded 展開中かどうか。
  */
 data class LibraryDirectoryUiModel(
@@ -99,6 +141,33 @@ data class LibraryDirectoryUiModel(
         } else {
             "transcription/*.chunkflow.json"
         }
+
+    /** このディレクトリ内で `Listened（済）` になっているファイル数。 */
+    val listenedCount: Int
+        get() = items.count { it.isListened }
+
+    /**
+     * このディレクトリ内で最後にアクセスされた `Listened（済）` ファイルの [items] 内インデックス。
+     *
+     * 該当するファイルがない場合は `null`。
+     */
+    val lastAccessedListenedIndex: Int?
+        get() = items
+            .withIndex()
+            .filter { it.value.isListened }
+            .maxWithOrNull(
+                compareBy<IndexedValue<LibraryItemUiModel>> { it.value.lastAccessedAtEpochMs ?: 0L }
+                    .thenBy { it.index },
+            )
+            ?.index
+
+    /**
+     * ディレクトリ表示時に画面上部に表示を開始する [items] 内インデックス。
+     *
+     * 最後にアクセスされた `Listened（済）` ファイルが 1〜2 件だけ上部に残って見える位置（`max(0, lastAccessedListenedIndex - 1)`）を返す。
+     */
+    val initialVisibleItemIndexInDirectory: Int?
+        get() = lastAccessedListenedIndex?.let { idx -> (idx - 1).coerceAtLeast(0) }
 }
 
 /**
@@ -246,18 +315,31 @@ data class PendingImportConfig(
 )
 
 /**
+ * ディレクトリ（コース）単位のコース名・言語ペア一括再設定ダイアログの状態。
+ *
+ * @property currentCourse 現在のディレクトリ（コース）名（未分類の場合は `null`）。
+ * @property initialLanguages 初期表示する言語ペア。
+ */
+data class PendingDirectoryEdit(
+    val currentCourse: String?,
+    val initialLanguages: LanguagePair,
+)
+
+/**
  * ライブラリ画面の状態（F1.1〜F2.4、F7.1、§7.5.1）。
  *
- * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無を含む）。
+ * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無・聴取完了・最終アクセス日時を含む）。
  * @property importState 音声・フォルダ取り込みの進捗・エラー状態。
  * @property transcriptImportState 文字起こし単体取り込みの結果状態。
  * @property syncState Google Drive 同期の進捗・エラー状態。
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
  * @property pendingDeleteItem 削除確認ダイアログで対象になっている教材（表示中でなければ `null`）。
  * @property pendingEditItem コース・言語ペア編集ダイアログで対象になっている教材（表示中でなければ `null`）。
+ * @property pendingEditDirectory ディレクトリ一括のコース・言語ペア編集ダイアログ状態（表示中でなければ `null`）。
  * @property pendingImportConfig 取り込み・同期フォルダ選択後の共通設定ダイアログ状態（表示中でなければ `null`）。
  * @property selectedDirectoryName フォルダ指定で選択されたディレクトリ名。
  * @property collapsedDirectories 折りたたまれているディレクトリ名の集合。
+ * @property enabledLanguages 設定画面で有効化された選択肢の言語一覧（既定は日本語・英語）。
  */
 data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
@@ -267,21 +349,51 @@ data class LibraryUiState(
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
     val pendingEditItem: AudioItem? = null,
+    val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
     val selectedDirectoryName: String? = null,
     val collapsedDirectories: Set<String?> = emptySet(),
+    val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
 ) {
-    /** ディレクトリ（フォルダ）単位にグループ化した教材一覧。 */
+    /**
+     * ディレクトリ（フォルダ）単位にグループ化し、各ディレクトリ内をファイル名の自然昇順でソートした教材一覧。
+     */
     val directories: List<LibraryDirectoryUiModel>
         get() = items
             .groupBy { it.item.course ?: selectedDirectoryName }
             .map { (dirName, dirItems) ->
+                val sortedItems = dirItems.sortedWith { a, b ->
+                    val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                    if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                }
                 LibraryDirectoryUiModel(
                     name = dirName,
-                    items = dirItems,
+                    items = sortedItems,
                     isExpanded = dirName !in collapsedDirectories,
                 )
             }
+
+    /**
+     * 指定したディレクトリ（省略時は展開中で `Listened` ファイルを持つ最初のディレクトリ）について、
+     * 最後にアクセスされた `Listened` ファイルが 1〜2 件だけ上部に表示されるフラット `LazyColumn` インデックスを返す。
+     */
+    fun targetScrollLazyIndexForDirectory(
+        directoryName: String? = directories.firstOrNull {
+            it.isExpanded && it.initialVisibleItemIndexInDirectory != null
+        }?.name,
+    ): Int? {
+        var flatIndex = 0
+        for (dir in directories) {
+            if (dir.name == directoryName) {
+                if (!dir.isExpanded) return null
+                val offsetInDir = dir.initialVisibleItemIndexInDirectory ?: return null
+                // ディレクトリヘッダの分 (+1) を進めて対象ファイル行を先頭に表示する
+                return flatIndex + 1 + offsetInDir
+            }
+            flatIndex += 1 + if (dir.isExpanded) dir.items.size else 0
+        }
+        return null
+    }
 }
 
 /** ライブラリ画面のイベント。 */
@@ -350,6 +462,19 @@ sealed interface LibraryEvent {
     /** 教材のコース名・言語ペア編集ダイアログをキャンセルする。 */
     data object CancelEditMetadata : LibraryEvent
 
+    /** ディレクトリ（コース）単位のコース名・言語ペア一括編集ダイアログを開く。 */
+    data class RequestEditDirectoryMetadata(val directoryName: String?) : LibraryEvent
+
+    /** ディレクトリ（コース）単位のコース名・言語ペア一括編集を確定して保存する。 */
+    data class ConfirmEditDirectoryMetadata(
+        val currentCourse: String?,
+        val newCourse: String?,
+        val languages: LanguagePair,
+    ) : LibraryEvent
+
+    /** ディレクトリ（コース）単位の編集ダイアログをキャンセルする。 */
+    data object CancelEditDirectoryMetadata : LibraryEvent
+
     /** 教材の削除確認ダイアログを開く。 */
     data class RequestDelete(val item: AudioItem) : LibraryEvent
 
@@ -374,6 +499,7 @@ private data class LibraryRepositorySnapshot(
     val itemStates: Map<MediaId, ItemState> = emptyMap(),
     val summaries: Map<MediaId, ItemAnalysisSummary> = emptyMap(),
     val missingAudioIds: Set<MediaId> = emptySet(),
+    val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
 )
 
 private data class DialogAndImportSnapshot(
@@ -382,6 +508,7 @@ private data class DialogAndImportSnapshot(
     val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val pendingDeleteItem: AudioItem? = null,
     val pendingEditItem: AudioItem? = null,
+    val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
 )
 
@@ -395,6 +522,14 @@ private object EmptyAnalysisRepository : AnalysisRepository {
     override suspend fun resegment(id: MediaId, params: SegmentationParams) = Unit
     override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) = Unit
     override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) = Unit
+}
+
+private fun orderEnabledLanguages(enabledSet: Set<LanguageTag>): List<LanguageTag> {
+    val nonEmpty = enabledSet.ifEmpty { UserSettings.DEFAULT_ENABLED_LANGUAGES }
+    val priority = listOf(LanguageTag("ja"), LanguageTag("en"))
+    val head = priority.filter { it in nonEmpty }
+    val tail = nonEmpty.filterNot { it in priority }.sortedBy { it.value }
+    return head + tail
 }
 
 /**
@@ -426,6 +561,7 @@ class LibraryViewModel @Inject constructor(
     private val syncState = MutableStateFlow<DriveSyncUiState>(DriveSyncUiState.Idle)
     private val pendingDeleteItem = MutableStateFlow<AudioItem?>(null)
     private val pendingEditItem = MutableStateFlow<AudioItem?>(null)
+    private val pendingEditDirectory = MutableStateFlow<PendingDirectoryEdit?>(null)
     private val pendingImportConfig = MutableStateFlow<PendingImportConfig?>(null)
     private val selectedDirectoryName = MutableStateFlow<String?>(null)
     private val collapsedDirectories = MutableStateFlow<Set<String?>>(emptySet())
@@ -476,15 +612,21 @@ class LibraryViewModel @Inject constructor(
             Triple(currentImport, currentTranscript, currentSync)
         },
         pendingDeleteItem,
-        pendingEditItem,
+        combine(
+            pendingEditItem,
+            pendingEditDirectory,
+        ) { editItem, editDir ->
+            editItem to editDir
+        },
         pendingImportConfig,
-    ) { (currentImport, currentTranscript, currentSync), deleteTarget, editTarget, importConfig ->
+    ) { (currentImport, currentTranscript, currentSync), deleteTarget, (editTarget, editDirTarget), importConfig ->
         DialogAndImportSnapshot(
             importState = currentImport,
             transcriptImportState = currentTranscript,
             syncState = currentSync,
             pendingDeleteItem = deleteTarget,
             pendingEditItem = editTarget,
+            pendingEditDirectory = editDirTarget,
             pendingImportConfig = importConfig,
         )
     }
@@ -496,12 +638,14 @@ class LibraryViewModel @Inject constructor(
             libraryRepository.observeItemStates(),
             analysisSummaries,
             libraryRepository.observeMissingAudioIds(),
-        ) { items, itemStates, summaries, missingAudioIds ->
+            userSettingsRepository.settings,
+        ) { items, itemStates, summaries, missingAudioIds, userSettings ->
             LibraryRepositorySnapshot(
                 items = items,
                 itemStates = itemStates,
                 summaries = summaries,
                 missingAudioIds = missingAudioIds,
+                enabledLanguages = orderEnabledLanguages(userSettings.enabledLanguages),
             )
         },
         playbackController.status,
@@ -514,6 +658,7 @@ class LibraryViewModel @Inject constructor(
             itemStates = repoSnapshot.itemStates,
             summaries = repoSnapshot.summaries,
             missingAudioIds = repoSnapshot.missingAudioIds,
+            enabledLanguages = repoSnapshot.enabledLanguages,
             playbackStatus = playbackStatus,
             dialogAndImport = dialogAndImport,
             selectedDirectoryName = dirName,
@@ -650,6 +795,40 @@ class LibraryViewModel @Inject constructor(
 
             LibraryEvent.CancelEditMetadata -> {
                 pendingEditItem.value = null
+            }
+
+            is LibraryEvent.RequestEditDirectoryMetadata -> {
+                val targetDir = uiState.value.directories.firstOrNull { it.name == event.directoryName }
+                val initialPair = targetDir?.items?.firstOrNull()?.item?.languagePair ?: defaultLanguagePair
+                pendingEditDirectory.value = PendingDirectoryEdit(
+                    currentCourse = event.directoryName,
+                    initialLanguages = initialPair,
+                )
+            }
+
+            is LibraryEvent.ConfirmEditDirectoryMetadata -> {
+                pendingEditDirectory.value = null
+                val normalizedCourse = event.newCourse?.trim()?.ifBlank { null }
+                val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
+                val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
+                val normalizedLanguages = LanguagePair(
+                    target = LanguageTag(normalizedTarget),
+                    base = normalizedBase?.let { LanguageTag(it) },
+                )
+                if (selectedDirectoryName.value == event.currentCourse) {
+                    selectedDirectoryName.value = normalizedCourse
+                }
+                viewModelScope.launch {
+                    libraryRepository.updateDirectoryMetadata(
+                        currentCourse = event.currentCourse,
+                        newCourse = normalizedCourse,
+                        languages = normalizedLanguages,
+                    )
+                }
+            }
+
+            LibraryEvent.CancelEditDirectoryMetadata -> {
+                pendingEditDirectory.value = null
             }
 
             is LibraryEvent.RequestDelete -> {
@@ -806,6 +985,7 @@ class LibraryViewModel @Inject constructor(
         itemStates: Map<MediaId, ItemState>,
         summaries: Map<MediaId, ItemAnalysisSummary>,
         missingAudioIds: Set<MediaId>,
+        enabledLanguages: List<LanguageTag>,
         playbackStatus: PlaybackStatus,
         dialogAndImport: DialogAndImportSnapshot,
         selectedDirectoryName: String?,
@@ -822,6 +1002,8 @@ class LibraryViewModel @Inject constructor(
                 hasTranscript = summary?.hasTranscript ?: false,
                 isAnalyzing = summary?.isAnalyzing ?: false,
                 isAudioMissing = audioItem.id in missingAudioIds,
+                isListened = state?.isListened ?: false,
+                lastAccessedAtEpochMs = state?.updatedAtEpochMs?.takeIf { it > 0L },
             )
         }
         val activeMediaId = playbackStatus.mediaId
@@ -852,9 +1034,11 @@ class LibraryViewModel @Inject constructor(
             miniPlayer = miniPlayer,
             pendingDeleteItem = dialogAndImport.pendingDeleteItem,
             pendingEditItem = dialogAndImport.pendingEditItem,
+            pendingEditDirectory = dialogAndImport.pendingEditDirectory,
             pendingImportConfig = dialogAndImport.pendingImportConfig,
             selectedDirectoryName = selectedDirectoryName,
             collapsedDirectories = collapsedDirectories,
+            enabledLanguages = enabledLanguages,
         )
     }
 }

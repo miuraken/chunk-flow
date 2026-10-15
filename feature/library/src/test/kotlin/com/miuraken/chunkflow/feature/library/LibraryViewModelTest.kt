@@ -383,4 +383,97 @@ class LibraryViewModelTest {
         assertFalse(viewModel.uiState.value.items[0].isAudioMissing)
         assertTrue(viewModel.uiState.value.items[1].isAudioMissing)
     }
+
+    @Test
+    fun `ディレクトリ内ソートとListened初期スクロール位置_ファイル名昇順で並び最後のListenedの1から2件手前を指す`() = runTest {
+        val baseItem = SampleMaterials.jaKo.item
+        val item10 = baseItem.copy(id = com.miuraken.chunkflow.core.model.MediaId("m10"), title = "Lesson 10", course = "初級")
+        val item2 = baseItem.copy(id = com.miuraken.chunkflow.core.model.MediaId("m2"), title = "Lesson 2", course = "初級")
+        val item1 = baseItem.copy(id = com.miuraken.chunkflow.core.model.MediaId("m1"), title = "Lesson 1", course = "初級")
+        val item3 = baseItem.copy(id = com.miuraken.chunkflow.core.model.MediaId("m3"), title = "Lesson 3", course = "初級")
+        val item4 = baseItem.copy(id = com.miuraken.chunkflow.core.model.MediaId("m4"), title = "Lesson 4", course = "初級")
+
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(item10, item2, item1, item3, item4),
+            initialItemStates = mapOf(
+                item1.id to ItemState(
+                    mediaId = item1.id,
+                    positionMs = 29_000L,
+                    isListened = true,
+                    updatedAtEpochMs = 1_000L,
+                ),
+                item2.id to ItemState(
+                    mediaId = item2.id,
+                    positionMs = 29_500L,
+                    isListened = true,
+                    updatedAtEpochMs = 2_000L,
+                ),
+                item3.id to ItemState(
+                    mediaId = item3.id,
+                    positionMs = 29_800L,
+                    isListened = true,
+                    updatedAtEpochMs = 3_000L,
+                ),
+            ),
+        )
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val dir = viewModel.uiState.value.directories.single()
+        // ファイル名（タイトル）自然昇順: Lesson 1, Lesson 2, Lesson 3, Lesson 4, Lesson 10
+        assertEquals(
+            listOf("Lesson 1", "Lesson 2", "Lesson 3", "Lesson 4", "Lesson 10"),
+            dir.items.map { it.item.title },
+        )
+        assertEquals(3, dir.listenedCount)
+        assertTrue(dir.items[0].isListened)
+        assertEquals(1_000L, dir.items[0].lastAccessedAtEpochMs)
+        assertEquals(2, dir.lastAccessedListenedIndex) // Lesson 3 (index 2)
+        // 最後の Listened (index 2) の 1 件手前 (index 1 = Lesson 2) から表示開始し、Lesson 2, Lesson 3 の 2 件が上部に残る
+        assertEquals(1, dir.initialVisibleItemIndexInDirectory)
+        // LazyColumn 内のインデックスはヘッダ (0) + 1 + offset (1) = 2
+        assertEquals(2, viewModel.uiState.value.targetScrollLazyIndexForDirectory("初級"))
+    }
+
+    @Test
+    fun `ディレクトリ一括メタデータ編集_コース名と言語ペアをディレクトリ単位で一括更新できる`() = runTest {
+        val item1 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("d1"),
+            course = "旧コース",
+        )
+        val item2 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("d2"),
+            course = "旧コース",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2))
+        val playback = FakePlaybackController()
+        val settingsRepo = com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository()
+        val viewModel = LibraryViewModel(
+            libraryRepository = repo,
+            playbackController = playback,
+            analysisRepository = FakeAnalysisRepository(),
+            userSettingsRepository = settingsRepo,
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("旧コース"))
+        assertEquals("旧コース", viewModel.uiState.value.pendingEditDirectory?.currentCourse)
+
+        viewModel.onEvent(LibraryEvent.CancelEditDirectoryMetadata)
+        assertNull(viewModel.uiState.value.pendingEditDirectory)
+
+        val newPair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("en"))
+        viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("旧コース"))
+        viewModel.onEvent(
+            LibraryEvent.ConfirmEditDirectoryMetadata(
+                currentCourse = "旧コース",
+                newCourse = "新中国語コース",
+                languages = newPair,
+            ),
+        )
+        assertNull(viewModel.uiState.value.pendingEditDirectory)
+        assertTrue(viewModel.uiState.value.items.all { it.item.course == "新中国語コース" })
+        assertTrue(viewModel.uiState.value.items.all { it.item.languagePair == newPair })
+    }
 }
