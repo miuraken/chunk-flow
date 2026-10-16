@@ -19,6 +19,8 @@ import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
@@ -104,6 +106,12 @@ interface OnDeviceChunkTranscriber {
      * ダウンロードが終わっていれば、その言語を [recognitionModelIssues] から外す。
      */
     suspend fun refreshRecognitionModelIssues() = Unit
+
+    /**
+     * 指定された言語一覧 [languages] について、端末内音声認識モデルの利用可能状態と
+     * 解決された BCP-47 ロケールタグを問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
+     */
+    suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = languages.map { OnDeviceLanguageModelInfo(language = it) }
 
     /**
      * 音声ファイル [audioFile] の `[startMs, endMs]` 区間を 16kHz モノラル 16-bit PCM に切り出して端末内音声認識を行う。
@@ -205,6 +213,91 @@ internal fun toBcp47LocaleTag(lang: String): String {
             if (localeTag.isNotBlank() && localeTag != "und") localeTag else normalized
         }
     }
+}
+
+/**
+ * 言語コード [lang] に対して Android `SpeechRecognizer`（SODA）へ順に試行する BCP-47 ロケールタグ候補一覧を返す。
+ *
+ * Pixel 等のオンデバイス音声認識（SODA）では、中国語（普通話・簡体字）が `"zh-CN"` ではなく `"cmn-Hans-CN"`、
+ * 台湾華語（繁体字）が `"cmn-Hant-TW"`、広東語が `"yue-Hant-HK"` として登録されている端末があるため、
+ * 第一候補が `ERROR_LANGUAGE_NOT_SUPPORTED` となった場合にこれらの同義タグへフォールバックできるようにする。
+ */
+internal fun toBcp47CandidateLocaleTags(lang: String): List<String> {
+    val primary = toBcp47LocaleTag(lang)
+    val normalized = lang.trim().replace('_', '-').lowercase(Locale.ROOT)
+    val aliases = when (normalized) {
+        "zh",
+        "zh-cn",
+        "zh-hans",
+        "zh-hans-cn",
+        "cmn",
+        "cmn-hans",
+        "cmn-hans-cn",
+        "cmn-cn",
+        -> listOf("zh-CN", "cmn-Hans-CN", "zh-Hans-CN", "cmn-CN", "zh")
+
+        "zh-sg",
+        "zh-hans-sg",
+        "cmn-hans-sg",
+        -> listOf("zh-SG", "cmn-Hans-SG", "cmn-Hans-CN", "zh-CN", "zh-Hans-CN")
+
+        "zh-tw",
+        "zh-hant",
+        "zh-hant-tw",
+        "cmn-hant",
+        "cmn-hant-tw",
+        "cmn-tw",
+        -> listOf("zh-TW", "cmn-Hant-TW", "zh-Hant-TW", "cmn-TW")
+
+        "yue",
+        "yue-hk",
+        "yue-hant",
+        "yue-hant-hk",
+        "zh-hk",
+        "zh-hant-hk",
+        -> listOf("yue-HK", "yue-Hant-HK", "zh-HK", "zh-Hant-HK", "cmn-Hant-HK", "yue")
+
+        "ja", "ja-jp" -> listOf("ja-JP", "ja")
+
+        "en", "en-us" -> listOf("en-US", "en-GB", "en")
+
+        "ko", "ko-kr" -> listOf("ko-KR", "ko")
+
+        "es", "es-es" -> listOf("es-ES", "es-US", "es-MX", "es")
+
+        "fr", "fr-fr" -> listOf("fr-FR", "fr-CA", "fr")
+
+        "de", "de-de" -> listOf("de-DE", "de")
+
+        "it", "it-it" -> listOf("it-IT", "it")
+
+        "pt", "pt-br" -> listOf("pt-BR", "pt-PT", "pt")
+
+        "ru", "ru-ru" -> listOf("ru-RU", "ru")
+
+        "hi", "hi-in" -> listOf("hi-IN", "hi")
+
+        "ar", "ar-sa" -> listOf("ar-SA", "ar-EG", "ar-AE", "ar")
+
+        "th", "th-th" -> listOf("th-TH", "th")
+
+        "vi", "vi-vn" -> listOf("vi-VN", "vi")
+
+        "id", "id-id" -> listOf("id-ID", "id")
+
+        "el", "el-gr" -> listOf("el-GR", "el")
+
+        else -> {
+            val baseLang = normalized.substringBefore('-')
+            val defaultForBase = if (baseLang.isNotEmpty() && baseLang != normalized) {
+                toBcp47LocaleTag(baseLang)
+            } else {
+                null
+            }
+            listOfNotNull(primary, defaultForBase, baseLang.takeIf { it.isNotEmpty() })
+        }
+    }
+    return (listOf(primary) + aliases).distinct()
 }
 
 /**
@@ -1108,6 +1201,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     /** 自動でダウンロードを要求済みの言語（BCP-47、小文字）。同じ言語の要求はプロセスごとに 1 回だけ。 */
     private val autoDownloadRequestedTags: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    /** 言語タグ（小文字）ごとに端末で動作または対応が確認された BCP-47 ロケールタグのキャッシュ。 */
+    private val resolvedBcp47TagByLangKey: ConcurrentHashMap<String, String> = ConcurrentHashMap()
+
     @Volatile
     private var lastModelIssueRefreshRealtimeMs: Long = 0L
 
@@ -1118,7 +1214,27 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
     override suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean {
         if (!onDeviceAvailabilityChecker()) return false
-        val bcp47Tag = toBcp47LocaleTag(language.value)
+        val candidates = candidateBcp47TagsFor(language.value)
+        val support = recognitionLock.withLock(highPriority = false) {
+            try {
+                recognitionModelGateway.checkSupport(candidates)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        }
+        val installedTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.INSTALLED }
+        if (installedTag != null) {
+            rememberResolvedBcp47Tag(language.value, installedTag)
+            clearModelIssue(language)
+            return true
+        }
+        val bcp47Tag = candidates.firstOrNull {
+            support[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED ||
+                support[it] == RecognitionModelSupport.PENDING
+        } ?: candidates.first()
+        rememberResolvedBcp47Tag(language.value, bcp47Tag)
         autoDownloadRequestedTags.add(bcp47Tag.lowercase(Locale.ROOT))
         return startRecognitionModelDownload(language, bcp47Tag)
     }
@@ -1133,30 +1249,155 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             return
         }
         lastModelIssueRefreshRealtimeMs = now
-        val bcp47ByLanguage = issues.keys.associateWith { toBcp47LocaleTag(it.value) }
+        val candidatesByLanguage = issues.keys.associateWith { candidateBcp47TagsFor(it.value) }
         // 認識中の SpeechRecognizer と同時にサービスへ接続しないよう、認識ロックを取ってから問い合わせる
         val support = recognitionLock.withLock(highPriority = false) {
             try {
-                recognitionModelGateway.checkSupport(bcp47ByLanguage.values.distinct())
+                recognitionModelGateway.checkSupport(candidatesByLanguage.values.flatten().distinct())
             } catch (ce: CancellationException) {
                 throw ce
             } catch (_: Exception) {
                 emptyMap()
             }
         }
-        for ((language, bcp47Tag) in bcp47ByLanguage) {
-            when (support[bcp47Tag]) {
-                RecognitionModelSupport.INSTALLED -> {
-                    logInfo("modelSupport lang=$bcp47Tag installed")
+        for ((language, candidates) in candidatesByLanguage) {
+            val installedTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.INSTALLED }
+            val pendingTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.PENDING }
+            val supportedTag = candidates.firstOrNull {
+                support[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
+            }
+            when {
+                installedTag != null -> {
+                    logInfo("modelSupport lang=$installedTag installed")
+                    rememberResolvedBcp47Tag(language.value, installedTag)
                     clearModelIssue(language)
                 }
 
-                RecognitionModelSupport.PENDING -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+                pendingTag != null -> {
+                    rememberResolvedBcp47Tag(language.value, pendingTag)
+                    setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+                }
 
-                // 未インストール・非対応・不明は、認識時のエラーコードから決めた状態を優先して変えない
-                RecognitionModelSupport.SUPPORTED_NOT_INSTALLED, RecognitionModelSupport.UNSUPPORTED, null -> Unit
+                supportedTag != null -> {
+                    rememberResolvedBcp47Tag(language.value, supportedTag)
+                    if (issues[language] == OnDeviceRecognitionModelState.UNSUPPORTED) {
+                        setModelIssue(language, OnDeviceRecognitionModelState.NOT_INSTALLED)
+                    }
+                }
             }
         }
+    }
+
+    override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> {
+        if (languages.isEmpty()) return emptyList()
+        if (!onDeviceAvailabilityChecker()) {
+            return languages.map { lang ->
+                OnDeviceLanguageModelInfo(
+                    language = lang,
+                    status = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    resolvedBcp47Tag = candidateBcp47TagsFor(lang.value).firstOrNull(),
+                )
+            }
+        }
+        val candidatesByLanguage = languages.associateWith { candidateBcp47TagsFor(it.value) }
+        val support = recognitionLock.withLock(highPriority = false) {
+            try {
+                recognitionModelGateway.checkSupport(candidatesByLanguage.values.flatten().distinct())
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        }
+        val currentIssues = modelIssuesState.value
+        return languages.map { language ->
+            val candidates = candidatesByLanguage[language].orEmpty()
+            val installedTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.INSTALLED }
+            val pendingTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.PENDING }
+            val supportedTag = candidates.firstOrNull {
+                support[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
+            }
+            val issue = currentIssues[language]
+            when {
+                installedTag != null -> {
+                    rememberResolvedBcp47Tag(language.value, installedTag)
+                    clearModelIssue(language)
+                    OnDeviceLanguageModelInfo(
+                        language = language,
+                        status = OnDeviceLanguageModelStatus.INSTALLED,
+                        resolvedBcp47Tag = installedTag,
+                    )
+                }
+
+                pendingTag != null || issue == OnDeviceRecognitionModelState.DOWNLOADING -> {
+                    val tag = pendingTag ?: supportedTag ?: candidates.firstOrNull()
+                    if (tag != null) rememberResolvedBcp47Tag(language.value, tag)
+                    OnDeviceLanguageModelInfo(
+                        language = language,
+                        status = OnDeviceLanguageModelStatus.DOWNLOADING,
+                        resolvedBcp47Tag = tag,
+                    )
+                }
+
+                supportedTag != null -> {
+                    rememberResolvedBcp47Tag(language.value, supportedTag)
+                    val status = if (issue == OnDeviceRecognitionModelState.DOWNLOAD_FAILED) {
+                        OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                    } else {
+                        OnDeviceLanguageModelStatus.NOT_INSTALLED
+                    }
+                    OnDeviceLanguageModelInfo(
+                        language = language,
+                        status = status,
+                        resolvedBcp47Tag = supportedTag,
+                    )
+                }
+
+                support.isNotEmpty() -> {
+                    OnDeviceLanguageModelInfo(
+                        language = language,
+                        status = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                        resolvedBcp47Tag = candidates.firstOrNull(),
+                    )
+                }
+
+                else -> {
+                    val status = when (issue) {
+                        OnDeviceRecognitionModelState.NOT_INSTALLED -> OnDeviceLanguageModelStatus.NOT_INSTALLED
+                        OnDeviceRecognitionModelState.DOWNLOADING -> OnDeviceLanguageModelStatus.DOWNLOADING
+                        OnDeviceRecognitionModelState.DOWNLOAD_FAILED -> OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                        OnDeviceRecognitionModelState.UNSUPPORTED -> OnDeviceLanguageModelStatus.UNSUPPORTED
+                        null -> OnDeviceLanguageModelStatus.CHECKING
+                    }
+                    OnDeviceLanguageModelInfo(
+                        language = language,
+                        status = status,
+                        resolvedBcp47Tag = candidates.firstOrNull(),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun candidateBcp47TagsFor(
+        rawLang: String?,
+        fallbackBcp47Tag: String = toBcp47LocaleTag(rawLang ?: ""),
+    ): List<String> {
+        val source = rawLang?.takeIf { it.isNotBlank() } ?: fallbackBcp47Tag
+        val langKey = source.trim().replace('_', '-').lowercase(Locale.ROOT)
+        val resolved = resolvedBcp47TagByLangKey[langKey]
+        val candidates = toBcp47CandidateLocaleTags(source)
+        return if (resolved != null) {
+            (listOf(resolved) + candidates).distinct()
+        } else {
+            candidates
+        }
+    }
+
+    private fun rememberResolvedBcp47Tag(rawLang: String?, resolvedTag: String) {
+        val source = rawLang?.takeIf { it.isNotBlank() } ?: return
+        val langKey = source.trim().replace('_', '-').lowercase(Locale.ROOT)
+        resolvedBcp47TagByLangKey[langKey] = resolvedTag
     }
 
     private fun startRecognitionModelDownload(language: LanguageTag, bcp47Tag: String): Boolean {
@@ -1839,8 +2080,95 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         isProbe: Boolean,
         language: LanguageTag? = null,
     ): SpeechRecognitionAttemptResult? {
+        val candidates = candidateBcp47TagsFor(language?.value, bcp47LocaleTag)
+        var lastAttempt: SpeechRecognitionAttemptResult? = null
+        var lastTag: String = candidates.firstOrNull() ?: bcp47LocaleTag
+
+        for ((index, candidateTag) in candidates.withIndex()) {
+            lastTag = candidateTag
+            val attempt = runAttemptWithTag(
+                pcm16LeBytes = pcm16LeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = candidateTag,
+                preferOnDevice = preferOnDevice,
+                isProbe = isProbe,
+            )
+            lastAttempt = attempt
+            if (attempt?.errorCode != SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
+                if (index > 0 ||
+                    attempt?.text?.isNotBlank() == true ||
+                    attempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
+                ) {
+                    rememberResolvedBcp47Tag(language?.value, candidateTag)
+                }
+                noteRecognitionAttemptOutcome(language, candidateTag, attempt)
+                return attempt
+            }
+            if (index + 1 < candidates.size) {
+                logInfo(
+                    "bcp47Fallback lang=${language?.value ?: bcp47LocaleTag} " +
+                        "unsupportedTag=$candidateTag nextTag=${candidates[index + 1]}",
+                )
+            }
+        }
+
+        // すべての候補タグで ERROR_LANGUAGE_NOT_SUPPORTED が返った場合でも、
+        // checkRecognitionSupport 上で対応・未インストール（例: cmn-Hans-CN）と報告される端末では
+        // 未ダウンロード（ERROR_LANGUAGE_UNAVAILABLE）として扱い、モデルの取得を開始する
+        if (language != null && onDeviceAvailabilityChecker()) {
+            val support = try {
+                recognitionModelGateway.checkSupport(candidates)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                emptyMap()
+            }
+            val installedTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.INSTALLED }
+            val pendingTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.PENDING }
+            val downloadableTag = candidates.firstOrNull {
+                support[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
+            }
+            when {
+                installedTag != null -> {
+                    rememberResolvedBcp47Tag(language.value, installedTag)
+                    clearModelIssue(language)
+                    return lastAttempt
+                }
+
+                pendingTag != null -> {
+                    rememberResolvedBcp47Tag(language.value, pendingTag)
+                    setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+                    return SpeechRecognitionAttemptResult(
+                        text = "",
+                        errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                    )
+                }
+
+                downloadableTag != null -> {
+                    rememberResolvedBcp47Tag(language.value, downloadableTag)
+                    val unavailableAttempt = SpeechRecognitionAttemptResult(
+                        text = "",
+                        errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                    )
+                    noteRecognitionAttemptOutcome(language, downloadableTag, unavailableAttempt)
+                    return unavailableAttempt
+                }
+            }
+        }
+
+        noteRecognitionAttemptOutcome(language, lastTag, lastAttempt)
+        return lastAttempt
+    }
+
+    private suspend fun runAttemptWithTag(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        bcp47LocaleTag: String,
+        preferOnDevice: Boolean,
+        isProbe: Boolean,
+    ): SpeechRecognitionAttemptResult? {
         val runner = attemptRunner
-        val attempt = if (runner != null) {
+        return if (runner != null) {
             runner(pcm16LeBytes, sampleRateHz, bcp47LocaleTag, preferOnDevice)
         } else {
             runSinglePipeAttempt(
@@ -1851,8 +2179,6 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 isProbe = isProbe,
             )
         }
-        noteRecognitionAttemptOutcome(language, bcp47LocaleTag, attempt)
-        return attempt
     }
 
     private suspend fun runSinglePipeAttempt(

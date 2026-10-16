@@ -70,6 +70,25 @@ class SettingsViewModelTest {
         viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(1_500)))
         assertEquals(AutoPause.Fixed(1_500), viewModel.uiState.value.defaultAutoPause)
 
+        viewModel.onEvent(
+            SettingsEvent.SetDefaultAutoPauseScope(
+                com.miuraken.chunkflow.core.model.AutoPauseScope.AFTER_TARGET_LANGUAGE,
+            ),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.AutoPauseScope.AFTER_TARGET_LANGUAGE,
+            viewModel.uiState.value.defaultAutoPauseScope,
+        )
+        viewModel.onEvent(
+            SettingsEvent.SetDefaultAutoPauseScope(
+                com.miuraken.chunkflow.core.model.AutoPauseScope.AFTER_BASE_LANGUAGE,
+            ),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.AutoPauseScope.AFTER_BASE_LANGUAGE,
+            viewModel.uiState.value.defaultAutoPauseScope,
+        )
+
         val customParams = SegmentationParams(
             minSilenceMs = 500,
             prePaddingMs = 200,
@@ -226,5 +245,50 @@ class SettingsViewModelTest {
         viewModel.onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(true))
         assertTrue(viewModel.uiState.value.lookaheadTranscriptionEnabled)
         assertTrue(repo.state.value.lookaheadTranscriptionEnabled)
+    }
+
+    @Test
+    fun `音声認識モデルの管理_状態取得とダウンロード要求がUiStateに反映される`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val analysisRepo = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository().apply {
+            languageModelInfos[LanguageTag("zh")] =
+                com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                    language = LanguageTag("zh"),
+                    status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    resolvedBcp47Tag = "cmn-Hans-CN",
+                )
+        }
+        val viewModel = SettingsViewModel(repo, analysisRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val zhBefore = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            zhBefore.status,
+        )
+        assertEquals("cmn-Hans-CN", zhBefore.resolvedBcp47Tag)
+
+        // ダウンロード要求で DOWNLOADING に遷移する
+        viewModel.onEvent(SettingsEvent.RequestRecognitionModelDownload(LanguageTag("zh")))
+        assertEquals(listOf(LanguageTag("zh")), analysisRepo.requestedModelDownloads)
+        val zhDownloading = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.DOWNLOADING,
+            zhDownloading.status,
+        )
+
+        // インストール完了後に状態更新すると INSTALLED になる
+        analysisRepo.languageModelInfos[LanguageTag("zh")] =
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                language = LanguageTag("zh"),
+                status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                resolvedBcp47Tag = "cmn-Hans-CN",
+            )
+        viewModel.onEvent(SettingsEvent.RefreshRecognitionModels)
+        val zhInstalled = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            zhInstalled.status,
+        )
     }
 }

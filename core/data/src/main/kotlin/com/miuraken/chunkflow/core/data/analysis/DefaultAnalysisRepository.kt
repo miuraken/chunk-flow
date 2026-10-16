@@ -48,6 +48,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
@@ -927,6 +928,14 @@ class DefaultAnalysisRepository(
         } catch (_: Exception) {
             // 状態の問い合わせに失敗しても再生や文字起こしは続ける
         }
+    }
+
+    override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = try {
+        onDeviceChunkTranscriber.queryLanguageModelInfos(languages)
+    } catch (ce: CancellationException) {
+        throw ce
+    } catch (_: Exception) {
+        languages.map { OnDeviceLanguageModelInfo(language = it) }
     }
 
     /**
@@ -2797,7 +2806,7 @@ class DefaultAnalysisRepository(
         ): Boolean {
             if (MediaId(item.id) in openMediaIds) return false
             if (state == null) return true
-            if (state.isListened || state.positionMs > 0L) return false
+            if (state.isListened || state.positionMs > 0L || state.maxPositionMs > 0L) return false
             return state.updatedAt <= 0L || state.updatedAt <= item.importedAt
         }
     }

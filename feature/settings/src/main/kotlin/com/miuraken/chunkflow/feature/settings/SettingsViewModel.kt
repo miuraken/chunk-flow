@@ -2,12 +2,16 @@ package com.miuraken.chunkflow.feature.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
@@ -15,10 +19,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Locale
 import javax.inject.Inject
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -36,9 +42,11 @@ data class DeviceLanguageOption(
  * 設定画面の UI 状態（F9.1、F3.2、F3.3、F5.2、F6.3）。
  *
  * @property settings 現在のユーザー設定。
+ * @property languageModels 言語ごとの端末内音声認識モデルの状態一覧（「文字起こし設定」タブ用）。
  */
 data class SettingsUiState(
     val settings: UserSettings = UserSettings(),
+    val languageModels: List<OnDeviceLanguageModelInfo> = defaultLanguageModelInfos(),
 ) {
     /** 既定の言語ペア。 */
     val defaultLanguagePair: LanguagePair
@@ -85,6 +93,10 @@ data class SettingsUiState(
     /** 既定の自動ポーズ設定。 */
     val defaultAutoPause: AutoPause
         get() = settings.defaultAutoPause
+
+    /** 既定の自動ポーズ対象言語範囲。 */
+    val defaultAutoPauseScope: AutoPauseScope
+        get() = settings.defaultAutoPauseScope
 
     /** 端末内の先読み簡易文字起こしを既定で有効にするかどうか（既定は `true`）。 */
     val lookaheadTranscriptionEnabled: Boolean
@@ -136,6 +148,13 @@ data class SettingsUiState(
             AutoPause.Proportional(factor = 1.5f),
         )
 
+        /** 既定の自動ポーズ対象言語範囲の選択肢。 */
+        val AUTO_PAUSE_SCOPE_OPTIONS: List<AutoPauseScope> = listOf(
+            AutoPauseScope.ALL_CHUNKS,
+            AutoPauseScope.AFTER_TARGET_LANGUAGE,
+            AutoPauseScope.AFTER_BASE_LANGUAGE,
+        )
+
         /** 主な対象言語の一覧（§1.2、F9.1）。 */
         val SUPPORTED_LANGUAGES: List<LanguageTag> = listOf(
             LanguageTag("en"),
@@ -151,6 +170,9 @@ data class SettingsUiState(
             LanguageTag("el"),
             LanguageTag("id"),
         )
+
+        /** 音声認識モデル管理一覧の初期値。 */
+        fun defaultLanguageModelInfos(): List<OnDeviceLanguageModelInfo> = SUPPORTED_LANGUAGES.map { OnDeviceLanguageModelInfo(language = it) }
 
         /**
          * 端末（[Locale.getAvailableLocales]）で認識可能な言語一覧を返す。
@@ -214,6 +236,9 @@ sealed interface SettingsEvent {
     /** 既定の自動ポーズを変更する。 */
     data class SetDefaultAutoPause(val autoPause: AutoPause) : SettingsEvent
 
+    /** 既定の自動ポーズ対象言語範囲を変更する。 */
+    data class SetDefaultAutoPauseScope(val scope: AutoPauseScope) : SettingsEvent
+
     /** 自動チャンク分割の既定パラメータを変更する。 */
     data class SetDefaultSegmentationParams(val params: SegmentationParams) : SettingsEvent
 
@@ -243,6 +268,12 @@ sealed interface SettingsEvent {
 
     /** 端末内の先読み簡易文字起こしの ON / OFF を切り替える。 */
     data class SetLookaheadTranscriptionEnabled(val enabled: Boolean) : SettingsEvent
+
+    /** 指定した言語の端末内音声認識モデルのダウンロードを要求する。 */
+    data class RequestRecognitionModelDownload(val language: LanguageTag) : SettingsEvent
+
+    /** 言語ごとの端末内音声認識モデルの状態を再取得する。 */
+    data object RefreshRecognitionModels : SettingsEvent
 }
 
 /**
@@ -251,16 +282,38 @@ sealed interface SettingsEvent {
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val userSettingsRepository: UserSettingsRepository,
+    private val analysisRepository: AnalysisRepository,
 ) : ViewModel() {
 
+    constructor(
+        userSettingsRepository: UserSettingsRepository,
+    ) : this(
+        userSettingsRepository = userSettingsRepository,
+        analysisRepository = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository(),
+    )
+
+    private val languageModelsState = MutableStateFlow(SettingsUiState.defaultLanguageModelInfos())
+
     /** 設定画面の UI 状態。 */
-    val uiState: StateFlow<SettingsUiState> = userSettingsRepository.settings
-        .map { userSettings -> SettingsUiState(settings = userSettings) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = SettingsUiState(),
+    val uiState: StateFlow<SettingsUiState> = combine(
+        userSettingsRepository.settings,
+        languageModelsState,
+    ) { userSettings, languageModels ->
+        SettingsUiState(
+            settings = userSettings,
+            languageModels = languageModels,
         )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = SettingsUiState(),
+    )
+
+    init {
+        viewModelScope.launch {
+            refreshLanguageModelsInternal()
+        }
+    }
 
     /** 画面からのイベントを処理する。 */
     fun onEvent(event: SettingsEvent) {
@@ -291,6 +344,12 @@ class SettingsViewModel @Inject constructor(
             is SettingsEvent.SetDefaultAutoPause -> {
                 viewModelScope.launch {
                     userSettingsRepository.setDefaultAutoPause(event.autoPause)
+                }
+            }
+
+            is SettingsEvent.SetDefaultAutoPauseScope -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setDefaultAutoPauseScope(event.scope)
                 }
             }
 
@@ -365,7 +424,49 @@ class SettingsViewModel @Inject constructor(
                 }
             }
 
+            is SettingsEvent.RequestRecognitionModelDownload -> {
+                languageModelsState.update { current ->
+                    current.map { info ->
+                        if (info.language == event.language) {
+                            info.copy(status = OnDeviceLanguageModelStatus.DOWNLOADING)
+                        } else {
+                            info
+                        }
+                    }
+                }
+                viewModelScope.launch {
+                    val ok = analysisRepository.requestRecognitionModelDownload(event.language)
+                    if (!ok) {
+                        languageModelsState.update { current ->
+                            current.map { info ->
+                                if (info.language == event.language) {
+                                    info.copy(status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                } else {
+                                    info
+                                }
+                            }
+                        }
+                    } else {
+                        refreshLanguageModelsInternal()
+                    }
+                }
+            }
+
+            SettingsEvent.RefreshRecognitionModels -> {
+                viewModelScope.launch {
+                    analysisRepository.refreshRecognitionModelIssues()
+                    refreshLanguageModelsInternal()
+                }
+            }
+
             SettingsEvent.Back -> Unit
+        }
+    }
+
+    private suspend fun refreshLanguageModelsInternal() {
+        val queried = analysisRepository.queryLanguageModelInfos(SettingsUiState.SUPPORTED_LANGUAGES)
+        if (queried.isNotEmpty()) {
+            languageModelsState.value = queried
         }
     }
 

@@ -1308,6 +1308,144 @@ class OnDeviceSpeechTranscriberTest {
         )
     }
 
+    @Test
+    fun `toBcp47CandidateLocaleTags_簡体繁体広東語の同義BCP47タグ候補を優先順で返す`() {
+        assertEquals(
+            listOf("zh-CN", "cmn-Hans-CN", "zh-Hans-CN", "cmn-CN", "zh"),
+            toBcp47CandidateLocaleTags("zh"),
+        )
+        assertEquals(
+            listOf("zh-CN", "cmn-Hans-CN", "zh-Hans-CN", "cmn-CN", "zh"),
+            toBcp47CandidateLocaleTags("zh-cn"),
+        )
+        assertEquals(
+            listOf("zh-TW", "cmn-Hant-TW", "zh-Hant-TW", "cmn-TW"),
+            toBcp47CandidateLocaleTags("zh-tw"),
+        )
+        assertEquals(
+            listOf("yue-HK", "yue-Hant-HK", "zh-HK", "zh-Hant-HK", "cmn-Hant-HK", "yue"),
+            toBcp47CandidateLocaleTags("yue"),
+        )
+    }
+
+    @Test
+    fun `transcribeChunk_zh_CNがERROR_LANGUAGE_NOT_SUPPORTEDでもcmn_Hans_CNへフォールバックして認識し次回以降はcmn_Hans_CNを直接使う`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val gateway = FakeRecognitionModelGateway()
+        val runnerCalls = mutableListOf<String>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag
+                when (bcp47Tag) {
+                    "zh-CN" -> SpeechRecognitionAttemptResult(
+                        text = "",
+                        errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                    )
+
+                    "cmn-Hans-CN" -> SpeechRecognitionAttemptResult(
+                        text = "你好世界",
+                        confidence = 0.94f,
+                    )
+
+                    else -> null
+                }
+            },
+            languageDetector = { _, _, _ ->
+                LanguagePairPrediction(
+                    selectedTag = "zh",
+                    fallbackTag = "ja",
+                    selectedProbability = 0.98f,
+                    targetProbability = 0.98f,
+                    baseProbability = 0.02f,
+                    inferenceTimeMs = 8L,
+                )
+            },
+            modelGateway = gateway,
+        )
+        val zhJaPair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja"))
+
+        val first = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("zh_fallback_1.wav").apply { writeBytes(byteArrayOf(1, 2)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = zhJaPair,
+        )
+        assertNotNull(first)
+        assertEquals("你好世界", first.text)
+        assertEquals(LanguageTag("zh"), first.language)
+        assertEquals(listOf("zh-CN", "cmn-Hans-CN"), runnerCalls)
+        assertTrue(transcriber.recognitionModelIssues.value.isEmpty())
+
+        // 2チャンク目では解決済みの cmn-Hans-CN を最初から使う
+        val second = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("zh_fallback_2.wav").apply { writeBytes(byteArrayOf(3, 4)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = zhJaPair,
+        )
+        assertNotNull(second)
+        assertEquals("你好世界", second.text)
+        assertEquals(listOf("zh-CN", "cmn-Hans-CN", "cmn-Hans-CN"), runnerCalls)
+    }
+
+    @Test
+    fun `transcribeChunk_候補タグが全てERROR_LANGUAGE_NOT_SUPPORTEDでもcheckSupportでcmn_Hans_CNがSUPPORTED_NOT_INSTALLEDならダウンロードを開始する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val gateway = FakeRecognitionModelGateway().apply {
+            supportResult = mapOf("cmn-Hans-CN" to RecognitionModelSupport.SUPPORTED_NOT_INSTALLED)
+        }
+        val runnerCalls = mutableListOf<String>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                runnerCalls += bcp47Tag
+                SpeechRecognitionAttemptResult(
+                    text = "",
+                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                )
+            },
+            languageDetector = { _, _, _ ->
+                LanguagePairPrediction(
+                    selectedTag = "zh",
+                    fallbackTag = "ja",
+                    selectedProbability = 0.96f,
+                    targetProbability = 0.96f,
+                    baseProbability = 0.04f,
+                    inferenceTimeMs = 8L,
+                )
+            },
+            modelGateway = gateway,
+        )
+        val zhJaPair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja"))
+
+        val result = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("zh_download_fallback.wav").apply { writeBytes(byteArrayOf(5, 6)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = zhJaPair,
+        )
+        assertNotNull(result)
+        assertTrue(result.isLanguageOnly)
+        assertEquals(LanguageTag("zh"), result.language)
+        assertEquals(
+            listOf("zh-CN", "cmn-Hans-CN", "zh-Hans-CN", "cmn-CN", "zh"),
+            runnerCalls,
+        )
+        // UNSUPPORTED ではなく、対応タグ cmn-Hans-CN でダウンロードが自動要求されること
+        assertEquals(listOf("cmn-Hans-CN"), gateway.downloadRequests)
+        assertEquals(
+            mapOf(LanguageTag("zh") to OnDeviceRecognitionModelState.DOWNLOADING),
+            transcriber.recognitionModelIssues.value,
+        )
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

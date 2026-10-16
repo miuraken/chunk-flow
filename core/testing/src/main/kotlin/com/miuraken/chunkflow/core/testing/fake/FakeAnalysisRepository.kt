@@ -10,6 +10,8 @@ import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
@@ -89,6 +91,12 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     /** [prioritizeOpenedMediaAnalysis] の呼び出し履歴（呼ばれた順）。 */
     val prioritizedMediaAnalyses: MutableList<MediaId> = mutableListOf()
+
+    /** [queryLanguageModelInfos] が返す言語ごとのモデル情報のスタブ設定。 */
+    val languageModelInfos: MutableMap<LanguageTag, OnDeviceLanguageModelInfo> = mutableMapOf()
+
+    /** [requestRecognitionModelDownload] の呼び出し履歴（呼ばれた順）。 */
+    val requestedModelDownloads: MutableList<LanguageTag> = mutableListOf()
 
     /** フィクスチャの解析結果を入れる。 */
     fun put(material: SampleMaterial) {
@@ -185,6 +193,19 @@ class FakeAnalysisRepository : AnalysisRepository {
         update(id) { entry ->
             entry.copy(lookaheadStatus = entry.lookaheadStatus.copy(enabled = enabled))
         }
+    }
+
+    override suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean {
+        requestedModelDownloads += language
+        val existing = languageModelInfos[language]
+        languageModelInfos[language] = (existing ?: OnDeviceLanguageModelInfo(language = language)).copy(
+            status = OnDeviceLanguageModelStatus.DOWNLOADING,
+        )
+        return true
+    }
+
+    override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = languages.map { lang ->
+        languageModelInfos[lang] ?: OnDeviceLanguageModelInfo(language = lang)
     }
 
     override fun setMediaTranscriptionSessionOpen(id: MediaId, open: Boolean) {

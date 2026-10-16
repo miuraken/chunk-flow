@@ -1,6 +1,5 @@
 package com.miuraken.chunkflow.feature.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -11,42 +10,43 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -54,17 +54,25 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
-import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
-import com.miuraken.chunkflow.core.model.ChineseScript
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.LanguageTag
-import com.miuraken.chunkflow.core.model.PhoneticGuideKind
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.SegmentationParams
-import com.miuraken.chunkflow.core.model.UserSettings
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+/**
+ * 設定画面のタブ種別。
+ */
+private enum class SettingsTab {
+    PLAYBACK,
+    SEGMENTATION,
+    TRANSCRIPTION,
+}
 
 /**
  * 設定画面の Route（F9.1、F3.2、F3.3、F5.2、F6.3）。
@@ -99,6 +107,16 @@ fun SettingsScreen(
     onEvent: (SettingsEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var selectedTabOrdinal by rememberSaveable { mutableIntStateOf(SettingsTab.PLAYBACK.ordinal) }
+    val selectedTab = SettingsTab.entries.getOrElse(selectedTabOrdinal) { SettingsTab.PLAYBACK }
+    val isInspectionMode = LocalInspectionMode.current
+
+    LaunchedEffect(selectedTab, isInspectionMode) {
+        if (!isInspectionMode && selectedTab == SettingsTab.TRANSCRIPTION) {
+            onEvent(SettingsEvent.RefreshRecognitionModels)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -118,49 +136,63 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(innerPadding),
         ) {
-            PlaybackSettingsSection(
-                seekBackMs = state.seekBackMs,
-                seekForwardMs = state.seekForwardMs,
-                defaultSpeed = state.defaultSpeed,
-                defaultAutoPause = state.defaultAutoPause,
-                lookaheadTranscriptionEnabled = state.lookaheadTranscriptionEnabled,
-                onEvent = onEvent,
-            )
-
-            SegmentationDefaultsSection(
-                params = state.defaultSegmentationParams,
-                onEvent = onEvent,
-            )
-
-            LanguagePairSection(
-                targetLanguage = state.defaultLanguagePair.target,
-                baseLanguage = state.defaultLanguagePair.base,
-                enabledLanguages = state.enabledLanguages,
-                selectableLanguages = state.selectableLanguages,
-                onEvent = onEvent,
-            )
-
-            if (state.showChineseScriptOption ||
-                state.showCantoneseScriptOption ||
-                state.targetPhoneticGuideKind != null
-            ) {
-                ScriptPreferenceSection(
-                    showChineseScriptOption = state.showChineseScriptOption,
-                    showCantoneseScriptOption = state.showCantoneseScriptOption,
-                    chineseScript = state.chineseScript,
-                    cantoneseScript = state.cantoneseScript,
-                    targetPhoneticGuideKind = state.targetPhoneticGuideKind,
-                    showTargetRomanization = state.showTargetRomanization,
-                    onEvent = onEvent,
+            PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
+                Tab(
+                    selected = selectedTab == SettingsTab.PLAYBACK,
+                    onClick = { selectedTabOrdinal = SettingsTab.PLAYBACK.ordinal },
+                    text = { Text(text = stringResource(R.string.settings_tab_playback)) },
+                )
+                Tab(
+                    selected = selectedTab == SettingsTab.SEGMENTATION,
+                    onClick = { selectedTabOrdinal = SettingsTab.SEGMENTATION.ordinal },
+                    text = { Text(text = stringResource(R.string.settings_tab_segmentation)) },
+                )
+                Tab(
+                    selected = selectedTab == SettingsTab.TRANSCRIPTION,
+                    onClick = { selectedTabOrdinal = SettingsTab.TRANSCRIPTION.ordinal },
+                    text = { Text(text = stringResource(R.string.settings_tab_transcription)) },
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                when (selectedTab) {
+                    SettingsTab.PLAYBACK -> {
+                        PlaybackSettingsSection(
+                            seekBackMs = state.seekBackMs,
+                            seekForwardMs = state.seekForwardMs,
+                            defaultSpeed = state.defaultSpeed,
+                            defaultAutoPause = state.defaultAutoPause,
+                            defaultAutoPauseScope = state.defaultAutoPauseScope,
+                            onEvent = onEvent,
+                        )
+                    }
+
+                    SettingsTab.SEGMENTATION -> {
+                        SegmentationDefaultsSection(
+                            params = state.defaultSegmentationParams,
+                            onEvent = onEvent,
+                        )
+                    }
+
+                    SettingsTab.TRANSCRIPTION -> {
+                        TranscriptionSettingsSection(
+                            lookaheadEnabled = state.lookaheadTranscriptionEnabled,
+                            languageModels = state.languageModels,
+                            onEvent = onEvent,
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
         }
     }
 }
@@ -172,7 +204,7 @@ private fun PlaybackSettingsSection(
     seekForwardMs: Long,
     defaultSpeed: Float,
     defaultAutoPause: AutoPause,
-    lookaheadTranscriptionEnabled: Boolean,
+    defaultAutoPauseScope: AutoPauseScope,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_playback)) {
@@ -305,41 +337,36 @@ private fun PlaybackSettingsSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(
+        FlowRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable {
-                    onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(!lookaheadTranscriptionEnabled))
-                }
-                .padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+                .selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.settings_lookahead_transcription_label),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    text = stringResource(R.string.settings_lookahead_transcription_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.forEach { scopeOption ->
+                val isSelected = defaultAutoPauseScope == scopeOption
+                Row(
+                    modifier = Modifier
+                        .selectable(
+                            selected = isSelected,
+                            onClick = { onEvent(SettingsEvent.SetDefaultAutoPauseScope(scopeOption)) },
+                            role = Role.RadioButton,
+                        )
+                        .padding(vertical = 4.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = null,
+                    )
+                    Text(
+                        text = autoPauseScopeLabel(scopeOption),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(start = 6.dp),
+                    )
+                }
             }
-            Switch(
-                checked = lookaheadTranscriptionEnabled,
-                onCheckedChange = { enabled ->
-                    onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(enabled))
-                },
-            )
         }
     }
 }
@@ -418,351 +445,200 @@ private fun SegmentationDefaultsSection(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LanguagePairSection(
-    targetLanguage: LanguageTag,
-    baseLanguage: LanguageTag?,
-    enabledLanguages: Set<LanguageTag>,
-    selectableLanguages: List<LanguageTag>,
+private fun TranscriptionSettingsSection(
+    lookaheadEnabled: Boolean,
+    languageModels: List<OnDeviceLanguageModelInfo>,
     onEvent: (SettingsEvent) -> Unit,
 ) {
-    var showEnabledLanguagesDialog by remember { mutableStateOf(false) }
-    val langPalette = chunkFlowLanguagePalette()
-
-    SettingsCard(title = stringResource(R.string.settings_section_language)) {
-        OutlinedButton(
-            onClick = { showEnabledLanguagesDialog = true },
+    SettingsCard(title = stringResource(R.string.settings_section_transcription)) {
+        Row(
             modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Translate,
-                contentDescription = null,
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = stringResource(
-                    R.string.settings_enabled_languages_button,
-                    enabledLanguages.size,
-                ),
-            )
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Surface(
-            color = langPalette.targetRowBackground,
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .weight(1f)
+                    .padding(end = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
-                    text = stringResource(R.string.settings_target_language_label),
+                    text = stringResource(R.string.settings_lookahead_label),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium,
-                    color = langPalette.onTargetBadgeContainer,
                 )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    selectableLanguages.forEach { language ->
-                        FilterChip(
-                            selected = targetLanguage == language,
-                            onClick = { onEvent(SettingsEvent.SetTargetLanguage(language)) },
-                            label = { Text(text = languageDisplayName(language)) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = langPalette.targetBadgeContainer,
-                                selectedLabelColor = langPalette.onTargetBadgeContainer,
-                            ),
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Surface(
-            color = langPalette.baseRowBackground,
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
                 Text(
-                    text = stringResource(R.string.settings_base_language_label),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                    color = langPalette.onBaseBadgeContainer,
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    FilterChip(
-                        selected = baseLanguage == null,
-                        onClick = { onEvent(SettingsEvent.SetBaseLanguage(null)) },
-                        label = { Text(text = stringResource(R.string.settings_base_language_none)) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                        ),
-                    )
-                    selectableLanguages.forEach { language ->
-                        FilterChip(
-                            selected = baseLanguage == language,
-                            onClick = { onEvent(SettingsEvent.SetBaseLanguage(language)) },
-                            label = { Text(text = languageDisplayName(language)) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = langPalette.baseBadgeContainer,
-                                selectedLabelColor = langPalette.onBaseBadgeContainer,
-                            ),
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    if (showEnabledLanguagesDialog) {
-        EnabledLanguagesDialog(
-            initialEnabled = enabledLanguages,
-            onConfirm = { updatedSet ->
-                showEnabledLanguagesDialog = false
-                onEvent(SettingsEvent.SetEnabledLanguages(updatedSet))
-            },
-            onDismiss = { showEnabledLanguagesDialog = false },
-        )
-    }
-}
-
-@Composable
-private fun EnabledLanguagesDialog(
-    initialEnabled: Set<LanguageTag>,
-    onConfirm: (Set<LanguageTag>) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val allOptions = remember { SettingsUiState.availableDeviceLanguages() }
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedTags by remember(initialEnabled) {
-        mutableStateOf(initialEnabled.ifEmpty { UserSettings.DEFAULT_ENABLED_LANGUAGES })
-    }
-
-    val filteredOptions = remember(allOptions, searchQuery) {
-        val query = searchQuery.trim()
-        if (query.isEmpty()) {
-            allOptions
-        } else {
-            allOptions.filter { option ->
-                option.displayName.contains(query, ignoreCase = true) ||
-                    option.tag.value.contains(query, ignoreCase = true)
-            }
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(text = stringResource(R.string.settings_enabled_languages_dialog_title)) },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.settings_enabled_languages_dialog_hint),
+                    text = stringResource(R.string.settings_lookahead_description),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    label = { Text(text = stringResource(R.string.settings_enabled_languages_search_label)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                TextButton(
-                    onClick = { selectedTags = UserSettings.DEFAULT_ENABLED_LANGUAGES },
-                ) {
-                    Text(text = stringResource(R.string.settings_enabled_languages_reset_default))
-                }
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 320.dp),
-                ) {
-                    items(
-                        items = filteredOptions,
-                        key = { it.tag.value },
-                    ) { option ->
-                        val isChecked = option.tag in selectedTags
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    selectedTags = if (isChecked) {
-                                        if (selectedTags.size > 1) selectedTags - option.tag else selectedTags
-                                    } else {
-                                        selectedTags + option.tag
-                                    }
-                                }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = isChecked,
-                                onCheckedChange = { checked ->
-                                    selectedTags = if (checked) {
-                                        selectedTags + option.tag
-                                    } else {
-                                        if (selectedTags.size > 1) selectedTags - option.tag else selectedTags
-                                    }
-                                },
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = option.displayName,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        }
-                    }
-                }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onConfirm(selectedTags) },
-            ) {
-                Text(text = stringResource(R.string.settings_enabled_languages_save))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(text = stringResource(R.string.settings_enabled_languages_cancel))
-            }
-        },
-    )
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ScriptPreferenceSection(
-    showChineseScriptOption: Boolean,
-    showCantoneseScriptOption: Boolean,
-    chineseScript: ChineseScript,
-    cantoneseScript: ChineseScript,
-    targetPhoneticGuideKind: PhoneticGuideKind?,
-    showTargetRomanization: Boolean,
-    onEvent: (SettingsEvent) -> Unit,
-) {
-    SettingsCard(title = stringResource(R.string.settings_section_script)) {
-        if (showChineseScriptOption) {
-            Text(
-                text = stringResource(R.string.settings_chinese_script_label),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
+            Switch(
+                checked = lookaheadEnabled,
+                onCheckedChange = { enabled ->
+                    onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(enabled))
+                },
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                ChineseScript.entries.forEach { script ->
-                    FilterChip(
-                        selected = chineseScript == script,
-                        onClick = { onEvent(SettingsEvent.SetChineseScript(script)) },
-                        label = { Text(text = scriptDisplayName(script)) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                        ),
-                    )
-                }
-            }
         }
+    }
 
-        if (showChineseScriptOption && (showCantoneseScriptOption || targetPhoneticGuideKind != null)) {
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
-        if (showCantoneseScriptOption) {
+    SettingsCard(title = stringResource(R.string.settings_section_speech_models)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                text = stringResource(R.string.settings_cantonese_script_label),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                ChineseScript.entries.forEach { script ->
-                    FilterChip(
-                        selected = cantoneseScript == script,
-                        onClick = { onEvent(SettingsEvent.SetCantoneseScript(script)) },
-                        label = { Text(text = scriptDisplayName(script)) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                        ),
-                    )
-                }
-            }
-        }
-
-        if (showCantoneseScriptOption && targetPhoneticGuideKind != null) {
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
-        if (targetPhoneticGuideKind != null) {
-            val guideLabelRes = when (targetPhoneticGuideKind) {
-                PhoneticGuideKind.ROMAJI -> R.string.settings_phonetic_guide_romaji
-                PhoneticGuideKind.IAST -> R.string.settings_phonetic_guide_iast
-                PhoneticGuideKind.PINYIN -> R.string.settings_phonetic_guide_pinyin
-                PhoneticGuideKind.LATIN_TRANSLITERATION -> R.string.settings_phonetic_guide_latin
-            }
-            Text(
-                text = stringResource(guideLabelRes),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-            )
-            Text(
-                text = stringResource(R.string.settings_phonetic_guide_hint),
+                text = stringResource(R.string.settings_speech_models_description),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp),
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+            TextButton(onClick = { onEvent(SettingsEvent.RefreshRecognitionModels) }) {
+                Text(text = stringResource(R.string.settings_speech_models_refresh))
+            }
+        }
+
+        languageModels.forEachIndexed { index, info ->
+            if (index > 0) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                )
+            }
+            SpeechModelRow(
+                info = info,
+                onRequestDownload = {
+                    onEvent(SettingsEvent.RequestRecognitionModelDownload(info.language))
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeechModelRow(
+    info: OnDeviceLanguageModelInfo,
+    onRequestDownload: () -> Unit,
+) {
+    val (statusLabel, containerColor, contentColor) = when (info.status) {
+        OnDeviceLanguageModelStatus.CHECKING -> Triple(
+            stringResource(R.string.settings_speech_model_status_checking),
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        OnDeviceLanguageModelStatus.INSTALLED -> Triple(
+            stringResource(R.string.settings_speech_model_status_installed),
+            MaterialTheme.colorScheme.primaryContainer,
+            MaterialTheme.colorScheme.onPrimaryContainer,
+        )
+
+        OnDeviceLanguageModelStatus.NOT_INSTALLED -> Triple(
+            stringResource(R.string.settings_speech_model_status_not_installed),
+            MaterialTheme.colorScheme.secondaryContainer,
+            MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+
+        OnDeviceLanguageModelStatus.DOWNLOADING -> Triple(
+            stringResource(R.string.settings_speech_model_status_downloading),
+            MaterialTheme.colorScheme.tertiaryContainer,
+            MaterialTheme.colorScheme.onTertiaryContainer,
+        )
+
+        OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> Triple(
+            stringResource(R.string.settings_speech_model_status_download_failed),
+            MaterialTheme.colorScheme.errorContainer,
+            MaterialTheme.colorScheme.onErrorContainer,
+        )
+
+        OnDeviceLanguageModelStatus.UNSUPPORTED -> Triple(
+            stringResource(R.string.settings_speech_model_status_unsupported),
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = speechModelLanguageDisplayName(info.language),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            info.resolvedBcp47Tag?.let { bcp47Tag ->
+                Text(
+                    text = stringResource(R.string.settings_speech_model_locale_tag, bcp47Tag),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                color = containerColor,
+                contentColor = contentColor,
+                shape = RoundedCornerShape(6.dp),
             ) {
-                FilterChip(
-                    selected = !showTargetRomanization,
-                    onClick = { onEvent(SettingsEvent.SetShowTargetRomanization(false)) },
-                    label = { Text(text = stringResource(R.string.settings_phonetic_guide_off)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
+                Text(
+                    text = statusLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 )
-                FilterChip(
-                    selected = showTargetRomanization,
-                    onClick = { onEvent(SettingsEvent.SetShowTargetRomanization(true)) },
-                    label = { Text(text = stringResource(R.string.settings_phonetic_guide_on)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
-                )
+            }
+
+            if (info.status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+            ) {
+                val actionLabel = if (info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
+                    stringResource(R.string.settings_speech_model_action_retry)
+                } else {
+                    stringResource(R.string.settings_speech_model_action_download)
+                }
+                OutlinedButton(onClick = onRequestDownload) {
+                    Text(
+                        text = actionLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun speechModelLanguageDisplayName(language: LanguageTag): String = when (language.value.lowercase(Locale.ROOT)) {
+    "en" -> stringResource(R.string.settings_lang_en)
+    "ja" -> stringResource(R.string.settings_lang_ja)
+    "ko" -> stringResource(R.string.settings_lang_ko)
+    "zh" -> stringResource(R.string.settings_lang_zh)
+    "yue" -> stringResource(R.string.settings_lang_yue)
+    "hi" -> stringResource(R.string.settings_lang_hi)
+    "vi" -> stringResource(R.string.settings_lang_vi)
+    "ru" -> stringResource(R.string.settings_lang_ru)
+    "es" -> stringResource(R.string.settings_lang_es)
+    "de" -> stringResource(R.string.settings_lang_de)
+    "el" -> stringResource(R.string.settings_lang_el)
+    "id" -> stringResource(R.string.settings_lang_id)
+    else -> language.value.uppercase(Locale.ROOT)
 }
 
 @Composable
@@ -801,46 +677,11 @@ private fun autoPauseLabel(autoPause: AutoPause): String = when (autoPause) {
     is AutoPause.Proportional -> stringResource(R.string.settings_auto_pause_proportional, autoPause.factor)
 }
 
-@Suppress("NonObservableLocale")
 @Composable
-private fun languageDisplayName(language: LanguageTag): String = when (language.value) {
-    "en" -> stringResource(R.string.settings_lang_en)
-
-    "ja" -> stringResource(R.string.settings_lang_ja)
-
-    "ko" -> stringResource(R.string.settings_lang_ko)
-
-    "zh" -> stringResource(R.string.settings_lang_zh)
-
-    "yue" -> stringResource(R.string.settings_lang_yue)
-
-    "hi" -> stringResource(R.string.settings_lang_hi)
-
-    "vi" -> stringResource(R.string.settings_lang_vi)
-
-    "ru" -> stringResource(R.string.settings_lang_ru)
-
-    "es" -> stringResource(R.string.settings_lang_es)
-
-    "de" -> stringResource(R.string.settings_lang_de)
-
-    "el" -> stringResource(R.string.settings_lang_el)
-
-    "id" -> stringResource(R.string.settings_lang_id)
-
-    else -> {
-        val code = language.value
-        val display = Locale.forLanguageTag(code).getDisplayLanguage(Locale.getDefault())
-            .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
-        val upper = code.uppercase(Locale.ROOT)
-        if (display != null) "$display ($upper)" else upper
-    }
-}
-
-@Composable
-private fun scriptDisplayName(script: ChineseScript): String = when (script) {
-    ChineseScript.HANS -> stringResource(R.string.settings_script_hans)
-    ChineseScript.HANT -> stringResource(R.string.settings_script_hant)
+private fun autoPauseScopeLabel(scope: AutoPauseScope): String = when (scope) {
+    AutoPauseScope.ALL_CHUNKS -> stringResource(R.string.settings_auto_pause_scope_all)
+    AutoPauseScope.AFTER_TARGET_LANGUAGE -> stringResource(R.string.settings_auto_pause_scope_target)
+    AutoPauseScope.AFTER_BASE_LANGUAGE -> stringResource(R.string.settings_auto_pause_scope_base)
 }
 
 @ChunkFlowPreviews

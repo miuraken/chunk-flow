@@ -8,6 +8,7 @@ import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
@@ -86,6 +87,12 @@ interface AnalysisRepository {
      * 端末内音声認識の言語モデルの状態を OS に問い合わせ直す（ダウンロードの完了を検出する）。
      */
     suspend fun refreshRecognitionModelIssues() = Unit
+
+    /**
+     * 指定された言語一覧 [languages] について、端末内音声認識モデルの利用可能状態と
+     * 解決された BCP-47 ロケールタグを問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
+     */
+    suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = languages.map { OnDeviceLanguageModelInfo(language = it) }
 
     /**
      * プレイヤー画面で教材 [id] のウィンドウが開いているか閉じたかを通知する。
