@@ -16,12 +16,14 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
 import com.miuraken.chunkflow.core.audio.SampleSink
+import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -43,6 +45,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -94,11 +97,22 @@ interface OnDeviceChunkTranscriber {
         get() = NO_RECOGNITION_MODEL_ISSUES
 
     /**
-     * [language] の端末内音声認識モデルのダウンロードを OS に要求する。
+     * [language] の端末内音声認識モデルのダウンロードを要求する。
      *
-     * OS が利用者に確認を求めることがある。要求を送れた場合は `true`。
+     * OS の `SpeechRecognizer` が対応している言語は OS にダウンロードを要求し、
+     * OS 非対応言語（または `SHERPA_ONNX` 選択時）は `sherpa-onnx` ローカルモデルをダウンロードする。
      */
     suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean = false
+
+    /**
+     * [language] 向けに `sherpa-onnx` ローカル音声認識モデルをダウンロード・検証して有効化する（Stage 2）。
+     */
+    suspend fun downloadSherpaModel(language: LanguageTag): Boolean = false
+
+    /**
+     * [language] の `sherpa-onnx` ローカル音声認識モデルを削除する（Stage 2）。
+     */
+    suspend fun deleteSherpaModel(language: LanguageTag): Boolean = false
 
     /**
      * [recognitionModelIssues] に含まれる言語の言語モデルの状態を OS に問い合わせ直す。
@@ -109,7 +123,7 @@ interface OnDeviceChunkTranscriber {
 
     /**
      * 指定された言語一覧 [languages] について、端末内音声認識モデルの利用可能状態と
-     * 解決された BCP-47 ロケールタグを問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
+     * 解決された BCP-47 ロケールタグ、および `sherpa-onnx` ローカルモデルの状態を問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
      */
     suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = languages.map { OnDeviceLanguageModelInfo(language = it) }
 
@@ -608,11 +622,13 @@ object ChunkPcmExtractor {
  * 1 回の `SpeechRecognizer` 呼び出し試行の結果（内部・テスト用）。
  *
  * @property errorCode 認識できなかったときの `SpeechRecognizer` のエラーコード（言語モデルの未ダウンロードなどの判定に使う）。
+ * @property engineId 実際に認識を実行したエンジンの識別子。
  */
 internal data class SpeechRecognitionAttemptResult(
     val text: String,
     val confidence: Float? = null,
     val errorCode: Int? = null,
+    val engineId: EngineId = OnDeviceChunkTranscriptionResult.DEFAULT_ON_DEVICE_ENGINE_ID,
 ) {
     /** 言語モデルが使えない（未ダウンロード・非対応）ために認識できなかったかどうか。 */
     val isLanguageModelUnavailable: Boolean
@@ -1101,17 +1117,15 @@ private val ZH_COMMON_CHARS: List<String> = listOf(
 )
 
 /**
- * Android 標準の [SpeechRecognizer.createOnDeviceSpeechRecognizer]（API 33+ の `EXTRA_AUDIO_SOURCE` +
- * `ParcelFileDescriptor.createPipe()`）を用いた [OnDeviceChunkTranscriber] 実装（F6.2）。
+ * Android 標準の [SpeechRecognizer.createOnDeviceSpeechRecognizer]（Stage 1）と
+ * `sherpa-onnx` ローカル Whisper モデル（Stage 2）を組み合わせた [OnDeviceChunkTranscriber] 実装（F6.2）。
  *
- * - 学習言語（`target`）と母語（`base`）のペアが設定されている場合、まずチャンク先頭約 2 秒のプローブ音声を
- *   両言語で認識し、[scoreProbeCandidateForLanguage] でどちらの言語かを判定してから、勝った言語でチャンク全体の STT を実行する。
- * - `isOnDeviceRecognitionAvailable(context) == true` の端末では `createOnDeviceSpeechRecognizer` のみを使用し、
- *   物理マイクを掴んでハングする `createSpeechRecognizer`（`preferOnDevice = false`）へはフォールバックしない。
- * - 連続して `SpeechRecognizer` を呼び出す際はシステムサービスのアンバインド競合を防ぐため 200ms の間隔を空ける。
- * - 言語の音声認識モデルが未ダウンロード（`ERROR_LANGUAGE_UNAVAILABLE`）のときは、もう一方の言語の認識結果で
- *   代用せず（カタカナ・ハングル音写の誤ラベルになるため）、言語判定だけの結果を返す。あわせて、その言語の
- *   モデルのダウンロードを 1 回だけ自動で OS に要求し、状態を [recognitionModelIssues] で知らせる。
+ * - 利用者が選択した [OnDeviceTranscriptionEngine]（`AUTO` / `ANDROID_SPEECH_RECOGNIZER` / `SHERPA_ONNX` / `ML_KIT`）に従って
+ *   文字起こし処理を進める。
+ * - `AUTO`（または将来拡張用の `ML_KIT`）では Android 標準 `SpeechRecognizer` を優先し、OS が非対応（`UNSUPPORTED`）の言語については
+ *   `sherpa-onnx` ローカルモデルがチェックアウト済みであればそちらで推論し、未チェックアウトであれば `NOT_INSTALLED` として
+ *   プレイヤーバナーや設定画面からワンタップで `sherpa-onnx` モデルを入手できるようにする。
+ * - `SHERPA_ONNX` が選択されている場合は、チェックアウト済みの `sherpa-onnx` ローカルモデルを優先して使用する。
  */
 @Singleton
 class AndroidSpeechRecognizerChunkTranscriber internal constructor(
@@ -1135,6 +1149,15 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         ) -> LanguagePairPrediction?
     )? = null,
     modelGateway: RecognitionModelGateway? = null,
+    private val sherpaModelManager: SherpaOnnxModelManager? = null,
+    private val sherpaTranscriber: (
+        (
+            pcm16LeBytes: ByteArray,
+            sampleRateHz: Int,
+            language: LanguageTag,
+        ) -> OnDeviceChunkTranscriptionResult?
+    )? = null,
+    private val engineProvider: suspend () -> OnDeviceTranscriptionEngine = { OnDeviceTranscriptionEngine.AUTO },
 ) : OnDeviceChunkTranscriber {
 
     @Inject
@@ -1142,6 +1165,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         @ApplicationContext context: Context,
         audioStreamDecoder: AudioStreamDecoder,
         whisperTinyLanguageDetector: WhisperTinyLanguageDetector,
+        sherpaOnnxModelManager: SherpaOnnxModelManager,
+        sherpaOnnxWhisperTranscriber: SherpaOnnxWhisperTranscriber,
+        userSettingsRepository: UserSettingsRepository,
     ) : this(
         context = context,
         audioStreamDecoder = audioStreamDecoder,
@@ -1153,6 +1179,19 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         },
         attemptRunner = null,
         languageDetector = whisperTinyLanguageDetector::detectLanguagePair,
+        modelGateway = null,
+        sherpaModelManager = sherpaOnnxModelManager,
+        sherpaTranscriber = { pcmBytes, sampleRate, lang ->
+            sherpaOnnxWhisperTranscriber.transcribePcm16Le(
+                pcm16LeBytes = pcmBytes,
+                sampleRateHz = sampleRate,
+                language = lang,
+            )
+        },
+        engineProvider = {
+            runCatching { userSettingsRepository.settings.first().transcriptionEngine }
+                .getOrDefault(OnDeviceTranscriptionEngine.AUTO)
+        },
     )
 
     internal constructor(
@@ -1161,7 +1200,14 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     ) : this(
         context = context,
         audioStreamDecoder = audioStreamDecoder,
-        whisperTinyLanguageDetector = WhisperTinyLanguageDetector(context),
+        onDeviceAvailabilityChecker = {
+            runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }.getOrDefault(false)
+        },
+        standardAvailabilityChecker = {
+            runCatching { SpeechRecognizer.isRecognitionAvailable(context) }.getOrDefault(false)
+        },
+        attemptRunner = null,
+        languageDetector = WhisperTinyLanguageDetector(context)::detectLanguagePair,
     )
 
     private data class ChunkAudioCacheScope(
@@ -1210,10 +1256,61 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     override val recognitionModelIssues: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>> =
         modelIssuesState.asStateFlow()
 
-    override fun isAvailable(): Boolean = onDeviceAvailabilityChecker() || standardAvailabilityChecker()
+    override fun isAvailable(): Boolean = onDeviceAvailabilityChecker() ||
+        standardAvailabilityChecker() ||
+        sherpaModelManager?.areCoreModelFilesPresent() == true ||
+        sherpaTranscriber != null
+
+    private fun isSherpaInstalledFor(language: LanguageTag?): Boolean {
+        if (language == null) return false
+        return sherpaModelManager?.isInstalledForLanguage(language) == true
+    }
+
+    private fun isSherpaSupportedFor(language: LanguageTag?): Boolean {
+        if (language == null) return false
+        return sherpaModelManager != null && SherpaOnnxModelManager.isLanguageSupportedByWhisper(language)
+    }
+
+    private fun clearAllSttCache() {
+        synchronized(sttCacheLock) {
+            fullChunkSttCache.clear()
+        }
+    }
+
+    override suspend fun downloadSherpaModel(language: LanguageTag): Boolean {
+        val manager = sherpaModelManager ?: return false
+        setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+        val ok = manager.downloadModelForLanguage(language)
+        if (ok) {
+            clearModelIssue(language)
+            clearAllSttCache()
+        } else {
+            setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOAD_FAILED)
+        }
+        return ok
+    }
+
+    override suspend fun deleteSherpaModel(language: LanguageTag): Boolean {
+        val manager = sherpaModelManager ?: return false
+        val ok = manager.deleteModelForLanguage(language)
+        if (ok) {
+            clearAllSttCache()
+        }
+        return ok
+    }
 
     override suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean {
-        if (!onDeviceAvailabilityChecker()) return false
+        val selectedEngine = runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
+        if (selectedEngine == OnDeviceTranscriptionEngine.SHERPA_ONNX && isSherpaSupportedFor(language)) {
+            return downloadSherpaModel(language)
+        }
+        if (!onDeviceAvailabilityChecker()) {
+            return if (selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER && isSherpaSupportedFor(language)) {
+                downloadSherpaModel(language)
+            } else {
+                false
+            }
+        }
         val candidates = candidateBcp47TagsFor(language.value)
         val support = recognitionLock.withLock(highPriority = false) {
             try {
@@ -1230,10 +1327,19 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             clearModelIssue(language)
             return true
         }
-        val bcp47Tag = candidates.firstOrNull {
+        val supportedOrPendingTag = candidates.firstOrNull {
             support[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED ||
                 support[it] == RecognitionModelSupport.PENDING
-        } ?: candidates.first()
+        }
+        if (supportedOrPendingTag == null &&
+            support.isNotEmpty() &&
+            selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER &&
+            isSherpaSupportedFor(language)
+        ) {
+            // OS の SpeechRecognizer が非対応の言語は Stage 2 の sherpa-onnx ローカルモデルをダウンロードする
+            return downloadSherpaModel(language)
+        }
+        val bcp47Tag = supportedOrPendingTag ?: candidates.first()
         rememberResolvedBcp47Tag(language.value, bcp47Tag)
         autoDownloadRequestedTags.add(bcp47Tag.lowercase(Locale.ROOT))
         return startRecognitionModelDownload(language, bcp47Tag)
@@ -1241,7 +1347,14 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
     override suspend fun refreshRecognitionModelIssues() {
         val issues = modelIssuesState.value
-        if (issues.isEmpty() || !onDeviceAvailabilityChecker()) return
+        if (issues.isEmpty()) return
+        for (language in issues.keys) {
+            if (isSherpaInstalledFor(language)) {
+                clearModelIssue(language)
+            }
+        }
+        val remainingIssues = modelIssuesState.value
+        if (remainingIssues.isEmpty() || !onDeviceAvailabilityChecker()) return
         val now = SystemClock.elapsedRealtime()
         if (lastModelIssueRefreshRealtimeMs > 0L &&
             now - lastModelIssueRefreshRealtimeMs in 0L until MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS
@@ -1249,7 +1362,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             return
         }
         lastModelIssueRefreshRealtimeMs = now
-        val candidatesByLanguage = issues.keys.associateWith { candidateBcp47TagsFor(it.value) }
+        val candidatesByLanguage = remainingIssues.keys.associateWith { candidateBcp47TagsFor(it.value) }
         // 認識中の SpeechRecognizer と同時にサービスへ接続しないよう、認識ロックを取ってから問い合わせる
         val support = recognitionLock.withLock(highPriority = false) {
             try {
@@ -1267,9 +1380,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 support[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
             }
             when {
-                installedTag != null -> {
-                    logInfo("modelSupport lang=$installedTag installed")
-                    rememberResolvedBcp47Tag(language.value, installedTag)
+                installedTag != null || isSherpaInstalledFor(language) -> {
+                    if (installedTag != null) {
+                        logInfo("modelSupport lang=$installedTag installed")
+                        rememberResolvedBcp47Tag(language.value, installedTag)
+                    }
                     clearModelIssue(language)
                 }
 
@@ -1280,7 +1395,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
                 supportedTag != null -> {
                     rememberResolvedBcp47Tag(language.value, supportedTag)
-                    if (issues[language] == OnDeviceRecognitionModelState.UNSUPPORTED) {
+                    if (remainingIssues[language] == OnDeviceRecognitionModelState.UNSUPPORTED) {
                         setModelIssue(language, OnDeviceRecognitionModelState.NOT_INSTALLED)
                     }
                 }
@@ -1292,9 +1407,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         if (languages.isEmpty()) return emptyList()
         if (!onDeviceAvailabilityChecker()) {
             return languages.map { lang ->
-                OnDeviceLanguageModelInfo(
+                withSherpaModelFields(
                     language = lang,
-                    status = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    osStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
                     resolvedBcp47Tag = candidateBcp47TagsFor(lang.value).firstOrNull(),
                 )
             }
@@ -1322,19 +1437,24 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 installedTag != null -> {
                     rememberResolvedBcp47Tag(language.value, installedTag)
                     clearModelIssue(language)
-                    OnDeviceLanguageModelInfo(
+                    withSherpaModelFields(
                         language = language,
-                        status = OnDeviceLanguageModelStatus.INSTALLED,
+                        osStatus = OnDeviceLanguageModelStatus.INSTALLED,
                         resolvedBcp47Tag = installedTag,
                     )
                 }
 
-                pendingTag != null || issue == OnDeviceRecognitionModelState.DOWNLOADING -> {
+                pendingTag != null ||
+                    (
+                        issue == OnDeviceRecognitionModelState.DOWNLOADING &&
+                            sherpaModelManager?.getLanguageModelStatus(language) != OnDeviceLanguageModelStatus.DOWNLOADING
+                        )
+                -> {
                     val tag = pendingTag ?: supportedTag ?: candidates.firstOrNull()
                     if (tag != null) rememberResolvedBcp47Tag(language.value, tag)
-                    OnDeviceLanguageModelInfo(
+                    withSherpaModelFields(
                         language = language,
-                        status = OnDeviceLanguageModelStatus.DOWNLOADING,
+                        osStatus = OnDeviceLanguageModelStatus.DOWNLOADING,
                         resolvedBcp47Tag = tag,
                     )
                 }
@@ -1346,17 +1466,20 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     } else {
                         OnDeviceLanguageModelStatus.NOT_INSTALLED
                     }
-                    OnDeviceLanguageModelInfo(
+                    withSherpaModelFields(
                         language = language,
-                        status = status,
+                        osStatus = status,
                         resolvedBcp47Tag = supportedTag,
                     )
                 }
 
                 support.isNotEmpty() -> {
-                    OnDeviceLanguageModelInfo(
+                    if (isSherpaInstalledFor(language)) {
+                        clearModelIssue(language)
+                    }
+                    withSherpaModelFields(
                         language = language,
-                        status = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                        osStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
                         resolvedBcp47Tag = candidates.firstOrNull(),
                     )
                 }
@@ -1369,14 +1492,40 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         OnDeviceRecognitionModelState.UNSUPPORTED -> OnDeviceLanguageModelStatus.UNSUPPORTED
                         null -> OnDeviceLanguageModelStatus.CHECKING
                     }
-                    OnDeviceLanguageModelInfo(
+                    withSherpaModelFields(
                         language = language,
-                        status = status,
+                        osStatus = status,
                         resolvedBcp47Tag = candidates.firstOrNull(),
                     )
                 }
             }
         }
+    }
+
+    private fun withSherpaModelFields(
+        language: LanguageTag,
+        osStatus: OnDeviceLanguageModelStatus,
+        resolvedBcp47Tag: String?,
+    ): OnDeviceLanguageModelInfo {
+        val manager = sherpaModelManager
+        if (manager == null) {
+            return OnDeviceLanguageModelInfo(
+                language = language,
+                status = osStatus,
+                resolvedBcp47Tag = resolvedBcp47Tag,
+            )
+        }
+        val sherpaStatus = manager.getLanguageModelStatus(language)
+        val installed = sherpaStatus == OnDeviceLanguageModelStatus.INSTALLED
+        return OnDeviceLanguageModelInfo(
+            language = language,
+            status = osStatus,
+            resolvedBcp47Tag = resolvedBcp47Tag,
+            sherpaModelStatus = sherpaStatus,
+            sherpaModelId = SherpaOnnxModelManager.MODEL_ID,
+            sherpaModelSizeBytes = manager.totalModelSizeBytes,
+            canDeleteSherpaModel = installed,
+        )
     }
 
     private fun candidateBcp47TagsFor(
@@ -1442,13 +1591,26 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         language: LanguageTag?,
         bcp47Tag: String,
         attempt: SpeechRecognitionAttemptResult?,
+        selectedEngine: OnDeviceTranscriptionEngine = OnDeviceTranscriptionEngine.AUTO,
     ) {
         if (language == null || attempt == null) return
         when {
             attempt.text.isNotBlank() -> clearModelIssue(language)
 
             attempt.errorCode == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> {
-                setModelIssue(language, OnDeviceRecognitionModelState.UNSUPPORTED)
+                if (selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER &&
+                    isSherpaSupportedFor(language)
+                ) {
+                    val sherpaStatus = sherpaModelManager?.getLanguageModelStatus(language)
+                    when (sherpaStatus) {
+                        OnDeviceLanguageModelStatus.INSTALLED -> clearModelIssue(language)
+                        OnDeviceLanguageModelStatus.DOWNLOADING -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+                        OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOAD_FAILED)
+                        else -> setModelIssue(language, OnDeviceRecognitionModelState.NOT_INSTALLED)
+                    }
+                } else {
+                    setModelIssue(language, OnDeviceRecognitionModelState.UNSUPPORTED)
+                }
             }
 
             attempt.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
@@ -1458,7 +1620,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 ) {
                     setModelIssue(language, OnDeviceRecognitionModelState.NOT_INSTALLED)
                 }
-                if (onDeviceAvailabilityChecker() &&
+                if (selectedEngine != OnDeviceTranscriptionEngine.SHERPA_ONNX &&
+                    onDeviceAvailabilityChecker() &&
                     autoDownloadRequestedTags.add(bcp47Tag.lowercase(Locale.ROOT))
                 ) {
                     startRecognitionModelDownload(language, bcp47Tag)
@@ -1594,7 +1757,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         val onDeviceAvailable = onDeviceAvailabilityChecker()
         val standardAvailable = standardAvailabilityChecker()
-        if (!onDeviceAvailable && !standardAvailable) return null
+        val sherpaAvailable = sherpaModelManager?.areCoreModelFilesPresent() == true || sherpaTranscriber != null
+        if (!onDeviceAvailable && !standardAvailable && !sherpaAvailable) return null
 
         // isOnDeviceRecognitionAvailable == true の端末では物理マイクが開くのを防ぐため preferOnDevice = true のみを使用する
         val preferOnDevice = onDeviceAvailable
@@ -1686,6 +1850,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         text = attempt.text.trim(),
                         language = singleLang,
                         confidence = attempt.confidence,
+                        engineId = attempt.engineId,
                     )
                     putCachedSttResult(cacheScope, singleLang?.value ?: bcp47Tag, result)
                     result
@@ -1740,6 +1905,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     text = it.text.trim(),
                     language = selectedLang,
                     confidence = it.confidence,
+                    engineId = it.engineId,
                 ).also { res ->
                     putCachedSttResult(cacheScope, selectedLang.value, res)
                 }
@@ -1785,6 +1951,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     text = it.text.trim(),
                     language = fallbackLang,
                     confidence = it.confidence,
+                    engineId = it.engineId,
                 ).also { res ->
                     putCachedSttResult(cacheScope, fallbackLang.value, res)
                 }
@@ -1881,7 +2048,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         val targetProbe = if (probeSlice.isFullChunkCovered) {
             getCachedSttResult(cacheScope, targetLang)?.let {
-                SpeechRecognitionAttemptResult(text = it.text, confidence = it.confidence)
+                SpeechRecognitionAttemptResult(text = it.text, confidence = it.confidence, engineId = it.engineId)
             } ?: executeAttempt(
                 pcm16LeBytes = probeBytes,
                 sampleRateHz = sampleRateHz,
@@ -1897,6 +2064,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         text = probe.text.trim(),
                         language = targetLang,
                         confidence = probe.confidence,
+                        engineId = probe.engineId,
                     ),
                 )
             }
@@ -1913,7 +2081,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         val baseProbe = if (probeSlice.isFullChunkCovered) {
             getCachedSttResult(cacheScope, baseLang)?.let {
-                SpeechRecognitionAttemptResult(text = it.text, confidence = it.confidence)
+                SpeechRecognitionAttemptResult(text = it.text, confidence = it.confidence, engineId = it.engineId)
             } ?: executeAttempt(
                 pcm16LeBytes = probeBytes,
                 sampleRateHz = sampleRateHz,
@@ -1929,6 +2097,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         text = probe.text.trim(),
                         language = baseLang,
                         confidence = probe.confidence,
+                        engineId = probe.engineId,
                     ),
                 )
             }
@@ -1976,6 +2145,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 text = text,
                 language = winningLang,
                 confidence = winningProbe.confidence,
+                engineId = winningProbe.engineId,
             )
             putCachedSttResult(cacheScope, winningLang.value, result)
             return result
@@ -2007,6 +2177,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             text = finalText,
             language = winningLang,
             confidence = finalAttempt.confidence,
+            engineId = finalAttempt.engineId,
         )
         putCachedSttResult(cacheScope, winningLang.value, result)
         return result
@@ -2072,6 +2243,29 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
     }
 
+    private fun trySherpaInference(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        language: LanguageTag?,
+    ): SpeechRecognitionAttemptResult? {
+        if (language == null) return null
+        val runner = sherpaTranscriber ?: return null
+        if (sherpaModelManager != null && !sherpaModelManager.isInstalledForLanguage(language)) {
+            return null
+        }
+        val result = runCatching {
+            runner(pcm16LeBytes, sampleRateHz, language)
+        }.getOrNull() ?: return null
+        if (result.text.isBlank()) return null
+        clearModelIssue(language)
+        return SpeechRecognitionAttemptResult(
+            text = result.text.trim(),
+            confidence = result.confidence,
+            errorCode = null,
+            engineId = result.engineId,
+        )
+    }
+
     private suspend fun executeAttempt(
         pcm16LeBytes: ByteArray,
         sampleRateHz: Int,
@@ -2080,35 +2274,63 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         isProbe: Boolean,
         language: LanguageTag? = null,
     ): SpeechRecognitionAttemptResult? {
+        val selectedEngine = runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
+
+        // SHERPA_ONNX が明示選択されている場合は sherpa-onnx ローカルモデルを最優先で使用する
+        if (selectedEngine == OnDeviceTranscriptionEngine.SHERPA_ONNX && language != null) {
+            trySherpaInference(pcm16LeBytes, sampleRateHz, language)?.let { return it }
+            if (isSherpaSupportedFor(language) && !isSherpaInstalledFor(language)) {
+                val sherpaStatus = sherpaModelManager?.getLanguageModelStatus(language)
+                when (sherpaStatus) {
+                    OnDeviceLanguageModelStatus.DOWNLOADING -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+                    OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOAD_FAILED)
+                    else -> setModelIssue(language, OnDeviceRecognitionModelState.NOT_INSTALLED)
+                }
+                return SpeechRecognitionAttemptResult(
+                    text = "",
+                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                    engineId = SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID,
+                )
+            }
+        }
+
         val candidates = candidateBcp47TagsFor(language?.value, bcp47LocaleTag)
         var lastAttempt: SpeechRecognitionAttemptResult? = null
         var lastTag: String = candidates.firstOrNull() ?: bcp47LocaleTag
 
-        for ((index, candidateTag) in candidates.withIndex()) {
-            lastTag = candidateTag
-            val attempt = runAttemptWithTag(
-                pcm16LeBytes = pcm16LeBytes,
-                sampleRateHz = sampleRateHz,
-                bcp47LocaleTag = candidateTag,
-                preferOnDevice = preferOnDevice,
-                isProbe = isProbe,
-            )
-            lastAttempt = attempt
-            if (attempt?.errorCode != SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
-                if (index > 0 ||
-                    attempt?.text?.isNotBlank() == true ||
-                    attempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
-                ) {
-                    rememberResolvedBcp47Tag(language?.value, candidateTag)
-                }
-                noteRecognitionAttemptOutcome(language, candidateTag, attempt)
-                return attempt
-            }
-            if (index + 1 < candidates.size) {
-                logInfo(
-                    "bcp47Fallback lang=${language?.value ?: bcp47LocaleTag} " +
-                        "unsupportedTag=$candidateTag nextTag=${candidates[index + 1]}",
+        if (onDeviceAvailabilityChecker() || standardAvailabilityChecker() || attemptRunner != null) {
+            for ((index, candidateTag) in candidates.withIndex()) {
+                lastTag = candidateTag
+                val attempt = runAttemptWithTag(
+                    pcm16LeBytes = pcm16LeBytes,
+                    sampleRateHz = sampleRateHz,
+                    bcp47LocaleTag = candidateTag,
+                    preferOnDevice = preferOnDevice,
+                    isProbe = isProbe,
                 )
+                lastAttempt = attempt
+                if (attempt?.errorCode != SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
+                    if (index > 0 ||
+                        attempt?.text?.isNotBlank() == true ||
+                        attempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
+                    ) {
+                        rememberResolvedBcp47Tag(language?.value, candidateTag)
+                    }
+                    // OS モデルが未ダウンロードの間でも、sherpa-onnx がチェックアウト済みならフォールバック推論する
+                    if (attempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE &&
+                        selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER
+                    ) {
+                        trySherpaInference(pcm16LeBytes, sampleRateHz, language)?.let { return it }
+                    }
+                    noteRecognitionAttemptOutcome(language, candidateTag, attempt, selectedEngine)
+                    return attempt
+                }
+                if (index + 1 < candidates.size) {
+                    logInfo(
+                        "bcp47Fallback lang=${language?.value ?: bcp47LocaleTag} " +
+                            "unsupportedTag=$candidateTag nextTag=${candidates[index + 1]}",
+                    )
+                }
             }
         }
 
@@ -2150,13 +2372,27 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         text = "",
                         errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
                     )
-                    noteRecognitionAttemptOutcome(language, downloadableTag, unavailableAttempt)
+                    noteRecognitionAttemptOutcome(language, downloadableTag, unavailableAttempt, selectedEngine)
                     return unavailableAttempt
                 }
             }
         }
 
-        noteRecognitionAttemptOutcome(language, lastTag, lastAttempt)
+        // OS の SpeechRecognizer が非対応（UNSUPPORTED）の場合、Stage 2 の sherpa-onnx ローカルモデルへフォールバックする
+        if (language != null && selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER) {
+            trySherpaInference(pcm16LeBytes, sampleRateHz, language)?.let { return it }
+            if (isSherpaSupportedFor(language)) {
+                val unavailableAttempt = SpeechRecognitionAttemptResult(
+                    text = "",
+                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                    engineId = SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID,
+                )
+                noteRecognitionAttemptOutcome(language, lastTag, unavailableAttempt, selectedEngine)
+                return unavailableAttempt
+            }
+        }
+
+        noteRecognitionAttemptOutcome(language, lastTag, lastAttempt, selectedEngine)
         return lastAttempt
     }
 

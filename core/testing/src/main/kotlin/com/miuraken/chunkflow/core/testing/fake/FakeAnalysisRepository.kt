@@ -98,6 +98,12 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [requestRecognitionModelDownload] の呼び出し履歴（呼ばれた順）。 */
     val requestedModelDownloads: MutableList<LanguageTag> = mutableListOf()
 
+    /** [downloadSherpaModel] の呼び出し履歴（呼ばれた順）。 */
+    val requestedSherpaDownloads: MutableList<LanguageTag> = mutableListOf()
+
+    /** [deleteSherpaModel] の呼び出し履歴（呼ばれた順）。 */
+    val requestedSherpaDeletions: MutableList<LanguageTag> = mutableListOf()
+
     /** フィクスチャの解析結果を入れる。 */
     fun put(material: SampleMaterial) {
         update(material.item.id) {
@@ -200,6 +206,28 @@ class FakeAnalysisRepository : AnalysisRepository {
         val existing = languageModelInfos[language]
         languageModelInfos[language] = (existing ?: OnDeviceLanguageModelInfo(language = language)).copy(
             status = OnDeviceLanguageModelStatus.DOWNLOADING,
+        )
+        return true
+    }
+
+    override suspend fun downloadSherpaModel(language: LanguageTag): Boolean {
+        requestedSherpaDownloads += language
+        val existing = languageModelInfos[language] ?: OnDeviceLanguageModelInfo(language = language)
+        languageModelInfos[language] = existing.copy(
+            sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
+            sherpaModelId = "sherpa-onnx-whisper-tiny",
+            sherpaModelSizeBytes = 103_609_903L,
+            canDeleteSherpaModel = true,
+        )
+        return true
+    }
+
+    override suspend fun deleteSherpaModel(language: LanguageTag): Boolean {
+        requestedSherpaDeletions += language
+        val existing = languageModelInfos[language] ?: OnDeviceLanguageModelInfo(language = language)
+        languageModelInfos[language] = existing.copy(
+            sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            canDeleteSherpaModel = false,
         )
         return true
     }

@@ -5,6 +5,7 @@ import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
@@ -53,4 +54,7 @@ interface UserSettingsRepository {
 
     /** 先読み文字起こしの有効・無効を更新する（既定は true）。 */
     suspend fun setLookaheadTranscriptionEnabled(enabled: Boolean) = Unit
+
+    /** 端末内文字起こしで使用する音声認識ライブラリ（エンジン）を更新する。 */
+    suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) = Unit
 }

@@ -6,6 +6,7 @@ import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
@@ -76,5 +77,9 @@ class FakeUserSettingsRepository(
 
     override suspend fun setLookaheadTranscriptionEnabled(enabled: Boolean) {
         state.update { it.copy(lookaheadTranscriptionEnabled = enabled) }
+    }
+
+    override suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) {
+        state.update { it.copy(transcriptionEngine = engine) }
     }
 }

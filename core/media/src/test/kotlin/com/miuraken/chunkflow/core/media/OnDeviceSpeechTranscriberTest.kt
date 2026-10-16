@@ -1446,6 +1446,318 @@ class OnDeviceSpeechTranscriberTest {
         )
     }
 
+    @Test
+    fun `SherpaOnnxModelManager_言語ごとのチェックアウトと共有ファイル検証および削除が機能する`() = runTest {
+        val encPayload = "dummy-encoder-bytes".toByteArray()
+        val decPayload = "dummy-decoder-bytes".toByteArray()
+        val tokPayload = "dummy-tokens-bytes".toByteArray()
+        val testArtifacts = listOf(
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.ENCODER_FILE_NAME,
+                url = "https://huggingface.co/test/encoder.onnx",
+                expectedSizeBytes = encPayload.size.toLong(),
+                expectedSha256Hex = null,
+            ),
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.DECODER_FILE_NAME,
+                url = "https://huggingface.co/test/decoder.onnx",
+                expectedSizeBytes = decPayload.size.toLong(),
+                expectedSha256Hex = null,
+            ),
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.TOKENS_FILE_NAME,
+                url = "https://huggingface.co/test/tokens.txt",
+                expectedSizeBytes = tokPayload.size.toLong(),
+                expectedSha256Hex = null,
+            ),
+        )
+        val filesByUrl = mapOf(
+            "https://huggingface.co/test/encoder.onnx" to encPayload,
+            "https://huggingface.co/test/decoder.onnx" to decPayload,
+            "https://huggingface.co/test/tokens.txt" to tokPayload,
+        )
+        var downloadCallCount = 0
+        val fakeDownloader = object : com.miuraken.chunkflow.core.drive.ModelArtifactDownloader {
+            override suspend fun downloadVerifiedFile(
+                url: String,
+                destFile: File,
+                expectedSizeBytes: Long?,
+                expectedSha256Hex: String?,
+                maxSizeBytes: Long,
+            ): com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult {
+                downloadCallCount += 1
+                val payload = filesByUrl[url]
+                    ?: return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Failure(
+                        com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Failure.Reason.HTTP_ERROR,
+                    )
+                destFile.parentFile?.mkdirs()
+                destFile.writeBytes(payload)
+                return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Success(
+                    bytesWritten = payload.size.toLong(),
+                    sha256Hex = "0".repeat(64),
+                )
+            }
+        }
+        val manager = SherpaOnnxModelManager(
+            modelsRootDir = tempFolder.newFolder("sherpa_models"),
+            downloader = fakeDownloader,
+            artifacts = testArtifacts,
+        )
+
+        val zh = LanguageTag("zh")
+        val ko = LanguageTag("ko")
+
+        // 初期状態は未インストール
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            manager.getLanguageModelStatus(zh),
+        )
+        assertFalse(manager.isInstalledForLanguage(zh))
+
+        // 1言語目 (zh) をダウンロード -> 3ファイルがダウンロードされ zh が INSTALLED になる
+        assertTrue(manager.downloadModelForLanguage(zh))
+        assertEquals(3, downloadCallCount)
+        assertTrue(manager.isInstalledForLanguage(zh))
+        assertFalse(manager.isInstalledForLanguage(ko))
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            manager.getLanguageModelStatus(zh),
+        )
+
+        // 2言語目 (ko) をチェックアウト -> 共有ファイルが揃っているため再ダウンロードせず即座に INSTALLED になる
+        assertTrue(manager.downloadModelForLanguage(ko))
+        assertEquals(3, downloadCallCount)
+        assertTrue(manager.isInstalledForLanguage(ko))
+
+        // zh だけ削除 -> ko が残っているため共有ファイルは保持され ko は引き続き INSTALLED
+        assertTrue(manager.deleteModelForLanguage(zh))
+        assertFalse(manager.isInstalledForLanguage(zh))
+        assertTrue(manager.isInstalledForLanguage(ko))
+        assertTrue(manager.areCoreModelFilesPresent())
+
+        // 最後の言語 ko を削除 -> 共有モデルファイルも削除される
+        assertTrue(manager.deleteModelForLanguage(ko))
+        assertFalse(manager.isInstalledForLanguage(ko))
+        assertFalse(manager.areCoreModelFilesPresent())
+    }
+
+    @Test
+    fun `SherpaOnnxWhisperTranscriber_base64トークン表からUTF8文字列と言語トークンIDを正しく復元する`() {
+        val tokensFile = tempFolder.newFile("tiny-tokens.txt")
+        val helloBase64 = java.util.Base64.getEncoder().encodeToString("こんにちは".toByteArray(Charsets.UTF_8))
+        val worldBase64 = java.util.Base64.getEncoder().encodeToString("世界".toByteArray(Charsets.UTF_8))
+        val sotBase64 = java.util.Base64.getEncoder().encodeToString("<|startoftranscript|>".toByteArray(Charsets.UTF_8))
+        val eotBase64 = java.util.Base64.getEncoder().encodeToString("<|endoftext|>".toByteArray(Charsets.UTF_8))
+
+        tokensFile.writeText(
+            """
+            $helloBase64 100
+            $worldBase64 101
+            $sotBase64 50258
+            $eotBase64 50257
+            """.trimIndent(),
+        )
+
+        val tokenMap = SherpaOnnxWhisperTranscriber.parseTokensFile(tokensFile)
+        assertTrue(tokenMap.isNotEmpty())
+
+        val config = SherpaOnnxWhisperTranscriber.WhisperModelConfig()
+        assertEquals(50266L, config.resolveLanguageToken(LanguageTag("ja")))
+        assertEquals(50266L, config.resolveLanguageToken(LanguageTag("ja-JP")))
+        assertEquals(50260L, config.resolveLanguageToken(LanguageTag("zh")))
+        assertEquals(50260L, config.resolveLanguageToken(LanguageTag("yue")))
+
+        val decoded = SherpaOnnxWhisperTranscriber.decodeTokensToString(
+            tokenIds = intArrayOf(100, 101, 50258, 50257),
+            tokenBytesById = tokenMap,
+        )
+        assertEquals("こんにちは世界", decoded)
+    }
+
+    @Test
+    fun `computeMelSpectrogram80x3000WithFilters_30秒3000フレームの正規化特徴量を生成する`() {
+        val dummyFilters = FloatArray(WhisperTinyLanguageDetector.N_MELS * WhisperTinyLanguageDetector.N_FREQ_BINS) { 0.01f }
+        val pcm = ShortArray(WhisperTinyLanguageDetector.SAMPLE_RATE_HZ * 2) { 1_000 }
+        val melPair = WhisperTinyLanguageDetector.computeMelSpectrogram80x3000WithFilters(pcm, dummyFilters)
+        assertNotNull(melPair)
+        assertEquals(
+            WhisperTinyLanguageDetector.N_MELS * WhisperTinyLanguageDetector.MEL_FRAMES_30S,
+            melPair.first.size,
+        )
+        assertEquals(200, melPair.second)
+    }
+
+    @Test
+    fun `transcribeChunk_OSのSpeechRecognizerがUNSUPPORTEDのときsherpa_onnxが導入済みなら自動フォールバックで文字起こしする`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val gateway = FakeRecognitionModelGateway().apply {
+            supportResult = emptyMap() // すべて UNSUPPORTED
+        }
+        val testArtifacts = listOf(
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.ENCODER_FILE_NAME,
+                url = "https://huggingface.co/test/encoder.onnx",
+                expectedSizeBytes = 3L,
+                expectedSha256Hex = null,
+            ),
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.DECODER_FILE_NAME,
+                url = "https://huggingface.co/test/decoder.onnx",
+                expectedSizeBytes = 3L,
+                expectedSha256Hex = null,
+            ),
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.TOKENS_FILE_NAME,
+                url = "https://huggingface.co/test/tokens.txt",
+                expectedSizeBytes = 3L,
+                expectedSha256Hex = null,
+            ),
+        )
+        val fakeDownloader = object : com.miuraken.chunkflow.core.drive.ModelArtifactDownloader {
+            override suspend fun downloadVerifiedFile(
+                url: String,
+                destFile: File,
+                expectedSizeBytes: Long?,
+                expectedSha256Hex: String?,
+                maxSizeBytes: Long,
+            ): com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult {
+                destFile.parentFile?.mkdirs()
+                destFile.writeBytes(byteArrayOf(1, 2, 3))
+                return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Success(3L, "0".repeat(64))
+            }
+        }
+        val sherpaManager = SherpaOnnxModelManager(
+            modelsRootDir = tempFolder.newFolder("sherpa_fallback_models"),
+            downloader = fakeDownloader,
+            artifacts = testArtifacts,
+        )
+        assertTrue(sherpaManager.downloadModelForLanguage(LanguageTag("zh")))
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, _, _ ->
+                SpeechRecognitionAttemptResult(
+                    text = "",
+                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                )
+            },
+            languageDetector = { _, _, _ ->
+                LanguagePairPrediction(
+                    selectedTag = "zh",
+                    fallbackTag = "ja",
+                    selectedProbability = 0.98f,
+                    targetProbability = 0.98f,
+                    baseProbability = 0.02f,
+                    inferenceTimeMs = 8L,
+                )
+            },
+            modelGateway = gateway,
+            sherpaModelManager = sherpaManager,
+            sherpaTranscriber = { _, _, lang ->
+                OnDeviceChunkTranscriptionResult(
+                    text = "你好，这是本地模型识别结果",
+                    language = lang,
+                    confidence = 0.85f,
+                    engineId = SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID,
+                )
+            },
+        )
+
+        val result = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("zh_sherpa_fallback.wav").apply { writeBytes(byteArrayOf(1, 2)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja")),
+        )
+        assertNotNull(result)
+        assertFalse(result.isLanguageOnly)
+        assertEquals("你好，这是本地模型识别结果", result.text)
+        assertEquals(LanguageTag("zh"), result.language)
+        assertEquals(SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID, result.engineId)
+        assertTrue(transcriber.recognitionModelIssues.value.isEmpty())
+    }
+
+    @Test
+    fun `transcribeChunk_SHERPA_ONNXエンジン優先設定時はOSのSpeechRecognizerを呼ばずにsherpa_onnxで認識する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val testArtifacts = listOf(
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.ENCODER_FILE_NAME,
+                url = "https://huggingface.co/test/encoder.onnx",
+                expectedSizeBytes = 3L,
+                expectedSha256Hex = null,
+            ),
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.DECODER_FILE_NAME,
+                url = "https://huggingface.co/test/decoder.onnx",
+                expectedSizeBytes = 3L,
+                expectedSha256Hex = null,
+            ),
+            SherpaOnnxModelManager.ArtifactEntry(
+                fileName = SherpaOnnxModelManager.TOKENS_FILE_NAME,
+                url = "https://huggingface.co/test/tokens.txt",
+                expectedSizeBytes = 3L,
+                expectedSha256Hex = null,
+            ),
+        )
+        val fakeDownloader = object : com.miuraken.chunkflow.core.drive.ModelArtifactDownloader {
+            override suspend fun downloadVerifiedFile(
+                url: String,
+                destFile: File,
+                expectedSizeBytes: Long?,
+                expectedSha256Hex: String?,
+                maxSizeBytes: Long,
+            ): com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult {
+                destFile.parentFile?.mkdirs()
+                destFile.writeBytes(byteArrayOf(1, 2, 3))
+                return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Success(3L, "0".repeat(64))
+            }
+        }
+        val sherpaManager = SherpaOnnxModelManager(
+            modelsRootDir = tempFolder.newFolder("sherpa_preferred_models"),
+            downloader = fakeDownloader,
+            artifacts = testArtifacts,
+        )
+        assertTrue(sherpaManager.downloadModelForLanguage(LanguageTag("ko")))
+
+        var osAttemptCount = 0
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, _, _ ->
+                osAttemptCount += 1
+                SpeechRecognitionAttemptResult(text = "OS結果", confidence = 0.9f)
+            },
+            sherpaModelManager = sherpaManager,
+            sherpaTranscriber = { _, _, lang ->
+                OnDeviceChunkTranscriptionResult(
+                    text = "안녕하세요 로컬 모델입니다",
+                    language = lang,
+                    confidence = 0.88f,
+                    engineId = SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID,
+                )
+            },
+            engineProvider = { com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.SHERPA_ONNX },
+        )
+
+        val result = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("ko_sherpa_preferred.wav").apply { writeBytes(byteArrayOf(7, 8)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = null),
+        )
+        assertNotNull(result)
+        assertEquals("안녕하세요 로컬 모델입니다", result.text)
+        assertEquals(LanguageTag("ko"), result.language)
+        assertEquals(SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID, result.engineId)
+        assertEquals(0, osAttemptCount)
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

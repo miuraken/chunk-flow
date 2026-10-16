@@ -10,6 +10,7 @@ import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import java.io.File
@@ -96,6 +97,14 @@ class DataStoreUserSettingsRepositoryTest {
         assertEquals(false, repository.settings.first().lookaheadTranscriptionEnabled)
         repository.setLookaheadTranscriptionEnabled(true)
         assertEquals(true, repository.settings.first().lookaheadTranscriptionEnabled)
+
+        assertEquals(OnDeviceTranscriptionEngine.AUTO, repository.settings.first().transcriptionEngine)
+        repository.setTranscriptionEngine(OnDeviceTranscriptionEngine.SHERPA_ONNX)
+        assertEquals(OnDeviceTranscriptionEngine.SHERPA_ONNX, repository.settings.first().transcriptionEngine)
+        repository.setTranscriptionEngine(OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER)
+        assertEquals(OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER, repository.settings.first().transcriptionEngine)
+        repository.setTranscriptionEngine(OnDeviceTranscriptionEngine.ML_KIT)
+        assertEquals(OnDeviceTranscriptionEngine.ML_KIT, repository.settings.first().transcriptionEngine)
     }
 
     @Test
@@ -137,6 +146,7 @@ class DataStoreUserSettingsRepositoryTest {
             prefs[stringPreferencesKey("default_auto_pause")] = "FIXED:-100"
             prefs[intPreferencesKey("seg_min_silence_ms")] = -10
             prefs[floatPreferencesKey("seg_threshold_ratio")] = 2.0f
+            prefs[stringPreferencesKey("transcription_engine")] = "INVALID_ENGINE"
         }
         val current = repository.settings.first()
         assertEquals(ChineseScript.HANS, current.chineseScript)
@@ -144,5 +154,6 @@ class DataStoreUserSettingsRepositoryTest {
         assertEquals(UserSettings.DEFAULT_SEEK_BACK_MS, current.seekBackMs)
         assertEquals(AutoPause.Off, current.defaultAutoPause)
         assertEquals(SegmentationParams(), current.defaultSegmentationParams)
+        assertEquals(OnDeviceTranscriptionEngine.AUTO, current.transcriptionEngine)
     }
 }

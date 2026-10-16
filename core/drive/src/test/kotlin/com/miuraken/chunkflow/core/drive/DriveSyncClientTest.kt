@@ -389,4 +389,55 @@ class DriveSyncClientTest {
         exchange.sendResponseHeaders(status, bytes.size.toLong())
         exchange.responseBody.use { it.write(bytes) }
     }
+
+    @Test
+    fun `HttpUrlConnectionModelArtifactDownloader_SHA256とサイズが一致するモデル成果物を取得し不一致時は破棄する`() = runTest {
+        val payload = "onnx-model-test-payload".toByteArray(Charsets.UTF_8)
+        val expectedSha = MessageDigest.getInstance("SHA-256")
+            .digest(payload)
+            .joinToString("") { "%02x".format(it) }
+
+        server.createContext("/models/tiny-encoder.int8.onnx") { exchange ->
+            exchange.sendResponseHeaders(200, payload.size.toLong())
+            exchange.responseBody.use { it.write(payload) }
+        }
+
+        val downloader = HttpUrlConnectionModelArtifactDownloader()
+        val destFile = File(tempDir, "tiny-encoder.int8.onnx")
+
+        // 1. 正常系: サイズと SHA-256 が一致する場合は成功する
+        val okResult = downloader.downloadVerifiedFile(
+            url = "$baseUrl/models/tiny-encoder.int8.onnx",
+            destFile = destFile,
+            expectedSizeBytes = payload.size.toLong(),
+            expectedSha256Hex = expectedSha,
+        )
+        assertIs<ModelArtifactDownloadResult.Success>(okResult)
+        assertTrue(destFile.exists())
+        assertContentEquals(payload, destFile.readBytes())
+
+        // 2. 異常系: SHA-256 が一致しない場合は失敗し、壊れたファイルが残らない
+        val badShaDest = File(tempDir, "bad-sha.onnx")
+        val badShaResult = downloader.downloadVerifiedFile(
+            url = "$baseUrl/models/tiny-encoder.int8.onnx",
+            destFile = badShaDest,
+            expectedSizeBytes = payload.size.toLong(),
+            expectedSha256Hex = "0".repeat(64),
+        )
+        val badShaFailure = assertIs<ModelArtifactDownloadResult.Failure>(badShaResult)
+        assertEquals(ModelArtifactDownloadResult.Failure.Reason.CHECKSUM_MISMATCH, badShaFailure.reason)
+        assertFalse(badShaDest.exists())
+
+        // 3. 異常系: 許可されていないホストや平文 HTTP (localhost 以外) は拒否する
+        val untrustedDest = File(tempDir, "untrusted.onnx")
+        val untrustedResult = downloader.downloadVerifiedFile(
+            url = "https://evil.example.com/model.onnx",
+            destFile = untrustedDest,
+            expectedSizeBytes = payload.size.toLong(),
+            expectedSha256Hex = expectedSha,
+        )
+        val untrustedFailure = assertIs<ModelArtifactDownloadResult.Failure>(untrustedResult)
+        assertEquals(ModelArtifactDownloadResult.Failure.Reason.DISALLOWED_URL, untrustedFailure.reason)
+        assertFalse(untrustedDest.exists())
+    }
 }

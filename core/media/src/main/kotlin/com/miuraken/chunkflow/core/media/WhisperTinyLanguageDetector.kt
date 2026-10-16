@@ -65,6 +65,23 @@ class WhisperTinyLanguageDetector @Inject constructor(
     internal fun supportedLanguageCodes(): List<String> = ensureModelLoaded()?.languageCodes.orEmpty()
 
     /**
+     * `sherpa-onnx` Whisper 推論向けに、16kHz モノラル 16-bit PCM（最大 30 秒 = 3,000 フレーム）から
+     * `[1, 80, 3000]` 形状（`melIdx * 3000 + frameIdx`）の正規化 Log-Mel スペクトログラムを算出する。
+     */
+    internal fun computeMelSpectrogram80x3000(
+        pcm16kMono: ShortArray,
+        allowSilentForTest: Boolean = false,
+    ): FloatArray? {
+        if (pcm16kMono.isEmpty()) return null
+        val model = ensureModelLoaded() ?: return null
+        return computeMelSpectrogram80x3000WithFilters(
+            pcm16kMono = pcm16kMono,
+            melFilters201x80 = model.melFilters201x80,
+            allowSilentForTest = allowSilentForTest,
+        )?.first
+    }
+
+    /**
      * 16kHz モノラル 16-bit PCM（[pcm16kMono]）から `targetTag` と `baseTag` の 2 言語確率を算出する。
      *
      * 無音チャンク、極端に短いチャンク、非対応言語ペア、またはモデル未ロード時は `null` を返す。
@@ -216,8 +233,8 @@ class WhisperTinyLanguageDetector @Inject constructor(
         private const val MIN_VALID_PCM_SAMPLES: Int = 1_600
         private const val N_FFT: Int = 400
         private const val HOP_LENGTH: Int = 160
-        private const val N_FREQ_BINS: Int = 201
-        private const val N_MELS: Int = 80
+        internal const val N_FREQ_BINS: Int = 201
+        internal const val N_MELS: Int = 80
         private const val N_FRAMES: Int = 300
         private const val N_AUDIO_CTX: Int = 150
         private const val D_MODEL: Int = 384
@@ -236,6 +253,31 @@ class WhisperTinyLanguageDetector @Inject constructor(
         private const val SPEECH_ONSET_RMS_THRESHOLD: Double = 120.0
         private const val MIN_PEAK_AMPLITUDE: Int = 64
         private const val MAX_POOLED_WORKSPACES: Int = 2
+
+        /** Whisper Tiny (v1/v2) 多言語モデルがサポートする 99 言語コード（トークン ID 50259..50357 の順）。 */
+        internal val WHISPER_99_LANGUAGE_CODES: List<String> = listOf(
+            "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr",
+            "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi",
+            "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no",
+            "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk",
+            "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk",
+            "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw",
+            "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc",
+            "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo",
+            "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl",
+            "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su",
+        )
+
+        private val WHISPER_LANGUAGE_INDEX_MAP: Map<String, Int> =
+            WHISPER_99_LANGUAGE_CODES.withIndex().associate { (idx, code) -> code to idx }
+
+        /**
+         * 言語タグ [rawTag] に対応する Whisper 言語インデックス（`0..99`）を返す。非対応言語は `null`。
+         */
+        internal fun languageIndexForTag(rawTag: String): Int? {
+            val code = resolveWhisperLanguageCode(rawTag, WHISPER_LANGUAGE_INDEX_MAP) ?: return null
+            return WHISPER_LANGUAGE_INDEX_MAP[code]
+        }
 
         @Volatile
         private var sharedLoadedModel: QuantizedWhisperLidModel? = null
@@ -442,6 +484,118 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 val clamped = max(melOut[i], minClamp)
                 melOut[i] = (clamped + 4.0f) * 0.25f
             }
+        }
+
+        internal const val MAX_30S_FRAMES: Int = 3_000
+        internal const val MEL_FRAMES_30S: Int = MAX_30S_FRAMES
+        private const val MAX_30S_SAMPLES: Int = MAX_30S_FRAMES * HOP_LENGTH
+
+        internal fun computeMelSpectrogram80x3000WithFilters(
+            pcm16kMono: ShortArray,
+            melFilters201x80: FloatArray,
+            allowSilentForTest: Boolean = false,
+        ): Pair<FloatArray, Int>? {
+            if (pcm16kMono.isEmpty() || melFilters201x80.size < N_FREQ_BINS * N_MELS) return null
+            var maxAbs = 0
+            for (s in pcm16kMono) {
+                val a = abs(s.toInt())
+                if (a > maxAbs) maxAbs = a
+            }
+            if (!allowSilentForTest && maxAbs < MIN_PEAK_AMPLITUDE) {
+                return null
+            }
+
+            val cappedSamples = min(pcm16kMono.size, MAX_30S_SAMPLES)
+            val actualFrames = ((cappedSamples + HOP_LENGTH - 1) / HOP_LENGTH).coerceIn(1, MAX_30S_FRAMES)
+            val windowSamples = actualFrames * HOP_LENGTH
+            val pad = N_FFT / 2 // 200
+            val padded = FloatArray(windowSamples + N_FFT)
+            val norm = 1.0f / 32768.0f
+
+            for (i in 0 until windowSamples) {
+                padded[pad + i] = if (i < cappedSamples) pcm16kMono[i].toFloat() * norm else 0f
+            }
+            for (i in 0 until pad) {
+                val srcIdx = (pad - i).coerceIn(0, windowSamples - 1)
+                padded[i] = padded[pad + srcIdx]
+            }
+            for (i in 0 until pad) {
+                val srcIdx = (windowSamples - 2 - i).coerceIn(0, windowSamples - 1)
+                padded[pad + windowSamples + i] = padded[pad + srcIdx]
+            }
+
+            val aRe = FloatArray(20 * 20)
+            val aIm = FloatArray(20 * 20)
+            val mag = FloatArray(N_FREQ_BINS)
+            val tempMel = FloatArray(actualFrames * N_MELS)
+            var globalMaxLog = Float.NEGATIVE_INFINITY
+
+            for (t in 0 until actualFrames) {
+                val baseIdx = t * HOP_LENGTH
+                for (m in 0 until 20) {
+                    val mRow = m * 20
+                    for (n0 in 0 until 20) {
+                        var sumRe = 0f
+                        var sumIm = 0f
+                        for (n1 in 0 until 20) {
+                            val idx = n1 * 20 + n0
+                            val xw = padded[baseIdx + idx] * HANN_WINDOW_400[idx]
+                            sumRe += xw * DFT20_COS[mRow + n1]
+                            sumIm += xw * DFT20_SIN[mRow + n1]
+                        }
+                        aRe[mRow + n0] = sumRe
+                        aIm[mRow + n0] = sumIm
+                    }
+                }
+
+                for (k in 0 until N_FREQ_BINS) {
+                    val mRow = (k % 20) * 20
+                    val kRow = k * 20
+                    var re = 0f
+                    var im = 0f
+                    for (n0 in 0 until 20) {
+                        val ar = aRe[mRow + n0]
+                        val ai = aIm[mRow + n0]
+                        val tr = TWIDDLE_RE_201_20[kRow + n0]
+                        val ti = TWIDDLE_IM_201_20[kRow + n0]
+                        re += ar * tr - ai * ti
+                        im += ar * ti + ai * tr
+                    }
+                    mag[k] = re * re + im * im
+                }
+
+                val melRowOffset = t * N_MELS
+                for (k in 0 until N_FREQ_BINS) {
+                    val mk = mag[k]
+                    val filterRow = k * N_MELS
+                    for (melIdx in 0 until N_MELS) {
+                        tempMel[melRowOffset + melIdx] += mk * melFilters201x80[filterRow + melIdx]
+                    }
+                }
+                for (melIdx in 0 until N_MELS) {
+                    val v = max(tempMel[melRowOffset + melIdx], 1e-10f)
+                    val log10Val = ln(v) * INV_LN_10
+                    tempMel[melRowOffset + melIdx] = log10Val
+                    if (log10Val > globalMaxLog) {
+                        globalMaxLog = log10Val
+                    }
+                }
+            }
+
+            if (actualFrames < MAX_30S_FRAMES && -10.0f > globalMaxLog) {
+                globalMaxLog = -10.0f
+            }
+            val minClamp = globalMaxLog - 8.0f
+            val silenceNormalized = (max(-10.0f, minClamp) + 4.0f) * 0.25f
+            val mel80x3000 = FloatArray(N_MELS * MAX_30S_FRAMES) { silenceNormalized }
+            for (t in 0 until actualFrames) {
+                val melRowOffset = t * N_MELS
+                for (melIdx in 0 until N_MELS) {
+                    val clamped = max(tempMel[melRowOffset + melIdx], minClamp)
+                    mel80x3000[melIdx * MAX_30S_FRAMES + t] = (clamped + 4.0f) * 0.25f
+                }
+            }
+            return mel80x3000 to actualFrames
         }
 
         private fun runAudioEncoder(

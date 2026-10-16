@@ -15,6 +15,7 @@ import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
 import java.io.IOException
@@ -162,6 +163,12 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) {
+        dataStore.edit { prefs ->
+            prefs[KEY_TRANSCRIPTION_ENGINE] = engine.name
+        }
+    }
+
     private fun Preferences.toUserSettings(): UserSettings {
         val defaults = UserSettings()
         val defaultSeg = defaults.defaultSegmentationParams
@@ -226,6 +233,9 @@ class DataStoreUserSettingsRepository @Inject constructor(
             ?.toSet()
             ?.takeIf { it.isNotEmpty() }
             ?: UserSettings.DEFAULT_ENABLED_LANGUAGES
+        val transcriptionEngine = this[KEY_TRANSCRIPTION_ENGINE]
+            ?.let { name -> OnDeviceTranscriptionEngine.entries.firstOrNull { it.name == name } }
+            ?: defaults.transcriptionEngine
 
         return UserSettings(
             defaultLanguagePair = LanguagePair(target = targetLang, base = baseLang),
@@ -249,6 +259,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
             showTargetRomanization = this[KEY_SHOW_TARGET_ROMANIZATION] ?: defaults.showTargetRomanization,
             lookaheadTranscriptionEnabled = this[KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED]
                 ?: defaults.lookaheadTranscriptionEnabled,
+            transcriptionEngine = transcriptionEngine,
         )
     }
 
@@ -276,6 +287,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_ENABLED_LANGUAGES = stringPreferencesKey("enabled_languages")
         val KEY_SHOW_TARGET_ROMANIZATION = booleanPreferencesKey("show_target_romanization")
         val KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED = booleanPreferencesKey("lookahead_transcription_enabled")
+        val KEY_TRANSCRIPTION_ENGINE = stringPreferencesKey("transcription_engine")
 
         fun encodeAutoPause(autoPause: AutoPause): String = when (autoPause) {
             AutoPause.Off -> AUTO_PAUSE_OFF

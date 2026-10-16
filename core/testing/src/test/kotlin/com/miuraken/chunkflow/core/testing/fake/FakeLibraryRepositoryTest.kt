@@ -43,7 +43,7 @@ class FakeLibraryRepositoryTest {
         )
         val updated = repo.observeItemState(item.id).first()
         assertEquals(
-            initial.copy(positionMs = 5_000L, speed = 1.25f, updatedAtEpochMs = 200L),
+            initial.copy(positionMs = 5_000L, maxPositionMs = 5_000L, speed = 1.25f, updatedAtEpochMs = 200L),
             updated,
         )
     }

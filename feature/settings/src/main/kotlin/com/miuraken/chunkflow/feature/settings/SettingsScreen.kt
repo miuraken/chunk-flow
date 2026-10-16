@@ -60,6 +60,7 @@ import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import java.util.Locale
 import kotlin.math.abs
@@ -185,6 +186,7 @@ fun SettingsScreen(
                     SettingsTab.TRANSCRIPTION -> {
                         TranscriptionSettingsSection(
                             lookaheadEnabled = state.lookaheadTranscriptionEnabled,
+                            transcriptionEngine = state.transcriptionEngine,
                             languageModels = state.languageModels,
                             onEvent = onEvent,
                         )
@@ -448,6 +450,7 @@ private fun SegmentationDefaultsSection(
 @Composable
 private fun TranscriptionSettingsSection(
     lookaheadEnabled: Boolean,
+    transcriptionEngine: OnDeviceTranscriptionEngine,
     languageModels: List<OnDeviceLanguageModelInfo>,
     onEvent: (SettingsEvent) -> Unit,
 ) {
@@ -483,6 +486,57 @@ private fun TranscriptionSettingsSection(
         }
     }
 
+    SettingsCard(title = stringResource(R.string.settings_section_transcription_engine)) {
+        Text(
+            text = stringResource(R.string.settings_transcription_engine_description),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup(),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            SettingsUiState.TRANSCRIPTION_ENGINE_OPTIONS.forEach { option ->
+                val isSelected = transcriptionEngine == option
+                val (titleText, descText) = transcriptionEngineLabelAndDescription(option)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = isSelected,
+                            onClick = { onEvent(SettingsEvent.SetTranscriptionEngine(option)) },
+                            role = Role.RadioButton,
+                        )
+                        .padding(vertical = 6.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = null,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    Column(
+                        modifier = Modifier.padding(start = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = titleText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = descText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     SettingsCard(title = stringResource(R.string.settings_section_speech_models)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -510,8 +564,14 @@ private fun TranscriptionSettingsSection(
             }
             SpeechModelRow(
                 info = info,
-                onRequestDownload = {
+                onRequestOsDownload = {
                     onEvent(SettingsEvent.RequestRecognitionModelDownload(info.language))
+                },
+                onRequestSherpaDownload = {
+                    onEvent(SettingsEvent.RequestSherpaModelDownload(info.language))
+                },
+                onDeleteSherpaModel = {
+                    onEvent(SettingsEvent.DeleteSherpaModel(info.language))
                 },
             )
         }
@@ -519,109 +579,199 @@ private fun TranscriptionSettingsSection(
 }
 
 @Composable
+private fun transcriptionEngineLabelAndDescription(
+    engine: OnDeviceTranscriptionEngine,
+): Pair<String, String> = when (engine) {
+    OnDeviceTranscriptionEngine.AUTO -> Pair(
+        stringResource(R.string.settings_engine_auto_title),
+        stringResource(R.string.settings_engine_auto_desc),
+    )
+
+    OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> Pair(
+        stringResource(R.string.settings_engine_android_title),
+        stringResource(R.string.settings_engine_android_desc),
+    )
+
+    OnDeviceTranscriptionEngine.SHERPA_ONNX -> Pair(
+        stringResource(R.string.settings_engine_sherpa_title),
+        stringResource(R.string.settings_engine_sherpa_desc),
+    )
+
+    OnDeviceTranscriptionEngine.ML_KIT -> Pair(
+        stringResource(R.string.settings_engine_mlkit_title),
+        stringResource(R.string.settings_engine_mlkit_desc),
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun SpeechModelRow(
     info: OnDeviceLanguageModelInfo,
-    onRequestDownload: () -> Unit,
+    onRequestOsDownload: () -> Unit,
+    onRequestSherpaDownload: () -> Unit,
+    onDeleteSherpaModel: () -> Unit,
 ) {
-    val (statusLabel, containerColor, contentColor) = when (info.status) {
-        OnDeviceLanguageModelStatus.CHECKING -> Triple(
-            stringResource(R.string.settings_speech_model_status_checking),
-            MaterialTheme.colorScheme.surfaceVariant,
-            MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    val (osStatusLabel, osContainerColor, osContentColor) = modelStatusStyle(info.status)
+    val (sherpaStatusLabel, sherpaContainerColor, sherpaContentColor) = modelStatusStyle(info.sherpaModelStatus)
 
-        OnDeviceLanguageModelStatus.INSTALLED -> Triple(
-            stringResource(R.string.settings_speech_model_status_installed),
-            MaterialTheme.colorScheme.primaryContainer,
-            MaterialTheme.colorScheme.onPrimaryContainer,
-        )
-
-        OnDeviceLanguageModelStatus.NOT_INSTALLED -> Triple(
-            stringResource(R.string.settings_speech_model_status_not_installed),
-            MaterialTheme.colorScheme.secondaryContainer,
-            MaterialTheme.colorScheme.onSecondaryContainer,
-        )
-
-        OnDeviceLanguageModelStatus.DOWNLOADING -> Triple(
-            stringResource(R.string.settings_speech_model_status_downloading),
-            MaterialTheme.colorScheme.tertiaryContainer,
-            MaterialTheme.colorScheme.onTertiaryContainer,
-        )
-
-        OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> Triple(
-            stringResource(R.string.settings_speech_model_status_download_failed),
-            MaterialTheme.colorScheme.errorContainer,
-            MaterialTheme.colorScheme.onErrorContainer,
-        )
-
-        OnDeviceLanguageModelStatus.UNSUPPORTED -> Triple(
-            stringResource(R.string.settings_speech_model_status_unsupported),
-            MaterialTheme.colorScheme.surfaceVariant,
-            MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = speechModelLanguageDisplayName(info.language),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-            )
-            info.resolvedBcp47Tag?.let { bcp47Tag ->
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 Text(
-                    text = stringResource(R.string.settings_speech_model_locale_tag, bcp47Tag),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = speechModelLanguageDisplayName(info.language),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
                 )
+                info.resolvedBcp47Tag?.let { bcp47Tag ->
+                    Text(
+                        text = stringResource(R.string.settings_speech_model_locale_tag, bcp47Tag),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (info.status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                    info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                ) {
+                    val actionLabel = if (info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
+                        stringResource(R.string.settings_speech_model_action_retry)
+                    } else {
+                        stringResource(R.string.settings_speech_model_action_download)
+                    }
+                    OutlinedButton(onClick = onRequestOsDownload) {
+                        Text(
+                            text = actionLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+
+                if (info.sherpaModelStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                    info.sherpaModelStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                ) {
+                    val sherpaActionLabel = if (info.sherpaModelStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
+                        stringResource(R.string.settings_speech_model_action_sherpa_retry)
+                    } else {
+                        stringResource(R.string.settings_speech_model_action_sherpa_download)
+                    }
+                    OutlinedButton(onClick = onRequestSherpaDownload) {
+                        Text(
+                            text = sherpaActionLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                } else if (info.canDeleteSherpaModel &&
+                    info.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
+                ) {
+                    TextButton(onClick = onDeleteSherpaModel) {
+                        Text(
+                            text = stringResource(R.string.settings_speech_model_action_sherpa_delete),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
             }
         }
 
-        Row(
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Surface(
-                color = containerColor,
-                contentColor = contentColor,
+                color = osContainerColor,
+                contentColor = osContentColor,
                 shape = RoundedCornerShape(6.dp),
             ) {
                 Text(
-                    text = statusLabel,
+                    text = stringResource(R.string.settings_speech_model_os_prefix, osStatusLabel),
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
 
-            if (info.status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
-                info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
-            ) {
-                val actionLabel = if (info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
-                    stringResource(R.string.settings_speech_model_action_retry)
+            if (info.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED) {
+                val sizeMb = (info.sherpaModelSizeBytes / (1024L * 1024L)).toInt()
+                val sherpaBadgeText = if (sizeMb > 0) {
+                    stringResource(R.string.settings_speech_model_sherpa_size_mb, sizeMb, sherpaStatusLabel)
                 } else {
-                    stringResource(R.string.settings_speech_model_action_download)
+                    stringResource(R.string.settings_speech_model_sherpa_prefix, sherpaStatusLabel)
                 }
-                OutlinedButton(onClick = onRequestDownload) {
+                Surface(
+                    color = sherpaContainerColor,
+                    contentColor = sherpaContentColor,
+                    shape = RoundedCornerShape(6.dp),
+                ) {
                     Text(
-                        text = actionLabel,
-                        style = MaterialTheme.typography.labelMedium,
+                        text = sherpaBadgeText,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     )
                 }
             }
         }
     }
+}
+
+@Composable
+private fun modelStatusStyle(
+    status: OnDeviceLanguageModelStatus,
+): Triple<String, androidx.compose.ui.graphics.Color, androidx.compose.ui.graphics.Color> = when (status) {
+    OnDeviceLanguageModelStatus.CHECKING -> Triple(
+        stringResource(R.string.settings_speech_model_status_checking),
+        MaterialTheme.colorScheme.surfaceVariant,
+        MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    OnDeviceLanguageModelStatus.INSTALLED -> Triple(
+        stringResource(R.string.settings_speech_model_status_installed),
+        MaterialTheme.colorScheme.primaryContainer,
+        MaterialTheme.colorScheme.onPrimaryContainer,
+    )
+
+    OnDeviceLanguageModelStatus.NOT_INSTALLED -> Triple(
+        stringResource(R.string.settings_speech_model_status_not_installed),
+        MaterialTheme.colorScheme.secondaryContainer,
+        MaterialTheme.colorScheme.onSecondaryContainer,
+    )
+
+    OnDeviceLanguageModelStatus.DOWNLOADING -> Triple(
+        stringResource(R.string.settings_speech_model_status_downloading),
+        MaterialTheme.colorScheme.tertiaryContainer,
+        MaterialTheme.colorScheme.onTertiaryContainer,
+    )
+
+    OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> Triple(
+        stringResource(R.string.settings_speech_model_status_download_failed),
+        MaterialTheme.colorScheme.errorContainer,
+        MaterialTheme.colorScheme.onErrorContainer,
+    )
+
+    OnDeviceLanguageModelStatus.UNSUPPORTED -> Triple(
+        stringResource(R.string.settings_speech_model_status_unsupported),
+        MaterialTheme.colorScheme.surfaceVariant,
+        MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable

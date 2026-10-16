@@ -84,13 +84,23 @@ interface AnalysisRepository {
     suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean = false
 
     /**
+     * [language] 向けに `sherpa-onnx` ローカル音声認識モデルをダウンロード・検証して有効化する（Stage 2）。
+     */
+    suspend fun downloadSherpaModel(language: LanguageTag): Boolean = false
+
+    /**
+     * [language] の `sherpa-onnx` ローカル音声認識モデルを削除する（Stage 2）。
+     */
+    suspend fun deleteSherpaModel(language: LanguageTag): Boolean = false
+
+    /**
      * 端末内音声認識の言語モデルの状態を OS に問い合わせ直す（ダウンロードの完了を検出する）。
      */
     suspend fun refreshRecognitionModelIssues() = Unit
 
     /**
      * 指定された言語一覧 [languages] について、端末内音声認識モデルの利用可能状態と
-     * 解決された BCP-47 ロケールタグを問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
+     * 解決された BCP-47 ロケールタグ、および `sherpa-onnx` ローカルモデルの状態を問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
      */
     suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = languages.map { OnDeviceLanguageModelInfo(language = it) }
 

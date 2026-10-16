@@ -291,4 +291,60 @@ class SettingsViewModelTest {
             zhInstalled.status,
         )
     }
+
+    @Test
+    fun `文字起こしライブラリの選択とsherpa_onnxモデルの入手および削除がUiStateとRepositoryに反映される`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val analysisRepo = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository().apply {
+            languageModelInfos[LanguageTag("zh")] =
+                com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                    language = LanguageTag("zh"),
+                    status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    sherpaModelId = "sherpa-onnx-whisper-tiny",
+                    sherpaModelSizeBytes = 103_609_903L,
+                )
+        }
+        val viewModel = SettingsViewModel(repo, analysisRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.AUTO,
+            viewModel.uiState.value.transcriptionEngine,
+        )
+
+        viewModel.onEvent(
+            SettingsEvent.SetTranscriptionEngine(
+                com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.SHERPA_ONNX,
+            ),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.SHERPA_ONNX,
+            viewModel.uiState.value.transcriptionEngine,
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.SHERPA_ONNX,
+            repo.state.value.transcriptionEngine,
+        )
+
+        // sherpa-onnx モデルの入手要求で INSTALLED + canDeleteSherpaModel = true に遷移する
+        viewModel.onEvent(SettingsEvent.RequestSherpaModelDownload(LanguageTag("zh")))
+        assertEquals(listOf(LanguageTag("zh")), analysisRepo.requestedSherpaDownloads)
+        val zhAfterDownload = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            zhAfterDownload.sherpaModelStatus,
+        )
+        assertTrue(zhAfterDownload.canDeleteSherpaModel)
+
+        // 削除要求で NOT_INSTALLED + canDeleteSherpaModel = false に戻る
+        viewModel.onEvent(SettingsEvent.DeleteSherpaModel(LanguageTag("zh")))
+        assertEquals(listOf(LanguageTag("zh")), analysisRepo.requestedSherpaDeletions)
+        val zhAfterDelete = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            zhAfterDelete.sherpaModelStatus,
+        )
+        assertFalse(zhAfterDelete.canDeleteSherpaModel)
+    }
 }

@@ -12,6 +12,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.UserSettings
@@ -102,6 +103,10 @@ data class SettingsUiState(
     val lookaheadTranscriptionEnabled: Boolean
         get() = settings.lookaheadTranscriptionEnabled
 
+    /** 端末内文字起こしで使用する認識ライブラリ（エンジン）。 */
+    val transcriptionEngine: OnDeviceTranscriptionEngine
+        get() = settings.transcriptionEngine
+
     /** 端末内の自動チャンク分割の既定パラメータ。 */
     val defaultSegmentationParams: SegmentationParams
         get() = settings.defaultSegmentationParams
@@ -153,6 +158,14 @@ data class SettingsUiState(
             AutoPauseScope.ALL_CHUNKS,
             AutoPauseScope.AFTER_TARGET_LANGUAGE,
             AutoPauseScope.AFTER_BASE_LANGUAGE,
+        )
+
+        /** 端末内文字起こしライブラリの選択肢。 */
+        val TRANSCRIPTION_ENGINE_OPTIONS: List<OnDeviceTranscriptionEngine> = listOf(
+            OnDeviceTranscriptionEngine.AUTO,
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            OnDeviceTranscriptionEngine.SHERPA_ONNX,
+            OnDeviceTranscriptionEngine.ML_KIT,
         )
 
         /** 主な対象言語の一覧（§1.2、F9.1）。 */
@@ -269,8 +282,17 @@ sealed interface SettingsEvent {
     /** 端末内の先読み簡易文字起こしの ON / OFF を切り替える。 */
     data class SetLookaheadTranscriptionEnabled(val enabled: Boolean) : SettingsEvent
 
-    /** 指定した言語の端末内音声認識モデルのダウンロードを要求する。 */
+    /** 端末内文字起こしで使用する認識ライブラリ（エンジン）を変更する。 */
+    data class SetTranscriptionEngine(val engine: OnDeviceTranscriptionEngine) : SettingsEvent
+
+    /** 指定した言語の端末内音声認識モデル（OS SODA）のダウンロードを要求する。 */
     data class RequestRecognitionModelDownload(val language: LanguageTag) : SettingsEvent
+
+    /** 指定した言語向けに `sherpa-onnx` ローカルモデルのダウンロード・検証を要求する（Stage 2）。 */
+    data class RequestSherpaModelDownload(val language: LanguageTag) : SettingsEvent
+
+    /** 指定した言語の `sherpa-onnx` ローカルモデルを削除する（Stage 2）。 */
+    data class DeleteSherpaModel(val language: LanguageTag) : SettingsEvent
 
     /** 言語ごとの端末内音声認識モデルの状態を再取得する。 */
     data object RefreshRecognitionModels : SettingsEvent
@@ -424,6 +446,12 @@ class SettingsViewModel @Inject constructor(
                 }
             }
 
+            is SettingsEvent.SetTranscriptionEngine -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setTranscriptionEngine(event.engine)
+                }
+            }
+
             is SettingsEvent.RequestRecognitionModelDownload -> {
                 languageModelsState.update { current ->
                     current.map { info ->
@@ -449,6 +477,41 @@ class SettingsViewModel @Inject constructor(
                     } else {
                         refreshLanguageModelsInternal()
                     }
+                }
+            }
+
+            is SettingsEvent.RequestSherpaModelDownload -> {
+                languageModelsState.update { current ->
+                    current.map { info ->
+                        if (info.language == event.language) {
+                            info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
+                        } else {
+                            info
+                        }
+                    }
+                }
+                viewModelScope.launch {
+                    val ok = analysisRepository.downloadSherpaModel(event.language)
+                    if (!ok) {
+                        languageModelsState.update { current ->
+                            current.map { info ->
+                                if (info.language == event.language) {
+                                    info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                } else {
+                                    info
+                                }
+                            }
+                        }
+                    } else {
+                        refreshLanguageModelsInternal()
+                    }
+                }
+            }
+
+            is SettingsEvent.DeleteSherpaModel -> {
+                viewModelScope.launch {
+                    analysisRepository.deleteSherpaModel(event.language)
+                    refreshLanguageModelsInternal()
                 }
             }
 

@@ -914,10 +914,38 @@ class DefaultAnalysisRepository(
     }.distinctUntilChanged()
 
     override suspend fun requestRecognitionModelDownload(language: LanguageTag): Boolean = runCatching {
-        onDeviceChunkTranscriber.requestRecognitionModelDownload(language)
+        val ok = onDeviceChunkTranscriber.requestRecognitionModelDownload(language)
+        if (ok) {
+            attemptedEmptyChunkIds.clear()
+        }
+        ok
     }.getOrElse { error ->
         if (error is CancellationException) throw error
         false
+    }
+
+    override suspend fun downloadSherpaModel(language: LanguageTag): Boolean = withContext(ioDispatcher) {
+        try {
+            val ok = onDeviceChunkTranscriber.downloadSherpaModel(language)
+            if (ok) {
+                attemptedEmptyChunkIds.clear()
+            }
+            ok
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override suspend fun deleteSherpaModel(language: LanguageTag): Boolean = withContext(ioDispatcher) {
+        try {
+            onDeviceChunkTranscriber.deleteSherpaModel(language)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
     }
 
     override suspend fun refreshRecognitionModelIssues() {
