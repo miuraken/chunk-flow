@@ -219,7 +219,7 @@ class DefaultLibraryRepository(
             return@flow
         }
 
-        val explicitCourse = sanitizeCourseName(course).takeIf { it.isNotBlank() }
+        val explicitCourse = sanitizeCoursePath(course).takeIf { it.isNotBlank() }
 
         // 1. スキームの検証と SAF フォルダ（Tree URI）の展開
         val rawCandidates = mutableListOf<ImportCandidate>()
@@ -230,15 +230,10 @@ class DefaultLibraryRepository(
                 return@flow
             }
             if (isTreeUriSafe(uri)) {
-                val expanded = expandTreeUri(uri)
-                rawCandidates += if (explicitCourse != null) {
-                    expanded.map { it.copy(course = explicitCourse) }
-                } else {
-                    expanded
-                }
+                rawCandidates += expandTreeUri(uri, rootCourseOverride = explicitCourse)
             } else {
                 val meta = queryContentMetadata(uri)
-                val resolvedCourse = explicitCourse ?: extractCourseFromDocumentUri(uri)
+                val resolvedCourse = extractCourseFromDocumentUri(uri, explicitRootCourse = explicitCourse)
                 rawCandidates += ImportCandidate(
                     uri = uri,
                     meta = meta,
@@ -477,7 +472,7 @@ class DefaultLibraryRepository(
         languages: LanguagePair,
     ) {
         withContext(ioDispatcher) {
-            val normalizedCourse = sanitizeCourseName(course).takeIf { it.isNotBlank() }
+            val normalizedCourse = sanitizeCoursePath(course).takeIf { it.isNotBlank() }
             mediaItemDao.updateCourseAndLanguagePair(
                 id = id.value,
                 course = normalizedCourse,
@@ -493,7 +488,7 @@ class DefaultLibraryRepository(
         languages: LanguagePair,
     ) {
         withContext(ioDispatcher) {
-            val normalizedNewCourse = sanitizeCourseName(newCourse).takeIf { it.isNotBlank() }
+            val normalizedNewCourse = sanitizeCoursePath(newCourse).takeIf { it.isNotBlank() }
             if (currentCourse != null) {
                 mediaItemDao.updateCourseMetadata(
                     oldCourse = currentCourse,
@@ -501,6 +496,23 @@ class DefaultLibraryRepository(
                     targetLang = languages.target.value,
                     baseLang = languages.base?.value,
                 )
+                val prefix = "$currentCourse/"
+                val childItems = mediaItemDao.observeAll().first()
+                    .filter { it.course?.startsWith(prefix) == true }
+                for (child in childItems) {
+                    val suffix = child.course.orEmpty().removePrefix(prefix)
+                    val updatedChildCourse = if (normalizedNewCourse != null) {
+                        "$normalizedNewCourse/$suffix"
+                    } else {
+                        suffix
+                    }
+                    mediaItemDao.updateCourseAndLanguagePair(
+                        id = child.id,
+                        course = updatedChildCourse,
+                        targetLang = languages.target.value,
+                        baseLang = languages.base?.value,
+                    )
+                }
             } else {
                 mediaItemDao.updateUncategorizedCourseMetadata(
                     newCourse = normalizedNewCourse,
@@ -1058,7 +1070,11 @@ class DefaultLibraryRepository(
         // すでに同じ SHA-256 の項目が DB にあるか調べる
         val existingEntity = mediaItemDao.getBySha256(sha256)
         if (existingEntity != null) {
-            val updatedCourse = explicitCourse ?: (existingEntity.course ?: course?.takeIf { it.isNotBlank() })
+            val updatedCourse = if (explicitCourse != null) {
+                course?.takeIf { it.isNotBlank() } ?: explicitCourse
+            } else {
+                existingEntity.course ?: course?.takeIf { it.isNotBlank() }
+            }
             val updatedTargetLang = languages?.target?.value ?: existingEntity.targetLang
             val updatedBaseLang = if (languages != null) languages.base?.value else existingEntity.baseLang
             if (updatedCourse != existingEntity.course ||
@@ -1426,12 +1442,15 @@ class DefaultLibraryRepository(
      * SAF のフォルダ選択（`OpenDocumentTree`）で渡された Tree URI を展開し、
      * 直下の音声ファイル・サブフォルダ・および `transcription/` フォルダ内の文字起こしファイルを列挙する。
      */
-    private fun expandTreeUri(treeUri: Uri): List<ImportCandidate> {
+    private fun expandTreeUri(
+        treeUri: Uri,
+        rootCourseOverride: String? = null,
+    ): List<ImportCandidate> {
         val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
             ?: return emptyList()
         val rootDocUri = runCatching { DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId) }.getOrNull()
         val rootMeta = rootDocUri?.let(::queryContentMetadata)
-        val rootCourse = sanitizeCourseName(
+        val rootCourse = rootCourseOverride ?: sanitizeCourseName(
             rootMeta?.displayName ?: extractFolderNameFromDocId(rootDocId),
         ).takeIf { it.isNotBlank() }
 
@@ -1486,7 +1505,12 @@ class DefaultLibraryRepository(
                         val childCourse = if (isTranscriptionDir) {
                             currentCourse
                         } else {
-                            sanitizeCourseName(displayName).takeIf { it.isNotBlank() } ?: currentCourse
+                            val childSegment = sanitizeCourseName(displayName).takeIf { it.isNotBlank() }
+                            when {
+                                childSegment == null -> currentCourse
+                                currentCourse.isNullOrBlank() -> childSegment
+                                else -> "$currentCourse/$childSegment"
+                            }
                         }
                         collectTreeChildren(
                             treeUri = treeUri,
@@ -1531,10 +1555,33 @@ class DefaultLibraryRepository(
             DocumentsContract.isTreeUri(uri)
     }.getOrDefault(false)
 
-    private fun extractCourseFromDocumentUri(uri: Uri): String? {
+    private fun extractCourseFromDocumentUri(
+        uri: Uri,
+        explicitRootCourse: String? = null,
+    ): String? {
         val docId = runCatching {
             DocumentsContract.getDocumentId(uri)
-        }.getOrNull() ?: return null
+        }.getOrNull()
+        val treeDocId = runCatching {
+            DocumentsContract.getTreeDocumentId(uri)
+        }.getOrNull()
+
+        if (treeDocId != null && docId != null && docId.startsWith(treeDocId)) {
+            val rootCourse = explicitRootCourse
+                ?: sanitizeCourseName(extractFolderNameFromDocId(treeDocId)).takeIf { it.isNotBlank() }
+            val relativePath = docId.removePrefix(treeDocId).trim('/')
+            val relSegments = relativePath.split('/').filter { it.isNotBlank() }
+            val subDirSegments = if (relSegments.size >= 2) relSegments.dropLast(1) else emptyList()
+            val cleanSubDirs = subDirSegments
+                .filterNot { it.equals(TRANSCRIPTION_DIR_NAME, ignoreCase = true) }
+                .mapNotNull { seg -> sanitizeCourseName(seg).takeIf { it.isNotBlank() } }
+            return (listOfNotNull(rootCourse) + cleanSubDirs)
+                .joinToString("/")
+                .takeIf { it.isNotBlank() }
+        }
+
+        if (explicitRootCourse != null) return explicitRootCourse
+        if (docId == null) return null
 
         val pathPart = docId.substringAfter(':', docId)
         val segments = pathPart.split('/').filter { it.isNotBlank() }
@@ -2147,16 +2194,11 @@ class DefaultLibraryRepository(
     private suspend fun FlowCollector<SyncProgress>.syncWithSafTreeUri(
         config: LinkedSyncFolderConfig,
     ) {
-        val explicitCourse = sanitizeCourseName(config.course).takeIf { it.isNotBlank() }
-        val rawCandidates = if (isTreeUriSafe(config.treeUri)) {
-            expandTreeUri(config.treeUri)
+        val explicitCourse = sanitizeCoursePath(config.course).takeIf { it.isNotBlank() }
+        val candidates = if (isTreeUriSafe(config.treeUri)) {
+            expandTreeUri(config.treeUri, rootCourseOverride = explicitCourse)
         } else {
             emptyList()
-        }
-        val candidates = if (explicitCourse != null) {
-            rawCandidates.map { it.copy(course = explicitCourse) }
-        } else {
-            rawCandidates
         }
 
         val (transcriptCandidates, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
@@ -2549,7 +2591,7 @@ class DefaultLibraryRepository(
         private const val DEFAULT_UNTITLED_NAME: String = "Untitled"
         private const val TRANSCRIPTION_DIR_NAME: String = "transcription"
         private const val LINKED_SYNC_PROPERTIES_FILE_NAME: String = "drive_sync_link.properties"
-        private const val MAX_TREE_DEPTH: Int = 2
+        private const val MAX_TREE_DEPTH: Int = 6
         private const val MAX_EXPORT_SEGMENT_CHARS: Int = 2_000
 
         private fun extensionForMimeType(mimeType: String): String = when (mimeType.lowercase()) {
@@ -2701,6 +2743,16 @@ class DefaultLibraryRepository(
             } else {
                 String(codePoints, 0, MAX_TITLE_CODE_POINTS)
             }
+        }
+
+        internal fun sanitizeCoursePath(rawCourse: String?): String {
+            if (rawCourse.isNullOrBlank()) return ""
+            return rawCourse
+                .replace('\\', '/')
+                .split('/')
+                .map { segment -> sanitizeCourseName(segment) }
+                .filter { it.isNotBlank() && it != "." && it != ".." }
+                .joinToString("/")
         }
 
         /**

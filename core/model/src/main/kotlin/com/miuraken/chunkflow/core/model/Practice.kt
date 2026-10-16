@@ -58,10 +58,13 @@ sealed interface AutoPause {
 
 /** 自動ポーズを入れるチャンクの範囲。 */
 enum class AutoPauseScope {
-    /** すべてのチャンクの後。 */
+    /** すべてのチャンクの後（両言語）。 */
     ALL_CHUNKS,
 
-    /** 母語（base）のチャンクの後だけ（瞬間作文モード）。 */
+    /** 学習言語（target）のチャンクの後だけ。 */
+    AFTER_TARGET_LANGUAGE,
+
+    /** 母語・解説言語（base）のチャンクの後だけ（瞬間作文モード）。 */
     AFTER_BASE_LANGUAGE,
 }
 

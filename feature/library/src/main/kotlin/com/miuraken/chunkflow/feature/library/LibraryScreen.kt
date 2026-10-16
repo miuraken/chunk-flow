@@ -1,9 +1,12 @@
 package com.miuraken.chunkflow.feature.library
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -28,14 +32,13 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -309,27 +312,22 @@ fun LibraryScreen(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
-    var autoScrolledDirs by remember { mutableStateOf<Set<String?>>(emptySet()) }
+    var lastScrolledDirectoryPath by remember { mutableStateOf<String?>("__uninitialized__") }
 
-    val directories = state.directories
-    LaunchedEffect(directories) {
-        // 折りたたまれたディレクトリは次回展開時に再スクロールできるよう履歴から外す
-        val expandedNames = directories.filter { it.isExpanded }.map { it.name }.toSet()
-        autoScrolledDirs = autoScrolledDirs.intersect(expandedNames)
+    val currentDirs = state.currentDirectories
+    val currentFiles = state.currentFiles
 
-        // 新たに展開表示され、かつ Listened ファイルを持つディレクトリがあれば
-        // 最後の Listened ファイルが上部に 1〜2 件だけ見える位置までスクロールする
-        val newlyExpandedWithListened = directories.firstOrNull { dir ->
-            dir.isExpanded &&
-                dir.name !in autoScrolledDirs &&
-                dir.initialVisibleItemIndexInDirectory != null
-        }
-        if (newlyExpandedWithListened != null) {
-            autoScrolledDirs = autoScrolledDirs + newlyExpandedWithListened.name
-            val targetLazyIdx = state.targetScrollLazyIndexForDirectory(newlyExpandedWithListened.name)
-            if (targetLazyIdx != null && targetLazyIdx > 0) {
-                listState.scrollToItem(targetLazyIdx)
-            }
+    BackHandler(enabled = state.isSelectionMode || state.currentDirectoryPath != null) {
+        onEvent(LibraryEvent.NavigateUp)
+    }
+
+    LaunchedEffect(state.currentDirectoryPath, currentFiles.size) {
+        if (lastScrolledDirectoryPath != state.currentDirectoryPath &&
+            (currentDirs.isNotEmpty() || currentFiles.isNotEmpty())
+        ) {
+            lastScrolledDirectoryPath = state.currentDirectoryPath
+            val targetIdx = state.initialVisibleLazyIndexInCurrentDirectory ?: 0
+            listState.scrollToItem(targetIdx)
         }
     }
 
@@ -337,40 +335,90 @@ fun LibraryScreen(
         modifier = modifier,
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (state.isSelectionMode) {
+                        IconButton(onClick = { onEvent(LibraryEvent.ClearSelection) }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Close,
+                                contentDescription = stringResource(R.string.library_selection_clear),
+                            )
+                        }
+                    } else if (state.currentDirectoryPath != null) {
+                        IconButton(onClick = { onEvent(LibraryEvent.NavigateUp) }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.ArrowBack,
+                                contentDescription = stringResource(R.string.library_navigate_up),
+                            )
+                        }
+                    }
+                },
                 title = {
+                    val titleText = when {
+                        state.isSelectionMode -> stringResource(
+                            R.string.library_selection_count,
+                            state.selectedCount,
+                        )
+
+                        state.currentDirectoryPath != null -> {
+                            state.currentDirectoryPath.substringAfterLast('/')
+                        }
+
+                        else -> stringResource(R.string.library_title)
+                    }
                     Text(
-                        text = stringResource(R.string.library_title),
+                        text = titleText,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 },
                 actions = {
-                    IconButton(onClick = { onEvent(LibraryEvent.SyncFromDrive) }) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Sync,
-                            contentDescription = stringResource(R.string.library_drive_sync_button),
-                        )
-                    }
-                    FilledTonalButton(
-                        onClick = { onEvent(LibraryEvent.RequestImportDirectory) },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Folder,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.library_import_directory_button),
-                            maxLines = 1,
-                        )
-                    }
-                    TextButton(onClick = { onEvent(LibraryEvent.OpenSettings) }) {
-                        Text(
-                            text = stringResource(R.string.library_open_settings),
-                            maxLines = 1,
-                        )
+                    if (state.isSelectionMode) {
+                        FilledTonalButton(
+                            onClick = { onEvent(LibraryEvent.RequestDeleteSelected) },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Delete,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = stringResource(
+                                    R.string.library_selection_delete_action,
+                                    state.selectedCount,
+                                ),
+                                maxLines = 1,
+                            )
+                        }
+                    } else {
+                        IconButton(onClick = { onEvent(LibraryEvent.SyncFromDrive) }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Sync,
+                                contentDescription = stringResource(R.string.library_drive_sync_button),
+                            )
+                        }
+                        FilledTonalButton(
+                            onClick = { onEvent(LibraryEvent.RequestImportDirectory) },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        ) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = stringResource(R.string.library_import_directory_button),
+                                maxLines = 1,
+                            )
+                        }
+                        TextButton(onClick = { onEvent(LibraryEvent.OpenSettings) }) {
+                            Text(
+                                text = stringResource(R.string.library_open_settings),
+                                maxLines = 1,
+                            )
+                        }
                     }
                 },
             )
@@ -417,50 +465,85 @@ fun LibraryScreen(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 ) {
-                    directories.forEachIndexed { dirIndex, directory ->
-                        val dirKey = directory.name ?: "__uncategorized__"
-                        item(key = "dir_header_$dirKey") {
-                            LibraryDirectoryHeader(
-                                directory = directory,
-                                onToggleExpand = {
-                                    onEvent(LibraryEvent.ToggleDirectory(directory.name))
-                                },
-                                onEditDirectoryMetadata = {
-                                    onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
-                                },
-                                modifier = Modifier.padding(top = if (dirIndex == 0) 0.dp else 12.dp),
-                            )
+                    items(
+                        items = currentDirs,
+                        key = { dir -> "dir_${dir.name.orEmpty()}" },
+                    ) { directory ->
+                        val dirPath = directory.name.orEmpty()
+                        val isSelected = dirPath in state.selectedDirectoryPaths
+                        LibraryDirectoryRow(
+                            directory = directory,
+                            isSelectionMode = state.isSelectionMode,
+                            isSelected = isSelected,
+                            onClick = {
+                                if (state.isSelectionMode) {
+                                    onEvent(LibraryEvent.ToggleDirectorySelection(dirPath))
+                                } else {
+                                    onEvent(LibraryEvent.OpenDirectory(dirPath))
+                                }
+                            },
+                            onLongClick = {
+                                if (dirPath.isNotEmpty()) {
+                                    onEvent(LibraryEvent.ToggleDirectorySelection(dirPath))
+                                }
+                            },
+                            onEditDirectoryMetadata = {
+                                onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
+                            },
+                            onDeleteDirectory = {
+                                if (dirPath.isNotEmpty()) {
+                                    onEvent(LibraryEvent.RequestDeleteDirectory(dirPath))
+                                }
+                            },
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                    }
+                    itemsIndexed(
+                        items = currentFiles,
+                        key = { _, itemModel -> "file_${itemModel.item.id.value}" },
+                    ) { index, itemModel ->
+                        val isFirstFile = index == 0
+                        val isLastFile = index == currentFiles.lastIndex
+                        val isSelected = itemModel.item.id in state.selectedItemIds
+                        val shape = when {
+                            isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
+                            isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
+                            isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                            else -> RectangleShape
                         }
-                        if (directory.isExpanded) {
-                            itemsIndexed(
-                                items = directory.items,
-                                key = { _, itemModel -> "dir_item_${dirKey}_${itemModel.item.id.value}" },
-                            ) { index, itemModel ->
-                                val isLastInDir = index == directory.items.lastIndex
-                                Surface(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                    shape = if (isLastInDir) {
-                                        RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
-                                    } else {
-                                        RectangleShape
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerLow
+                            },
+                            shape = shape,
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                LibraryItemRow(
+                                    itemModel = itemModel,
+                                    isSelectionMode = state.isSelectionMode,
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        if (state.isSelectionMode) {
+                                            onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                                        } else {
+                                            onEvent(LibraryEvent.OpenItem(itemModel.item.id))
+                                        }
                                     },
-                                ) {
-                                    Column(modifier = Modifier.fillMaxWidth()) {
-                                        if (index == 0) {
-                                            HorizontalDivider()
-                                        }
-                                        LibraryItemRow(
-                                            itemModel = itemModel,
-                                            onClick = { onEvent(LibraryEvent.OpenItem(itemModel.item.id)) },
-                                            onEditMetadataClick = {
-                                                onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
-                                            },
-                                        )
-                                        if (!isLastInDir) {
-                                            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                                        }
-                                    }
+                                    onLongClick = {
+                                        onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                                    },
+                                    onEditMetadataClick = {
+                                        onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
+                                    },
+                                    onDeleteClick = {
+                                        onEvent(LibraryEvent.RequestDelete(itemModel.item))
+                                    },
+                                )
+                                if (!isLastFile) {
+                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                                 }
                             }
                         }
@@ -523,13 +606,44 @@ fun LibraryScreen(
         )
     }
 
-    state.pendingDeleteItem?.let { itemToDelete ->
+    if (state.hasPendingDeleteConfirmation) {
+        val deleteDialogTitle: String
+        val deleteDialogMessage: String
+        when {
+            state.pendingDeleteItem != null -> {
+                deleteDialogTitle = stringResource(R.string.library_delete_dialog_title)
+                deleteDialogMessage = stringResource(
+                    R.string.library_delete_dialog_message,
+                    state.pendingDeleteItem.title,
+                )
+            }
+
+            state.pendingDeleteDirectoryPath != null -> {
+                val dirDisplayName = state.pendingDeleteDirectoryPath.substringAfterLast('/')
+                val targetCount = state.pendingDeleteTargetItems.size
+                deleteDialogTitle = stringResource(R.string.library_delete_directory_dialog_title)
+                deleteDialogMessage = stringResource(
+                    R.string.library_delete_directory_dialog_message,
+                    dirDisplayName,
+                    targetCount,
+                )
+            }
+
+            else -> {
+                val selectedCount = state.selectedCount
+                val targetCount = state.pendingDeleteTargetItems.size
+                deleteDialogTitle = stringResource(R.string.library_delete_selected_dialog_title)
+                deleteDialogMessage = stringResource(
+                    R.string.library_delete_selected_dialog_message,
+                    selectedCount,
+                    targetCount,
+                )
+            }
+        }
         AlertDialog(
             onDismissRequest = { onEvent(LibraryEvent.CancelDelete) },
-            title = { Text(text = stringResource(R.string.library_delete_dialog_title)) },
-            text = {
-                Text(text = stringResource(R.string.library_delete_dialog_message, itemToDelete.title))
-            },
+            title = { Text(text = deleteDialogTitle) },
+            text = { Text(text = deleteDialogMessage) },
             confirmButton = {
                 TextButton(onClick = { onEvent(LibraryEvent.ConfirmDelete) }) {
                     Text(
@@ -555,121 +669,117 @@ private fun LibraryActionToolbar(
     onSyncFromDrive: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
+    Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        OutlinedButton(
+            onClick = onSelectDirectory,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
         ) {
-            OutlinedButton(
-                onClick = onSelectDirectory,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Folder,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.library_import_directory_button),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            OutlinedButton(
-                onClick = onImportFiles,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.library_import_button),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            OutlinedButton(
-                onClick = onImportTranscript,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Description,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.library_import_transcript_button),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            OutlinedButton(
-                onClick = onSyncFromDrive,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Sync,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.library_drive_sync_button),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
+            Icon(
+                imageVector = ChunkFlowIcons.Folder,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(R.string.library_import_directory_button),
+                style = MaterialTheme.typography.labelMedium,
+            )
         }
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = stringResource(R.string.library_directory_structure_hint),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        OutlinedButton(
+            onClick = onImportFiles,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Add,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(R.string.library_import_button),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        OutlinedButton(
+            onClick = onImportTranscript,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Description,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(R.string.library_import_transcript_button),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        OutlinedButton(
+            onClick = onSyncFromDrive,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Sync,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(R.string.library_drive_sync_button),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LibraryDirectoryHeader(
+private fun LibraryDirectoryRow(
     directory: LibraryDirectoryUiModel,
-    onToggleExpand: () -> Unit,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onEditDirectoryMetadata: () -> Unit,
+    onDeleteDirectory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val directoryTitle = directory.name ?: stringResource(R.string.library_directory_uncategorized)
-    val toggleDescription = if (directory.isExpanded) {
-        stringResource(R.string.library_directory_collapse)
-    } else {
-        stringResource(R.string.library_directory_expand)
-    }
-    val shape = if (directory.isExpanded && directory.items.isNotEmpty()) {
-        RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
-    } else {
-        RoundedCornerShape(12.dp)
-    }
+    val directoryTitle = directory.displayName ?: directory.name.orEmpty()
 
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = shape,
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        shape = RoundedCornerShape(12.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onToggleExpand)
-                .padding(start = 16.dp, top = 10.dp, bottom = 10.dp, end = 8.dp),
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                )
+                .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (isSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onClick() },
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+            }
             Icon(
                 imageVector = ChunkFlowIcons.Folder,
                 contentDescription = null,
@@ -677,67 +787,54 @@ private fun LibraryDirectoryHeader(
                 modifier = Modifier.size(22.dp),
             )
             Spacer(modifier = Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = directoryTitle,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Text(
-                        text = stringResource(
-                            R.string.library_directory_item_count,
-                            directory.items.size,
-                        ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (directory.listenedCount > 0) {
-                        Text(
-                            text = stringResource(
-                                R.string.library_directory_listened_count,
-                                directory.listenedCount,
-                                directory.items.size,
-                            ),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    text = directory.transcriptionPathHint,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = directoryTitle,
+                    style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Text(
+                    text = stringResource(
+                        R.string.library_directory_item_count,
+                        directory.items.size,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(
-                onClick = onEditDirectoryMetadata,
-                modifier = Modifier.size(36.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Edit,
-                    contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
+            if (!isSelectionMode) {
+                IconButton(
+                    onClick = onEditDirectoryMetadata,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Edit,
+                        contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                IconButton(
+                    onClick = onDeleteDirectory,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Delete,
+                        contentDescription = stringResource(
+                            R.string.library_delete_content_description,
+                            directoryTitle,
+                        ),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
-            Icon(
-                imageVector = if (directory.isExpanded) {
-                    ChunkFlowIcons.ExpandLess
-                } else {
-                    ChunkFlowIcons.ExpandMore
-                },
-                contentDescription = toggleDescription,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
@@ -1088,22 +1185,30 @@ private fun LibraryEmptyContent(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun LibraryItemRow(
     itemModel: LibraryItemUiModel,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onEditMetadataClick: () -> Unit,
+    onDeleteClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val item = itemModel.item
     val formattedDuration = formatDurationMs(item.durationMs)
     val editCd = stringResource(R.string.library_edit_metadata_cd)
+    val deleteCd = stringResource(R.string.library_delete_content_description, item.title)
 
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Row(
@@ -1111,6 +1216,18 @@ private fun LibraryItemRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (isSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onClick() },
+                )
+            }
+            Icon(
+                imageVector = ChunkFlowIcons.AudioFile,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
             Text(
                 text = item.title,
                 style = MaterialTheme.typography.titleMedium,
@@ -1118,40 +1235,29 @@ private fun LibraryItemRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if (itemModel.isListened) {
-                Surface(
-                    color = MaterialTheme.colorScheme.tertiaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                    shape = RoundedCornerShape(6.dp),
+            if (!isSelectionMode) {
+                IconButton(
+                    onClick = onEditMetadataClick,
+                    modifier = Modifier.size(32.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(13.dp),
-                        )
-                        Text(
-                            text = stringResource(R.string.library_item_listened_badge),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
+                    Icon(
+                        imageVector = ChunkFlowIcons.Edit,
+                        contentDescription = editCd,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
-            }
-            IconButton(
-                onClick = onEditMetadataClick,
-                modifier = Modifier.size(32.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Edit,
-                    contentDescription = editCd,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
+                IconButton(
+                    onClick = onDeleteClick,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Delete,
+                        contentDescription = deleteCd,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
         Spacer(modifier = Modifier.height(4.dp))
@@ -1166,31 +1272,38 @@ private fun LibraryItemRow(
                     .clickable(onClick = onEditMetadataClick)
                     .semantics { contentDescription = editCd },
             )
-            Text(
-                text = formattedDuration,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             if (itemModel.isAnalyzing) {
                 Text(
                     text = stringResource(R.string.library_item_analyzing),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.tertiary,
                 )
-            } else if (itemModel.chunkCount > 0) {
-                Text(
-                    text = stringResource(R.string.library_item_chunk_count, itemModel.chunkCount),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
             }
-            if (itemModel.hasTranscript) {
-                Text(
-                    text = stringResource(R.string.library_item_transcript_ready),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+            val transcriptStatusText: String
+            val transcriptStatusColor = when (itemModel.transcriptStatus) {
+                LibraryTranscriptStatus.NONE -> {
+                    transcriptStatusText = stringResource(R.string.library_item_transcript_none)
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+
+                LibraryTranscriptStatus.PARTIAL -> {
+                    transcriptStatusText = stringResource(
+                        R.string.library_item_transcript_partial,
+                        itemModel.transcriptProgressPercent,
+                    )
+                    MaterialTheme.colorScheme.secondary
+                }
+
+                LibraryTranscriptStatus.COMPLETED -> {
+                    transcriptStatusText = stringResource(R.string.library_item_transcript_completed)
+                    MaterialTheme.colorScheme.primary
+                }
             }
+            Text(
+                text = transcriptStatusText,
+                style = MaterialTheme.typography.labelSmall,
+                color = transcriptStatusColor,
+            )
             if (itemModel.isAudioMissing) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
@@ -1205,58 +1318,54 @@ private fun LibraryItemRow(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = itemModel.transcriptRelativePath,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Spacer(modifier = Modifier.height(6.dp))
+        LinearProgressIndicator(
+            progress = { itemModel.maxProgressFraction },
+            modifier = Modifier.fillMaxWidth(),
         )
-        if (itemModel.positionMs > 0L || itemModel.lastAccessedAtEpochMs != null) {
-            Spacer(modifier = Modifier.height(6.dp))
-            if (itemModel.positionMs > 0L) {
-                LinearProgressIndicator(
-                    progress = { itemModel.progressFraction },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(modifier = Modifier.height(2.dp))
+        Spacer(modifier = Modifier.height(2.dp))
+        val maxPercent = itemModel.maxProgressPercent
+        val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
+        val durationProgressText = if (hasProgress) {
+            val baseResume = stringResource(
+                R.string.library_item_resume_position,
+                formatDurationMs(itemModel.positionMs),
+                formattedDuration,
+                maxPercent,
+            )
+            val speedSuffix = if (itemModel.speed != 1.0f) {
+                " · ${formatSpeed(itemModel.speed)}"
+            } else {
+                ""
             }
-            val progressPercent = (itemModel.progressFraction * 100f).roundToInt()
-            val resumePositionText = if (itemModel.positionMs > 0L) {
-                val baseResume = stringResource(
-                    R.string.library_item_resume_position,
-                    formatDurationMs(itemModel.positionMs),
-                    formattedDuration,
-                    progressPercent,
-                )
-                val speedSuffix = if (itemModel.speed != 1.0f) {
-                    " · ${formatSpeed(itemModel.speed)}"
-                } else {
-                    ""
-                }
-                baseResume + speedSuffix
+            baseResume + speedSuffix
+        } else {
+            stringResource(
+                R.string.library_item_duration_progress,
+                formatDurationMs(0L),
+                formattedDuration,
+            )
+        }
+        val lastAccessedText = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
+            val formatted = formatEpochMsLocal(epochMs)
+            if (formatted.isNotEmpty()) {
+                stringResource(R.string.library_item_last_accessed, formatted)
             } else {
                 null
             }
-            val lastAccessedText = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
-                val formatted = formatEpochMsLocal(epochMs)
-                if (formatted.isNotEmpty()) {
-                    stringResource(R.string.library_item_last_accessed, formatted)
-                } else {
-                    null
-                }
-            }
-            val combinedStatus = listOfNotNull(resumePositionText, lastAccessedText)
-                .joinToString(separator = "  •  ")
-            if (combinedStatus.isNotEmpty()) {
-                Text(
-                    text = combinedStatus,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
         }
+        val combinedStatus = listOfNotNull(durationProgressText, lastAccessedText)
+            .joinToString(separator = "  •  ")
+        val langPalette = chunkFlowLanguagePalette()
+        Text(
+            text = combinedStatus,
+            style = MaterialTheme.typography.labelSmall,
+            color = when {
+                maxPercent > 95 -> langPalette.completedProgressText
+                hasProgress || itemModel.lastAccessedAtEpochMs != null -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
     }
 }
 
@@ -1512,7 +1621,6 @@ private fun EditItemMetadataDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = stringResource(R.string.library_edit_metadata_title)) },
         text = {
             Column(
                 modifier = Modifier
@@ -1589,7 +1697,9 @@ private fun EditDirectoryMetadataDialog(
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var courseText by remember(directoryEdit) { mutableStateOf(directoryEdit.currentCourse.orEmpty()) }
+    var courseText by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.currentCourse?.substringAfterLast('/').orEmpty())
+    }
     var targetLangText by remember(directoryEdit) {
         mutableStateOf(normalizeDialogLanguageCode(directoryEdit.initialLanguages.target.value))
     }
@@ -1599,7 +1709,6 @@ private fun EditDirectoryMetadataDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = stringResource(R.string.library_edit_directory_metadata_title)) },
         text = {
             Column(
                 modifier = Modifier
@@ -1607,12 +1716,6 @@ private fun EditDirectoryMetadataDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(
-                    text = stringResource(R.string.library_edit_directory_metadata_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
                 OutlinedTextField(
                     value = courseText,
                     onValueChange = { courseText = it },

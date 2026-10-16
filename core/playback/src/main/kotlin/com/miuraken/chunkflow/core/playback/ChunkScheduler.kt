@@ -720,6 +720,12 @@ class ChunkScheduler(
         val scopeMatches = when (practiceSettings.autoPauseScope) {
             AutoPauseScope.ALL_CHUNKS -> true
 
+            AutoPauseScope.AFTER_TARGET_LANGUAGE -> {
+                val targetLang = languagePair?.target
+                val chunkLang = transcripts[chunk.id]?.language
+                targetLang != null && chunkLang != null && isSameOrCompatibleLanguage(chunkLang, targetLang)
+            }
+
             AutoPauseScope.AFTER_BASE_LANGUAGE -> {
                 val baseLang = languagePair?.base
                 val chunkLang = transcripts[chunk.id]?.language

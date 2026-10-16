@@ -34,7 +34,7 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         BookmarkEntity::class,
         DriveFileEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -67,6 +67,14 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE item_state ADD COLUMN is_listened INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** バージョン 2 から 3 へのマイグレーション（`item_state` に `max_position_ms` 列を追加し、既存の `position_ms` を引き継ぐ）。 */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE item_state ADD COLUMN max_position_ms INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE item_state SET max_position_ms = position_ms WHERE position_ms > max_position_ms")
             }
         }
     }

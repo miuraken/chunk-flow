@@ -98,7 +98,16 @@ class FakeLibraryRepository(
     override fun observeItemState(id: MediaId): Flow<ItemState?> = itemStates.map { map -> map[id] }
 
     override suspend fun upsertItemState(state: ItemState) {
-        itemStates.update { current -> current + (state.mediaId to state) }
+        itemStates.update { current ->
+            val existing = current[state.mediaId]
+            val nextMaxPos = maxOf(
+                existing?.maxPositionMs ?: 0L,
+                existing?.positionMs ?: 0L,
+                state.maxPositionMs,
+                state.positionMs,
+            )
+            current + (state.mediaId to state.copy(maxPositionMs = nextMaxPos))
+        }
     }
 
     override suspend fun updatePlaybackPosition(
@@ -109,13 +118,20 @@ class FakeLibraryRepository(
     ) {
         itemStates.update { current ->
             val existing = current[id]
+            val nextMaxPos = maxOf(
+                existing?.maxPositionMs ?: 0L,
+                existing?.positionMs ?: 0L,
+                positionMs,
+            )
             val updated = existing?.copy(
                 positionMs = positionMs,
+                maxPositionMs = nextMaxPos,
                 speed = speed,
                 updatedAtEpochMs = updatedAtEpochMs,
             ) ?: ItemState(
                 mediaId = id,
                 positionMs = positionMs,
+                maxPositionMs = nextMaxPos,
                 speed = speed,
                 updatedAtEpochMs = updatedAtEpochMs,
             )
@@ -203,10 +219,20 @@ class FakeLibraryRepository(
     ) {
         items.update { list ->
             list.map { item ->
-                if (item.course == currentCourse) {
-                    item.copy(course = newCourse, languagePair = languages)
-                } else {
-                    item
+                when {
+                    item.course == currentCourse -> {
+                        item.copy(course = newCourse, languagePair = languages)
+                    }
+
+                    currentCourse != null && item.course?.startsWith("$currentCourse/") == true -> {
+                        val suffix = item.course.orEmpty().removePrefix("$currentCourse/")
+                        val updatedChildCourse = if (!newCourse.isNullOrBlank()) "$newCourse/$suffix" else suffix
+                        item.copy(course = updatedChildCourse, languagePair = languages)
+                    }
+
+                    else -> {
+                        item
+                    }
                 }
             }
         }

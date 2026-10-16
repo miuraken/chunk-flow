@@ -7,6 +7,7 @@ package com.miuraken.chunkflow.core.model
  *
  * @property mediaId 対象の教材。
  * @property positionMs 前回の再生位置（ミリ秒、0 以上）。
+ * @property maxPositionMs 過去に到達した最大の再生位置（ミリ秒、0 以上）。
  * @property speed 再生速度（0.5..2.0）。
  * @property chunkSource 使用するチャンクの出どころ（文字起こしがあれば [ChunkOrigin.IMPORTED]、なければ [ChunkOrigin.AUTO]）。
  * @property autoPause 自動ポーズの設定。
@@ -25,9 +26,11 @@ data class ItemState(
     val languageFilter: LanguageFilter = LanguageFilter.ALL,
     val updatedAtEpochMs: Long = 0L,
     val isListened: Boolean = false,
+    val maxPositionMs: Long = positionMs,
 ) {
     init {
         require(positionMs >= 0L) { "positionMs must be >= 0: $positionMs" }
+        require(maxPositionMs >= 0L) { "maxPositionMs must be >= 0: $maxPositionMs" }
         require(speed in MIN_SPEED..MAX_SPEED) { "speed must be in $MIN_SPEED..$MAX_SPEED: $speed" }
     }
 

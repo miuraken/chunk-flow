@@ -271,6 +271,7 @@ class MediaControllerPlaybackController(
                 PracticeSettings(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
+                    autoPauseScope = userSettings.defaultAutoPauseScope,
                 ),
             )
         }
@@ -360,12 +361,20 @@ class MediaControllerPlaybackController(
             val currentPos = learningPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: 0L
             val currentSpeed = _status.value.speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
             val existingState = libraryRepository.observeItemState(currentMediaId).first()
+            val resolvedChunkSource = existingState?.chunkSource ?: activeChunkSource
+            val maxPos = maxOf(
+                existingState?.maxPositionMs ?: 0L,
+                existingState?.positionMs ?: 0L,
+                currentPos,
+            )
+            activeChunkSource = resolvedChunkSource
             libraryRepository.upsertItemState(
                 ItemState(
                     mediaId = currentMediaId,
                     positionMs = currentPos,
+                    maxPositionMs = maxPos,
                     speed = currentSpeed,
-                    chunkSource = activeChunkSource,
+                    chunkSource = resolvedChunkSource,
                     autoPause = updated.autoPause,
                     autoPauseScope = updated.autoPauseScope,
                     languageFilter = updated.languageFilter,
@@ -429,6 +438,7 @@ class MediaControllerPlaybackController(
                 PracticeSettings(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
+                    autoPauseScope = userSettings.defaultAutoPauseScope,
                 ),
             )
         }
@@ -493,6 +503,7 @@ class MediaControllerPlaybackController(
         chunkObservationJob = scope.launch {
             analysisRepository.observeChunks(mediaId).collect { chunks ->
                 val sorted = chunks.sortedBy { it.startMs }
+                sorted.firstOrNull()?.origin?.let { activeChunkSource = it }
                 currentChunks = sorted
                 learningPlayerInstance?.chunks = sorted
                 val pos = learningPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: 0L

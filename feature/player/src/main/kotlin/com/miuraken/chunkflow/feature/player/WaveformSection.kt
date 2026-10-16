@@ -153,7 +153,7 @@ internal const val LOCAL_STRIP_SPAN_FACTOR: Long = 4L
 private const val ANCHOR_POLL_INTERVAL_MS: Long = 100L
 
 /** 拡大波形で、1 つおきのチャンクの背景を薄くするときの濃さ（不透明度の倍率）。 */
-private const val ALTERNATE_CHUNK_BACKGROUND_EMPHASIS: Float = 0.55f
+private const val ALTERNATE_CHUNK_BACKGROUND_EMPHASIS: Float = 0.78f
 
 /**
  * 表示窓 [windowMs] に対して、近傍画像をレンダリングする解像度（その表示窓で画面幅いっぱいになる時間幅）を返す。
@@ -273,12 +273,11 @@ fun WaveformSection(
     val unknownActiveBorderColor = colorScheme.primary.copy(alpha = 0.60f)
     val abLoopHighlightColor = colorScheme.tertiary.copy(alpha = 0.30f)
     val abLoopBorderColor = colorScheme.tertiary
-    // 拡大波形のチャンク背景（言語の役割で色を分け、隣り合うチャンクは濃さを交互に変える）。
-    // ダークテーマではバッジの色が濃いため、波形が埋もれないよう薄めて使う
-    val chunkBackgroundAlpha = if (colorScheme.surface.luminance() < 0.5f) 0.60f else 1f
-    val targetChunkBackgroundColor = langPalette.targetBadgeContainer.copy(alpha = chunkBackgroundAlpha)
-    val baseChunkBackgroundColor = langPalette.baseBadgeContainer.copy(alpha = chunkBackgroundAlpha)
-    val unknownChunkBackgroundColor = colorScheme.surfaceVariant.copy(alpha = chunkBackgroundAlpha)
+    // 拡大波形のチャンク背景（非チャンク区間 surfaceContainerLow と明確に見分けられる濃さで、隣り合うチャンクは濃さを交互に変える）
+    val isDarkTheme = colorScheme.surface.luminance() < 0.5f
+    val targetChunkBackgroundColor = langPalette.targetChunkBackground
+    val baseChunkBackgroundColor = langPalette.baseChunkBackground
+    val unknownChunkBackgroundColor = colorScheme.onSurfaceVariant.copy(alpha = if (isDarkTheme) 0.34f else 0.24f)
     val selectedChunkBackgroundColor = colorScheme.primary.copy(alpha = 0.16f)
     val selectedChunkBorderColor = colorScheme.primary
     val selectedChunkCheckColor = colorScheme.onPrimary

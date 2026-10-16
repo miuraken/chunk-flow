@@ -43,13 +43,20 @@ interface ItemStateDao {
         updatedAt: Long,
     ) {
         val existing = getByMediaId(mediaId)
+        val nextMaxPositionMs = maxOf(
+            existing?.maxPositionMs ?: 0L,
+            existing?.positionMs ?: 0L,
+            positionMs,
+        )
         val updated = existing?.copy(
             positionMs = positionMs,
+            maxPositionMs = nextMaxPositionMs,
             speed = speed,
             updatedAt = updatedAt,
         ) ?: ItemStateEntity(
             mediaId = mediaId,
             positionMs = positionMs,
+            maxPositionMs = nextMaxPositionMs,
             speed = speed,
             updatedAt = updatedAt,
         )

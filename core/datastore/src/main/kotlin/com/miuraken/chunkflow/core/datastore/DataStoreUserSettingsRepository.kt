@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
@@ -110,6 +111,12 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setDefaultAutoPauseScope(scope: AutoPauseScope) {
+        dataStore.edit { prefs ->
+            prefs[KEY_DEFAULT_AUTO_PAUSE_SCOPE] = scope.name
+        }
+    }
+
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
         require(params.minSilenceMs > 0) { "minSilenceMs must be > 0: ${params.minSilenceMs}" }
         require(params.minSpeechMs > 0) { "minSpeechMs must be > 0: ${params.minSpeechMs}" }
@@ -186,6 +193,9 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val defaultAutoPause = this[KEY_DEFAULT_AUTO_PAUSE]
             ?.let(::decodeAutoPause)
             ?: defaults.defaultAutoPause
+        val defaultAutoPauseScope = this[KEY_DEFAULT_AUTO_PAUSE_SCOPE]
+            ?.let { name -> AutoPauseScope.entries.firstOrNull { it.name == name } }
+            ?: defaults.defaultAutoPauseScope
 
         val minSilenceMs = this[KEY_SEG_MIN_SILENCE_MS]
             ?.takeIf { it > 0 }
@@ -225,6 +235,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
             seekBackMs = seekBackMs,
             seekForwardMs = seekForwardMs,
             defaultAutoPause = defaultAutoPause,
+            defaultAutoPauseScope = defaultAutoPauseScope,
             defaultSegmentationParams = SegmentationParams(
                 minSilenceMs = minSilenceMs,
                 minSpeechMs = minSpeechMs,
@@ -254,6 +265,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_SEEK_BACK_MS = longPreferencesKey("seek_back_ms")
         val KEY_SEEK_FORWARD_MS = longPreferencesKey("seek_forward_ms")
         val KEY_DEFAULT_AUTO_PAUSE = stringPreferencesKey("default_auto_pause")
+        val KEY_DEFAULT_AUTO_PAUSE_SCOPE = stringPreferencesKey("default_auto_pause_scope")
         val KEY_SEG_MIN_SILENCE_MS = intPreferencesKey("seg_min_silence_ms")
         val KEY_SEG_MIN_SPEECH_MS = intPreferencesKey("seg_min_speech_ms")
         val KEY_SEG_MERGE_GAP_MS = intPreferencesKey("seg_merge_gap_ms")

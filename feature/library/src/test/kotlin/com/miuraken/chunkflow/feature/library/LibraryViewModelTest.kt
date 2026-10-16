@@ -498,4 +498,160 @@ class LibraryViewModelTest {
             baseOptions.drop(1).map { it.code },
         )
     }
+
+    @Test
+    fun `階層型ディレクトリ移動_現在ディレクトリ直下のフォルダとファイルのみを表示しNavigateUpで親階層へ戻る`() = runTest {
+        val rootFile = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("root-file"),
+            title = "Root Audio",
+            course = null,
+        )
+        val dirAFile = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("dir-a-file"),
+            title = "Lesson 1",
+            course = "韓国語/初級",
+        )
+        val dirASubFile = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("dir-a-sub-file"),
+            title = "Unit 1",
+            course = "韓国語/初級/Part1",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(rootFile, dirAFile, dirASubFile))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // ルート階層: 直下ディレクトリ「韓国語」と直下ファイル「Root Audio」のみ
+        assertNull(viewModel.uiState.value.currentDirectoryPath)
+        assertEquals(listOf("韓国語"), viewModel.uiState.value.currentDirectories.map { it.displayName })
+        assertEquals(listOf("Root Audio"), viewModel.uiState.value.currentFiles.map { it.item.title })
+
+        // 「韓国語」を開く -> 直下ディレクトリ「初級」のみ、直下ファイルなし
+        viewModel.onEvent(LibraryEvent.OpenDirectory("韓国語"))
+        assertEquals("韓国語", viewModel.uiState.value.currentDirectoryPath)
+        assertEquals(listOf("韓国語/初級"), viewModel.uiState.value.currentDirectories.map { it.name })
+        assertEquals(listOf("初級"), viewModel.uiState.value.currentDirectories.map { it.displayName })
+        assertTrue(viewModel.uiState.value.currentFiles.isEmpty())
+
+        // 「韓国語/初級」を開く -> 直下ディレクトリ「Part1」と直下ファイル「Lesson 1」
+        viewModel.onEvent(LibraryEvent.OpenDirectory("韓国語/初級"))
+        assertEquals("韓国語/初級", viewModel.uiState.value.currentDirectoryPath)
+        assertEquals(listOf("Part1"), viewModel.uiState.value.currentDirectories.map { it.displayName })
+        assertEquals(listOf("Lesson 1"), viewModel.uiState.value.currentFiles.map { it.item.title })
+
+        // NavigateUp で「韓国語」へ戻る -> さらに NavigateUp でルートへ戻る
+        viewModel.onEvent(LibraryEvent.NavigateUp)
+        assertEquals("韓国語", viewModel.uiState.value.currentDirectoryPath)
+        viewModel.onEvent(LibraryEvent.NavigateUp)
+        assertNull(viewModel.uiState.value.currentDirectoryPath)
+    }
+
+    @Test
+    fun `ディレクトリ削除と長押し複数選択一括削除_確認ダイアログを経て対象教材がすべて削除される`() = runTest {
+        val item1 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("m1"),
+            title = "Track 1",
+            course = "CourseA/Sub1",
+        )
+        val item2 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("m2"),
+            title = "Track 2",
+            course = "CourseA/Sub2",
+        )
+        val item3 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("m3"),
+            title = "Track 3",
+            course = "CourseB",
+        )
+        val item4 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("m4"),
+            title = "Track 4",
+            course = null,
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2, item3, item4))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // ディレクトリ単体削除確認 -> キャンセル -> 確定削除
+        viewModel.onEvent(LibraryEvent.RequestDeleteDirectory("CourseA/Sub1"))
+        assertTrue(viewModel.uiState.value.hasPendingDeleteConfirmation)
+        assertEquals(listOf(item1), viewModel.uiState.value.pendingDeleteTargetItems)
+        viewModel.onEvent(LibraryEvent.CancelDelete)
+        assertFalse(viewModel.uiState.value.hasPendingDeleteConfirmation)
+
+        viewModel.onEvent(LibraryEvent.RequestDeleteDirectory("CourseA/Sub1"))
+        viewModel.onEvent(LibraryEvent.ConfirmDelete)
+        assertEquals(listOf(item2.id, item3.id, item4.id), viewModel.uiState.value.items.map { it.item.id })
+
+        // 長押し複数選択（ディレクトリ CourseA + 単体ファイル m4）-> 一括削除
+        viewModel.onEvent(LibraryEvent.ToggleDirectorySelection("CourseA"))
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item4.id))
+        assertTrue(viewModel.uiState.value.isSelectionMode)
+        assertEquals(2, viewModel.uiState.value.selectedCount)
+
+        viewModel.onEvent(LibraryEvent.RequestDeleteSelected)
+        assertTrue(viewModel.uiState.value.isPendingBatchDelete)
+        assertEquals(setOf(item2.id, item4.id), viewModel.uiState.value.pendingDeleteTargetItems.map { it.id }.toSet())
+
+        viewModel.onEvent(LibraryEvent.ConfirmDelete)
+        assertFalse(viewModel.uiState.value.isSelectionMode)
+        assertEquals(listOf(item3.id), viewModel.uiState.value.items.map { it.item.id })
+    }
+
+    @Test
+    fun `文字起こし状態_チャンク数に対する文字起こし有無に応じてNONE_PARTIAL_COMPLETEDになる`() = runTest {
+        val itemNone = SampleMaterials.jaKo.item.copy(id = com.miuraken.chunkflow.core.model.MediaId("none"))
+        val itemPartial = SampleMaterials.jaKo.item.copy(id = com.miuraken.chunkflow.core.model.MediaId("partial"))
+        val itemCompleted = SampleMaterials.jaKo.item.copy(id = com.miuraken.chunkflow.core.model.MediaId("completed"))
+        val repo = FakeLibraryRepository(initialItems = listOf(itemNone, itemPartial, itemCompleted))
+        val analysisRepo = FakeAnalysisRepository()
+
+        val c1 = com.miuraken.chunkflow.core.model.Chunk(
+            id = com.miuraken.chunkflow.core.model.ChunkId(1L),
+            startMs = 0L,
+            endMs = 1_000L,
+            origin = com.miuraken.chunkflow.core.model.ChunkOrigin.AUTO,
+        )
+        val c2 = com.miuraken.chunkflow.core.model.Chunk(
+            id = com.miuraken.chunkflow.core.model.ChunkId(2L),
+            startMs = 1_000L,
+            endMs = 2_000L,
+            origin = com.miuraken.chunkflow.core.model.ChunkOrigin.AUTO,
+        )
+        val t1 = com.miuraken.chunkflow.core.model.Transcript(
+            chunkId = c1.id,
+            text = "テスト1",
+            language = LanguageTag("ja"),
+            languageConfidence = 1.0f,
+            engine = com.miuraken.chunkflow.core.model.EngineId("manual"),
+        )
+        val t2 = com.miuraken.chunkflow.core.model.Transcript(
+            chunkId = c2.id,
+            text = "テスト2",
+            language = LanguageTag("ja"),
+            languageConfidence = 1.0f,
+            engine = com.miuraken.chunkflow.core.model.EngineId("manual"),
+        )
+
+        analysisRepo.update(itemNone.id) {
+            it.copy(chunks = listOf(c1, c2), transcripts = emptyMap())
+        }
+        analysisRepo.update(itemPartial.id) {
+            it.copy(chunks = listOf(c1, c2), transcripts = mapOf(c1.id to t1))
+        }
+        analysisRepo.update(itemCompleted.id) {
+            it.copy(chunks = listOf(c1, c2), transcripts = mapOf(c1.id to t1, c2.id to t2))
+        }
+
+        val viewModel = LibraryViewModel(
+            libraryRepository = repo,
+            playbackController = FakePlaybackController(),
+            analysisRepository = analysisRepo,
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val byId = viewModel.uiState.value.items.associateBy { it.item.id }
+        assertEquals(LibraryTranscriptStatus.NONE, byId.getValue(itemNone.id).transcriptStatus)
+        assertEquals(LibraryTranscriptStatus.PARTIAL, byId.getValue(itemPartial.id).transcriptStatus)
+        assertEquals(LibraryTranscriptStatus.COMPLETED, byId.getValue(itemCompleted.id).transcriptStatus)
+    }
 }

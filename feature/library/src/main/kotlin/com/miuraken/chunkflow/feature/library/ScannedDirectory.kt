@@ -33,7 +33,7 @@ internal fun scanDocumentTree(
         treeUri = treeUri,
         parentDocumentId = rootDocId,
         depth = 0,
-        maxDepth = 3,
+        maxDepth = 6,
         outUris = collected,
     )
     return ScannedDirectory(

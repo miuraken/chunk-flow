@@ -45,6 +45,8 @@ data class ItemStateEntity(
     val updatedAt: Long = 0L,
     @ColumnInfo(name = "is_listened", defaultValue = "0")
     val isListened: Boolean = false,
+    @ColumnInfo(name = "max_position_ms", defaultValue = "0")
+    val maxPositionMs: Long = 0L,
 ) {
     companion object {
         internal const val AUTO_PAUSE_OFF = "OFF"
@@ -84,19 +86,24 @@ data class ItemStateEntity(
 }
 
 /** [ItemStateEntity] をドメインモデルの [ItemState] に変換する。 */
-fun ItemStateEntity.toExternalModel(): ItemState = ItemState(
-    mediaId = MediaId(mediaId),
-    positionMs = positionMs.coerceAtLeast(0L),
-    speed = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED),
-    chunkSource = ChunkOrigin.entries.firstOrNull { it.name == chunkSource } ?: ChunkOrigin.AUTO,
-    autoPause = ItemStateEntity.decodeAutoPause(autoPause),
-    autoPauseScope = AutoPauseScope.entries.firstOrNull { it.name == autoPauseScope }
-        ?: AutoPauseScope.ALL_CHUNKS,
-    languageFilter = LanguageFilter.entries.firstOrNull { it.name == languageFilter }
-        ?: LanguageFilter.ALL,
-    updatedAtEpochMs = updatedAt,
-    isListened = isListened,
-)
+fun ItemStateEntity.toExternalModel(): ItemState {
+    val coercedPos = positionMs.coerceAtLeast(0L)
+    val coercedMaxPos = maxOf(maxPositionMs.coerceAtLeast(0L), coercedPos)
+    return ItemState(
+        mediaId = MediaId(mediaId),
+        positionMs = coercedPos,
+        speed = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED),
+        chunkSource = ChunkOrigin.entries.firstOrNull { it.name == chunkSource } ?: ChunkOrigin.AUTO,
+        autoPause = ItemStateEntity.decodeAutoPause(autoPause),
+        autoPauseScope = AutoPauseScope.entries.firstOrNull { it.name == autoPauseScope }
+            ?: AutoPauseScope.ALL_CHUNKS,
+        languageFilter = LanguageFilter.entries.firstOrNull { it.name == languageFilter }
+            ?: LanguageFilter.ALL,
+        updatedAtEpochMs = updatedAt,
+        isListened = isListened,
+        maxPositionMs = coercedMaxPos,
+    )
+}
 
 /** ドメインモデルの [ItemState] を [ItemStateEntity] に変換する。 */
 fun ItemState.toEntity(): ItemStateEntity = ItemStateEntity(
@@ -109,4 +116,5 @@ fun ItemState.toEntity(): ItemStateEntity = ItemStateEntity(
     languageFilter = languageFilter.name,
     updatedAt = updatedAtEpochMs,
     isListened = isListened,
+    maxPositionMs = maxOf(maxPositionMs, positionMs),
 )

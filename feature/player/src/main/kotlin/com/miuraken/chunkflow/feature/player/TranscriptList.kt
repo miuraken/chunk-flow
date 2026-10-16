@@ -360,12 +360,9 @@ fun TranscriptList(
                 )
             }
 
-            if (lookaheadStatus.enabled || localTranscriptExported) {
+            if (localTranscriptExported) {
                 LookaheadAndExportBanner(
-                    lookaheadStatus = lookaheadStatus,
                     localTranscriptExported = localTranscriptExported,
-                    totalChunkCount = chunks.size,
-                    onToggleLookahead = { onSetLookaheadEnabled(!lookaheadStatus.enabled) },
                     onExportLocalTranscriptJson = onExportLocalTranscriptJson,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                 )
@@ -481,13 +478,9 @@ fun TranscriptList(
                         },
                         onSplitChunk = {
                             val nowMs = positionProvider.currentPositionMs()
-                            val splitMs = if (nowMs > chunk.startMs + 50L && nowMs < chunk.endMs - 50L) {
-                                nowMs
-                            } else {
-                                (chunk.startMs + chunk.endMs) / 2L
-                            }
-                            if (splitMs > chunk.startMs && splitMs < chunk.endMs) {
-                                onSplitChunk(chunk.id, splitMs)
+                            val target = findSplitTargetChunk(chunks, nowMs)
+                            if (target != null) {
+                                onSplitChunk(target.id, nowMs)
                             }
                         },
                         onMergeWithNextChunk = {
@@ -586,45 +579,15 @@ private fun EditChunkTextDialog(
 
 @Composable
 private fun LookaheadAndExportBanner(
-    lookaheadStatus: LookaheadTranscriptionStatus,
     localTranscriptExported: Boolean,
-    totalChunkCount: Int,
-    onToggleLookahead: () -> Unit,
     onExportLocalTranscriptJson: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val totalCount = if (lookaheadStatus.totalTargetCount > 0) {
-        lookaheadStatus.totalTargetCount
-    } else {
-        totalChunkCount
-    }
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (lookaheadStatus.enabled) {
-            FilterChip(
-                selected = true,
-                onClick = onToggleLookahead,
-                label = {
-                    Text(
-                        text = stringResource(
-                            R.string.player_lookahead_chip_on,
-                            lookaheadStatus.completedCount,
-                            totalCount,
-                        ),
-                    )
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Bolt,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
-            )
-        }
         if (localTranscriptExported) {
             AssistChip(
                 onClick = onExportLocalTranscriptJson,

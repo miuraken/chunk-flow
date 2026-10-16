@@ -2,6 +2,7 @@ package com.miuraken.chunkflow.core.testing.fake
 
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -54,6 +55,10 @@ class FakeUserSettingsRepository(
 
     override suspend fun setDefaultAutoPause(autoPause: AutoPause) {
         state.update { it.copy(defaultAutoPause = autoPause) }
+    }
+
+    override suspend fun setDefaultAutoPauseScope(scope: AutoPauseScope) {
+        state.update { it.copy(defaultAutoPauseScope = scope) }
     }
 
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {

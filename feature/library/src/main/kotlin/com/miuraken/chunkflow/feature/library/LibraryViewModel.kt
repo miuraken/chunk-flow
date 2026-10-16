@@ -79,24 +79,49 @@ internal fun compareFileNamesAscending(a: String, b: String): Int {
 }
 
 /**
+ * 教材の文字起こし付与状態。
+ */
+enum class LibraryTranscriptStatus {
+    /** 文字起こしなし。 */
+    NONE,
+
+    /** 一部のチャンクのみ文字起こしあり。 */
+    PARTIAL,
+
+    /** 全チャンクの文字起こし済み。 */
+    COMPLETED,
+}
+
+/**
  * ライブラリ一覧の各教材の UI 表示モデル（F2.1〜F2.4、F7.1）。
  *
  * @property item 教材のメタデータ。
  * @property positionMs 前回のレジューム再生位置（ミリ秒）。
+ * @property maxPositionMs 過去に到達した最大の再生位置（ミリ秒）。
  * @property speed 前回の再生速度（0.5..2.0）。
  * @property chunkCount チャンク数（解析前・未取得の場合は 0）。
  * @property hasTranscript 文字起こしが紐付いているかどうか。
+ * @property transcriptStatus 文字起こしの付与状態（なし・一部・済み）。
+ * @property transcriptProgressPercent 文字起こししたチャンクの割合（0..100）。
  * @property isAnalyzing 端末内解析を実行中かどうか。
  * @property isAudioMissing バックアップ復元後などで音声ファイルが未取り込みかどうか（F2.4）。
- * @property isListened ファイルの 95%〜100% の位置を 1 秒以上聴取した完了フラグ（済）。
+ * @property isListened ファイルの 95%〜100% の位置を 1 秒以上聴取した完了フラグ。
  * @property lastAccessedAtEpochMs 最終アクセス日時（ミリ秒、未アクセスの場合は `null`）。
  */
 data class LibraryItemUiModel(
     val item: AudioItem,
     val positionMs: Long = 0L,
+    val maxPositionMs: Long = positionMs,
     val speed: Float = 1.0f,
     val chunkCount: Int = 0,
     val hasTranscript: Boolean = false,
+    val transcriptStatus: LibraryTranscriptStatus =
+        if (hasTranscript) LibraryTranscriptStatus.COMPLETED else LibraryTranscriptStatus.NONE,
+    val transcriptProgressPercent: Int = when (transcriptStatus) {
+        LibraryTranscriptStatus.COMPLETED -> 100
+        LibraryTranscriptStatus.NONE -> 0
+        LibraryTranscriptStatus.PARTIAL -> 50
+    },
     val isAnalyzing: Boolean = false,
     val isAudioMissing: Boolean = false,
     val isListened: Boolean = false,
@@ -106,13 +131,31 @@ data class LibraryItemUiModel(
     val lastPositionMs: Long
         get() = positionMs
 
-    /** 再生進捗の割合（0.0..1.0）。 */
+    /** 現在の再生進捗の割合（0.0..1.0）。 */
     val progressFraction: Float
         get() = if (item.durationMs > 0L) {
             (positionMs.toFloat() / item.durationMs.toFloat()).coerceIn(0f, 1f)
         } else {
             0f
         }
+
+    /** 過去に到達した最大の再生進捗の割合（0.0..1.0）。 */
+    val maxProgressFraction: Float
+        get() {
+            val effectiveMaxMs = maxOf(maxPositionMs, positionMs)
+            return when {
+                item.durationMs > 0L && effectiveMaxMs > 0L ->
+                    (effectiveMaxMs.toFloat() / item.durationMs.toFloat()).coerceIn(0f, 1f)
+
+                isListened -> 1f
+
+                else -> 0f
+            }
+        }
+
+    /** 過去に到達した最大の再生進捗のパーセンテージ（0..100）。 */
+    val maxProgressPercent: Int
+        get() = (maxProgressFraction * 100f).let { kotlin.math.round(it).toInt().coerceIn(0, 100) }
 
     /** ディレクトリ構成における対応文字起こし JSON の相対パス案内。 */
     val transcriptRelativePath: String
@@ -125,14 +168,16 @@ typealias LibraryItemUi = LibraryItemUiModel
 /**
  * ディレクトリ（フォルダ）単位の教材グループ表示モデル。
  *
- * @property name ディレクトリ名（未分類の場合は `null`）。
- * @property items このディレクトリ内の教材一覧（ファイル名昇順）。
+ * @property name ディレクトリのフル相対パス（未分類の場合は `null`）。
+ * @property items このディレクトリ（サブディレクトリを含む）内の教材一覧（ファイル名昇順）。
  * @property isExpanded 展開中かどうか。
+ * @property displayName 現在の階層で表示するディレクトリ名（末尾セグメント）。
  */
 data class LibraryDirectoryUiModel(
     val name: String?,
     val items: List<LibraryItemUiModel>,
     val isExpanded: Boolean = true,
+    val displayName: String? = name?.substringAfterLast('/'),
 ) {
     /** ディレクトリ配下の `transcription/` サブフォルダの対応パス案内。 */
     val transcriptionPathHint: String
@@ -333,13 +378,18 @@ data class PendingDirectoryEdit(
  * @property transcriptImportState 文字起こし単体取り込みの結果状態。
  * @property syncState Google Drive 同期の進捗・エラー状態。
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
- * @property pendingDeleteItem 削除確認ダイアログで対象になっている教材（表示中でなければ `null`）。
+ * @property pendingDeleteItem 削除確認ダイアログで対象になっている単一教材（表示中でなければ `null`）。
+ * @property pendingDeleteDirectoryPath 削除確認ダイアログで対象になっているディレクトリパス（表示中でなければ `null`）。
+ * @property isPendingBatchDelete 複数選択項目の削除確認ダイアログを表示中かどうか。
  * @property pendingEditItem コース・言語ペア編集ダイアログで対象になっている教材（表示中でなければ `null`）。
  * @property pendingEditDirectory ディレクトリ一括のコース・言語ペア編集ダイアログ状態（表示中でなければ `null`）。
  * @property pendingImportConfig 取り込み・同期フォルダ選択後の共通設定ダイアログ状態（表示中でなければ `null`）。
  * @property selectedDirectoryName フォルダ指定で選択されたディレクトリ名。
  * @property collapsedDirectories 折りたたまれているディレクトリ名の集合。
  * @property enabledLanguages 設定画面で有効化された選択肢の言語一覧（既定は日本語・英語）。
+ * @property currentDirectoryPath 現在開いているディレクトリの相対パス（ルート階層の場合は `null`）。
+ * @property selectedDirectoryPaths 長押し複数選択モードで選択されているディレクトリパスの集合。
+ * @property selectedItemIds 長押し複数選択モードで選択されている教材 ID の集合。
  */
 data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
@@ -348,13 +398,145 @@ data class LibraryUiState(
     val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
+    val pendingDeleteDirectoryPath: String? = null,
+    val isPendingBatchDelete: Boolean = false,
     val pendingEditItem: AudioItem? = null,
     val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
     val selectedDirectoryName: String? = null,
     val collapsedDirectories: Set<String?> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
+    val currentDirectoryPath: String? = null,
+    val selectedDirectoryPaths: Set<String> = emptySet(),
+    val selectedItemIds: Set<MediaId> = emptySet(),
 ) {
+    /** 複数選択モード中かどうか。 */
+    val isSelectionMode: Boolean
+        get() = selectedDirectoryPaths.isNotEmpty() || selectedItemIds.isNotEmpty()
+
+    /** 複数選択モードで選択されている項目（ディレクトリ数＋ファイル数）の合計。 */
+    val selectedCount: Int
+        get() = selectedDirectoryPaths.size + selectedItemIds.size
+
+    /** 削除確認ダイアログを表示すべきかどうか。 */
+    val hasPendingDeleteConfirmation: Boolean
+        get() = pendingDeleteItem != null || pendingDeleteDirectoryPath != null || isPendingBatchDelete
+
+    /**
+     * 各教材の実効ディレクトリパス（先頭・末尾の `/` を除いた相対パス、未分類なら `null`）を返す。
+     */
+    internal fun effectivePathOf(itemModel: LibraryItemUiModel): String? {
+        val raw = itemModel.item.course ?: selectedDirectoryName
+        return raw?.trim('/')?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * 指定されたディレクトリパス [dirPath] 配下（サブディレクトリを含む）の教材一覧を返す。
+     */
+    fun itemsInDirectoryTree(dirPath: String): List<LibraryItemUiModel> {
+        val normalized = dirPath.trim('/')
+        if (normalized.isEmpty()) return emptyList()
+        val prefix = "$normalized/"
+        return items.filter { model ->
+            val path = effectivePathOf(model)
+            path == normalized || (path != null && path.startsWith(prefix))
+        }
+    }
+
+    /**
+     * 現在の削除確認ダイアログで削除対象となる全 [AudioItem] の一覧（重複なし）。
+     */
+    val pendingDeleteTargetItems: List<AudioItem>
+        get() = when {
+            pendingDeleteItem != null -> listOf(pendingDeleteItem)
+
+            pendingDeleteDirectoryPath != null -> {
+                itemsInDirectoryTree(pendingDeleteDirectoryPath).map { it.item }
+            }
+
+            isPendingBatchDelete -> {
+                val fromDirs = selectedDirectoryPaths.flatMap { path ->
+                    itemsInDirectoryTree(path).map { it.item }
+                }
+                val fromItems = items.filter { it.item.id in selectedItemIds }.map { it.item }
+                (fromDirs + fromItems).distinctBy { it.id }
+            }
+
+            else -> emptyList()
+        }
+
+    /**
+     * 現在開いている階層（[currentDirectoryPath]）の直下にあるサブディレクトリ一覧（ディレクトリ名の自然昇順）。
+     */
+    val currentDirectories: List<LibraryDirectoryUiModel>
+        get() {
+            val currentPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+            val grouped = linkedMapOf<String, MutableList<LibraryItemUiModel>>()
+            for (itemModel in items) {
+                val path = effectivePathOf(itemModel) ?: continue
+                if (currentPath == null) {
+                    val topSegment = path.substringBefore('/')
+                    grouped.getOrPut(topSegment) { mutableListOf() }.add(itemModel)
+                } else if (path.startsWith("$currentPath/")) {
+                    val remainder = path.removePrefix("$currentPath/")
+                    val childSegment = remainder.substringBefore('/')
+                    if (childSegment.isNotBlank()) {
+                        val childFullPath = "$currentPath/$childSegment"
+                        grouped.getOrPut(childFullPath) { mutableListOf() }.add(itemModel)
+                    }
+                }
+            }
+            return grouped.entries
+                .sortedWith { a, b ->
+                    val nameA = a.key.substringAfterLast('/')
+                    val nameB = b.key.substringAfterLast('/')
+                    compareFileNamesAscending(nameA, nameB)
+                }
+                .map { (dirFullPath, dirItems) ->
+                    val sortedItems = dirItems.sortedWith { a, b ->
+                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                    }
+                    LibraryDirectoryUiModel(
+                        name = dirFullPath,
+                        items = sortedItems,
+                        isExpanded = dirFullPath !in collapsedDirectories,
+                        displayName = dirFullPath.substringAfterLast('/'),
+                    )
+                }
+        }
+
+    /**
+     * 現在開いている階層（[currentDirectoryPath]）の直下にある音声ファイル一覧（ファイル名の自然昇順）。
+     */
+    val currentFiles: List<LibraryItemUiModel>
+        get() {
+            val currentPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+            return items
+                .filter { effectivePathOf(it) == currentPath }
+                .sortedWith { a, b ->
+                    val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                    if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                }
+        }
+
+    /**
+     * 現在の階層で最後にアクセスされた `Listened` ファイルが 1〜2 件だけ上部に残る `LazyColumn` インデックス。
+     */
+    val initialVisibleLazyIndexInCurrentDirectory: Int?
+        get() {
+            val lastListenedIdx = currentFiles
+                .withIndex()
+                .filter { it.value.isListened }
+                .maxWithOrNull(
+                    compareBy<IndexedValue<LibraryItemUiModel>> { it.value.lastAccessedAtEpochMs ?: 0L }
+                        .thenBy { it.index },
+                )
+                ?.index ?: return null
+            val targetFileIdx = (lastListenedIdx - 1).coerceAtLeast(0)
+            return currentDirectories.size + targetFileIdx
+        }
+
     /**
      * ディレクトリ（フォルダ）単位にグループ化し、各ディレクトリ内をファイル名の自然昇順でソートした教材一覧。
      */
@@ -449,6 +631,21 @@ sealed interface LibraryEvent {
     /** ディレクトリ（フォルダ）セクションの展開・折りたたみを切り替える。 */
     data class ToggleDirectory(val directoryName: String?) : LibraryEvent
 
+    /** 指定されたディレクトリ階層 [directoryPath] を開いて掘り下げる。 */
+    data class OpenDirectory(val directoryPath: String?) : LibraryEvent
+
+    /** 1 つ上の親ディレクトリ階層へ戻る。 */
+    data object NavigateUp : LibraryEvent
+
+    /** ディレクトリ [directoryPath] の複数選択状態を切り替える。 */
+    data class ToggleDirectorySelection(val directoryPath: String) : LibraryEvent
+
+    /** 教材 [id] の複数選択状態を切り替える。 */
+    data class ToggleItemSelection(val id: MediaId) : LibraryEvent
+
+    /** 複数選択状態をすべて解除する。 */
+    data object ClearSelection : LibraryEvent
+
     /** 教材を開いてプレイヤー画面へ遷移する。 */
     data class OpenItem(val id: MediaId) : LibraryEvent
 
@@ -484,6 +681,12 @@ sealed interface LibraryEvent {
     /** 教材の削除確認ダイアログを開く。 */
     data class RequestDelete(val item: AudioItem) : LibraryEvent
 
+    /** ディレクトリ単位の削除確認ダイアログを開く。 */
+    data class RequestDeleteDirectory(val directoryPath: String) : LibraryEvent
+
+    /** 複数選択されているディレクトリ・ファイルの削除確認ダイアログを開く。 */
+    data object RequestDeleteSelected : LibraryEvent
+
     /** 削除確認ダイアログで削除を実行する。 */
     data object ConfirmDelete : LibraryEvent
 
@@ -497,6 +700,8 @@ sealed interface LibraryEvent {
 private data class ItemAnalysisSummary(
     val chunkCount: Int = 0,
     val hasTranscript: Boolean = false,
+    val transcriptStatus: LibraryTranscriptStatus = LibraryTranscriptStatus.NONE,
+    val transcriptProgressPercent: Int = 0,
     val isAnalyzing: Boolean = false,
 )
 
@@ -513,9 +718,19 @@ private data class DialogAndImportSnapshot(
     val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
     val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val pendingDeleteItem: AudioItem? = null,
+    val pendingDeleteDirectoryPath: String? = null,
+    val isPendingBatchDelete: Boolean = false,
     val pendingEditItem: AudioItem? = null,
     val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
+)
+
+private data class NavigationAndSelectionSnapshot(
+    val selectedDirectoryName: String? = null,
+    val collapsedDirectories: Set<String?> = emptySet(),
+    val currentDirectoryPath: String? = null,
+    val selectedDirectoryPaths: Set<String> = emptySet(),
+    val selectedItemIds: Set<MediaId> = emptySet(),
 )
 
 private object EmptyAnalysisRepository : AnalysisRepository {
@@ -566,11 +781,16 @@ class LibraryViewModel @Inject constructor(
         MutableStateFlow<TranscriptImportUiState>(TranscriptImportUiState.Idle)
     private val syncState = MutableStateFlow<DriveSyncUiState>(DriveSyncUiState.Idle)
     private val pendingDeleteItem = MutableStateFlow<AudioItem?>(null)
+    private val pendingDeleteDirectoryPath = MutableStateFlow<String?>(null)
+    private val isPendingBatchDelete = MutableStateFlow(false)
     private val pendingEditItem = MutableStateFlow<AudioItem?>(null)
     private val pendingEditDirectory = MutableStateFlow<PendingDirectoryEdit?>(null)
     private val pendingImportConfig = MutableStateFlow<PendingImportConfig?>(null)
     private val selectedDirectoryName = MutableStateFlow<String?>(null)
     private val collapsedDirectories = MutableStateFlow<Set<String?>>(emptySet())
+    private val currentDirectoryPath = MutableStateFlow<String?>(null)
+    private val selectedDirectoryPaths = MutableStateFlow<Set<String>>(emptySet())
+    private val selectedItemIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private var defaultLanguagePair: LanguagePair = LanguagePair(
         target = LanguageTag("en"),
         base = LanguageTag("ja"),
@@ -597,10 +817,50 @@ class LibraryViewModel @Inject constructor(
                         analysisRepository.observeTranscripts(item.id),
                         analysisRepository.observeStatus(item.id),
                     ) { chunks, transcripts, statusMap ->
+                        val transcribedCount = chunks.count { chunk ->
+                            transcripts[chunk.id]?.text?.isNotBlank() == true
+                        }
+                        val transcriptStatus = when {
+                            chunks.isNotEmpty() && transcribedCount >= chunks.size -> {
+                                LibraryTranscriptStatus.COMPLETED
+                            }
+
+                            transcribedCount > 0 -> {
+                                LibraryTranscriptStatus.PARTIAL
+                            }
+
+                            transcripts.values.any { it.text.isNotBlank() } -> {
+                                LibraryTranscriptStatus.PARTIAL
+                            }
+
+                            chunks.any { it.origin == ChunkOrigin.IMPORTED } -> {
+                                LibraryTranscriptStatus.COMPLETED
+                            }
+
+                            else -> {
+                                LibraryTranscriptStatus.NONE
+                            }
+                        }
+                        val transcriptProgressPercent = when (transcriptStatus) {
+                            LibraryTranscriptStatus.COMPLETED -> 100
+
+                            LibraryTranscriptStatus.NONE -> 0
+
+                            LibraryTranscriptStatus.PARTIAL -> {
+                                if (chunks.isNotEmpty()) {
+                                    kotlin.math.round((transcribedCount * 100f) / chunks.size.toFloat())
+                                        .toInt()
+                                        .coerceIn(1, 99)
+                                } else {
+                                    0
+                                }
+                            }
+                        }
                         item.id to ItemAnalysisSummary(
                             chunkCount = chunks.size,
-                            hasTranscript = transcripts.isNotEmpty() ||
-                                chunks.any { it.origin == ChunkOrigin.IMPORTED },
+                            hasTranscript = transcriptStatus != LibraryTranscriptStatus.NONE,
+                            transcriptStatus = transcriptStatus,
+                            transcriptProgressPercent = transcriptProgressPercent,
                             isAnalyzing = statusMap.values.any { it is StageStatus.Running },
                         )
                     }
@@ -617,7 +877,13 @@ class LibraryViewModel @Inject constructor(
         ) { currentImport, currentTranscript, currentSync ->
             Triple(currentImport, currentTranscript, currentSync)
         },
-        pendingDeleteItem,
+        combine(
+            pendingDeleteItem,
+            pendingDeleteDirectoryPath,
+            isPendingBatchDelete,
+        ) { deleteItem, deleteDir, batchDelete ->
+            Triple(deleteItem, deleteDir, batchDelete)
+        },
         combine(
             pendingEditItem,
             pendingEditDirectory,
@@ -625,15 +891,33 @@ class LibraryViewModel @Inject constructor(
             editItem to editDir
         },
         pendingImportConfig,
-    ) { (currentImport, currentTranscript, currentSync), deleteTarget, (editTarget, editDirTarget), importConfig ->
+    ) { (currentImport, currentTranscript, currentSync), (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editDirTarget), importConfig ->
         DialogAndImportSnapshot(
             importState = currentImport,
             transcriptImportState = currentTranscript,
             syncState = currentSync,
             pendingDeleteItem = deleteTarget,
+            pendingDeleteDirectoryPath = deleteDirTarget,
+            isPendingBatchDelete = batchDelete,
             pendingEditItem = editTarget,
             pendingEditDirectory = editDirTarget,
             pendingImportConfig = importConfig,
+        )
+    }
+
+    private val navigationAndSelectionFlow: Flow<NavigationAndSelectionSnapshot> = combine(
+        selectedDirectoryName,
+        collapsedDirectories,
+        currentDirectoryPath,
+        selectedDirectoryPaths,
+        selectedItemIds,
+    ) { dirName, collapsed, currentPath, selectedDirs, selectedItems ->
+        NavigationAndSelectionSnapshot(
+            selectedDirectoryName = dirName,
+            collapsedDirectories = collapsed,
+            currentDirectoryPath = currentPath,
+            selectedDirectoryPaths = selectedDirs,
+            selectedItemIds = selectedItems,
         )
     }
 
@@ -656,9 +940,8 @@ class LibraryViewModel @Inject constructor(
         },
         playbackController.status,
         dialogAndImportFlow,
-        selectedDirectoryName,
-        collapsedDirectories,
-    ) { repoSnapshot, playbackStatus, dialogAndImport, dirName, collapsed ->
+        navigationAndSelectionFlow,
+    ) { repoSnapshot, playbackStatus, dialogAndImport, navAndSelection ->
         buildUiState(
             items = repoSnapshot.items,
             itemStates = repoSnapshot.itemStates,
@@ -667,8 +950,7 @@ class LibraryViewModel @Inject constructor(
             enabledLanguages = repoSnapshot.enabledLanguages,
             playbackStatus = playbackStatus,
             dialogAndImport = dialogAndImport,
-            selectedDirectoryName = dirName,
-            collapsedDirectories = collapsed,
+            navAndSelection = navAndSelection,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -687,7 +969,7 @@ class LibraryViewModel @Inject constructor(
                 if (event.uris.isNotEmpty()) {
                     pendingImportConfig.value = PendingImportConfig(
                         uris = event.uris,
-                        initialCourse = trimmedDir ?: selectedDirectoryName.value,
+                        initialCourse = trimmedDir ?: currentDirectoryPath.value ?: selectedDirectoryName.value,
                         initialLanguages = defaultLanguagePair,
                         isDriveSyncFolder = false,
                     )
@@ -698,7 +980,7 @@ class LibraryViewModel @Inject constructor(
                 if (event.uris.isNotEmpty()) {
                     pendingImportConfig.value = PendingImportConfig(
                         uris = event.uris,
-                        initialCourse = selectedDirectoryName.value,
+                        initialCourse = currentDirectoryPath.value ?: selectedDirectoryName.value,
                         initialLanguages = defaultLanguagePair,
                         isDriveSyncFolder = false,
                     )
@@ -712,7 +994,7 @@ class LibraryViewModel @Inject constructor(
                 }
                 pendingImportConfig.value = PendingImportConfig(
                     uris = listOf(event.treeUri),
-                    initialCourse = trimmedDir ?: selectedDirectoryName.value ?: "ChunkFlow",
+                    initialCourse = trimmedDir ?: currentDirectoryPath.value ?: selectedDirectoryName.value ?: "ChunkFlow",
                     initialLanguages = defaultLanguagePair,
                     isDriveSyncFolder = true,
                 )
@@ -780,6 +1062,43 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            is LibraryEvent.OpenDirectory -> {
+                clearSelectionInternal()
+                currentDirectoryPath.value = event.directoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+            }
+
+            LibraryEvent.NavigateUp -> {
+                if (selectedDirectoryPaths.value.isNotEmpty() || selectedItemIds.value.isNotEmpty()) {
+                    clearSelectionInternal()
+                } else {
+                    val current = currentDirectoryPath.value?.trim('/')?.takeIf { it.isNotBlank() }
+                    currentDirectoryPath.value = if (current != null && '/' in current) {
+                        current.substringBeforeLast('/')
+                    } else {
+                        null
+                    }
+                }
+            }
+
+            is LibraryEvent.ToggleDirectorySelection -> {
+                val normalized = event.directoryPath.trim('/')
+                if (normalized.isNotEmpty()) {
+                    selectedDirectoryPaths.update { current ->
+                        if (normalized in current) current - normalized else current + normalized
+                    }
+                }
+            }
+
+            is LibraryEvent.ToggleItemSelection -> {
+                selectedItemIds.update { current ->
+                    if (event.id in current) current - event.id else current + event.id
+                }
+            }
+
+            LibraryEvent.ClearSelection -> {
+                clearSelectionInternal()
+            }
+
             is LibraryEvent.RequestEditMetadata -> {
                 pendingEditItem.value = event.item
             }
@@ -806,30 +1125,59 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.RequestEditDirectoryMetadata -> {
-                val targetDir = uiState.value.directories.firstOrNull { it.name == event.directoryName }
-                val initialPair = targetDir?.items?.firstOrNull()?.item?.languagePair ?: defaultLanguagePair
+                val dirPath = event.directoryName?.trim('/')?.takeIf { it.isNotBlank() }
+                val matchingItems = if (dirPath != null) {
+                    uiState.value.itemsInDirectoryTree(dirPath)
+                } else {
+                    uiState.value.items.filter { uiState.value.effectivePathOf(it) == null }
+                }
+                val initialPair = matchingItems.firstOrNull()?.item?.languagePair ?: defaultLanguagePair
                 pendingEditDirectory.value = PendingDirectoryEdit(
-                    currentCourse = event.directoryName,
+                    currentCourse = dirPath,
                     initialLanguages = initialPair,
                 )
             }
 
             is LibraryEvent.ConfirmEditDirectoryMetadata -> {
                 pendingEditDirectory.value = null
-                val normalizedCourse = event.newCourse?.trim()?.ifBlank { null }
+                val currentPath = event.currentCourse?.trim('/')?.takeIf { it.isNotBlank() }
+                val rawNew = event.newCourse?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
+                val resolvedNewCourse = if (
+                    currentPath != null &&
+                    '/' in currentPath &&
+                    rawNew != null &&
+                    '/' !in rawNew
+                ) {
+                    "${currentPath.substringBeforeLast('/')}/$rawNew"
+                } else {
+                    rawNew
+                }
                 val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
                 val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
                 val normalizedLanguages = LanguagePair(
                     target = LanguageTag(normalizedTarget),
                     base = normalizedBase?.let { LanguageTag(it) },
                 )
-                if (selectedDirectoryName.value == event.currentCourse) {
-                    selectedDirectoryName.value = normalizedCourse
+                if (selectedDirectoryName.value == currentPath) {
+                    selectedDirectoryName.value = resolvedNewCourse
+                }
+                val activeDir = currentDirectoryPath.value
+                if (currentPath != null && activeDir != null) {
+                    if (activeDir == currentPath) {
+                        currentDirectoryPath.value = resolvedNewCourse
+                    } else if (activeDir.startsWith("$currentPath/")) {
+                        val suffix = activeDir.removePrefix("$currentPath/")
+                        currentDirectoryPath.value = if (resolvedNewCourse != null) {
+                            "$resolvedNewCourse/$suffix"
+                        } else {
+                            suffix
+                        }
+                    }
                 }
                 viewModelScope.launch {
                     libraryRepository.updateDirectoryMetadata(
-                        currentCourse = event.currentCourse,
-                        newCourse = normalizedCourse,
+                        currentCourse = currentPath,
+                        newCourse = resolvedNewCourse,
                         languages = normalizedLanguages,
                     )
                 }
@@ -840,11 +1188,30 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.RequestDelete -> {
+                pendingDeleteDirectoryPath.value = null
+                isPendingBatchDelete.value = false
                 pendingDeleteItem.value = event.item
+            }
+
+            is LibraryEvent.RequestDeleteDirectory -> {
+                val normalized = event.directoryPath.trim('/').takeIf { it.isNotBlank() } ?: return
+                pendingDeleteItem.value = null
+                isPendingBatchDelete.value = false
+                pendingDeleteDirectoryPath.value = normalized
+            }
+
+            LibraryEvent.RequestDeleteSelected -> {
+                if (selectedDirectoryPaths.value.isNotEmpty() || selectedItemIds.value.isNotEmpty()) {
+                    pendingDeleteItem.value = null
+                    pendingDeleteDirectoryPath.value = null
+                    isPendingBatchDelete.value = true
+                }
             }
 
             LibraryEvent.CancelDelete -> {
                 pendingDeleteItem.value = null
+                pendingDeleteDirectoryPath.value = null
+                isPendingBatchDelete.value = false
             }
 
             LibraryEvent.ConfirmDelete -> confirmDelete()
@@ -860,6 +1227,12 @@ class LibraryViewModel @Inject constructor(
             LibraryEvent.OpenSettings,
             -> Unit
         }
+    }
+
+    private fun clearSelectionInternal() {
+        selectedDirectoryPaths.value = emptySet()
+        selectedItemIds.value = emptySet()
+        isPendingBatchDelete.value = false
     }
 
     private fun importUris(
@@ -969,14 +1342,22 @@ class LibraryViewModel @Inject constructor(
     }
 
     private fun confirmDelete() {
-        val target = pendingDeleteItem.value ?: return
+        val currentState = uiState.value
+        val targets = currentState.pendingDeleteTargetItems
         pendingDeleteItem.value = null
+        pendingDeleteDirectoryPath.value = null
+        isPendingBatchDelete.value = false
+        clearSelectionInternal()
+        if (targets.isEmpty()) return
+
         viewModelScope.launch {
-            libraryRepository.delete(target.id)
-            if (playbackController is FakePlaybackController &&
-                playbackController.status.value.mediaId == target.id
-            ) {
-                playbackController.statusState.value = PlaybackStatus()
+            for (target in targets) {
+                libraryRepository.delete(target.id)
+                if (playbackController is FakePlaybackController &&
+                    playbackController.status.value.mediaId == target.id
+                ) {
+                    playbackController.statusState.value = PlaybackStatus()
+                }
             }
         }
     }
@@ -1008,18 +1389,27 @@ class LibraryViewModel @Inject constructor(
         enabledLanguages: List<LanguageTag>,
         playbackStatus: PlaybackStatus,
         dialogAndImport: DialogAndImportSnapshot,
-        selectedDirectoryName: String?,
-        collapsedDirectories: Set<String?>,
+        navAndSelection: NavigationAndSelectionSnapshot,
     ): LibraryUiState {
         val uiItems = items.map { audioItem ->
             val state = itemStates[audioItem.id]
             val summary = summaries[audioItem.id]
+            val transcriptStatus = summary?.transcriptStatus ?: LibraryTranscriptStatus.NONE
+            val posMs = state?.positionMs ?: 0L
+            val maxPosMs = maxOf(state?.maxPositionMs ?: 0L, posMs)
             LibraryItemUiModel(
                 item = audioItem,
-                positionMs = state?.positionMs ?: 0L,
+                positionMs = posMs,
+                maxPositionMs = maxPosMs,
                 speed = state?.speed ?: 1.0f,
                 chunkCount = summary?.chunkCount ?: 0,
-                hasTranscript = summary?.hasTranscript ?: false,
+                hasTranscript = summary?.hasTranscript ?: (transcriptStatus != LibraryTranscriptStatus.NONE),
+                transcriptStatus = transcriptStatus,
+                transcriptProgressPercent = summary?.transcriptProgressPercent ?: when (transcriptStatus) {
+                    LibraryTranscriptStatus.COMPLETED -> 100
+                    LibraryTranscriptStatus.NONE -> 0
+                    LibraryTranscriptStatus.PARTIAL -> 50
+                },
                 isAnalyzing = summary?.isAnalyzing ?: false,
                 isAudioMissing = audioItem.id in missingAudioIds,
                 isListened = state?.isListened ?: false,
@@ -1046,6 +1436,9 @@ class LibraryViewModel @Inject constructor(
         } else {
             null
         }
+        val validItemIds = items.mapTo(mutableSetOf()) { it.id }
+        val filteredSelectedItemIds = navAndSelection.selectedItemIds.intersect(validItemIds)
+
         return LibraryUiState(
             items = uiItems,
             importState = dialogAndImport.importState,
@@ -1053,12 +1446,17 @@ class LibraryViewModel @Inject constructor(
             syncState = dialogAndImport.syncState,
             miniPlayer = miniPlayer,
             pendingDeleteItem = dialogAndImport.pendingDeleteItem,
+            pendingDeleteDirectoryPath = dialogAndImport.pendingDeleteDirectoryPath,
+            isPendingBatchDelete = dialogAndImport.isPendingBatchDelete,
             pendingEditItem = dialogAndImport.pendingEditItem,
             pendingEditDirectory = dialogAndImport.pendingEditDirectory,
             pendingImportConfig = dialogAndImport.pendingImportConfig,
-            selectedDirectoryName = selectedDirectoryName,
-            collapsedDirectories = collapsedDirectories,
+            selectedDirectoryName = navAndSelection.selectedDirectoryName,
+            collapsedDirectories = navAndSelection.collapsedDirectories,
             enabledLanguages = enabledLanguages,
+            currentDirectoryPath = navAndSelection.currentDirectoryPath,
+            selectedDirectoryPaths = navAndSelection.selectedDirectoryPaths,
+            selectedItemIds = filteredSelectedItemIds,
         )
     }
 }

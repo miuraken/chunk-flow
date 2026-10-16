@@ -30,7 +30,11 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                 )
             }
             entry<PlayerKey> { key ->
-                PlayerRoute(mediaId = MediaId(key.mediaId), onBack = { backStack.removeLastOrNull() })
+                PlayerRoute(
+                    mediaId = MediaId(key.mediaId),
+                    onBack = { backStack.removeLastOrNull() },
+                    onOpenPlaybackSettings = { backStack.add(SettingsKey) },
+                )
             }
             entry<SettingsKey> {
                 SettingsRoute(onBack = { backStack.removeLastOrNull() })

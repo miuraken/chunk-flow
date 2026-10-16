@@ -1,6 +1,7 @@
 package com.miuraken.chunkflow.core.datastore
 
 import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -37,6 +38,9 @@ interface UserSettingsRepository {
 
     /** 既定の自動ポーズ設定を更新する（F6.3、F9.1）。 */
     suspend fun setDefaultAutoPause(autoPause: AutoPause) {}
+
+    /** 既定の自動ポーズ対象言語範囲を更新する（F6.3、F6.5、F9.1）。 */
+    suspend fun setDefaultAutoPauseScope(scope: AutoPauseScope) {}
 
     /** 端末内の自動チャンク分割の既定パラメータを更新する（§7.3.3、F5.2、F9.1）。 */
     suspend fun setDefaultSegmentationParams(params: SegmentationParams) {}

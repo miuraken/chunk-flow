@@ -337,6 +337,34 @@ class ChunkSchedulerTest {
     }
 
     @Test
+    fun `AutoPauseScope_AFTER_TARGET_LANGUAGEでは学習言語チャンク終端のみで一時停止する`() {
+        scheduler.setChunks(sampleChunks)
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                chunk1.id to sampleTranscript(chunk1.id, "こんにちは", "ja"),
+                chunk2.id to sampleTranscript(chunk2.id, "Hello", "en"),
+                chunk3.id to sampleTranscript(chunk3.id, "さようなら", "ja"),
+            ),
+        )
+        practiceController.update {
+            it.copy(
+                autoPause = AutoPause.Fixed(pauseMs = 1_200L),
+                autoPauseScope = AutoPauseScope.AFTER_TARGET_LANGUAGE,
+            )
+        }
+
+        // chunk1 (ja) の終端 2_000ms では止まらず、chunk2 (en) の終端 4_500ms で一時停止する
+        exoPlayer.play()
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition >= 4_500L)
+        assertNotNull(scheduler.autoPauseEndsAtMs.value)
+    }
+
+    @Test
     fun `LanguageFilter_TARGET_ONLYでは母語チャンクを飛ばして次の学習言語チャンクへシークする`() {
         scheduler.setChunks(sampleChunks)
         scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))

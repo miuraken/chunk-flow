@@ -888,7 +888,7 @@ class DefaultLibraryRepositoryTest {
 
         repo.updateItemMetadata(
             id = mediaId,
-            course = "  path/to/Business_Chinese  ",
+            course = "  ../../Business_Chinese/  ",
             languages = LanguagePair(LanguageTag("zh"), LanguageTag("en")),
         )
 
@@ -896,6 +896,15 @@ class DefaultLibraryRepositoryTest {
         assertNotNull(updated)
         assertEquals("Business_Chinese", updated.course)
         assertEquals(LanguagePair(LanguageTag("zh"), LanguageTag("en")), updated.languagePair)
+
+        repo.updateItemMetadata(
+            id = mediaId,
+            course = "  Business_Chinese / Unit1  ",
+            languages = LanguagePair(LanguageTag("zh"), LanguageTag("en")),
+        )
+        val updatedSub = repo.observeItem(mediaId).first()
+        assertNotNull(updatedSub)
+        assertEquals("Business_Chinese/Unit1", updatedSub.course)
     }
 
     @Test

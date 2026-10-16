@@ -81,6 +81,7 @@ enum class PhoneticGuideKind {
  * @property seekBackMs 巻き戻しのミリ秒数（正の値、既定 3,000ms）。
  * @property seekForwardMs 早送りのミリ秒数（正の値、既定 5,000ms）。
  * @property defaultAutoPause 新しく開く教材の既定の自動ポーズ設定（F6.3、F9.1）。
+ * @property defaultAutoPauseScope 既定の自動ポーズ対象言語範囲（両言語・学習言語のみ・解説言語のみ）。
  * @property defaultSegmentationParams 端末内の自動チャンク分割の既定パラメータ（§7.3.3、F5.2、F9.1）。
  * @property enabledLanguages 設定画面やダイアログの言語選択肢として表示する言語の集合。
  * @property showTargetRomanization 対象言語が非ラテン文字（日本語・中国語・ヒンディー語・韓国語など）のときに、アルファベットによる読み方（ローマ字・Pinyin・IAST など）をチャンクに付加して表示するかどうか。
@@ -97,6 +98,7 @@ data class UserSettings(
     val seekBackMs: Long = DEFAULT_SEEK_BACK_MS,
     val seekForwardMs: Long = DEFAULT_SEEK_FORWARD_MS,
     val defaultAutoPause: AutoPause = AutoPause.Off,
+    val defaultAutoPauseScope: AutoPauseScope = AutoPauseScope.ALL_CHUNKS,
     val defaultSegmentationParams: SegmentationParams = SegmentationParams(),
     val enabledLanguages: Set<LanguageTag> = DEFAULT_ENABLED_LANGUAGES,
     val showTargetRomanization: Boolean = false,

@@ -81,7 +81,6 @@ import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
-import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
@@ -116,6 +115,7 @@ fun PlayerRoute(
     mediaId: MediaId,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    onOpenPlaybackSettings: () -> Unit = {},
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(mediaId) {
@@ -197,6 +197,7 @@ fun PlayerRoute(
                 else -> viewModel.onEvent(event)
             }
         },
+        onOpenPlaybackSettings = onOpenPlaybackSettings,
         onPickTranscriptJson = {
             transcriptPickerLauncher.launch(
                 arrayOf("*/*"),
@@ -223,6 +224,7 @@ fun PlayerScreen(
     positionProvider: PositionProvider,
     onEvent: (PlayerEvent) -> Unit,
     modifier: Modifier = Modifier,
+    onOpenPlaybackSettings: () -> Unit = {},
     onPickTranscriptJson: () -> Unit = {},
     onRequestExportTranscript: (TranscriptExportFormat) -> Unit = {},
 ) {
@@ -257,6 +259,27 @@ fun PlayerScreen(
                     }
                 },
                 actions = {
+                    if (state.isTranscriptionCompleted) {
+                        Text(
+                            text = "✅️",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                        )
+                    } else {
+                        val isTranscribeOn = state.lookaheadStatus.enabled
+                        FilterChip(
+                            selected = isTranscribeOn,
+                            onClick = { onEvent(PlayerEvent.SetLookaheadEnabled(!isTranscribeOn)) },
+                            label = {
+                                Text(
+                                    text = stringResource(R.string.player_chip_transcribe),
+                                    fontWeight = if (isTranscribeOn) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 1,
+                                )
+                            },
+                            colors = brightnessToggleChipColors(),
+                        )
+                    }
                     IconButton(onClick = { showResegmentSheet = true }) {
                         Icon(
                             imageVector = ChunkFlowIcons.Tune,
@@ -322,6 +345,7 @@ fun PlayerScreen(
                             state = state,
                             onEvent = onEvent,
                             onOpenSpeedSheet = { showSpeedSheet = true },
+                            onOpenPlaybackSettings = onOpenPlaybackSettings,
                         )
 
                         PlayerTransportControls(
@@ -533,6 +557,7 @@ fun PlayerScreen(
                                 state = state,
                                 onEvent = onEvent,
                                 onOpenSpeedSheet = { showSpeedSheet = true },
+                                onOpenPlaybackSettings = onOpenPlaybackSettings,
                             )
 
                             PlayerTransportControls(
@@ -686,7 +711,7 @@ private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
  *
  * 表示項目:
  * - 「言語」（*すべて、学習言語のみ、母語のみ）
- * - 「学習言語を表示」（*on, off）
+ * - 「学習言語を隠す」（on, *off）
  * - 「読み」（on, *off）
  *
  * 左端には、チャンクを選択しているときは「全選択解除」（選択が連続していて両端の言語が同じなら「連結」も）、
@@ -707,7 +732,7 @@ private fun ChunkListControlStrip(
         LanguageFilter.BASE_ONLY -> stringResource(R.string.player_chip_lang_filter_base)
     }
 
-    val isShowTargetLangOn = state.blindMode == BlindMode.OFF
+    val isHideTargetLangOn = state.blindMode != BlindMode.OFF
     val isReadingOn = state.showTargetRomanization
     val toggleColors = brightnessToggleChipColors()
     val hasSelection = state.chunks.any { it.isRepeatChecked }
@@ -774,21 +799,21 @@ private fun ChunkListControlStrip(
             }
         }
 
-        // 2. 「学習言語を表示」（*on, off）
+        // 2. 「学習言語を隠す」（on, *off）
         FilterChip(
-            selected = isShowTargetLangOn,
+            selected = isHideTargetLangOn,
             onClick = {
-                val nextBlindMode = if (isShowTargetLangOn) {
-                    BlindMode.HIDE_TARGET_ONLY
-                } else {
+                val nextBlindMode = if (isHideTargetLangOn) {
                     BlindMode.OFF
+                } else {
+                    BlindMode.HIDE_TARGET_ONLY
                 }
                 onEvent(PlayerEvent.SetBlindMode(nextBlindMode))
             },
             label = {
                 Text(
-                    text = stringResource(R.string.player_chip_show_target_lang),
-                    fontWeight = if (isShowTargetLangOn) FontWeight.SemiBold else FontWeight.Normal,
+                    text = stringResource(R.string.player_chip_blind_target),
+                    fontWeight = if (isHideTargetLangOn) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                 )
             },
@@ -819,7 +844,7 @@ private fun ChunkListControlStrip(
  * 表示項目:
  * - 「1.00x」（再生速度）
  * - 「リピート」（on, *off）
- * - 「瞬間作文」（on, *off）
+ * - 「再生設定」（全体設定の再生設定タブへ移動）
  */
 @Composable
 private fun PlaybackControlStrip(
@@ -827,11 +852,9 @@ private fun PlaybackControlStrip(
     onEvent: (PlayerEvent) -> Unit,
     onOpenSpeedSheet: () -> Unit,
     modifier: Modifier = Modifier,
+    onOpenPlaybackSettings: () -> Unit = {},
 ) {
     val isRepeatOn = state.practice.loop !is LoopMode.Off || state.practice.repeatCheckedOnly
-    val isInstantCompositionOn =
-        state.practice.autoPauseScope == AutoPauseScope.AFTER_BASE_LANGUAGE &&
-            state.practice.autoPause !is AutoPause.Off
     val toggleColors = brightnessToggleChipColors()
 
     Row(
@@ -868,18 +891,15 @@ private fun PlaybackControlStrip(
             colors = toggleColors,
         )
 
-        // 3. 「瞬間作文」（on, *off）
-        FilterChip(
-            selected = isInstantCompositionOn,
-            onClick = { onEvent(PlayerEvent.ToggleInstantComposition) },
+        // 3. 「再生設定」
+        AssistChip(
+            onClick = onOpenPlaybackSettings,
             label = {
                 Text(
-                    text = stringResource(R.string.player_chip_instant_comp),
-                    fontWeight = if (isInstantCompositionOn) FontWeight.SemiBold else FontWeight.Normal,
+                    text = stringResource(R.string.player_chip_playback_settings),
                     maxLines = 1,
                 )
             },
-            colors = toggleColors,
         )
     }
 }

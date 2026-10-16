@@ -337,14 +337,13 @@ class PlayerViewModelTest {
         assertEquals(-120, viewModel.uiState.value.transcriptOffsetMs)
         assertEquals(-120, analysisRepo.transcriptOffsets[item.id])
 
-        // 既定で先読み文字起こしが有効（UserSettings.lookaheadTranscriptionEnabled = true）であり、OFF/ON 切り替えと現在チャンク変更時のトリガーが機能する
+        // 既定でファイルごとに先読み文字起こしが有効（ON）であり、OFF/ON 切り替えと現在チャンク変更時のトリガーが機能する
         assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertTrue(viewModel.uiState.value.isTranscriptionCompleted)
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(false))
         assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
-        assertFalse(settingsRepo.state.value.lookaheadTranscriptionEnabled)
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
         assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
-        assertTrue(settingsRepo.state.value.lookaheadTranscriptionEnabled)
 
         val thirdChunkId = sample.chunks[2].id
         playback.statusState.value = playback.statusState.value.copy(currentChunkId = thirdChunkId)
