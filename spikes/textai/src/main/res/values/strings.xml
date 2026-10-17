@@ -2,5 +2,102 @@
 <resources>
     <string name="app_name" translatable="false">Spike S4 TextAI</string>
     <string name="spike_title">S4: ML Kit の翻訳・校正</string>
-    <string name="spike_placeholder">試作の画面はこれから作ります（担当: transcriber）。</string>
+    <string name="spike_description">本体で書き出した文字起こし（Chunk Flow JSON / SRT / LRC）を開き、学習言語のチャンクごとに A〜D を試します。訳と案は画面にだけ出し、CSV には時間・結果の種類・文字数・評価だけを書きます。</string>
+
+    <!-- ファイル -->
+    <string name="action_open_file">文字起こしファイルを開く</string>
+    <string name="loading_file">読み込み中…</string>
+    <string name="file_summary">%1$s・セグメント %2$d 件・学習言語のチャンク %3$d 件・ID %4$s</string>
+    <string name="file_kind_json" translatable="false">Chunk Flow JSON</string>
+    <string name="file_kind_srt" translatable="false">SRT</string>
+    <string name="file_kind_vtt" translatable="false">WebVTT</string>
+    <string name="file_kind_lrc" translatable="false">LRC</string>
+    <string name="load_error_too_large">ファイルが大きすぎます（20MB まで）</string>
+    <string name="load_error_unreadable">ファイルを読めませんでした</string>
+    <string name="load_error_unknown_format">形式がわかりません（Chunk Flow JSON・SRT・WebVTT・LRC だけ。TXT は読めません）</string>
+    <string name="load_error_unsupported_version">対応していない版の Chunk Flow JSON です</string>
+    <string name="load_error_invalid">ファイルの内容が正しくありません</string>
+    <string name="load_error_time">時刻が範囲外です</string>
+    <string name="load_error_no_segments">チャンクがありません</string>
+
+    <!-- 言語 -->
+    <string name="section_languages">言語</string>
+    <string name="label_target">学習言語</string>
+    <string name="label_target_from_file">学習言語（ファイルの言語ペア）: %1$s</string>
+    <string name="label_base">ベース言語（訳す先）</string>
+    <string name="subtitle_language_note">SRT / LRC にはチャンクごとの言語がないので、文字の種類から学習言語のチャンクを選びます。</string>
+    <string name="cannot_distinguish_note">この 2 つの言語は文字の種類で区別できません。「言語が不明なチャンクも含める」をオンにすると、すべてのチャンクを学習言語として扱います。</string>
+    <string name="choose_target_prompt">学習言語を選んでください</string>
+    <string name="include_unknown">言語が不明なチャンクも含める（%1$d 件）</string>
+    <string name="language_unknown">不明</string>
+    <string name="lang_source_file">ファイル</string>
+    <string name="lang_source_script">文字の種類から推定</string>
+    <string name="lang_source_none">言語不明</string>
+
+    <!-- 方式と状態 -->
+    <string name="section_methods">方式と状態</string>
+    <string name="method_a">A 翻訳 API（Translation）</string>
+    <string name="method_b">B Prompt API で翻訳</string>
+    <string name="method_c">C 校正 API（Proofreading・音声入力）</string>
+    <string name="method_d">D Prompt API で校正の提案</string>
+    <string name="state_checking">確認中…</string>
+    <string name="state_unsupported">この言語には対応していません</string>
+    <string name="state_needs_language">言語を選んでください</string>
+    <string name="state_unavailable">この端末では使えません（UNAVAILABLE）</string>
+    <string name="state_downloadable">モデルのダウンロードが必要です</string>
+    <string name="state_downloading">ダウンロード中…</string>
+    <string name="state_downloading_progress">ダウンロード中… %1$s / %2$s</string>
+    <string name="state_available">使えます</string>
+    <string name="state_error">確認できませんでした（コード %1$s）</string>
+    <string name="status_model">モデル: %1$s</string>
+    <string name="status_last_download">前回のダウンロード: %1$s・%2$s</string>
+    <string name="shared_model_note">B と D は同じモデル（Gemini Nano）を使います。チェックを外した方式は実行しません。</string>
+    <string name="action_download">ダウンロード</string>
+    <string name="action_refresh_status">状態を確認し直す</string>
+
+    <!-- 実行と記録 -->
+    <string name="section_run">実行と記録</string>
+    <string name="action_run_all">全部を順に実行（未実行と失敗だけ）</string>
+    <string name="action_stop">停止</string>
+    <string name="batch_progress">%1$d / %2$d 件</string>
+    <string name="last_batch_completed">前回の「全部を順に実行」: %1$d 件（成功 %2$d 件）・%3$s・最後まで実行</string>
+    <string name="last_batch_stopped">前回の「全部を順に実行」: %1$d 件（成功 %2$d 件）・%3$s・途中で止めた</string>
+    <string name="background_note">画面を消したり、ほかのアプリに切り替えたりしても実行は続けます。そのときの結果（BACKGROUND_USE_BLOCKED など）も CSV に記録します。</string>
+    <string name="action_save_summary">集計 CSV を保存</string>
+    <string name="action_clear_results">結果を消す</string>
+    <string name="csv_location">CSV の保存先: %1$s</string>
+    <string name="message_summary_saved">集計を保存しました: %1$s</string>
+    <string name="message_summary_failed">集計を保存できませんでした</string>
+    <string name="message_nothing_to_run">実行できるものがありません（方式が「使えます」になっているか、未実行・失敗のチャンクがあるかを確かめてください）</string>
+    <string name="action_dismiss">閉じる</string>
+    <string name="duration_seconds">%1$.1f 秒</string>
+    <string name="duration_minutes">%1$d 分 %2$d 秒</string>
+
+    <!-- チャンク -->
+    <string name="chunk_header">#%1$d・%2$s・%3$s（%4$s）</string>
+    <string name="action_run_chunk">このチャンクだけ実行</string>
+    <string name="result_running">実行中…</string>
+    <string name="result_not_run">未実行</string>
+    <string name="result_time">%1$d ms</string>
+    <string name="result_time_first">%1$d ms（初回）</string>
+    <string name="result_background">（裏で実行）</string>
+    <string name="result_no_change">修正なし</string>
+    <string name="result_suggestion">案: %1$s</string>
+    <string name="result_diff_legend">差分（取り消し線 = 消す、下線 = 加える）</string>
+    <string name="result_diff_too_long">（長いので差分は出しません）</string>
+    <string name="result_reason">理由: %1$s</string>
+    <string name="result_suggestion_count">案 %1$d 件（最初の案を表示）</string>
+    <string name="result_format_error">決めた形（元の文 / 案 / 理由）で返りませんでした:</string>
+    <string name="result_empty">出力が空でした</string>
+    <string name="result_failed">失敗: %1$s</string>
+    <string name="result_failed_code">失敗: %1$s（コード %2$d）</string>
+    <string name="result_truncated">（出力の長さの上限で切れました）</string>
+
+    <!-- 評価 -->
+    <string name="rating_correct">合っている</string>
+    <string name="rating_mostly_correct">ほぼ合っている</string>
+    <string name="rating_wrong">間違い</string>
+    <string name="rating_good_fix">正しい修正</string>
+    <string name="rating_unnecessary_fix">不要な書き換え</string>
+    <string name="rating_wrong_fix">誤った修正</string>
 </resources>
