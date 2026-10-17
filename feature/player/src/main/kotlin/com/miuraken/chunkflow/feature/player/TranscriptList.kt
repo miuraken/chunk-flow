@@ -64,6 +64,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,7 +77,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
@@ -290,6 +293,8 @@ internal fun nextToggledChunkLanguage(
  * - 未判定言語のチャンクがある場合は一括で学習言語に設定するチップを表示する（F1.4）。
  * - 現在のチャンクに単語タイムスタンプ（`words`）がある場合、アクティブ行の内部でのみ [positionProvider] を監視して発話中の単語をカラオケ強調する（F7.7）。
  * - ブックマーク（F8.1）、テキスト手動編集（F7.4）、チャンク分割・結合・境界微調整（F5.3）を提供する。
+ * - 文字起こしの実行中は、進捗をリストの下部に重ねたカード（[TranscriptionProgressOverlay]）で表示する。
+ *   カードが出ている間は、カードの高さの分だけリストの下に余白を付け、最後のチャンクがカードの後ろに隠れたままにならないようにする。
  */
 @Composable
 fun TranscriptList(
@@ -311,7 +316,6 @@ fun TranscriptList(
     showTargetRomanization: Boolean = false,
     positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
-    isAudioAnalysisRunning: Boolean = false,
     localTranscriptExported: Boolean = false,
     transcriptExportBanner: TranscriptExportBannerState? = null,
     onDismissExportBanner: () -> Unit = {},
@@ -344,7 +348,8 @@ fun TranscriptList(
     var manualScrollTick by remember { mutableLongStateOf(0L) }
     var rangeSelectionStartChunkId by remember { mutableStateOf<ChunkId?>(null) }
     var editingTextChunk by remember { mutableStateOf<Pair<Int, ChunkUi>?>(null) }
-    var showDiagnosticsDialog by remember { mutableStateOf(false) }
+    var progressOverlayHeightPx by remember { mutableIntStateOf(0) }
+    val density = LocalDensity.current
 
     // ユーザーによる手動スクロールの検出
     LaunchedEffect(listState.isScrollInProgress) {
@@ -390,6 +395,16 @@ fun TranscriptList(
     val isTranscriptionActive = lookaheadStatus.inFlightChunkId != null ||
         (lookaheadStatus.enabled && lookaheadStatus.queuedChunkIds.isNotEmpty())
 
+    // 進捗カードと、リストの端・ほかの部品との間隔
+    val progressOverlayMargin = 8.dp
+
+    // 進捗カードが出ている間は、カードの高さと上下の間隔の分だけリストの下に余白を付ける
+    val progressOverlayInset = if (isTranscriptionActive) {
+        with(density) { progressOverlayHeightPx.toDp() } + progressOverlayMargin * 2
+    } else {
+        0.dp
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             transcriptImportBanner?.let { banner ->
@@ -408,46 +423,8 @@ fun TranscriptList(
                 )
             }
 
-            if (isTranscriptionActive) {
-                val activeChunkNumber = lookaheadStatus.inFlightChunkId?.let { inFlightId ->
-                    chunks.indexOfFirst { it.id == inFlightId }.takeIf { it >= 0 }?.plus(1)
-                }
-                TranscriptionProgressBanner(
-                    lookaheadStatus = lookaheadStatus,
-                    inFlightChunkNumber = activeChunkNumber,
-                    isAudioAnalysisRunning = isAudioAnalysisRunning,
-                    onAbortTranscription = onResetTranscription,
-                    onOpenDiagnostics = { showDiagnosticsDialog = true },
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            } else if (lookaheadStatus.diagnostics.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (localTranscriptExported) {
-                        AssistChip(
-                            onClick = onExportLocalTranscriptJson,
-                            label = { Text(text = stringResource(R.string.player_lookahead_exported_badge)) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = ChunkFlowIcons.Check,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            },
-                        )
-                    }
-                    Spacer(modifier = Modifier.weight(1f))
-                    AssistChip(
-                        onClick = { showDiagnosticsDialog = true },
-                        label = { Text(text = stringResource(R.string.player_transcription_diagnostics_button)) },
-                    )
-                }
-            } else if (localTranscriptExported) {
+            // 書き出し済みのバッジは、文字起こしの実行中でないときだけ出す（実行中の進捗はリスト下部のカードで表示する）
+            if (!isTranscriptionActive && localTranscriptExported) {
                 LookaheadAndExportBanner(
                     localTranscriptExported = localTranscriptExported,
                     onExportLocalTranscriptJson = onExportLocalTranscriptJson,
@@ -484,7 +461,7 @@ fun TranscriptList(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                contentPadding = PaddingValues(vertical = 4.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp + progressOverlayInset),
             ) {
                 itemsIndexed(
                     items = chunks,
@@ -579,6 +556,21 @@ fun TranscriptList(
             }
         }
 
+        if (isTranscriptionActive) {
+            val activeChunkNumber = lookaheadStatus.inFlightChunkId?.let { inFlightId ->
+                chunks.indexOfFirst { it.id == inFlightId }.takeIf { it >= 0 }?.plus(1)
+            }
+            TranscriptionProgressOverlay(
+                lookaheadStatus = lookaheadStatus,
+                inFlightChunkNumber = activeChunkNumber,
+                onAbortTranscription = onResetTranscription,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 12.dp, vertical = progressOverlayMargin)
+                    .onSizeChanged { size -> progressOverlayHeightPx = size.height },
+            )
+        }
+
         if (isAutoFollowPaused && activeChunkIndex != null && activeChunkIndex in chunks.indices) {
             AssistChip(
                 onClick = {
@@ -608,21 +600,15 @@ fun TranscriptList(
                 elevation = AssistChipDefaults.elevatedAssistChipElevation(elevation = 4.dp),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(12.dp),
+                    .padding(
+                        start = 12.dp,
+                        top = 12.dp,
+                        end = 12.dp,
+                        // 進捗カードが出ているときは、カードに重ならないようその上に出す
+                        bottom = if (isTranscriptionActive) progressOverlayInset else 12.dp,
+                    ),
             )
         }
-    }
-
-    if (showDiagnosticsDialog) {
-        TranscriptionDiagnosticsDialog(
-            lookaheadStatus = lookaheadStatus,
-            isAudioAnalysisRunning = isAudioAnalysisRunning,
-            onResetTranscription = {
-                onResetTranscription()
-                showDiagnosticsDialog = false
-            },
-            onDismiss = { showDiagnosticsDialog = false },
-        )
     }
 
     editingTextChunk?.let { (chunkIndex, targetChunk) ->
@@ -1039,15 +1025,20 @@ internal fun transcriptionStepLabel(step: TranscriptionStep?): String = when (st
 }
 
 /**
- * 全体の文字起こし進捗・現在ステップ・競合や停滞の警告・中断/診断ボタンを表示するバナー。
+ * 文字起こしの進捗を、チャンクリストの下部に重ねて表示するカード。
+ *
+ * - 1 行目: 全体の進捗（完了数 / 対象数と待機数。強制文字起こし中はその要約）と「中断」ボタン
+ * - 2 行目: 進捗バー
+ * - 3 行目: 処理中のチャンクの番号・ステップ・補足（エンジンや言語）・経過時間
+ *
+ * 同じチャンクで [TRANSCRIPTION_STALL_WARNING_MS] 以上止まっているときは、カードを errorContainer の色にし、
+ * 3 行目の末尾に短い注意を付ける（行は増やさない）。診断ログはファイル設定シートから開く。
  */
 @Composable
-private fun TranscriptionProgressBanner(
+private fun TranscriptionProgressOverlay(
     lookaheadStatus: LookaheadTranscriptionStatus,
     inFlightChunkNumber: Int?,
-    isAudioAnalysisRunning: Boolean,
     onAbortTranscription: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isInspectionMode = LocalInspectionMode.current
@@ -1090,16 +1081,52 @@ private fun TranscriptionProgressBanner(
         stepFraction
     }
 
+    val summaryText = if (lookaheadStatus.isForcedChunkInFlight) {
+        stringResource(
+            R.string.player_transcription_progress_forced_summary,
+            lookaheadStatus.completedCount,
+            totalCount,
+        )
+    } else {
+        stringResource(
+            R.string.player_transcription_progress_summary,
+            lookaheadStatus.completedCount,
+            totalCount,
+            lookaheadStatus.queuedChunkIds.size,
+        )
+    }
+    val stepLabel = transcriptionStepLabel(lookaheadStatus.inFlightStep)
+    val chunkPrefix = if (inFlightChunkNumber != null) {
+        "#$inFlightChunkNumber: "
+    } else {
+        ""
+    }
+    val detailSuffix = lookaheadStatus.inFlightDetail
+        ?.takeIf { it.isNotBlank() }
+        ?.let { " [$it]" }
+        .orEmpty()
+    val elapsedSuffix = if (elapsedMs > 0L) {
+        String.format(JavaLocale.ROOT, " (%.1fs)", elapsedMs / 1_000f)
+    } else {
+        ""
+    }
+    val stallSuffix = if (isStalled) {
+        " " + stringResource(R.string.player_transcription_stall_short)
+    } else {
+        ""
+    }
+
     Surface(
         color = containerColor,
         contentColor = contentColor,
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(12.dp),
+        shadowElevation = 6.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(start = 12.dp, top = 2.dp, end = 4.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(
@@ -1108,20 +1135,6 @@ private fun TranscriptionProgressBanner(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 ChunkTranscriptionSpinner(stage = ChunkTranscriptionStage.TRANSCRIBING)
-                val summaryText = if (lookaheadStatus.isForcedChunkInFlight) {
-                    stringResource(
-                        R.string.player_transcription_progress_forced_summary,
-                        lookaheadStatus.completedCount,
-                        totalCount,
-                    )
-                } else {
-                    stringResource(
-                        R.string.player_transcription_progress_summary,
-                        lookaheadStatus.completedCount,
-                        totalCount,
-                        lookaheadStatus.queuedChunkIds.size,
-                    )
-                }
                 Text(
                     text = summaryText,
                     style = MaterialTheme.typography.labelLarge,
@@ -1129,21 +1142,12 @@ private fun TranscriptionProgressBanner(
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(
-                    onClick = onOpenDiagnostics,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        text = stringResource(R.string.player_transcription_diagnostics_button),
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                TextButton(
                     onClick = onAbortTranscription,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
                 ) {
                     Text(
                         text = stringResource(R.string.player_transcription_abort_button),
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -1153,56 +1157,32 @@ private fun TranscriptionProgressBanner(
                 progress = { overallProgress },
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(end = 8.dp)
                     .height(5.dp)
                     .clip(RoundedCornerShape(3.dp)),
+                // 既定のトラックの色はカードの色（secondaryContainer）と同じで見えないため、文字色を薄くして使う
+                trackColor = contentColor.copy(alpha = 0.18f),
             )
 
-            val stepLabel = transcriptionStepLabel(lookaheadStatus.inFlightStep)
-            val chunkPrefix = if (inFlightChunkNumber != null) {
-                "#$inFlightChunkNumber: "
-            } else {
-                ""
-            }
-            val detailSuffix = lookaheadStatus.inFlightDetail
-                ?.takeIf { it.isNotBlank() }
-                ?.let { " [$it]" }
-                .orEmpty()
-            val elapsedSuffix = if (elapsedMs > 0L) {
-                String.format(JavaLocale.ROOT, " (%.1fs)", elapsedMs / 1_000f)
-            } else {
-                ""
-            }
             Text(
-                text = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix",
+                text = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix$stallSuffix",
                 style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (isStalled) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(end = 8.dp),
             )
-
-            if (isAudioAnalysisRunning) {
-                Text(
-                    text = stringResource(R.string.player_transcription_concurrent_analysis_notice),
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
-
-            if (isStalled) {
-                Text(
-                    text = stringResource(
-                        R.string.player_transcription_stall_warning,
-                        (elapsedMs / 1_000L).coerceAtLeast(1L),
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
         }
     }
 }
 
 /**
  * 文字起こしの現在の状態・進行中ステップ・直近の診断履歴を確認し、強制リセットできるダイアログ。
+ *
+ * プレイヤー画面のファイル設定シート（右上の設定アイコン）の「診断ログ」ボタンから開く。
  */
 @Composable
-private fun TranscriptionDiagnosticsDialog(
+internal fun TranscriptionDiagnosticsDialog(
     lookaheadStatus: LookaheadTranscriptionStatus,
     isAudioAnalysisRunning: Boolean,
     onResetTranscription: () -> Unit,

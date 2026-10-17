@@ -156,10 +156,9 @@
     <string name="player_transcription_step_recognizing_primary">音声認識中（第1候補）…</string>
     <string name="player_transcription_step_recognizing_fallback">音声認識中（フォールバック）…</string>
     <string name="player_transcription_step_saving">認識結果を保存中…</string>
-    <string name="player_transcription_progress_summary">文字起こし進捗: %1$d / %2$d チャンク（待機 %3$d 件）</string>
+    <string name="player_transcription_progress_summary">文字起こし進捗: %1$d / %2$d（待機 %3$d 件）</string>
     <string name="player_transcription_progress_forced_summary">⚡ 強制文字起こし割り込み実行中（全体 %1$d / %2$d）</string>
-    <string name="player_transcription_concurrent_analysis_notice">⚠️ 波形・無音解析と並行実行中（デコーダ/CPU競合により文字起こしが遅くなる場合があります）</string>
-    <string name="player_transcription_stall_warning">⚠️ チャンクの処理に時間がかかっています（%1$d秒経過）。応答がない場合は中断・リセットできます。</string>
+    <string name="player_transcription_stall_short">⚠️ 遅れています</string>
     <string name="player_transcription_abort_button">中断</string>
     <string name="player_transcription_diagnostics_button">診断ログ</string>
     <string name="player_transcription_diagnostics_title">文字起こし診断・デバッグ</string>

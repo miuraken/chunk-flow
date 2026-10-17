@@ -94,6 +94,7 @@ import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
+import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fake.FakePositionProvider
@@ -217,6 +218,16 @@ fun PlayerRoute(
 /**
  * プレイヤー画面（状態を受け取って描くだけの Composable。§6.2、§7.5.2〜§7.5.6）。
  *
+ * 1 ペイン（幅 600dp 未満）では、上から次の順に並べる。
+ * 1. チャンクの表示に関する設定（言語・学習言語を隠す・読み）
+ * 2. チャンクリスト（残りの高さをすべて使う。文字起こしの進捗はリストの下部に重ねて表示する）
+ * 3. 選択範囲に関する操作（全選択解除・連結・分割）
+ * 4. 波形（全体波形 + 拡大波形。自動ポーズ中はそのすぐ上にカウントダウンを出す）
+ * 5. 再生の操作（速度・リピート・再生設定と、再生ボタン類）
+ *
+ * 2 ペイン（幅 600dp 以上）では、左に選択範囲の操作・波形・再生の操作を、右にチャンクの表示設定とチャンクリストを置く。
+ * 文字起こしの診断ログ（[TranscriptionDiagnosticsDialog]）は、右上の設定アイコンで開くファイル設定シートから開く。
+ *
  * 再生位置は [PlayerUiState] に含めず、[positionProvider] を子 Composable（[WaveformSection]・[TranscriptList]）にのみ渡す。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -232,6 +243,7 @@ fun PlayerScreen(
 ) {
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showResegmentSheet by remember { mutableStateOf(false) }
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
     val seekBackSeconds = (state.seekBackMs / 1_000L).toInt().coerceAtLeast(1)
     val isAudioAnalysisRunning = state.analysis[AnalysisStage.FEATURES] is StageStatus.Running ||
         state.analysis[AnalysisStage.SEGMENTATION] is StageStatus.Running
@@ -316,6 +328,7 @@ fun PlayerScreen(
 
             if (isTwoPane) {
                 Row(modifier = Modifier.fillMaxSize()) {
+                    // 左ペイン: バナー → 選択範囲に関する操作 → 波形 → 再生の操作
                     Column(
                         modifier = Modifier
                             .weight(0.48f)
@@ -334,28 +347,16 @@ fun PlayerScreen(
                             )
                         }
 
-                        WaveformSection(
-                            waveform = state.waveform,
-                            durationMs = state.durationMs,
-                            isPlaying = state.isPlaying,
-                            chunks = state.chunks,
-                            activeChunkIndex = state.activeChunkIndex,
-                            languagePair = state.languagePair,
-                            loopMode = state.practice.loop,
-                            analysis = state.analysis,
+                        ChunkSelectionActionStrip(
+                            state = state,
+                            onEvent = onEvent,
+                        )
+
+                        PlayerWaveform(
+                            state = state,
                             positionProvider = positionProvider,
                             seekBackSeconds = seekBackSeconds,
-                            onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
-                            onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
-                            onSetChunkSelected = { chunkId, selected ->
-                                onEvent(PlayerEvent.SetChunkSelected(chunkId, selected))
-                            },
-                            onSetAbRange = { startMs, endMs ->
-                                onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
-                            },
-                            onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
-                            onNextChunk = { onEvent(PlayerEvent.NextChunk) },
-                            onSeekBack = { onEvent(PlayerEvent.SeekBack) },
+                            onEvent = onEvent,
                         )
 
                         PlaybackControlStrip(
@@ -380,100 +381,23 @@ fun PlayerScreen(
 
                     VerticalDivider()
 
+                    // 右ペイン: チャンクの表示に関する設定 → チャンクリスト（文字起こしの進捗は下部に重ねる）
                     Column(
                         modifier = Modifier
                             .weight(0.52f)
                             .fillMaxHeight(),
                     ) {
-                        ChunkListControlStrip(
+                        ChunkDisplaySettingsStrip(
                             state = state,
                             onEvent = onEvent,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                         )
 
-                        TranscriptList(
-                            chunks = state.chunks,
-                            activeChunkIndex = state.activeChunkIndex,
-                            languagePair = state.languagePair,
-                            loopMode = state.practice.loop,
-                            blindMode = state.blindMode,
-                            revealedChunkIds = state.revealedChunkIds,
-                            chineseScript = state.chineseScript,
-                            cantoneseScript = state.cantoneseScript,
-                            showTargetRomanization = state.showTargetRomanization,
-                            transcriptImportBanner = state.transcriptImportBanner,
+                        PlayerChunkList(
+                            state = state,
                             positionProvider = positionProvider,
-                            lookaheadStatus = state.lookaheadStatus,
-                            isAudioAnalysisRunning = isAudioAnalysisRunning,
-                            localTranscriptExported = state.localTranscriptExported,
-                            transcriptExportBanner = state.transcriptExportBanner,
-                            onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
-                            onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
-                            onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
-                            onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
-                            onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
-                            onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
+                            onEvent = onEvent,
                             onPickTranscriptJson = onPickTranscriptJson,
-                            onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
-                            onUpdateChunkLanguage = { chunkId, lang ->
-                                onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
-                            },
-                            onUpdateChunkText = { chunkId, text ->
-                                onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
-                            },
-                            onRetranscribeChunk = { chunkId ->
-                                onEvent(PlayerEvent.RetranscribeChunk(chunkId))
-                            },
-                            onSplitChunk = { chunkId, splitMs ->
-                                onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
-                            },
-                            onMergeWithNextChunk = { chunkId ->
-                                onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
-                            },
-                            onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
-                                onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
-                            },
-                            onBulkSetUnknownLanguage = { lang ->
-                                onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
-                            },
-                            onSetLookaheadEnabled = { enabled ->
-                                onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
-                            },
-                            onResetTranscription = {
-                                onEvent(PlayerEvent.ResetTranscription)
-                            },
-                            onExportLocalTranscriptJson = {
-                                onEvent(PlayerEvent.ExportLocalTranscriptJson)
-                            },
-                            onRequestRecognitionModelDownload = { language ->
-                                onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
-                            },
-                            detailedTranscriptionDialog = state.detailedTranscriptionDialog,
-                            onOpenDetailedTranscription = { chunkId ->
-                                onEvent(PlayerEvent.OpenDetailedTranscription(chunkId))
-                            },
-                            onDismissDetailedTranscription = {
-                                onEvent(PlayerEvent.DismissDetailedTranscription)
-                            },
-                            onRunDetailedTranscriptionTrial = { chunkId, engine, languageOverride, audioSpeed ->
-                                onEvent(
-                                    PlayerEvent.RunDetailedTranscriptionTrial(
-                                        chunkId = chunkId,
-                                        engine = engine,
-                                        languageOverride = languageOverride,
-                                        audioSpeed = audioSpeed,
-                                    ),
-                                )
-                            },
-                            onApplyDetailedTranscriptionResult = { chunkId, text, language ->
-                                onEvent(
-                                    PlayerEvent.ApplyDetailedTranscriptionResult(
-                                        chunkId = chunkId,
-                                        text = text,
-                                        language = language,
-                                    ),
-                                )
-                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
@@ -482,15 +406,43 @@ fun PlayerScreen(
                 }
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
+                    state.error?.let { error ->
+                        PlayerErrorBanner(
+                            error = error,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                    }
+
+                    // 1. チャンクの表示に関する設定（チャンクリストの上）
+                    ChunkDisplaySettingsStrip(
+                        state = state,
+                        onEvent = onEvent,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    )
+
+                    // 2. チャンクリスト（残りの高さをすべて使う。文字起こしの進捗はリストの下部に重ねる）
+                    PlayerChunkList(
+                        state = state,
+                        positionProvider = positionProvider,
+                        onEvent = onEvent,
+                        onPickTranscriptJson = onPickTranscriptJson,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                    )
+
+                    // 3. 選択範囲に関する操作 → 4. 波形（自動ポーズ中は波形のすぐ上にカウントダウンを出す）
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        state.error?.let { error ->
-                            PlayerErrorBanner(error = error)
-                        }
+                        ChunkSelectionActionStrip(
+                            state = state,
+                            onEvent = onEvent,
+                        )
+
                         state.autoPauseEndsAtMs?.let { endsAtMs ->
                             AutoPauseCountdownBanner(
                                 autoPauseEndsAtMs = endsAtMs,
@@ -498,126 +450,15 @@ fun PlayerScreen(
                             )
                         }
 
-                        WaveformSection(
-                            waveform = state.waveform,
-                            durationMs = state.durationMs,
-                            isPlaying = state.isPlaying,
-                            chunks = state.chunks,
-                            activeChunkIndex = state.activeChunkIndex,
-                            languagePair = state.languagePair,
-                            loopMode = state.practice.loop,
-                            analysis = state.analysis,
+                        PlayerWaveform(
+                            state = state,
                             positionProvider = positionProvider,
                             seekBackSeconds = seekBackSeconds,
-                            onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
-                            onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
-                            onSetChunkSelected = { chunkId, selected ->
-                                onEvent(PlayerEvent.SetChunkSelected(chunkId, selected))
-                            },
-                            onSetAbRange = { startMs, endMs ->
-                                onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
-                            },
-                            onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
-                            onNextChunk = { onEvent(PlayerEvent.NextChunk) },
-                            onSeekBack = { onEvent(PlayerEvent.SeekBack) },
+                            onEvent = onEvent,
                         )
                     }
 
-                    // a) チャンクリストに関するボタン類（チャンクリスト上部）
-                    ChunkListControlStrip(
-                        state = state,
-                        onEvent = onEvent,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-                    )
-
-                    TranscriptList(
-                        chunks = state.chunks,
-                        activeChunkIndex = state.activeChunkIndex,
-                        languagePair = state.languagePair,
-                        loopMode = state.practice.loop,
-                        blindMode = state.blindMode,
-                        revealedChunkIds = state.revealedChunkIds,
-                        chineseScript = state.chineseScript,
-                        cantoneseScript = state.cantoneseScript,
-                        showTargetRomanization = state.showTargetRomanization,
-                        transcriptImportBanner = state.transcriptImportBanner,
-                        positionProvider = positionProvider,
-                        lookaheadStatus = state.lookaheadStatus,
-                        isAudioAnalysisRunning = isAudioAnalysisRunning,
-                        localTranscriptExported = state.localTranscriptExported,
-                        transcriptExportBanner = state.transcriptExportBanner,
-                        onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
-                        onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
-                        onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
-                        onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
-                        onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
-                        onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
-                        onPickTranscriptJson = onPickTranscriptJson,
-                        onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
-                        onUpdateChunkLanguage = { chunkId, lang ->
-                            onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
-                        },
-                        onUpdateChunkText = { chunkId, text ->
-                            onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
-                        },
-                        onRetranscribeChunk = { chunkId ->
-                            onEvent(PlayerEvent.RetranscribeChunk(chunkId))
-                        },
-                        onSplitChunk = { chunkId, splitMs ->
-                            onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
-                        },
-                        onMergeWithNextChunk = { chunkId ->
-                            onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
-                        },
-                        onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
-                            onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
-                        },
-                        onBulkSetUnknownLanguage = { lang ->
-                            onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
-                        },
-                        onSetLookaheadEnabled = { enabled ->
-                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
-                        },
-                        onResetTranscription = {
-                            onEvent(PlayerEvent.ResetTranscription)
-                        },
-                        onExportLocalTranscriptJson = {
-                            onEvent(PlayerEvent.ExportLocalTranscriptJson)
-                        },
-                        onRequestRecognitionModelDownload = { language ->
-                            onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
-                        },
-                        detailedTranscriptionDialog = state.detailedTranscriptionDialog,
-                        onOpenDetailedTranscription = { chunkId ->
-                            onEvent(PlayerEvent.OpenDetailedTranscription(chunkId))
-                        },
-                        onDismissDetailedTranscription = {
-                            onEvent(PlayerEvent.DismissDetailedTranscription)
-                        },
-                        onRunDetailedTranscriptionTrial = { chunkId, engine, languageOverride, audioSpeed ->
-                            onEvent(
-                                PlayerEvent.RunDetailedTranscriptionTrial(
-                                    chunkId = chunkId,
-                                    engine = engine,
-                                    languageOverride = languageOverride,
-                                    audioSpeed = audioSpeed,
-                                ),
-                            )
-                        },
-                        onApplyDetailedTranscriptionResult = { chunkId, text, language ->
-                            onEvent(
-                                PlayerEvent.ApplyDetailedTranscriptionResult(
-                                    chunkId = chunkId,
-                                    text = text,
-                                    language = language,
-                                ),
-                            )
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                    )
-
+                    // 5. 再生の操作（画面の下部）
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -693,6 +534,10 @@ fun PlayerScreen(
                     showResegmentSheet = false
                     onEvent(PlayerEvent.ResetTranscripts)
                 },
+                onOpenDiagnostics = {
+                    showResegmentSheet = false
+                    showDiagnosticsDialog = true
+                },
                 onApply = { params ->
                     onEvent(PlayerEvent.Resegment(params))
                     showResegmentSheet = false
@@ -705,6 +550,152 @@ fun PlayerScreen(
             )
         }
     }
+
+    if (showDiagnosticsDialog) {
+        TranscriptionDiagnosticsDialog(
+            lookaheadStatus = state.lookaheadStatus,
+            isAudioAnalysisRunning = isAudioAnalysisRunning,
+            onResetTranscription = {
+                onEvent(PlayerEvent.ResetTranscription)
+                showDiagnosticsDialog = false
+            },
+            onDismiss = { showDiagnosticsDialog = false },
+        )
+    }
+}
+
+/**
+ * [PlayerUiState] とイベントを [WaveformSection]（全体波形 + 拡大波形）につなぐ。1 ペインと 2 ペインで共通に使う。
+ */
+@Composable
+private fun PlayerWaveform(
+    state: PlayerUiState,
+    positionProvider: PositionProvider,
+    seekBackSeconds: Int,
+    onEvent: (PlayerEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    WaveformSection(
+        waveform = state.waveform,
+        durationMs = state.durationMs,
+        isPlaying = state.isPlaying,
+        chunks = state.chunks,
+        activeChunkIndex = state.activeChunkIndex,
+        languagePair = state.languagePair,
+        loopMode = state.practice.loop,
+        analysis = state.analysis,
+        positionProvider = positionProvider,
+        seekBackSeconds = seekBackSeconds,
+        onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
+        onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
+        onSetChunkSelected = { chunkId, selected ->
+            onEvent(PlayerEvent.SetChunkSelected(chunkId, selected))
+        },
+        onSetAbRange = { startMs, endMs ->
+            onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs, endMs)))
+        },
+        onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
+        onNextChunk = { onEvent(PlayerEvent.NextChunk) },
+        onSeekBack = { onEvent(PlayerEvent.SeekBack) },
+        modifier = modifier,
+    )
+}
+
+/**
+ * [PlayerUiState] とイベントを [TranscriptList]（チャンクリスト）につなぐ。1 ペインと 2 ペインで共通に使う。
+ */
+@Composable
+private fun PlayerChunkList(
+    state: PlayerUiState,
+    positionProvider: PositionProvider,
+    onEvent: (PlayerEvent) -> Unit,
+    onPickTranscriptJson: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    TranscriptList(
+        chunks = state.chunks,
+        activeChunkIndex = state.activeChunkIndex,
+        languagePair = state.languagePair,
+        loopMode = state.practice.loop,
+        blindMode = state.blindMode,
+        revealedChunkIds = state.revealedChunkIds,
+        chineseScript = state.chineseScript,
+        cantoneseScript = state.cantoneseScript,
+        showTargetRomanization = state.showTargetRomanization,
+        transcriptImportBanner = state.transcriptImportBanner,
+        positionProvider = positionProvider,
+        lookaheadStatus = state.lookaheadStatus,
+        localTranscriptExported = state.localTranscriptExported,
+        transcriptExportBanner = state.transcriptExportBanner,
+        onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
+        onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
+        onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
+        onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
+        onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
+        onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
+        onPickTranscriptJson = onPickTranscriptJson,
+        onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
+        onUpdateChunkLanguage = { chunkId, lang ->
+            onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
+        },
+        onUpdateChunkText = { chunkId, text ->
+            onEvent(PlayerEvent.UpdateChunkText(chunkId, text))
+        },
+        onRetranscribeChunk = { chunkId ->
+            onEvent(PlayerEvent.RetranscribeChunk(chunkId))
+        },
+        onSplitChunk = { chunkId, splitMs ->
+            onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
+        },
+        onMergeWithNextChunk = { chunkId ->
+            onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
+        },
+        onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
+            onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
+        },
+        onBulkSetUnknownLanguage = { lang ->
+            onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
+        },
+        onSetLookaheadEnabled = { enabled ->
+            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+        },
+        onResetTranscription = {
+            onEvent(PlayerEvent.ResetTranscription)
+        },
+        onExportLocalTranscriptJson = {
+            onEvent(PlayerEvent.ExportLocalTranscriptJson)
+        },
+        onRequestRecognitionModelDownload = { language ->
+            onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
+        },
+        detailedTranscriptionDialog = state.detailedTranscriptionDialog,
+        onOpenDetailedTranscription = { chunkId ->
+            onEvent(PlayerEvent.OpenDetailedTranscription(chunkId))
+        },
+        onDismissDetailedTranscription = {
+            onEvent(PlayerEvent.DismissDetailedTranscription)
+        },
+        onRunDetailedTranscriptionTrial = { chunkId, engine, languageOverride, audioSpeed ->
+            onEvent(
+                PlayerEvent.RunDetailedTranscriptionTrial(
+                    chunkId = chunkId,
+                    engine = engine,
+                    languageOverride = languageOverride,
+                    audioSpeed = audioSpeed,
+                ),
+            )
+        },
+        onApplyDetailedTranscriptionResult = { chunkId, text, language ->
+            onEvent(
+                PlayerEvent.ApplyDetailedTranscriptionResult(
+                    chunkId = chunkId,
+                    text = text,
+                    language = language,
+                ),
+            )
+        },
+        modifier = modifier,
+    )
 }
 
 @Composable
@@ -788,18 +779,58 @@ private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
 )
 
 /**
- * a) チャンクリストに関するボタン列（チャンクリスト上部に配置）。
+ * 選択範囲に関する操作の行（1 ペインではチャンクリストと波形の間、2 ペインでは波形の上に置く）。
+ *
+ * レイアウトが跳ねないよう 3 つのボタンを常に並べ、使えないときは無効（押せない見た目）にする。
+ * - 「全選択解除」: チャンクを 1 つ以上選択しているとき
+ * - 「連結」: 選択が連続していて、両端のチャンクの言語が同じとき（[canMergeSelectedChunks]）
+ * - 「分割」: チャンクがあり、選択がないとき（現在位置でチャンクを 2 つに分ける）
+ */
+@Composable
+private fun ChunkSelectionActionStrip(
+    state: PlayerUiState,
+    onEvent: (PlayerEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val hasSelection = state.chunks.any { it.isRepeatChecked }
+    val canMergeSelection = remember(state.chunks) { canMergeSelectedChunks(state.chunks) }
+    val canSplitAtCursor = state.chunks.isNotEmpty() && !hasSelection
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AssistChip(
+            onClick = { onEvent(PlayerEvent.ClearChunkSelection) },
+            enabled = hasSelection,
+            label = { Text(text = stringResource(R.string.player_selection_clear_all), maxLines = 1) },
+        )
+        AssistChip(
+            onClick = { onEvent(PlayerEvent.MergeSelectedChunks) },
+            enabled = canMergeSelection,
+            label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
+        )
+        AssistChip(
+            onClick = { onEvent(PlayerEvent.SplitChunkAtCurrentPosition) },
+            enabled = canSplitAtCursor,
+            label = { Text(text = stringResource(R.string.player_split_at_cursor), maxLines = 1) },
+        )
+    }
+}
+
+/**
+ * チャンクの表示に関する設定の行（チャンクリストの上に置く）。
  *
  * 表示項目:
  * - 「言語」（*すべて、学習言語のみ、母語のみ）
  * - 「学習言語を隠す」（on, *off）
  * - 「読み」（on, *off）
- *
- * 左端には、チャンクを選択しているときは「全選択解除」（選択が連続していて両端の言語が同じなら「連結」も）、
- * 選択がないときは現在位置でチャンクを分ける「分割」を表示する。
  */
 @Composable
-private fun ChunkListControlStrip(
+private fun ChunkDisplaySettingsStrip(
     state: PlayerUiState,
     onEvent: (PlayerEvent) -> Unit,
     modifier: Modifier = Modifier,
@@ -816,8 +847,6 @@ private fun ChunkListControlStrip(
     val isHideTargetLangOn = state.blindMode != BlindMode.OFF
     val isReadingOn = state.showTargetRomanization
     val toggleColors = brightnessToggleChipColors()
-    val hasSelection = state.chunks.any { it.isRepeatChecked }
-    val canMergeSelection = remember(state.chunks) { canMergeSelectedChunks(state.chunks) }
 
     Row(
         modifier = modifier
@@ -826,25 +855,6 @@ private fun ChunkListControlStrip(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 0. 選択中: 「全選択解除」（+「連結」）、選択なし: 「分割」
-        if (hasSelection) {
-            AssistChip(
-                onClick = { onEvent(PlayerEvent.ClearChunkSelection) },
-                label = { Text(text = stringResource(R.string.player_selection_clear_all), maxLines = 1) },
-            )
-            if (canMergeSelection) {
-                AssistChip(
-                    onClick = { onEvent(PlayerEvent.MergeSelectedChunks) },
-                    label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
-                )
-            }
-        } else if (state.chunks.isNotEmpty()) {
-            AssistChip(
-                onClick = { onEvent(PlayerEvent.SplitChunkAtCurrentPosition) },
-                label = { Text(text = stringResource(R.string.player_split_at_cursor), maxLines = 1) },
-            )
-        }
-
         // 1. 「言語」（*すべて、学習言語のみ、母語のみ）
         Column {
             FilterChip(
@@ -1322,6 +1332,7 @@ private fun ResegmentSheetContent(
     onImportTranscript: () -> Unit,
     onExportTranscript: (TranscriptExportFormat) -> Unit,
     onResetTranscripts: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onApply: (SegmentationParams) -> Unit,
     onOpenGlobalSettings: () -> Unit,
     onClose: () -> Unit,
@@ -1423,6 +1434,19 @@ private fun ResegmentSheetContent(
                     style = MaterialTheme.typography.labelMedium,
                 )
             }
+        }
+        // 文字起こしの診断ログ（状態の要約・直近のログ・コピー・強制リセット）を開く
+        OutlinedButton(
+            onClick = onOpenDiagnostics,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Description,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = stringResource(R.string.player_transcription_diagnostics_button))
         }
         OutlinedButton(
             onClick = { showResetConfirmDialog = true },
@@ -1709,6 +1733,37 @@ private fun PlayerScreenBlindAndAutoPausePreview() {
                 autoPauseEndsAtMs = 3_000L,
             ),
             positionProvider = FakePositionProvider(4_500L),
+            onEvent = {},
+        )
+    }
+}
+
+/** 文字起こしの実行中（チャンクリストの下部に進捗のカードが重なる状態）のプレビュー。 */
+@ChunkFlowPreviews
+@Composable
+private fun PlayerScreenTranscriptionProgressPreview() {
+    val material = SampleMaterials.jaKo
+    val baseState = material.toPlayerUiState(isPlaying = true, activeChunkIndex = 0)
+    // 先頭の 2 件は文字起こし済み、3 件目を文字起こし中、残りは待機中にする
+    val chunks = baseState.chunks.mapIndexed { index, chunk ->
+        if (index < 2) chunk else chunk.copy(text = null, language = null)
+    }
+    ChunkFlowTheme {
+        PlayerScreen(
+            state = baseState.copy(
+                chunks = chunks,
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    enabled = true,
+                    engineAvailable = true,
+                    inFlightChunkId = chunks.getOrNull(2)?.id,
+                    queuedChunkIds = chunks.drop(3).map { it.id }.toSet(),
+                    completedCount = 2,
+                    totalTargetCount = chunks.size,
+                    inFlightStep = TranscriptionStep.DETECTING_LANGUAGE,
+                    inFlightDetail = "ko / ja",
+                ),
+            ),
+            positionProvider = FakePositionProvider(5_000L),
             onEvent = {},
         )
     }

@@ -7,9 +7,11 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.testing.fake.FakePositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
@@ -127,6 +129,61 @@ fun PlayerScreenSourceMissingErrorScreenshot() {
                 error = PlaybackError.SOURCE_MISSING,
             ),
             positionProvider = FakePositionProvider(0L),
+            onEvent = {},
+        )
+    }
+}
+
+/** 文字起こしの実行中（チャンクリストの下部に進捗のカードが重なる状態）。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun PlayerScreenTranscriptionProgressScreenshot() {
+    val sample = SampleMaterials.jaKo
+    val item = sample.item
+    // 先頭の 2 件は文字起こし済み、3 件目を文字起こし中、残りは待機中にする
+    val chunks = sample.chunks.mapIndexed { index, chunk ->
+        val transcript = sample.transcripts[chunk.id]
+        val isTranscribed = index < 2
+        ChunkUi(
+            id = chunk.id,
+            startMs = chunk.startMs,
+            endMs = chunk.endMs,
+            text = if (isTranscribed) transcript?.text else null,
+            language = if (isTranscribed) transcript?.language else null,
+            textVariants = if (isTranscribed) transcript?.textVariants.orEmpty() else emptyMap(),
+            origin = chunk.origin,
+        )
+    }
+    ChunkFlowTheme {
+        PlayerScreen(
+            state = PlayerUiState(
+                mediaId = item.id,
+                title = item.title,
+                course = item.course,
+                languagePair = item.languagePair,
+                isPlaying = true,
+                durationMs = item.durationMs,
+                speed = 1.0f,
+                waveform = sample.waveform,
+                chunks = chunks,
+                activeChunkIndex = 0,
+                analysis = mapOf(
+                    AnalysisStage.FEATURES to StageStatus.Done,
+                    AnalysisStage.SEGMENTATION to StageStatus.Done,
+                ),
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    enabled = true,
+                    engineAvailable = true,
+                    inFlightChunkId = chunks.getOrNull(2)?.id,
+                    queuedChunkIds = chunks.drop(3).map { it.id }.toSet(),
+                    completedCount = 2,
+                    totalTargetCount = chunks.size,
+                    inFlightStep = TranscriptionStep.DETECTING_LANGUAGE,
+                    inFlightDetail = "ko / ja",
+                ),
+            ),
+            positionProvider = FakePositionProvider(2_000L),
             onEvent = {},
         )
     }
