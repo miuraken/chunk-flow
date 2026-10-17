@@ -94,6 +94,7 @@ import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
@@ -101,6 +102,7 @@ import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.playback.PlaybackError
@@ -614,6 +616,13 @@ fun PlayerScreen(
             onDismiss = { showDiagnosticsDialog = false },
         )
     }
+
+    state.backgroundSpeechRecognizerWarning?.let { warning ->
+        BackgroundSpeechRecognizerWarningDialog(
+            warning = warning,
+            onDismiss = { onEvent(PlayerEvent.DismissBackgroundSpeechRecognizerWarning) },
+        )
+    }
 }
 
 /**
@@ -722,6 +731,9 @@ private fun PlayerChunkList(
         },
         onSetLookaheadEnabled = { enabled ->
             onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+        },
+        onToggleBackgroundTranscription = { enabled ->
+            onEvent(PlayerEvent.SetBackgroundTranscriptionEnabled(enabled))
         },
         onResetTranscription = {
             onEvent(PlayerEvent.ResetTranscription)
@@ -2160,6 +2172,60 @@ private fun ResegmentSheetContent(
             },
         )
     }
+}
+
+/**
+ * 言語タグから表示用の言語名（例: `韓国語 (ko)`）を返す。
+ */
+internal fun formatLanguageDisplayName(language: LanguageTag): String {
+    val entry = SupportedLanguageCatalog.findByCode(language.value)
+    return if (entry != null) {
+        "${entry.japaneseName} (${language.value})"
+    } else {
+        language.value
+    }
+}
+
+/**
+ * バックグラウンド文字起こし有効化時の `SpeechRecognizer` 制限警告ダイアログの本文を組み立てる。
+ */
+internal fun formatBackgroundSpeechRecognizerWarningMessage(
+    warning: BackgroundSpeechRecognizerWarningState,
+): String {
+    val langLabel = warning.speechRecognizerLanguages.joinToString("・") {
+        formatLanguageDisplayName(it)
+    }
+    return buildString {
+        append("${langLabel}では標準の音声認識（SpeechRecognizer）が使用されるため、バックグラウンドでは処理が進まない可能性があります。")
+        if (warning.sherpaSupportedLanguages.isNotEmpty()) {
+            val sherpaLangLabel = warning.sherpaSupportedLanguages.joinToString("・") {
+                formatLanguageDisplayName(it)
+            }
+            append("\n\n${sherpaLangLabel}ではオフラインモデルの sherpa-onnx が利用可能です。sherpa-onnx の導入を検討してください。")
+        }
+    }
+}
+
+@Composable
+private fun BackgroundSpeechRecognizerWarningDialog(
+    warning: BackgroundSpeechRecognizerWarningState,
+    onDismiss: () -> Unit,
+) {
+    val message = remember(warning) { formatBackgroundSpeechRecognizerWarningMessage(warning) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResource(R.string.player_background_speech_recognizer_warning_title))
+        },
+        text = {
+            Text(text = message)
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.player_background_speech_recognizer_warning_close))
+            }
+        },
+    )
 }
 
 /**

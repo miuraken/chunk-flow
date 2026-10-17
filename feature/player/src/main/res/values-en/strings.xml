@@ -228,4 +228,7 @@
     <string name="player_same_target_base_language_warning">Target and base languages are set to the same language (%1$s). For bilingual audio, one language may not be recognized. Check language settings.</string>
     <string name="player_all_transcription_empty_warning">Tried transcribing all chunks, but no speech was recognized. Check file settings to verify that the language (%1$s) matches the audio and the recognition model is ready.</string>
     <string name="player_open_file_settings_action">Check file settings</string>
+    <string name="player_transcription_progress_background_checkbox">Transcribe in background</string>
+    <string name="player_background_speech_recognizer_warning_title">Background Transcription Limitation</string>
+    <string name="player_background_speech_recognizer_warning_close">Close</string>
 </resources>

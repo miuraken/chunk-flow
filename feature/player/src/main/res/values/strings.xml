@@ -228,4 +228,7 @@
     <string name="player_same_target_base_language_warning">学習言語とベース言語に同じ言語（%1$s）が設定されています。2言語の教材では片方の言語が認識されないことがあります。ファイル設定から言語を確認してください。</string>
     <string name="player_all_transcription_empty_warning">すべてのチャンクの文字起こしを試行しましたが、音声を認識できませんでした。設定されている言語（%1$s）が実際の音声と合っているか、または音声認識モデルが準備されているかファイル設定から確認してください。</string>
     <string name="player_open_file_settings_action">ファイル設定を確認</string>
+    <string name="player_transcription_progress_background_checkbox">バックグラウンドで文字起こしを行う</string>
+    <string name="player_background_speech_recognizer_warning_title">バックグラウンド文字起こしの制限</string>
+    <string name="player_background_speech_recognizer_warning_close">閉じる</string>
 </resources>

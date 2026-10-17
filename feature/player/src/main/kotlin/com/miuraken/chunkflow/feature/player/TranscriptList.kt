@@ -44,6 +44,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -360,6 +361,27 @@ internal fun extractUnpreparedModelIssueLanguages(
     }
     .map { (lang, _) -> lang }
 
+/** 文字起こし進捗ペーンのバックグラウンド文字起こし継続チェックボックスのラベル。 */
+internal const val BACKGROUND_TRANSCRIPTION_CHECKBOX_LABEL: String = "バックグラウンドで文字起こしを行う"
+
+/**
+ * 文字起こし進捗ペーン（[TranscriptionProgressOverlay]）に表示するチェックボックス情報。
+ */
+internal data class TranscriptionProgressCheckboxUiModel(
+    val label: String = BACKGROUND_TRANSCRIPTION_CHECKBOX_LABEL,
+    val checked: Boolean,
+)
+
+/**
+ * [LookaheadTranscriptionStatus] から文字起こし進捗ペーンのバックグラウンド文字起こしチェックボックス状態を組み立てる。
+ */
+internal fun resolveTranscriptionProgressCheckbox(
+    lookaheadStatus: LookaheadTranscriptionStatus,
+): TranscriptionProgressCheckboxUiModel = TranscriptionProgressCheckboxUiModel(
+    label = BACKGROUND_TRANSCRIPTION_CHECKBOX_LABEL,
+    checked = lookaheadStatus.backgroundEnabled,
+)
+
 /**
  * 再生位置に同期したチャンク / スクリプト一覧（F5.3、F7.1〜F7.7、F8.1、§7.5.5）。
  *
@@ -411,6 +433,7 @@ fun TranscriptList(
     onMoveChunkBoundary: (ChunkId, Long, Long) -> Unit = { _, _, _ -> },
     onBulkSetUnknownLanguage: (LanguageTag) -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onSetLookaheadEnabled: (Boolean) -> Unit = {},
+    onToggleBackgroundTranscription: (Boolean) -> Unit = {},
     onResetTranscription: () -> Unit = {},
     onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
     waveform: Waveform? = null,
@@ -662,6 +685,7 @@ fun TranscriptList(
                 lookaheadStatus = lookaheadStatus,
                 inFlightChunkNumber = activeChunkNumber,
                 onAbortTranscription = onResetTranscription,
+                onToggleBackgroundTranscription = onToggleBackgroundTranscription,
                 onRequestRecognitionModelDownload = onRequestRecognitionModelDownload,
                 onOpenFileSettings = onOpenFileSettings,
                 modifier = Modifier
@@ -1366,6 +1390,7 @@ private fun TranscriptionProgressOverlay(
     inFlightChunkNumber: Int?,
     onAbortTranscription: () -> Unit,
     modifier: Modifier = Modifier,
+    onToggleBackgroundTranscription: (Boolean) -> Unit = {},
     onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
     onOpenFileSettings: () -> Unit = {},
 ) {
@@ -1499,6 +1524,30 @@ private fun TranscriptionProgressOverlay(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(end = 8.dp),
             )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .toggleable(
+                        value = lookaheadStatus.backgroundEnabled,
+                        role = Role.Checkbox,
+                        onValueChange = onToggleBackgroundTranscription,
+                    )
+                    .padding(top = 2.dp, bottom = 2.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Checkbox(
+                    checked = lookaheadStatus.backgroundEnabled,
+                    onCheckedChange = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = stringResource(R.string.player_transcription_progress_background_checkbox),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
 
             val unpreparedLanguages = remember(lookaheadStatus.recognitionModelIssues) {
                 extractUnpreparedModelIssueLanguages(lookaheadStatus.recognitionModelIssues)

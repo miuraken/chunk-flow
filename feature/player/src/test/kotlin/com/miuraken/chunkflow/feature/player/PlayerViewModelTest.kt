@@ -2007,4 +2007,71 @@ class PlayerViewModelTest {
             )
         }
     }
+
+    @Test
+    fun `バックグラウンド文字起こし切替_SpeechRecognizer使用言語がある場合は警告ダイアログ状態を出しSherpa等のみなら出さない`() = runTest {
+        val sample = SampleMaterials.jaKo // target=ko, base=ja
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            languageModelInfos[LanguageTag("ko")] =
+                com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                    language = LanguageTag("ko"),
+                    status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                    mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                )
+            languageModelInfos[LanguageTag("ja")] =
+                com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                    language = LanguageTag("ja"),
+                    status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                    mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                    sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                )
+        }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. ko が SpeechRecognizer にフォールバックする状態で ON にすると、setBackgroundTranscriptionEnabled(true) が呼ばれ警告状態がセットされる
+        viewModel.onEvent(PlayerEvent.SetBackgroundTranscriptionEnabled(true))
+        assertEquals(listOf(item.id to true), analysisRepo.backgroundTranscriptionRequests)
+        assertTrue(viewModel.uiState.value.lookaheadStatus.backgroundEnabled)
+        assertEquals(
+            BackgroundSpeechRecognizerWarningState(
+                speechRecognizerLanguages = listOf(LanguageTag("ko")),
+                sherpaSupportedLanguages = listOf(LanguageTag("ko")),
+            ),
+            viewModel.uiState.value.backgroundSpeechRecognizerWarning,
+        )
+
+        // 2. DismissBackgroundSpeechRecognizerWarning で警告ダイアログが閉じる（backgroundEnabled は true のまま）
+        viewModel.onEvent(PlayerEvent.DismissBackgroundSpeechRecognizerWarning)
+        assertNull(viewModel.uiState.value.backgroundSpeechRecognizerWarning)
+        assertTrue(viewModel.uiState.value.lookaheadStatus.backgroundEnabled)
+
+        // 3. OFF にすると setBackgroundTranscriptionEnabled(false) が呼ばれる
+        viewModel.onEvent(PlayerEvent.SetBackgroundTranscriptionEnabled(false))
+        assertEquals(listOf(item.id to true, item.id to false), analysisRepo.backgroundTranscriptionRequests)
+        assertFalse(viewModel.uiState.value.lookaheadStatus.backgroundEnabled)
+
+        // 4. 両言語とも SHERPA_ONNX / ML_KIT が使われる状態なら ON にしても警告は出ない
+        analysisRepo.languageModelInfos[LanguageTag("ko")] =
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                language = LanguageTag("ko"),
+                status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            )
+        viewModel.onEvent(
+            PlayerEvent.SetTargetEngineOverride(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX),
+        )
+        viewModel.onEvent(PlayerEvent.SetBackgroundTranscriptionEnabled(true))
+        assertTrue(viewModel.uiState.value.lookaheadStatus.backgroundEnabled)
+        assertNull(viewModel.uiState.value.backgroundSpeechRecognizerWarning)
+    }
 }
