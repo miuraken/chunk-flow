@@ -6,6 +6,7 @@ import android.speech.SpeechRecognizer
 import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.MlKitRecognitionMode
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import java.io.File
 import java.nio.ByteBuffer
@@ -1766,13 +1767,13 @@ class OnDeviceSpeechTranscriberTest {
         val fakeMlKit = object : MlKitSpeechRecognitionGateway {
             override fun isDevicePotentiallySupported(): Boolean = true
 
-            override suspend fun checkSupport(
+            override suspend fun checkMlKitSupport(
                 bcp47LocaleTags: List<String>,
-            ): Map<String, RecognitionModelSupport> = bcp47LocaleTags.associateWith { tag ->
+            ): Map<String, Pair<RecognitionModelSupport, MlKitRecognitionMode?>> = bcp47LocaleTags.associateWith { tag ->
                 if (tag.startsWith("ja")) {
-                    RecognitionModelSupport.INSTALLED
+                    RecognitionModelSupport.INSTALLED to null
                 } else {
-                    RecognitionModelSupport.UNSUPPORTED
+                    RecognitionModelSupport.UNSUPPORTED to null
                 }
             }
 
@@ -1852,10 +1853,10 @@ class OnDeviceSpeechTranscriberTest {
         val fakeMlKit = object : MlKitSpeechRecognitionGateway {
             override fun isDevicePotentiallySupported(): Boolean = true
 
-            override suspend fun checkSupport(
+            override suspend fun checkMlKitSupport(
                 bcp47LocaleTags: List<String>,
-            ): Map<String, RecognitionModelSupport> = bcp47LocaleTags.associateWith {
-                RecognitionModelSupport.INSTALLED
+            ): Map<String, Pair<RecognitionModelSupport, MlKitRecognitionMode?>> = bcp47LocaleTags.associateWith {
+                RecognitionModelSupport.INSTALLED to null
             }
 
             override suspend fun downloadModel(

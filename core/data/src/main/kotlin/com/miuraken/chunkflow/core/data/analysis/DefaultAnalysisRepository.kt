@@ -1689,8 +1689,8 @@ class DefaultAnalysisRepository(
                             )
                         }
                         val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
-                            val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
-                            val recognized = try {
+                        val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
+                        val recognized = try {
                             onDeviceChunkTranscriber.transcribeChunk(
                                 audioFile = audioFile,
                                 startMs = targetChunk.startMs,
