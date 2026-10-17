@@ -120,8 +120,9 @@ fun SettingsScreen(
     state: SettingsUiState,
     onEvent: (SettingsEvent) -> Unit,
     modifier: Modifier = Modifier,
+    initialTab: Int = SettingsTab.PLAYBACK.ordinal,
 ) {
-    var selectedTabOrdinal by rememberSaveable { mutableIntStateOf(SettingsTab.PLAYBACK.ordinal) }
+    var selectedTabOrdinal by rememberSaveable { mutableIntStateOf(initialTab) }
     val selectedTab = SettingsTab.entries.getOrElse(selectedTabOrdinal) { SettingsTab.PLAYBACK }
     val isInspectionMode = LocalInspectionMode.current
 
@@ -555,11 +556,8 @@ private fun TranscriptionSettingsSection(
                 onPreferredEngineChange = { engine ->
                     onEvent(SettingsEvent.SetSttEngineForLanguage(langTag, engine))
                 },
-                onRequestOsDownload = {
-                    onEvent(SettingsEvent.RequestRecognitionModelDownload(info.language))
-                },
-                onRequestSherpaDownload = {
-                    onEvent(SettingsEvent.RequestSherpaModelDownload(info.language))
+                onRequestDownload = { engine ->
+                    onEvent(SettingsEvent.RequestSttModelDownload(info.language, engine))
                 },
                 onDeleteSherpaModel = {
                     onEvent(SettingsEvent.DeleteSherpaModel(info.language))
@@ -598,12 +596,12 @@ private fun transcriptionEngineLabelAndDescription(
 @Composable
 private fun SpeechModelRow(
     info: OnDeviceLanguageModelInfo,
-    onRequestOsDownload: () -> Unit,
-    onRequestSherpaDownload: () -> Unit,
+    onRequestDownload: (SttEngine) -> Unit,
     onDeleteSherpaModel: () -> Unit,
 ) {
     val (osStatusLabel, osContainerColor, osContentColor) = modelStatusStyle(info.status)
     val (sherpaStatusLabel, sherpaContainerColor, sherpaContentColor) = modelStatusStyle(info.sherpaModelStatus)
+    val (mlKitStatusLabel, mlKitContainerColor, mlKitContentColor) = modelStatusStyle(info.mlKitStatus)
 
     Column(
         modifier = Modifier
@@ -640,6 +638,19 @@ private fun SpeechModelRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                if (info.mlKitStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                    info.mlKitStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                ) {
+                    val actionLabel = if (info.mlKitStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
+                        stringResource(R.string.settings_speech_model_action_mlkit_retry)
+                    } else {
+                        stringResource(R.string.settings_speech_model_action_mlkit_download)
+                    }
+                    OutlinedButton(onClick = { onRequestDownload(SttEngine.ML_KIT) }) {
+                        Text(text = actionLabel, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+
                 if (info.status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
                     info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
                 ) {
@@ -648,11 +659,8 @@ private fun SpeechModelRow(
                     } else {
                         stringResource(R.string.settings_speech_model_action_download)
                     }
-                    OutlinedButton(onClick = onRequestOsDownload) {
-                        Text(
-                            text = actionLabel,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
+                    OutlinedButton(onClick = { onRequestDownload(SttEngine.SPEECH_RECOGNIZER) }) {
+                        Text(text = actionLabel, style = MaterialTheme.typography.labelMedium)
                     }
                 }
 
@@ -664,11 +672,8 @@ private fun SpeechModelRow(
                     } else {
                         stringResource(R.string.settings_speech_model_action_sherpa_download)
                     }
-                    OutlinedButton(onClick = onRequestSherpaDownload) {
-                        Text(
-                            text = sherpaActionLabel,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
+                    OutlinedButton(onClick = { onRequestDownload(SttEngine.SHERPA_ONNX) }) {
+                        Text(text = sherpaActionLabel, style = MaterialTheme.typography.labelMedium)
                     }
                 } else if (info.canDeleteSherpaModel &&
                     info.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
@@ -687,6 +692,26 @@ private fun SpeechModelRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
+            if (info.mlKitStatus != OnDeviceLanguageModelStatus.UNSUPPORTED) {
+                val modeLabel = when (info.mlKitMode) {
+                    com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED -> " (高度)"
+                    com.miuraken.chunkflow.core.model.MlKitRecognitionMode.BASIC -> " (基本)"
+                    null -> ""
+                }
+                Surface(
+                    color = mlKitContainerColor,
+                    contentColor = mlKitContentColor,
+                    shape = RoundedCornerShape(6.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_speech_model_mlkit_prefix, mlKitStatusLabel + modeLabel),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
+
             Surface(
                 color = osContainerColor,
                 contentColor = osContentColor,
@@ -957,8 +982,7 @@ private fun SttEngineAccordion(
     info: OnDeviceLanguageModelInfo,
     preferredEngine: SttEngine?,
     onPreferredEngineChange: (SttEngine?) -> Unit,
-    onRequestOsDownload: () -> Unit,
-    onRequestSherpaDownload: () -> Unit,
+    onRequestDownload: (SttEngine) -> Unit,
     onDeleteSherpaModel: () -> Unit,
 ) {
     val expanded = remember { mutableStateOf(false) }
@@ -1018,11 +1042,52 @@ private fun SttEngineAccordion(
 
                 SpeechModelRow(
                     info = info,
-                    onRequestOsDownload = onRequestOsDownload,
-                    onRequestSherpaDownload = onRequestSherpaDownload,
+                    onRequestDownload = onRequestDownload,
                     onDeleteSherpaModel = onDeleteSherpaModel,
                 )
             }
         }
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+internal fun SettingsScreenTranscriptionTabPreview() {
+    ChunkFlowTheme {
+        SettingsScreen(
+            state = SettingsUiState(
+                languageModels = listOf(
+                    OnDeviceLanguageModelInfo(
+                        language = LanguageTag("ja"),
+                        status = OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                        mlKitStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                        mlKitMode = com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED,
+                        sherpaModelSizeBytes = 50 * 1024 * 1024,
+                        canDeleteSherpaModel = true,
+                    ),
+                    OnDeviceLanguageModelInfo(
+                        language = LanguageTag("en"),
+                        status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        mlKitStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    ),
+                ),
+            ),
+            onEvent = {},
+            initialTab = SettingsTab.TRANSCRIPTION.ordinal,
+        )
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+internal fun SettingsScreenLanguageTabPreview() {
+    ChunkFlowTheme {
+        SettingsScreen(
+            state = SettingsUiState(),
+            onEvent = {},
+            initialTab = SettingsTab.LANGUAGE.ordinal,
+        )
     }
 }
