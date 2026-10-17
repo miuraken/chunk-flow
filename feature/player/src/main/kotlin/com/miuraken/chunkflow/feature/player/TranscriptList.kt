@@ -317,7 +317,6 @@ fun TranscriptList(
     showTargetRomanization: Boolean = false,
     positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
-    localTranscriptExported: Boolean = false,
     transcriptExportBanner: TranscriptExportBannerState? = null,
     onDismissExportBanner: () -> Unit = {},
     onToggleBookmark: (ChunkId) -> Unit = {},
@@ -331,7 +330,6 @@ fun TranscriptList(
     onBulkSetUnknownLanguage: (LanguageTag) -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onSetLookaheadEnabled: (Boolean) -> Unit = {},
     onResetTranscription: () -> Unit = {},
-    onExportLocalTranscriptJson: () -> Unit = {},
     onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
     detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
     onOpenDetailedTranscription: (ChunkId) -> Unit = {},
@@ -421,15 +419,6 @@ fun TranscriptList(
                     banner = exportBanner,
                     onDismiss = onDismissExportBanner,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
-
-            // 書き出し済みのバッジは、文字起こしの実行中でないときだけ出す（実行中の進捗はリスト下部のカードで表示する）
-            if (!isTranscriptionActive && localTranscriptExported) {
-                LookaheadAndExportBanner(
-                    localTranscriptExported = localTranscriptExported,
-                    onExportLocalTranscriptJson = onExportLocalTranscriptJson,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
                 )
             }
 
@@ -1316,33 +1305,6 @@ private fun DiagnosticEntryCard(
             Text(
                 text = entry.message,
                 style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-}
-
-@Composable
-private fun LookaheadAndExportBanner(
-    localTranscriptExported: Boolean,
-    onExportLocalTranscriptJson: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (localTranscriptExported) {
-            AssistChip(
-                onClick = onExportLocalTranscriptJson,
-                label = { Text(text = stringResource(R.string.player_lookahead_exported_badge)) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                },
             )
         }
     }
