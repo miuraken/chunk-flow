@@ -33,7 +33,7 @@ import kotlinx.coroutines.launch
  * 端末で認識可能な言語選択肢のモデル。
  *
  * @property tag BCP 47 言語タグ（小文字 ISO コード）。
- * @property displayName 現在のロケールでの表示名（例: `日本語 (JA)`）。
+ * @property displayName 現在のロケールでの表示名（例: `日本語 (ja)`）。
  */
 data class DeviceLanguageOption(
     val tag: LanguageTag,
@@ -220,11 +220,11 @@ data class SettingsUiState(
                 val localeName = tagLocale.getDisplayLanguage(displayLocale)
                     .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
                 val catalogName = if (isJapaneseLocale) catalogEntry?.japaneseName else catalogEntry?.englishName
-                val name = catalogName ?: localeName ?: code.uppercase(Locale.ROOT)
-                val upper = code.uppercase(Locale.ROOT)
+                val lower = code.lowercase(Locale.ROOT)
+                val name = catalogName ?: localeName ?: lower
                 DeviceLanguageOption(
                     tag = LanguageTag(code),
-                    displayName = "$name ($upper)",
+                    displayName = "$name ($lower)",
                 )
             }
             val priorityCodes = listOf("ja", "en")
