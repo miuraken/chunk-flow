@@ -9,6 +9,8 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.Util
+import androidx.media3.test.utils.FakeClock
+import androidx.media3.test.utils.TestExoPlayerBuilder
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
@@ -533,6 +535,70 @@ class PlaybackControllerTest {
 
         assertEquals(setOf(chunk1.id, chunk2.id), controller.practice.value.repeatChunkIds)
         assertTrue(controller.practice.value.repeatCheckedOnly)
+
+        controller.release()
+    }
+
+    @Test
+    fun `seekToChunk_複数チャンク選択時に選択チャンクをタップすると単発再生にならず選択チャンクを再生開始する`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val item = sampleAudioItem(mediaId1, durationMs = 60_000L)
+        libraryRepository.items.value = listOf(item)
+        mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+
+        val chunk1 = Chunk(ChunkId(10L), 0L, 2_000L, ChunkOrigin.AUTO)
+        val chunk2 = Chunk(ChunkId(20L), 2_000L, 4_000L, ChunkOrigin.AUTO)
+        val chunk3 = Chunk(ChunkId(30L), 4_000L, 6_000L, ChunkOrigin.AUTO)
+        analysisRepository.chunksByMedia.value = mapOf(mediaId1 to listOf(chunk1, chunk2, chunk3))
+
+        val exoPlayer = TestExoPlayerBuilder(context)
+            .setClock(FakeClock(false))
+            .build()
+
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { exoPlayer },
+            clock = { nowEpochMs },
+        )
+
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        // 1チャンクのみ選択時は停止中のタップで単発再生モードになる
+        controller.updatePractice {
+            it.copy(repeatChunkIds = setOf(chunk1.id))
+        }
+        controller.seekToChunk(chunk1.id)
+        runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
+        runCurrent()
+        assertTrue(controller.chunkScheduler?.isSingleChunkPlaybackActive == true)
+
+        // 2チャンク以上を選択して選択チャンクをタップすると単発再生モードにならず順次再生を開始する
+        exoPlayer.pause()
+        shadowOf(Looper.getMainLooper()).idle()
+        controller.updatePractice {
+            it.copy(repeatChunkIds = setOf(chunk1.id, chunk3.id), repeatCheckedOnly = false)
+        }
+        runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        controller.seekToChunk(chunk1.id)
+        runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
+        runCurrent()
+
+        assertFalse(controller.chunkScheduler?.isSingleChunkPlaybackActive == true)
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(chunk1.id, controller.status.value.currentChunkId)
 
         controller.release()
     }

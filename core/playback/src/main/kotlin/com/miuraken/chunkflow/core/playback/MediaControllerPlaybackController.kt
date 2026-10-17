@@ -340,19 +340,29 @@ class MediaControllerPlaybackController(
             val targetChunk = currentChunks.firstOrNull { it.id == chunkId } ?: return@launch
             val lp = learningPlayerInstance
             val scheduler = chunkScheduler
-            val shouldStartSingleChunkPlayback =
-                lp?.isPlaying != true || scheduler?.isSingleChunkPlaybackActive == true
+            val repeatChunkIds = practiceController.settings.value.repeatChunkIds
+            val isMultiSelectedTarget = repeatChunkIds.size >= 2 && chunkId in repeatChunkIds
 
-            if (shouldStartSingleChunkPlayback) {
-                if (scheduler != null) {
-                    scheduler.startSingleChunkPlayback(chunkId)
-                } else {
-                    lp?.seekTo(targetChunk.startMs)
-                    lp?.play()
-                }
-            } else {
+            if (isMultiSelectedTarget) {
+                scheduler?.singleChunkPlaybackId = null
                 scheduler?.cancelAutoPause()
-                lp.seekTo(targetChunk.startMs)
+                lp?.seekTo(targetChunk.startMs)
+                lp?.play()
+            } else {
+                val shouldStartSingleChunkPlayback =
+                    lp?.isPlaying != true || scheduler?.isSingleChunkPlaybackActive == true
+
+                if (shouldStartSingleChunkPlayback) {
+                    if (scheduler != null) {
+                        scheduler.startSingleChunkPlayback(chunkId)
+                    } else {
+                        lp?.seekTo(targetChunk.startMs)
+                        lp?.play()
+                    }
+                } else {
+                    scheduler?.cancelAutoPause()
+                    lp.seekTo(targetChunk.startMs)
+                }
             }
 
             _status.update {
