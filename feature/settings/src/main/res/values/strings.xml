@@ -17,6 +17,8 @@
     <string name="settings_auto_pause_scope_all">両言語</string>
     <string name="settings_auto_pause_scope_target">学習言語のみ</string>
     <string name="settings_auto_pause_scope_base">解説言語のみ</string>
+    <string name="settings_skip_original_silence_label">チャンク間の無音をスキップ</string>
+    <string name="settings_skip_original_silence_description">元音声のチャンク間の空白を飛ばして次のチャンクへ進みます</string>
     <string name="settings_section_segmentation">自動チャンク分割の既定値</string>
     <string name="settings_segmentation_min_silence">無音とみなす長さ: %1$d ms</string>
     <string name="settings_segmentation_pre_padding">前の余白: %1$d ms</string>

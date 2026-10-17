@@ -370,9 +370,10 @@ fun TranscriptList(
         LaunchedEffect(activeChunkIndex, chunks.size) {
             val targetIdx = activeChunkIndex ?: return@LaunchedEffect
             if (!isAutoFollowPaused && targetIdx in chunks.indices) {
+                val scrollTargetIdx = (targetIdx - 2).coerceAtLeast(0)
                 isProgrammaticScroll = true
                 try {
-                    listState.animateScrollToItem(targetIdx)
+                    listState.animateScrollToItem(scrollTargetIdx)
                 } finally {
                     isProgrammaticScroll = false
                 }
@@ -561,9 +562,10 @@ fun TranscriptList(
                 onClick = {
                     isAutoFollowPaused = false
                     coroutineScope.launch {
+                        val scrollTargetIdx = (activeChunkIndex - 2).coerceAtLeast(0)
                         isProgrammaticScroll = true
                         try {
-                            listState.animateScrollToItem(activeChunkIndex)
+                            listState.animateScrollToItem(scrollTargetIdx)
                         } finally {
                             isProgrammaticScroll = false
                         }

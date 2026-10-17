@@ -17,6 +17,8 @@
     <string name="settings_auto_pause_scope_all">Both languages</string>
     <string name="settings_auto_pause_scope_target">Target language only</string>
     <string name="settings_auto_pause_scope_base">Base language only</string>
+    <string name="settings_skip_original_silence_label">Skip silence between chunks</string>
+    <string name="settings_skip_original_silence_description">Skips silent gaps in the original audio between chunks</string>
     <string name="settings_section_segmentation">Default Auto-Segmentation</string>
     <string name="settings_segmentation_min_silence">Min silence duration: %1$d ms</string>
     <string name="settings_segmentation_pre_padding">Pre-padding: %1$d ms</string>

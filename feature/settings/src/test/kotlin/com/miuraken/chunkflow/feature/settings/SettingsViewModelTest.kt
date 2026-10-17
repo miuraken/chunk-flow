@@ -99,6 +99,14 @@ class SettingsViewModelTest {
 
         viewModel.onEvent(SettingsEvent.ResetDefaultSegmentationParams)
         assertEquals(SegmentationParams(), viewModel.uiState.value.defaultSegmentationParams)
+
+        assertFalse(viewModel.uiState.value.skipOriginalSilence)
+        viewModel.onEvent(SettingsEvent.SetSkipOriginalSilence(true))
+        assertTrue(viewModel.uiState.value.skipOriginalSilence)
+        assertTrue(repo.state.value.skipOriginalSilence)
+        viewModel.onEvent(SettingsEvent.SetSkipOriginalSilence(false))
+        assertFalse(viewModel.uiState.value.skipOriginalSilence)
+        assertFalse(repo.state.value.skipOriginalSilence)
     }
 
     @Test

@@ -100,6 +100,10 @@ data class SettingsUiState(
     val defaultAutoPauseScope: AutoPauseScope
         get() = settings.defaultAutoPauseScope
 
+    /** チャンク間の元音声の無音（ギャップ）をスキップするかどうか。 */
+    val skipOriginalSilence: Boolean
+        get() = settings.skipOriginalSilence
+
     /** 端末内の先読み簡易文字起こしを既定で有効にするかどうか（既定は `true`）。 */
     val lookaheadTranscriptionEnabled: Boolean
         get() = settings.lookaheadTranscriptionEnabled
@@ -258,6 +262,9 @@ sealed interface SettingsEvent {
     /** 既定の自動ポーズ対象言語範囲を変更する。 */
     data class SetDefaultAutoPauseScope(val scope: AutoPauseScope) : SettingsEvent
 
+    /** チャンク間の元音声の無音スキップ ON / OFF を変更する。 */
+    data class SetSkipOriginalSilence(val enabled: Boolean) : SettingsEvent
+
     /** 自動チャンク分割の既定パラメータを変更する。 */
     data class SetDefaultSegmentationParams(val params: SegmentationParams) : SettingsEvent
 
@@ -378,6 +385,12 @@ class SettingsViewModel @Inject constructor(
             is SettingsEvent.SetDefaultAutoPauseScope -> {
                 viewModelScope.launch {
                     userSettingsRepository.setDefaultAutoPauseScope(event.scope)
+                }
+            }
+
+            is SettingsEvent.SetSkipOriginalSilence -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setSkipOriginalSilence(event.enabled)
                 }
             }
 
