@@ -32,6 +32,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -162,7 +163,7 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
+            PrimaryScrollableTabRow(selectedTabIndex = selectedTab.ordinal, edgePadding = 0.dp) {
                 Tab(
                     selected = selectedTab == SettingsTab.PLAYBACK,
                     onClick = { selectedTabOrdinal = SettingsTab.PLAYBACK.ordinal },
@@ -573,7 +574,7 @@ private fun TranscriptionSettingsSection(
                 onDeleteSherpaModel = {
                     onEvent(SettingsEvent.DeleteSherpaModel(info.language))
                 },
-                initialExpanded = expandFirstAccordion && index == 0,
+                initialExpanded = expandFirstAccordion,
             )
         }
     }
@@ -998,7 +999,7 @@ private fun SttEngineAccordion(
     onDeleteSherpaModel: () -> Unit,
     initialExpanded: Boolean = false,
 ) {
-    val expanded = remember { mutableStateOf(false) }
+    val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
 
     // Auto order based on preferred engine
     val tryOrder = SttEngine.tryOrder(preferredEngine)
