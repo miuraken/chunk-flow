@@ -19,6 +19,7 @@ import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -357,6 +358,7 @@ data class PendingImportConfig(
         base = LanguageTag("ja"),
     ),
     val isDriveSyncFolder: Boolean = false,
+    val treeUri: Uri? = null,
 )
 
 /**
@@ -393,6 +395,7 @@ data class PendingDirectoryEdit(
  */
 data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
+    val courseFolders: List<LibraryCourseFolder> = emptyList(),
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
     val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
     val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
@@ -472,6 +475,20 @@ data class LibraryUiState(
         get() {
             val currentPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
             val grouped = linkedMapOf<String, MutableList<LibraryItemUiModel>>()
+            for (folder in courseFolders) {
+                val path = folder.coursePath.trim('/').takeIf { it.isNotBlank() } ?: continue
+                if (currentPath == null) {
+                    val topSegment = path.substringBefore('/')
+                    grouped.getOrPut(topSegment) { mutableListOf() }
+                } else if (path.startsWith("$currentPath/")) {
+                    val remainder = path.removePrefix("$currentPath/")
+                    val childSegment = remainder.substringBefore('/')
+                    if (childSegment.isNotBlank()) {
+                        val childFullPath = "$currentPath/$childSegment"
+                        grouped.getOrPut(childFullPath) { mutableListOf() }
+                    }
+                }
+            }
             for (itemModel in items) {
                 val path = effectivePathOf(itemModel) ?: continue
                 if (currentPath == null) {
@@ -541,9 +558,19 @@ data class LibraryUiState(
      * ディレクトリ（フォルダ）単位にグループ化し、各ディレクトリ内をファイル名の自然昇順でソートした教材一覧。
      */
     val directories: List<LibraryDirectoryUiModel>
-        get() = items
-            .groupBy { it.item.course ?: selectedDirectoryName }
-            .map { (dirName, dirItems) ->
+        get() {
+            val grouped = linkedMapOf<String?, MutableList<LibraryItemUiModel>>()
+            for (itemModel in items) {
+                val dirName = itemModel.item.course ?: selectedDirectoryName
+                grouped.getOrPut(dirName) { mutableListOf() }.add(itemModel)
+            }
+            for (folder in courseFolders) {
+                val folderPath = folder.coursePath.trim('/').takeIf { it.isNotBlank() }
+                if (folderPath != null) {
+                    grouped.getOrPut(folderPath) { mutableListOf() }
+                }
+            }
+            return grouped.map { (dirName, dirItems) ->
                 val sortedItems = dirItems.sortedWith { a, b ->
                     val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                     if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
@@ -554,6 +581,7 @@ data class LibraryUiState(
                     isExpanded = dirName !in collapsedDirectories,
                 )
             }
+        }
 
     /**
      * 指定したディレクトリ（省略時は展開中で `Listened` ファイルを持つ最初のディレクトリ）について、
@@ -592,8 +620,12 @@ sealed interface LibraryEvent {
     /** 指定された教材 [id] に対して SAF ファイルピッカーを開き、文字起こし・字幕ファイルを取り込む。 */
     data class RequestImportTranscriptForItem(val id: MediaId) : LibraryEvent
 
-    /** 指定されたフォルダ（ディレクトリ）名と配下の URI 一覧を取り込む。 */
-    data class ImportDirectory(val directoryName: String?, val uris: List<Uri>) : LibraryEvent
+    /** 指定されたフォルダ（ディレクトリ）名と配下の URI 一覧（および SAF Tree URI）を取り込む。 */
+    data class ImportDirectory(
+        val directoryName: String?,
+        val uris: List<Uri>,
+        val treeUri: Uri? = null,
+    ) : LibraryEvent
 
     /** SAF で選択された URI の一覧を取り込む。 */
     data class ImportUris(val uris: List<Uri>) : LibraryEvent
@@ -695,6 +727,27 @@ sealed interface LibraryEvent {
 
     /** ミニプレイヤーの再生 / 一時停止を切り替える。 */
     data object ToggleMiniPlayerPlayPause : LibraryEvent
+
+    /** 登録済みローカルフォルダを再スキャンする。 */
+    data object RescanLocalDirectories : LibraryEvent
+
+    /** 新しい仮想フォルダ（ファイル単位取り込みの整理用ディレクトリ）を作成する。 */
+    data class CreateVirtualFolder(
+        val folderName: String,
+        val languages: LanguagePair,
+    ) : LibraryEvent
+
+    /** 複数の教材を指定したコース（フォルダ）へ移動する。 */
+    data class MoveItemsToCourse(
+        val ids: Set<MediaId>,
+        val targetCourse: String?,
+    ) : LibraryEvent
+
+    /** Google Drive 上の未ダウンロード教材（`DRIVE_REMOTE_ONLY`）の音声ファイルをオンデマンドでダウンロードする。 */
+    data class DownloadDriveAudio(val id: MediaId) : LibraryEvent
+
+    /** Google Drive 由来教材のローカル音声コピーを削除し、`DRIVE_REMOTE_ONLY` に戻す。 */
+    data class DeleteLocalAudioCopy(val id: MediaId) : LibraryEvent
 }
 
 private data class ItemAnalysisSummary(
@@ -707,6 +760,7 @@ private data class ItemAnalysisSummary(
 
 private data class LibraryRepositorySnapshot(
     val items: List<AudioItem> = emptyList(),
+    val courseFolders: List<LibraryCourseFolder> = emptyList(),
     val itemStates: Map<MediaId, ItemState> = emptyMap(),
     val summaries: Map<MediaId, ItemAnalysisSummary> = emptyMap(),
     val missingAudioIds: Set<MediaId> = emptySet(),
@@ -924,14 +978,18 @@ class LibraryViewModel @Inject constructor(
     /** ライブラリ画面の UI 状態。 */
     val uiState: StateFlow<LibraryUiState> = combine(
         combine(
-            libraryRepository.observeItems(),
+            combine(
+                libraryRepository.observeItems(),
+                libraryRepository.observeCourseFolders(),
+            ) { items, courseFolders -> items to courseFolders },
             libraryRepository.observeItemStates(),
             analysisSummaries,
             libraryRepository.observeMissingAudioIds(),
             userSettingsRepository.settings,
-        ) { items, itemStates, summaries, missingAudioIds, userSettings ->
+        ) { (items, courseFolders), itemStates, summaries, missingAudioIds, userSettings ->
             LibraryRepositorySnapshot(
                 items = items,
+                courseFolders = courseFolders,
                 itemStates = itemStates,
                 summaries = summaries,
                 missingAudioIds = missingAudioIds,
@@ -944,6 +1002,7 @@ class LibraryViewModel @Inject constructor(
     ) { repoSnapshot, playbackStatus, dialogAndImport, navAndSelection ->
         buildUiState(
             items = repoSnapshot.items,
+            courseFolders = repoSnapshot.courseFolders,
             itemStates = repoSnapshot.itemStates,
             summaries = repoSnapshot.summaries,
             missingAudioIds = repoSnapshot.missingAudioIds,
@@ -966,12 +1025,20 @@ class LibraryViewModel @Inject constructor(
                 if (trimmedDir != null) {
                     selectedDirectoryName.value = trimmedDir
                 }
-                if (event.uris.isNotEmpty()) {
+                val effectiveUris = if (event.uris.isNotEmpty()) {
+                    event.uris
+                } else if (event.treeUri != null) {
+                    listOf(event.treeUri)
+                } else {
+                    emptyList()
+                }
+                if (effectiveUris.isNotEmpty()) {
                     pendingImportConfig.value = PendingImportConfig(
-                        uris = event.uris,
+                        uris = effectiveUris,
                         initialCourse = trimmedDir ?: currentDirectoryPath.value ?: selectedDirectoryName.value,
                         initialLanguages = defaultLanguagePair,
                         isDriveSyncFolder = false,
+                        treeUri = event.treeUri,
                     )
                 }
             }
@@ -980,9 +1047,12 @@ class LibraryViewModel @Inject constructor(
                 if (event.uris.isNotEmpty()) {
                     pendingImportConfig.value = PendingImportConfig(
                         uris = event.uris,
-                        initialCourse = currentDirectoryPath.value ?: selectedDirectoryName.value,
+                        initialCourse = currentDirectoryPath.value
+                            ?: selectedDirectoryName.value
+                            ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE,
                         initialLanguages = defaultLanguagePair,
                         isDriveSyncFolder = false,
+                        treeUri = null,
                     )
                 }
             }
@@ -1019,7 +1089,13 @@ class LibraryViewModel @Inject constructor(
                 }
                 if (config.isDriveSyncFolder) {
                     syncFromLinkedFolder(
-                        treeUri = config.uris.firstOrNull(),
+                        treeUri = config.treeUri ?: config.uris.firstOrNull(),
+                        course = normalizedCourse,
+                        languages = normalizedLanguages,
+                    )
+                } else if (config.treeUri != null) {
+                    linkLocalDirectory(
+                        treeUri = config.treeUri,
                         course = normalizedCourse,
                         languages = normalizedLanguages,
                     )
@@ -1131,7 +1207,12 @@ class LibraryViewModel @Inject constructor(
                 } else {
                     uiState.value.items.filter { uiState.value.effectivePathOf(it) == null }
                 }
-                val initialPair = matchingItems.firstOrNull()?.item?.languagePair ?: defaultLanguagePair
+                val folderPair = uiState.value.courseFolders.firstOrNull {
+                    it.coursePath.trim('/') == dirPath
+                }?.languagePair
+                val initialPair = matchingItems.firstOrNull()?.item?.languagePair
+                    ?: folderPair
+                    ?: defaultLanguagePair
                 pendingEditDirectory.value = PendingDirectoryEdit(
                     currentCourse = dirPath,
                     initialLanguages = initialPair,
@@ -1218,6 +1299,63 @@ class LibraryViewModel @Inject constructor(
 
             LibraryEvent.ToggleMiniPlayerPlayPause -> toggleMiniPlayerPlayPause()
 
+            LibraryEvent.RescanLocalDirectories -> {
+                val targetCourse = currentDirectoryPath.value?.trim('/')?.takeIf { it.isNotBlank() }
+                viewModelScope.launch {
+                    val addedCount = libraryRepository.rescanLocalDirectories(targetCourse)
+                    importState.value = LibraryImportUiState.Done(
+                        addedCount = addedCount,
+                        duplicates = 0,
+                        transcriptsAttached = 0,
+                    )
+                }
+            }
+
+            is LibraryEvent.CreateVirtualFolder -> {
+                val cleanFolder = event.folderName.trim().trim('/')
+                if (cleanFolder.isNotEmpty()) {
+                    val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
+                    val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
+                    val normalizedPair = LanguagePair(
+                        target = LanguageTag(normalizedTarget),
+                        base = normalizedBase?.let { LanguageTag(it) },
+                    )
+                    viewModelScope.launch {
+                        libraryRepository.createVirtualFolder(
+                            coursePath = cleanFolder,
+                            languages = normalizedPair,
+                        )
+                    }
+                }
+            }
+
+            is LibraryEvent.MoveItemsToCourse -> {
+                if (event.ids.isNotEmpty()) {
+                    val targetCourse = event.targetCourse?.trim()?.trim('/')?.ifBlank { null }
+                        ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+                    clearSelectionInternal()
+                    viewModelScope.launch {
+                        libraryRepository.moveItemsToCourse(
+                            mediaIds = event.ids,
+                            targetCourse = targetCourse,
+                        )
+                    }
+                }
+            }
+
+            is LibraryEvent.DownloadDriveAudio -> {
+                viewModelScope.launch {
+                    libraryRepository.downloadDriveAudio(event.id)
+                }
+            }
+
+            is LibraryEvent.DeleteLocalAudioCopy -> {
+                pendingEditItem.value = null
+                viewModelScope.launch {
+                    libraryRepository.deleteLocalAudioCopy(event.id)
+                }
+            }
+
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.RequestImportTranscript,
@@ -1233,6 +1371,34 @@ class LibraryViewModel @Inject constructor(
         selectedDirectoryPaths.value = emptySet()
         selectedItemIds.value = emptySet()
         isPendingBatchDelete.value = false
+    }
+
+    private fun linkLocalDirectory(
+        treeUri: Uri,
+        course: String?,
+        languages: LanguagePair,
+    ) {
+        transcriptImportState.value = TranscriptImportUiState.Idle
+        importJob?.cancel()
+        importJob = viewModelScope.launch {
+            libraryRepository.linkLocalDirectory(
+                treeUri = treeUri,
+                course = course,
+                languages = languages,
+            ).collect { progress ->
+                importState.value = when (progress) {
+                    is ImportProgress.Copying -> LibraryImportUiState.Copying(progress.fraction)
+
+                    is ImportProgress.Done -> LibraryImportUiState.Done(
+                        addedCount = progress.mediaIds.size,
+                        duplicates = progress.duplicates,
+                        transcriptsAttached = progress.transcriptsAttached,
+                    )
+
+                    is ImportProgress.Failed -> LibraryImportUiState.Error(progress.error)
+                }
+            }
+        }
     }
 
     private fun importUris(
@@ -1383,6 +1549,7 @@ class LibraryViewModel @Inject constructor(
 
     private fun buildUiState(
         items: List<AudioItem>,
+        courseFolders: List<LibraryCourseFolder>,
         itemStates: Map<MediaId, ItemState>,
         summaries: Map<MediaId, ItemAnalysisSummary>,
         missingAudioIds: Set<MediaId>,
@@ -1441,6 +1608,7 @@ class LibraryViewModel @Inject constructor(
 
         return LibraryUiState(
             items = uiItems,
+            courseFolders = courseFolders,
             importState = dialogAndImport.importState,
             transcriptImportState = dialogAndImport.transcriptImportState,
             syncState = dialogAndImport.syncState,

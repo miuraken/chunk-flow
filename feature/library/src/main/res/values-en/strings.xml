@@ -79,4 +79,12 @@
     <string name="library_drive_sync_config_hint">Choose the course name, target language, and base language for the selected sync folder.</string>
     <string name="library_drive_sync_config_confirm">Sync with these settings</string>
     <string name="library_drive_sync_select_folder_action">Select sync folder</string>
+    <string name="library_rescan_directories_button">Rescan folders</string>
+    <string name="library_create_virtual_folder_button">New folder</string>
+    <string name="library_create_virtual_folder_dialog_title">Create virtual folder</string>
+    <string name="library_create_virtual_folder_name_label">Folder name (e.g. imported / Korean Basics)</string>
+    <string name="library_create_virtual_folder_confirm">Create</string>
+    <string name="library_item_drive_remote_only_badge">Drive (not downloaded)</string>
+    <string name="library_item_drive_download_button">Download audio</string>
+    <string name="library_edit_delete_local_audio_copy_button">Delete local audio cache (keep on Drive)</string>
 </resources>
