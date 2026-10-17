@@ -920,16 +920,16 @@ class DefaultAnalysisRepositoryTest {
         )
 
         // 2,100ms（中間の無音区間内）で分割を実行
-        // 既定の SegmentationParams (prePaddingMs = 150, postPaddingMs = 200) により:
-        // - 前半チャンク: [600 - 150, 1500 + 200] = [450..1700ms]
-        // - 後半チャンク: [2700 - 150, 3800 + 200] = [2550..4000ms]
+        // 削った無音に対する最小限パディング（最大 30ms）により:
+        // - 前半チャンク: [600 - 30, 1500 + 30] = [570..1530ms]
+        // - 後半チャンク: [2700 - 30, 3800 + 30] = [2670..3830ms]
         assertTrue(repository.splitChunk(mediaId, ChunkId(610L), 2_100L))
 
         val chunksAfterSplit = repository.observeChunks(mediaId).first()
         assertEquals(2, chunksAfterSplit.size)
         assertTrue(chunksAfterSplit.all { it.origin == ChunkOrigin.MANUAL })
-        assertEquals(450L to 1_700L, chunksAfterSplit[0].startMs to chunksAfterSplit[0].endMs)
-        assertEquals(2_550L to 4_000L, chunksAfterSplit[1].startMs to chunksAfterSplit[1].endMs)
+        assertEquals(570L to 1_530L, chunksAfterSplit[0].startMs to chunksAfterSplit[0].endMs)
+        assertEquals(2_670L to 3_830L, chunksAfterSplit[1].startMs to chunksAfterSplit[1].endMs)
 
         // 単語タイムスタンプもトリミング後のチャンク区間にクランプされて引き継がれる
         val transcriptsAfterSplit = repository.observeTranscripts(mediaId).first()
@@ -939,10 +939,178 @@ class DefaultAnalysisRepositoryTest {
         assertNotNull(secondTr)
         assertEquals("First sentence", firstTr.text)
         assertEquals(1, firstTr.words.size)
-        assertTrue(firstTr.words[0].startMs >= 450L && firstTr.words[0].endMs <= 1_700L)
+        assertTrue(firstTr.words[0].startMs >= 570L && firstTr.words[0].endMs <= 1_530L)
         assertEquals("Second sentence", secondTr.text)
         assertEquals(1, secondTr.words.size)
-        assertTrue(secondTr.words[0].startMs >= 2_550L && secondTr.words[0].endMs <= 4_000L)
+        assertTrue(secondTr.words[0].startMs >= 2_670L && secondTr.words[0].endMs <= 3_830L)
+    }
+
+    @Test
+    fun `splitChunk_片側の半区間が無音のみの場合は無音側チャンクが消えてトリミング済み1チャンクになり文字起こしを引き継ぐ`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_split_trim_single_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Split Trim Single Piece Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 620L,
+                    mediaId = mediaId.value,
+                    startMs = 200L,
+                    endMs = 3_500L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+        transcriptDao.upsert(
+            Transcript(
+                chunkId = ChunkId(620L),
+                text = "Trimmed speech",
+                language = LanguageTag("en"),
+                languageConfidence = 0.95f,
+                words = listOf(
+                    WordTiming(startMs = 1_250L, endMs = 2_900L, text = "Trimmed speech", confidence = 0.95f),
+                ),
+                engine = EngineId("whisper"),
+                userEdited = false,
+            ).toEntity(),
+        )
+
+        // 前半 [200..1100ms] は無音 (-45dB)、後半 [1200..3000ms] のみ発話 (-12dB)
+        val logEnergyDb = FloatArray(400) { frame ->
+            val ms = frame * 10
+            if (ms in 1_200 until 3_000) -12f else -45f
+        }
+        val featuresFile = File(File(File(context.filesDir, "analysis"), mediaId.value), "features.bin")
+        assertTrue(
+            AnalysisBinaryFormat.writeFeaturesAtomic(
+                file = featuresFile,
+                features = StoredFeatures(binMs = 10, logEnergyDb = logEnergyDb),
+            ),
+        )
+
+        // 先頭の無音区間内の 1,000ms で分割すると、前半は無音のみのため消去され後半のみの 1 チャンクになる
+        assertTrue(repository.splitChunk(mediaId, ChunkId(620L), 1_000L))
+
+        val chunksAfterSplit = repository.observeChunks(mediaId).first()
+        assertEquals(1, chunksAfterSplit.size)
+        val singleChunk = chunksAfterSplit.first()
+        assertEquals(ChunkOrigin.MANUAL, singleChunk.origin)
+        assertEquals(1_170L to 3_030L, singleChunk.startMs to singleChunk.endMs)
+
+        val transcriptsAfterSplit = repository.observeTranscripts(mediaId).first()
+        val tr = transcriptsAfterSplit[singleChunk.id]
+        assertNotNull(tr)
+        assertEquals("Trimmed speech", tr.text)
+        assertEquals(LanguageTag("en"), tr.language)
+        assertTrue(tr.userEdited)
+        assertEquals(1, tr.words.size)
+        assertEquals(1_250L to 2_900L, tr.words[0].startMs to tr.words[0].endMs)
+    }
+
+    @Test
+    fun `deleteChunk_指定したチャンクを解除し前後のチャンクの時刻と文字起こしをそのまま保持する`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_delete_chunk_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Delete Chunk Test",
+                durationMs = 5_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 801L,
+                    mediaId = mediaId.value,
+                    startMs = 100L,
+                    endMs = 1_100L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+                ChunkEntity(
+                    id = 802L,
+                    mediaId = mediaId.value,
+                    startMs = 1_300L,
+                    endMs = 2_300L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+                ChunkEntity(
+                    id = 803L,
+                    mediaId = mediaId.value,
+                    startMs = 2_600L,
+                    endMs = 3_800L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+        transcriptDao.upsertAll(
+            listOf(
+                Transcript(
+                    chunkId = ChunkId(801L),
+                    text = "Keep first",
+                    language = LanguageTag("en"),
+                    languageConfidence = 0.9f,
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+                Transcript(
+                    chunkId = ChunkId(802L),
+                    text = "Noise to delete",
+                    language = LanguageTag("en"),
+                    languageConfidence = 0.5f,
+                    engine = EngineId("whisper"),
+                    userEdited = false,
+                ).toEntity(),
+                Transcript(
+                    chunkId = ChunkId(803L),
+                    text = "Keep third",
+                    language = LanguageTag("ja"),
+                    languageConfidence = 0.95f,
+                    engine = EngineId("whisper"),
+                    userEdited = true,
+                ).toEntity(),
+            ),
+        )
+
+        // 存在しないチャンク ID の指定は false
+        assertFalse(repository.deleteChunk(mediaId, ChunkId(9_999L)))
+
+        // 真ん中のチャンク (802L: 1300..2300ms) を解除
+        assertTrue(repository.deleteChunk(mediaId, ChunkId(802L)))
+
+        val remainingChunks = repository.observeChunks(mediaId).first()
+        assertEquals(2, remainingChunks.size)
+        assertTrue(remainingChunks.all { it.origin == ChunkOrigin.MANUAL })
+        // 前後のチャンクの時刻は変わらず、解除した [1300..2300ms] はチャンク間無音になる
+        assertEquals(100L to 1_100L, remainingChunks[0].startMs to remainingChunks[0].endMs)
+        assertEquals(2_600L to 3_800L, remainingChunks[1].startMs to remainingChunks[1].endMs)
+
+        val transcripts = repository.observeTranscripts(mediaId).first()
+        assertEquals("Keep first", transcripts[remainingChunks[0].id]?.text)
+        assertEquals("Keep third", transcripts[remainingChunks[1].id]?.text)
+        assertEquals(LanguageTag("ja"), transcripts[remainingChunks[1].id]?.language)
     }
 
     @Test

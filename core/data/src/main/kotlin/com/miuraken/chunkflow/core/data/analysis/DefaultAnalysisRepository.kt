@@ -10,6 +10,7 @@ import androidx.work.WorkManager
 import com.miuraken.chunkflow.core.audio.AnalysisBinaryFormat
 import com.miuraken.chunkflow.core.audio.CURRENT_ALGORITHM_VERSION
 import com.miuraken.chunkflow.core.audio.ChunkSegmenter
+import com.miuraken.chunkflow.core.audio.DbfsQuantizer
 import com.miuraken.chunkflow.core.audio.FeatureAccumulator
 import com.miuraken.chunkflow.core.audio.FrameFeatureExtractor
 import com.miuraken.chunkflow.core.audio.SampleSink
@@ -2681,22 +2682,30 @@ class DefaultAnalysisRepository(
         val storedFeatures = resolveAnalysisFile(id, FEATURES_FILE_NAME)?.let {
             AnalysisBinaryFormat.readFeatures(it)
         }
-        val (firstRange, secondRange) = if (storedFeatures != null && storedFeatures.logEnergyDb.isNotEmpty()) {
+        val energyAndBinMs: Pair<FloatArray, Int>? = if (storedFeatures != null && storedFeatures.logEnergyDb.isNotEmpty()) {
+            storedFeatures.logEnergyDb to storedFeatures.binMs
+        } else {
+            val waveform = readWaveformFromDisk(id)
+            if (waveform != null && waveform.rms.isNotEmpty() && waveform.binMs > 0) {
+                FloatArray(waveform.rms.size) { i -> DbfsQuantizer.toDb(waveform.rms[i]) } to waveform.binMs
+            } else {
+                null
+            }
+        }
+        val pieces = if (energyAndBinMs != null) {
             val segmentationParams = userSettingsRepository?.settings?.first()?.defaultSegmentationParams
                 ?: SegmentationParams()
-            chunkSegmenter.splitAndTrimSilence(
-                logEnergyDb = storedFeatures.logEnergyDb,
+            chunkSegmenter.splitAndTrimSilencePieces(
+                logEnergyDb = energyAndBinMs.first,
                 chunkStartMs = target.startMs,
                 chunkEndMs = target.endMs,
                 splitPositionMs = splitPositionMs,
                 params = segmentationParams,
-                binMs = storedFeatures.binMs,
+                binMs = energyAndBinMs.second,
             )
         } else {
-            (target.startMs to splitPositionMs) to (splitPositionMs to target.endMs)
+            listOf(target.startMs to splitPositionMs, splitPositionMs to target.endMs)
         }
-        val (firstStartMs, firstEndMs) = firstRange
-        val (secondStartMs, secondEndMs) = secondRange
 
         val now = clock()
         val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
@@ -2705,64 +2714,93 @@ class DefaultAnalysisRepository(
 
         for ((index, chunk) in activeChunks.withIndex()) {
             if (index < targetIndex) {
+                val destIdx = newChunks.size
                 newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
-                effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[index] = it }
+                effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIdx] = it }
             } else if (index == targetIndex) {
-                val firstHalfIndex = newChunks.size
-                val secondHalfIndex = firstHalfIndex + 1
-                newChunks.add(
-                    chunk.copy(
-                        id = 0L,
-                        startMs = firstStartMs,
-                        endMs = firstEndMs,
-                        origin = ChunkOrigin.MANUAL.name,
-                    ),
-                )
-                newChunks.add(
-                    chunk.copy(
-                        id = 0L,
-                        startMs = secondStartMs,
-                        endMs = secondEndMs,
-                        origin = ChunkOrigin.MANUAL.name,
-                    ),
-                )
-
-                val targetTranscript = effectiveTranscripts[chunk.id]
-                if (targetTranscript != null) {
-                    val domain = targetTranscript.toExternalModel()
-                    if (domain.words.isNotEmpty()) {
-                        val (firstWordsRaw, secondWordsRaw) = domain.words.partition { word ->
-                            (word.startMs + word.endMs) / 2L < splitPositionMs
+                if (pieces.size == 1) {
+                    val (singleStartMs, singleEndMs) = pieces[0]
+                    val singleIndex = newChunks.size
+                    newChunks.add(
+                        chunk.copy(
+                            id = 0L,
+                            startMs = singleStartMs,
+                            endMs = singleEndMs,
+                            origin = ChunkOrigin.MANUAL.name,
+                        ),
+                    )
+                    val targetTranscript = effectiveTranscripts[chunk.id]
+                    if (targetTranscript != null) {
+                        val domain = targetTranscript.toExternalModel()
+                        val clampedWords = if (domain.words.isNotEmpty()) {
+                            clampWordTimings(domain.words, singleStartMs, singleEndMs)
+                        } else {
+                            emptyList()
                         }
-                        val firstWords = clampWordTimings(firstWordsRaw, firstStartMs, firstEndMs)
-                        val secondWords = clampWordTimings(secondWordsRaw, secondStartMs, secondEndMs)
-                        val separator = if (domain.text.contains(' ')) " " else ""
-                        val firstText = truncateCodePoints(
-                            firstWords.joinToString(separator) { it.text }.trim(),
-                            MAX_TRANSCRIPT_TEXT_CODE_POINTS,
-                        )
-                        val secondText = truncateCodePoints(
-                            secondWords.joinToString(separator) { it.text }.trim(),
-                            MAX_TRANSCRIPT_TEXT_CODE_POINTS,
-                        )
-
-                        newTranscriptsByIndex[firstHalfIndex] = domain.copy(
-                            text = firstText,
-                            words = firstWords,
+                        newTranscriptsByIndex[singleIndex] = domain.copy(
+                            words = clampedWords,
                             userEdited = true,
                         ).toEntity(createdAtEpochMs = now)
+                    }
+                } else {
+                    val (firstStartMs, firstEndMs) = pieces.getOrElse(0) { target.startMs to splitPositionMs }
+                    val (secondStartMs, secondEndMs) = pieces.getOrElse(1) { splitPositionMs to target.endMs }
+                    val firstHalfIndex = newChunks.size
+                    val secondHalfIndex = firstHalfIndex + 1
+                    newChunks.add(
+                        chunk.copy(
+                            id = 0L,
+                            startMs = firstStartMs,
+                            endMs = firstEndMs,
+                            origin = ChunkOrigin.MANUAL.name,
+                        ),
+                    )
+                    newChunks.add(
+                        chunk.copy(
+                            id = 0L,
+                            startMs = secondStartMs,
+                            endMs = secondEndMs,
+                            origin = ChunkOrigin.MANUAL.name,
+                        ),
+                    )
 
-                        newTranscriptsByIndex[secondHalfIndex] = domain.copy(
-                            text = secondText,
-                            words = secondWords,
-                            userEdited = true,
-                        ).toEntity(createdAtEpochMs = now)
-                    } else {
-                        // words が空の場合は前半チャンクに元のテキスト（userEdited = true）を引き継ぐ
-                        newTranscriptsByIndex[firstHalfIndex] = targetTranscript.copy(
-                            userEdited = true,
-                            createdAt = now,
-                        )
+                    val targetTranscript = effectiveTranscripts[chunk.id]
+                    if (targetTranscript != null) {
+                        val domain = targetTranscript.toExternalModel()
+                        if (domain.words.isNotEmpty()) {
+                            val (firstWordsRaw, secondWordsRaw) = domain.words.partition { word ->
+                                (word.startMs + word.endMs) / 2L < splitPositionMs
+                            }
+                            val firstWords = clampWordTimings(firstWordsRaw, firstStartMs, firstEndMs)
+                            val secondWords = clampWordTimings(secondWordsRaw, secondStartMs, secondEndMs)
+                            val separator = if (domain.text.contains(' ')) " " else ""
+                            val firstText = truncateCodePoints(
+                                firstWords.joinToString(separator) { it.text }.trim(),
+                                MAX_TRANSCRIPT_TEXT_CODE_POINTS,
+                            )
+                            val secondText = truncateCodePoints(
+                                secondWords.joinToString(separator) { it.text }.trim(),
+                                MAX_TRANSCRIPT_TEXT_CODE_POINTS,
+                            )
+
+                            newTranscriptsByIndex[firstHalfIndex] = domain.copy(
+                                text = firstText,
+                                words = firstWords,
+                                userEdited = true,
+                            ).toEntity(createdAtEpochMs = now)
+
+                            newTranscriptsByIndex[secondHalfIndex] = domain.copy(
+                                text = secondText,
+                                words = secondWords,
+                                userEdited = true,
+                            ).toEntity(createdAtEpochMs = now)
+                        } else {
+                            // words が空の場合は前半チャンクに元のテキスト（userEdited = true）を引き継ぐ
+                            newTranscriptsByIndex[firstHalfIndex] = targetTranscript.copy(
+                                userEdited = true,
+                                createdAt = now,
+                            )
+                        }
                     }
                 }
             } else {
@@ -2929,6 +2967,44 @@ class DefaultAnalysisRepository(
             newTranscriptsByIndex = newTranscriptsByIndex,
             preserveAllOldTranscripts = true,
         )
+        syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
+        syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
+        setChunkSource(id, ChunkOrigin.MANUAL)
+        persistTranscriptBackupFile(id)
+        true
+    }
+
+    override suspend fun deleteChunk(id: MediaId, chunkId: ChunkId): Boolean = withContext(ioDispatcher) {
+        val allChunks = chunkDao.observeByMediaId(id.value).first()
+        val itemState = itemStateDao.getByMediaId(id.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        val targetIndex = activeChunks.indexOfFirst { it.id == chunkId.value }
+        if (targetIndex < 0) return@withContext false
+
+        val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
+        val newChunks = ArrayList<ChunkEntity>((activeChunks.size - 1).coerceAtLeast(0))
+        val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
+
+        for ((index, chunk) in activeChunks.withIndex()) {
+            if (index == targetIndex) continue
+            val destIndex = newChunks.size
+            newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
+            effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIndex] = it }
+        }
+
+        val insertedChunks = chunkDao.replaceChunksTransaction(
+            mediaId = id.value,
+            origin = ChunkOrigin.MANUAL.name,
+            newChunks = newChunks,
+            newTranscriptsByIndex = newTranscriptsByIndex,
+            preserveAllOldTranscripts = true,
+        )
+        if (newChunks.isEmpty()) {
+            val remainingIds = allChunks.map { it.id }
+            if (remainingIds.isNotEmpty()) {
+                chunkDao.deleteByIds(remainingIds)
+            }
+        }
         syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
         syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
         setChunkSource(id, ChunkOrigin.MANUAL)
