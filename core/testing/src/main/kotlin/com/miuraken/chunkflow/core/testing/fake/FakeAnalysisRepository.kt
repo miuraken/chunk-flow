@@ -215,6 +215,9 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [resetTranscription] の呼び出し履歴（呼ばれた順）。 */
     val resetTranscriptionRequests: MutableList<MediaId> = mutableListOf()
 
+    /** [setBackgroundTranscriptionEnabled] の呼び出し履歴（呼ばれた順）。 */
+    val backgroundTranscriptionRequests: MutableList<Pair<MediaId, Boolean>> = mutableListOf()
+
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
         update(id) { entry ->
             val nextStatus = if (enabled) {
@@ -222,6 +225,7 @@ class FakeAnalysisRepository : AnalysisRepository {
             } else {
                 entry.lookaheadStatus.copy(
                     enabled = false,
+                    backgroundEnabled = false,
                     inFlightChunkId = null,
                     inFlightStep = null,
                     inFlightDetail = null,
@@ -234,12 +238,22 @@ class FakeAnalysisRepository : AnalysisRepository {
         }
     }
 
+    override suspend fun setBackgroundTranscriptionEnabled(id: MediaId, enabled: Boolean) {
+        backgroundTranscriptionRequests += id to enabled
+        update(id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(backgroundEnabled = enabled),
+            )
+        }
+    }
+
     override suspend fun resetTranscription(id: MediaId) {
         resetTranscriptionRequests += id
         update(id) { entry ->
             entry.copy(
                 lookaheadStatus = entry.lookaheadStatus.copy(
                     enabled = false,
+                    backgroundEnabled = false,
                     inFlightChunkId = null,
                     inFlightStep = null,
                     inFlightDetail = null,
@@ -321,7 +335,11 @@ class FakeAnalysisRepository : AnalysisRepository {
         } else {
             openTranscriptionSessions.remove(id)
             update(id) { entry ->
-                entry.copy(lookaheadStatus = entry.lookaheadStatus.copy(queuedChunkIds = emptySet()))
+                if (entry.lookaheadStatus.backgroundEnabled) {
+                    entry
+                } else {
+                    entry.copy(lookaheadStatus = entry.lookaheadStatus.copy(queuedChunkIds = emptySet()))
+                }
             }
         }
     }

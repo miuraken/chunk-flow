@@ -79,6 +79,11 @@ interface AnalysisRepository {
     suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) = Unit
 
     /**
+     * 教材 [id] を閉じた後や別アプリへ移動した後も、優先度を下げてバックグラウンドで文字起こしを継続するかどうかを設定する。
+     */
+    suspend fun setBackgroundTranscriptionEnabled(id: MediaId, enabled: Boolean) = Unit
+
+    /**
      * [language] の端末内音声認識の言語モデルのダウンロードを OS に要求する（F6.2）。
      *
      * 状態は [observeLookaheadStatus] の [LookaheadTranscriptionStatus.recognitionModelIssues] で知らせる。
