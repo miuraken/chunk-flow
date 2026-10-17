@@ -112,6 +112,10 @@ class PlaybackControllerTest {
         )
         libraryRepository.items.value = listOf(item)
         libraryRepository.itemStates.value = mapOf(mediaId1 to savedState)
+        settingsRepository.state.value = UserSettings(
+            defaultAutoPause = AutoPause.Proportional(factor = 1.2f),
+            defaultAutoPauseScope = AutoPauseScope.ALL_CHUNKS,
+        )
         mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
 
         val controller = MediaControllerPlaybackController(
@@ -142,12 +146,99 @@ class PlaybackControllerTest {
         assertTrue(stubPlayer.prepared)
         assertEquals(25_000L, controller.position.currentPositionMs())
 
-        // ループは解除され、autoPause / languageFilter は復元される
+        // ループは解除され、languageFilter は savedState から復元され、autoPause / autoPauseScope は UserSettings に従う
         val practice = controller.practice.value
         assertEquals(LoopMode.Off, practice.loop)
-        assertEquals(AutoPause.Fixed(1_500L), practice.autoPause)
-        assertEquals(AutoPauseScope.AFTER_BASE_LANGUAGE, practice.autoPauseScope)
+        assertEquals(AutoPause.Proportional(factor = 1.2f), practice.autoPause)
+        assertEquals(AutoPauseScope.ALL_CHUNKS, practice.autoPauseScope)
         assertEquals(LanguageFilter.TARGET_ONLY, practice.languageFilter)
+
+        controller.release()
+    }
+
+    @Test
+    fun `open_savedStateにAutoPauseが残っていてもUserSettingsがOffならAutoPause_Offになる`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val item = sampleAudioItem(mediaId1, durationMs = 120_000L)
+        val savedState = ItemState(
+            mediaId = mediaId1,
+            positionMs = 10_000L,
+            speed = 1.0f,
+            autoPause = AutoPause.Fixed(1_500L),
+            autoPauseScope = AutoPauseScope.ALL_CHUNKS,
+            languageFilter = LanguageFilter.ALL,
+            updatedAtEpochMs = 500L,
+        )
+        libraryRepository.items.value = listOf(item)
+        libraryRepository.itemStates.value = mapOf(mediaId1 to savedState)
+        settingsRepository.state.value = UserSettings(
+            defaultAutoPause = AutoPause.Off,
+            defaultAutoPauseScope = AutoPauseScope.AFTER_BASE_LANGUAGE,
+        )
+        mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        assertEquals(AutoPause.Off, controller.practice.value.autoPause)
+        assertEquals(AutoPauseScope.AFTER_BASE_LANGUAGE, controller.practice.value.autoPauseScope)
+
+        controller.release()
+    }
+
+    @Test
+    fun `再生中にUserSettingsのdefaultAutoPauseを変更すると即座にpracticeへ反映される`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val item = sampleAudioItem(mediaId1, durationMs = 120_000L)
+        libraryRepository.items.value = listOf(item)
+        settingsRepository.state.value = UserSettings(
+            defaultAutoPause = AutoPause.Fixed(1_500L),
+            defaultAutoPauseScope = AutoPauseScope.ALL_CHUNKS,
+        )
+        mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        assertEquals(AutoPause.Fixed(1_500L), controller.practice.value.autoPause)
+        assertEquals(AutoPauseScope.ALL_CHUNKS, controller.practice.value.autoPauseScope)
+
+        settingsRepository.state.value = UserSettings(
+            defaultAutoPause = AutoPause.Off,
+            defaultAutoPauseScope = AutoPauseScope.AFTER_BASE_LANGUAGE,
+        )
+        runCurrent()
+
+        assertEquals(AutoPause.Off, controller.practice.value.autoPause)
+        assertEquals(AutoPauseScope.AFTER_BASE_LANGUAGE, controller.practice.value.autoPauseScope)
 
         controller.release()
     }
