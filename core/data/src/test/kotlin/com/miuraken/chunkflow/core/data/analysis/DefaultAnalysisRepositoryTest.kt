@@ -854,6 +854,98 @@ class DefaultAnalysisRepositoryTest {
     }
 
     @Test
+    fun `splitChunk_featuresBinが存在する場合に元チャンク範囲内で無音検出し前後の無音部分をトリミングしてMANUALチャンクを保存する`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_split_trim_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Split Trim Silence Test",
+                durationMs = 5_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 610L,
+                    mediaId = mediaId.value,
+                    startMs = 200L,
+                    endMs = 4_600L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+        transcriptDao.upsert(
+            Transcript(
+                chunkId = ChunkId(610L),
+                text = "First sentence Second sentence",
+                language = LanguageTag("en"),
+                languageConfidence = 0.9f,
+                words = listOf(
+                    WordTiming(startMs = 500L, endMs = 1_500L, text = "First sentence", confidence = 0.9f),
+                    WordTiming(startMs = 2_700L, endMs = 3_900L, text = "Second sentence", confidence = 0.9f),
+                ),
+                engine = EngineId("whisper"),
+                userEdited = false,
+            ).toEntity(),
+        )
+
+        // 10ms ホップで 500 フレーム (5,000ms)
+        // 元チャンク [200..4600ms] のうち:
+        // - 前半の発話: [600..1500ms] (frame 60..150)
+        // - 中間の無音: [1500..2700ms]（分割点 2100ms）
+        // - 後半の発話: [2700..3800ms] (frame 270..380)
+        val logEnergyDb = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 600 until 1_500 || ms in 2_700 until 3_800) {
+                -12f
+            } else {
+                -65f
+            }
+        }
+        val featuresFile = File(File(File(context.filesDir, "analysis"), mediaId.value), "features.bin")
+        assertTrue(
+            AnalysisBinaryFormat.writeFeaturesAtomic(
+                file = featuresFile,
+                features = StoredFeatures(binMs = 10, logEnergyDb = logEnergyDb),
+            ),
+        )
+
+        // 2,100ms（中間の無音区間内）で分割を実行
+        // 既定の SegmentationParams (prePaddingMs = 150, postPaddingMs = 200) により:
+        // - 前半チャンク: [600 - 150, 1500 + 200] = [450..1700ms]
+        // - 後半チャンク: [2700 - 150, 3800 + 200] = [2550..4000ms]
+        assertTrue(repository.splitChunk(mediaId, ChunkId(610L), 2_100L))
+
+        val chunksAfterSplit = repository.observeChunks(mediaId).first()
+        assertEquals(2, chunksAfterSplit.size)
+        assertTrue(chunksAfterSplit.all { it.origin == ChunkOrigin.MANUAL })
+        assertEquals(450L to 1_700L, chunksAfterSplit[0].startMs to chunksAfterSplit[0].endMs)
+        assertEquals(2_550L to 4_000L, chunksAfterSplit[1].startMs to chunksAfterSplit[1].endMs)
+
+        // 単語タイムスタンプもトリミング後のチャンク区間にクランプされて引き継がれる
+        val transcriptsAfterSplit = repository.observeTranscripts(mediaId).first()
+        val firstTr = transcriptsAfterSplit[chunksAfterSplit[0].id]
+        val secondTr = transcriptsAfterSplit[chunksAfterSplit[1].id]
+        assertNotNull(firstTr)
+        assertNotNull(secondTr)
+        assertEquals("First sentence", firstTr.text)
+        assertEquals(1, firstTr.words.size)
+        assertTrue(firstTr.words[0].startMs >= 450L && firstTr.words[0].endMs <= 1_700L)
+        assertEquals("Second sentence", secondTr.text)
+        assertEquals(1, secondTr.words.size)
+        assertTrue(secondTr.words[0].startMs >= 2_550L && secondTr.words[0].endMs <= 4_000L)
+    }
+
+    @Test
     fun `mergeWithNextChunkとmoveChunkBoundary_MANUALチャンクを生成し文字起こしと境界を更新する`() = runTest {
         val repository = createRepository(testScheduler)
         val mediaId = MediaId("media_merge_move_01")

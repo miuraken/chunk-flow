@@ -212,6 +212,115 @@ class ChunkSegmenter(
         }
     }
 
+    /**
+     * チャンク区間 `[chunkStartMs, chunkEndMs]` を [splitPositionMs] で前後に分割し、
+     * それぞれの半区間から前後の無音部分をトリミングした 2 つの区間（前半と後半の `startMs to endMs`）を返す。
+     *
+     * ファイル全体の [logEnergyDb] を渡すことで適応閾値（P10/P90）を安定して推定し、
+     * 各半区間内の発話フレーム範囲に `params.prePaddingMs` / `params.postPaddingMs` の余白を付与して
+     * 元の半区間 `[chunkStartMs, splitPositionMs]` および `[splitPositionMs, chunkEndMs]` の範囲内にクランプする。
+     * 半区間内に発話フレームが 1 つも見つからない場合は、チャンクが消滅しないよう元の半区間をそのまま返す。
+     *
+     * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
+     * @param chunkStartMs 分割対象チャンクの開始時刻（ミリ秒）。
+     * @param chunkEndMs 分割対象チャンクの終了時刻（ミリ秒）。
+     * @param splitPositionMs 分割位置の時刻（ミリ秒、`chunkStartMs < splitPositionMs < chunkEndMs`）。
+     * @param params 分割・パディングのパラメータ。
+     * @param binMs 1 フレームの長さ（ミリ秒）。
+     * @return 前半チャンク区間と後半チャンク区間のペア。
+     */
+    fun splitAndTrimSilence(
+        logEnergyDb: FloatArray,
+        chunkStartMs: Long,
+        chunkEndMs: Long,
+        splitPositionMs: Long,
+        params: SegmentationParams = SegmentationParams(),
+        binMs: Int = defaultBinMs,
+    ): Pair<Pair<Long, Long>, Pair<Long, Long>> {
+        require(binMs > 0) { "binMs must be > 0: $binMs" }
+        require(chunkStartMs < splitPositionMs && splitPositionMs < chunkEndMs) {
+            "splitPositionMs ($splitPositionMs) must be strictly between chunkStartMs ($chunkStartMs) and chunkEndMs ($chunkEndMs)"
+        }
+        val firstRaw = chunkStartMs to splitPositionMs
+        val secondRaw = splitPositionMs to chunkEndMs
+        if (logEnergyDb.isEmpty()) {
+            return firstRaw to secondRaw
+        }
+
+        val vadResult = vad.detect(logEnergyDb, params)
+        val firstTrimmed = trimPieceSilence(
+            vadResult = vadResult,
+            pieceStartMs = chunkStartMs,
+            pieceEndMs = splitPositionMs,
+            params = params,
+            binMs = binMs,
+        )
+        val secondTrimmed = trimPieceSilence(
+            vadResult = vadResult,
+            pieceStartMs = splitPositionMs,
+            pieceEndMs = chunkEndMs,
+            params = params,
+            binMs = binMs,
+        )
+        return firstTrimmed to secondTrimmed
+    }
+
+    private fun trimPieceSilence(
+        vadResult: VadResult,
+        pieceStartMs: Long,
+        pieceEndMs: Long,
+        params: SegmentationParams,
+        binMs: Int,
+    ): Pair<Long, Long> {
+        if (pieceEndMs <= pieceStartMs) return pieceStartMs to pieceEndMs
+        val totalFrames = vadResult.speechFrames.size
+        if (totalFrames == 0) return pieceStartMs to pieceEndMs
+
+        val startFrame = (pieceStartMs / binMs).toInt().coerceIn(0, totalFrames)
+        val endFrame = ((pieceEndMs + binMs - 1L) / binMs).toInt().coerceIn(startFrame, totalFrames)
+        if (startFrame >= endFrame) return pieceStartMs to pieceEndMs
+
+        var firstSpeechFrame = -1
+        var lastSpeechFrame = -1
+        for (f in startFrame until endFrame) {
+            if (vadResult.speechFrames[f]) {
+                if (firstSpeechFrame < 0) {
+                    firstSpeechFrame = f
+                }
+                lastSpeechFrame = f
+            }
+        }
+
+        if (firstSpeechFrame < 0) {
+            val thresholdDb = vadResult.thresholdDb
+            val smoothed = vadResult.smoothedEnergyDb
+            for (f in startFrame until endFrame) {
+                if (smoothed[f] >= thresholdDb) {
+                    if (firstSpeechFrame < 0) {
+                        firstSpeechFrame = f
+                    }
+                    lastSpeechFrame = f
+                }
+            }
+        }
+
+        if (firstSpeechFrame < 0 || lastSpeechFrame < firstSpeechFrame) {
+            return pieceStartMs to pieceEndMs
+        }
+
+        val rawSpeechStartMs = (firstSpeechFrame.toLong() * binMs).coerceIn(pieceStartMs, pieceEndMs)
+        val rawSpeechEndMs = ((lastSpeechFrame + 1).toLong() * binMs).coerceIn(rawSpeechStartMs, pieceEndMs)
+        if (rawSpeechEndMs <= rawSpeechStartMs) {
+            return pieceStartMs to pieceEndMs
+        }
+
+        val preMs = params.prePaddingMs.coerceAtLeast(0).toLong()
+        val postMs = params.postPaddingMs.coerceAtLeast(0).toLong()
+        val trimmedStartMs = (rawSpeechStartMs - preMs).coerceIn(pieceStartMs, rawSpeechStartMs)
+        val trimmedEndMs = (rawSpeechEndMs + postMs).coerceIn(max(rawSpeechEndMs, trimmedStartMs + 1L), pieceEndMs)
+        return trimmedStartMs to trimmedEndMs
+    }
+
     private fun extractAndBridgeIntervals(
         speechFrames: BooleanArray,
         minSilenceMs: Int,
