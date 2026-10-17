@@ -742,7 +742,8 @@ class DefaultAnalysisRepository(
                     chunkSource = source.name,
                     updatedAt = now,
                 )
-                itemStateDao.upsert(entity)
+                // 削除済みの教材には行を作らない（外部キー違反で落ちないように）
+                itemStateDao.upsertIfMediaExists(entity)
             }
         }
     }

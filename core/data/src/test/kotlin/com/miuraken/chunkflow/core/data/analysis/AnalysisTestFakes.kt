@@ -205,6 +205,9 @@ internal class FakeItemStateDao : ItemStateDao {
         store.update { it + (state.mediaId to state) }
     }
 
+    /** 解析のテストでは、教材はいつも `media_item` にあるものとする。 */
+    override suspend fun mediaItemExists(mediaId: String): Boolean = true
+
     override suspend fun updateChunkSource(mediaId: String, chunkSource: String, updatedAt: Long): Int {
         var updated = 0
         store.update { current ->

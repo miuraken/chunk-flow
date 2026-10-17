@@ -123,7 +123,7 @@ class DefaultLibraryRepositoryTest {
         File(context.filesDir, "analysis").deleteRecursively()
         File(context.filesDir, "drive_sync_link.properties").delete()
 
-        itemStateDao = InMemoryItemStateDao()
+        itemStateDao = InMemoryItemStateDao(mediaItemExistsCheck = { id -> mediaItemDao.getById(id) != null })
         chunkDao = InMemoryChunkDao()
         driveFileDao = InMemoryDriveFileDao()
         driveSyncClient = FakeDriveSyncClient()
@@ -646,6 +646,25 @@ class DefaultLibraryRepositoryTest {
         assertNull(mediaFileLocator.resolveAudioFile(mediaId))
         assertFalse(transcriptFile.exists())
         assertFalse(analysisDir.exists())
+    }
+
+    @Test
+    fun `delete後_プレイヤーが位置や聴取済みや学習モードを保存しようとしても行を作らない`() = runTest {
+        val bytes = "deleted-while-playing".encodeToByteArray()
+        val uri = registerContent("delplay", "deleted_while_playing.mp3", bytes.size.toLong(), bytes)
+        val repo = createRepository()
+        val mediaId = (repo.import(listOf(uri)).toList().last() as ImportProgress.Done).mediaIds.single()
+        repo.updatePlaybackPosition(mediaId, positionMs = 10_000L, speed = 1.0f, updatedAtEpochMs = 1_000L)
+        val savedState = assertNotNull(repo.observeItemState(mediaId).first())
+
+        repo.delete(mediaId)
+
+        // 再生中の教材を削除しても、プレイヤーは 5 秒ごとの位置・再生の終わりの聴取済み・学習モードを保存しようとする
+        repo.updatePlaybackPosition(mediaId, positionMs = 20_000L, speed = 1.0f, updatedAtEpochMs = 2_000L)
+        repo.markItemListened(id = mediaId, isListened = true, updatedAtEpochMs = 3_000L)
+        repo.upsertItemState(savedState.copy(positionMs = 30_000L, updatedAtEpochMs = 4_000L))
+
+        assertNull(repo.observeItemState(mediaId).first())
     }
 
     @Test
@@ -1679,7 +1698,10 @@ class DefaultLibraryRepositoryTest {
         }
     }
 
-    private class InMemoryItemStateDao : ItemStateDao {
+    /** @param mediaItemExistsCheck 教材が `media_item` にあるか（本物の DAO と同じく、削除済みの教材へ書かないかを確かめるため）。 */
+    private class InMemoryItemStateDao(
+        private val mediaItemExistsCheck: suspend (String) -> Boolean = { true },
+    ) : ItemStateDao {
         private val states = MutableStateFlow<Map<String, ItemStateEntity>>(emptyMap())
 
         override fun observeAll(): Flow<List<ItemStateEntity>> = states.map { it.values.toList() }
@@ -1691,6 +1713,8 @@ class DefaultLibraryRepositoryTest {
         override suspend fun upsert(state: ItemStateEntity) {
             states.update { it + (state.mediaId to state) }
         }
+
+        override suspend fun mediaItemExists(mediaId: String): Boolean = mediaItemExistsCheck(mediaId)
 
         override suspend fun updateChunkSource(mediaId: String, chunkSource: String, updatedAt: Long): Int {
             val existing = states.value[mediaId] ?: return 0

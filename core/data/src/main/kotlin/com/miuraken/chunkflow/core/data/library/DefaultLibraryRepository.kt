@@ -177,7 +177,8 @@ class DefaultLibraryRepository(
 
     override suspend fun upsertItemState(state: ItemState) {
         withContext(ioDispatcher) {
-            itemStateDao.upsert(state.toEntity())
+            // 再生中に削除された教材の設定は書かない（外部キー違反で落ちないように）
+            itemStateDao.upsertIfMediaExists(state.toEntity())
         }
     }
 
@@ -190,13 +191,14 @@ class DefaultLibraryRepository(
         withContext(ioDispatcher) {
             val coercedPosition = positionMs.coerceAtLeast(0L)
             val coercedSpeed = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
-            itemStateDao.updatePlaybackPosition(
+            // 再生中に削除された教材の位置は書かない（プレイヤーは削除後も保存しようとする）
+            val saved = itemStateDao.updatePlaybackPosition(
                 mediaId = id.value,
                 positionMs = coercedPosition,
                 speed = coercedSpeed,
                 updatedAt = updatedAtEpochMs,
             )
-            if (coercedPosition > 0L) {
+            if (saved && coercedPosition > 0L) {
                 val course = mediaItemDao.getById(id.value)?.course
                 scheduleCourseAnalysisUpToLimit(course)
             }
@@ -529,12 +531,13 @@ class DefaultLibraryRepository(
         updatedAtEpochMs: Long,
     ) {
         withContext(ioDispatcher) {
-            itemStateDao.updateListenedStatus(
+            // 再生中に削除された教材には書かない（再生の終わりで聴取済みにしようとすることがある）
+            val saved = itemStateDao.updateListenedStatus(
                 mediaId = id.value,
                 isListened = isListened,
                 updatedAt = updatedAtEpochMs,
             )
-            if (isListened) {
+            if (saved && isListened) {
                 val course = mediaItemDao.getById(id.value)?.course
                 scheduleCourseAnalysisUpToLimit(course)
             }

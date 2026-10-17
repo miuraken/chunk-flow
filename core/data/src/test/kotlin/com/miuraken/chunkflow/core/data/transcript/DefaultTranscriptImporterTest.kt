@@ -740,6 +740,9 @@ class DefaultTranscriptImporterTest {
             states.update { it + (state.mediaId to state) }
         }
 
+        /** このテストでは、教材はいつも `media_item` にあるものとする。 */
+        override suspend fun mediaItemExists(mediaId: String): Boolean = true
+
         override suspend fun updateChunkSource(mediaId: String, chunkSource: String, updatedAt: Long): Int {
             val existing = states.value[mediaId] ?: return 0
             states.update { it + (mediaId to existing.copy(chunkSource = chunkSource, updatedAt = updatedAt)) }

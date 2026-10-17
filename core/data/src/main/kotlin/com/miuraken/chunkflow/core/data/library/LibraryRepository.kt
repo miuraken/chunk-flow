@@ -28,13 +28,14 @@ interface LibraryRepository {
     /** 教材 1 件の再生・学習状態を購読する。まだ状態がなければ `null` を流す。 */
     fun observeItemState(id: MediaId): Flow<ItemState?>
 
-    /** 教材の再生・学習状態を保存（追加または更新）する。 */
+    /** 教材の再生・学習状態を保存（追加または更新）する。教材が削除済みなら何もしない。 */
     suspend fun upsertItemState(state: ItemState)
 
     /**
      * 教材の再生位置と速度を更新する（§7.2.5: 再生中は 5 秒ごと、および一時停止・停止・切り替え時）。
      *
      * まだ [ItemState] の行がない教材の場合は既定値で作って位置・速度を設定する。
+     * 教材が削除済み（再生中に削除されたときなど）なら何もしない。
      */
     suspend fun updatePlaybackPosition(
         id: MediaId,
@@ -109,7 +110,7 @@ interface LibraryRepository {
         languages: LanguagePair,
     ) = Unit
 
-    /** 教材の聴取完了フラグ（Listened / 済）と最終アクセス日時を更新する。 */
+    /** 教材の聴取完了フラグ（Listened / 済）と最終アクセス日時を更新する。教材が削除済みなら何もしない。 */
     suspend fun markItemListened(
         id: MediaId,
         isListened: Boolean = true,

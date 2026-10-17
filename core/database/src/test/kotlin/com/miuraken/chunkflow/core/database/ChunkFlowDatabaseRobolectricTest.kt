@@ -1,17 +1,22 @@
 package com.miuraken.chunkflow.core.database
 
+import android.database.sqlite.SQLiteException
 import androidx.room.Room
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
+import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.runner.RunWith
@@ -172,5 +177,38 @@ class ChunkFlowDatabaseRobolectricTest {
         assertEquals(emptyList(), db.transcriptDao().observeByMediaId(mediaId).first())
         assertEquals(emptyList(), db.bookmarkDao().getByMediaId(mediaId))
         assertEquals(emptyList(), db.driveFileDao().getAll())
+    }
+
+    @Test
+    fun `削除済みの教材の状態は書かずにfalseを返し外部キー違反も起こさない`() = runTest {
+        db.mediaItemDao().upsert(
+            MediaItemEntity(
+                id = mediaId,
+                title = "Lesson 02",
+                durationMs = 60_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1_000_000L,
+                sha256 = "d".repeat(64),
+                course = "korean-course",
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = 1_000L,
+            ),
+        )
+        assertTrue(db.itemStateDao().updatePlaybackPosition(mediaId, positionMs = 1_000L, speed = 1.0f, updatedAt = 2_000L))
+        db.mediaItemDao().deleteById(mediaId)
+        assertFalse(db.itemStateDao().mediaItemExists(mediaId))
+
+        // この環境でも外部キーが効いている（削除済みの教材の行をそのまま書くと失敗する）
+        assertFailsWith<SQLiteException> {
+            db.itemStateDao().upsert(ItemStateEntity(mediaId = mediaId, updatedAt = 3_000L))
+        }
+
+        // 再生中に削除された教材について、プレイヤーが位置・聴取済み・学習モードを保存しようとしても、書かずに false を返す
+        assertFalse(db.itemStateDao().updatePlaybackPosition(mediaId, positionMs = 2_000L, speed = 1.0f, updatedAt = 4_000L))
+        assertFalse(db.itemStateDao().updateListenedStatus(mediaId = mediaId, isListened = true, updatedAt = 5_000L))
+        assertFalse(db.itemStateDao().upsertIfMediaExists(ItemStateEntity(mediaId = mediaId, updatedAt = 6_000L)))
+        assertNull(db.itemStateDao().getByMediaId(mediaId))
     }
 }
