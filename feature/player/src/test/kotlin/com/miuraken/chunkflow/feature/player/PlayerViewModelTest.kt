@@ -1145,13 +1145,51 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.SplitChunkAtCurrentPosition)
         assertEquals(5, viewModel.uiState.value.chunks.size)
 
-        // 5000ms で分けると 4100..5000 と 5000..6900 になる
+        // 他のチャンク（chunks[0], chunks[3]）を選択した状態でチャンク 1 を 5000ms で分けると、分割が実行され他チャンクの選択状態が維持される
+        val selectedOther0 = viewModel.uiState.value.chunks[0]
+        val selectedOther3 = viewModel.uiState.value.chunks[3]
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(selectedOther0.id, selected = true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(selectedOther3.id, selected = true))
         viewModel.onEvent(PlayerEvent.SeekTo(5_000L))
         viewModel.onEvent(PlayerEvent.SplitChunkAtCurrentPosition)
         val chunks = viewModel.uiState.value.chunks
         assertEquals(6, chunks.size)
         assertEquals(4_100L to 5_000L, chunks[1].startMs to chunks[1].endMs)
         assertEquals(5_000L to 6_900L, chunks[2].startMs to chunks[2].endMs)
+        assertTrue(chunks[0].isRepeatChecked)
+        assertFalse(chunks[1].isRepeatChecked)
+        assertFalse(chunks[2].isRepeatChecked)
+        assertTrue(chunks[4].isRepeatChecked) // 元の chunks[3]
+    }
+
+    @Test
+    fun `チャンク解除_DeleteChunkで対象チャンクが解除され他のチャンクの選択状態は維持される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c0 = sample.chunks[0]
+        val c1 = sample.chunks[1]
+        val c2 = sample.chunks[2]
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c0.id, selected = true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c1.id, selected = true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c2.id, selected = true))
+
+        viewModel.onEvent(PlayerEvent.DeleteChunk(c1.id))
+
+        assertEquals(listOf(item.id to c1.id), analysisRepo.deleteChunkRequests)
+        val remaining = viewModel.uiState.value.chunks
+        assertEquals(sample.chunks.size - 1, remaining.size)
+        assertTrue(remaining.none { it.id == c1.id })
+        assertTrue(remaining.first { it.startMs == c0.startMs && it.endMs == c0.endMs }.isRepeatChecked)
+        assertTrue(remaining.first { it.startMs == c2.startMs && it.endMs == c2.endMs }.isRepeatChecked)
     }
 
     @Test
@@ -1263,7 +1301,7 @@ class PlayerViewModelTest {
     }
 
     @Test
-    fun `順次翻訳_全文字起こし完了後に翻訳バッジが有効になり再生位置や選択範囲から順次translateChunkが呼ばれる`() = runTest {
+    fun `順次翻訳_1チャンク以上文字起こし済みなら未完了でも翻訳が実行され再生位置や選択範囲から順次translateChunkが呼ばれる`() = runTest {
         val sample = SampleMaterials.jaKo // chunks: 0(ja), 1(ko), 2(ja), 3(ko), 4(ko)
         val item = sample.item
         val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
@@ -1288,24 +1326,13 @@ class PlayerViewModelTest {
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
-        // 1. ML Kit 翻訳対応ペア (ko -> ja) なので isTranslationSupported = true だが、文字起こし未完了の間は isAllTranscriptionCompleted = false
+        // 1. 全チャンクの文字起こしが未完了 (isAllTranscriptionCompleted = false) でも、1 チャンク以上文字起こし済み (hasTranscript = true) である
         assertTrue(viewModel.uiState.value.isTranslationSupported)
+        assertTrue(viewModel.uiState.value.hasTranscript)
         assertFalse(viewModel.uiState.value.isAllTranscriptionCompleted)
-
-        // 2. 全チャンクの文字起こしが完了すると isAllTranscriptionCompleted = true になる（この時点ではまだ翻訳は一切走らない）
-        analysisRepo.update(item.id) { entry ->
-            entry.copy(
-                transcripts = sample.transcripts,
-                lookaheadStatus = LookaheadTranscriptionStatus(
-                    enabled = false,
-                    engineAvailable = true,
-                ),
-            )
-        }
-        assertTrue(viewModel.uiState.value.isAllTranscriptionCompleted)
         assertTrue(analysisRepo.translatedChunkRequests.isEmpty())
 
-        // 3. 再生位置を chunks[3] (ko) に合わせて「翻訳」バッジを ON にすると、現在位置 (chunks[3]) -> 末尾 (chunks[4]) -> 先頭折り返し (chunks[1]) の順で学習対象言語のみ翻訳される
+        // 2. 全完了を待たずに再生位置を chunks[3] (ko) に合わせて「翻訳」バッジを ON にすると、現在位置 (chunks[3]) -> 末尾 (chunks[4]) -> 先頭折り返し (chunks[1]) の順で学習対象言語のみ翻訳される
         viewModel.onEvent(PlayerEvent.SeekToChunk(sample.chunks[3].id))
         viewModel.onEvent(PlayerEvent.SetShowTargetTranslation(true))
 

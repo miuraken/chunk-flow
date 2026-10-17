@@ -85,13 +85,13 @@ internal fun findSplitTargetChunk(chunks: List<ChunkUi>, positionMs: Long): Chun
 /**
  * 再生位置 [positionMs] でチャンクを分割できる状態かどうかを判定する。
  *
- * チャンクが 1 件以上あり、選択中のチャンクがなく、かつ [findSplitTargetChunk] が対象チャンクを返すときのみ `true` を返す。
+ * チャンクが 1 件以上あり、かつ [findSplitTargetChunk] が対象チャンクを返すときのみ `true` を返す。
  */
 internal fun canSplitChunkAtPosition(
     chunks: List<ChunkUi>,
     positionMs: Long,
 ): Boolean {
-    if (chunks.isEmpty() || chunks.any { it.isRepeatChecked }) return false
+    if (chunks.isEmpty()) return false
     return findSplitTargetChunk(chunks, positionMs) != null
 }
 

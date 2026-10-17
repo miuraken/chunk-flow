@@ -63,6 +63,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -999,6 +1000,9 @@ sealed interface PlayerEvent {
         val newEndMs: Long,
     ) : PlayerEvent
 
+    /** 指定したチャンクを解除（削除）する（F5.3）。 */
+    data class DeleteChunk(val chunkId: ChunkId) : PlayerEvent
+
     /** 言語未設定（`null` / `und`）のチャンクを一括で指定言語に設定する（F1.4、F7.3）。 */
     data class BulkSetUnknownTranscriptLanguage(val language: LanguageTag) : PlayerEvent
 
@@ -1360,16 +1364,16 @@ class PlayerViewModel @Inject constructor(
             }
         }
 
-        // 「翻訳」トグルが ON のとき、全文字起こし完了や未翻訳チャンクの発生に合わせて順次翻訳を開始する
+        // 「翻訳」トグルが ON のとき、文字起こし済みかつ未翻訳チャンクの発生に合わせて順次翻訳を開始する
         viewModelScope.launch {
             uiState
                 .map { state ->
-                    val untranslatedCount = if (state.showTargetTranslation && state.isTranslationSupported && state.isAllTranscriptionCompleted) {
+                    val untranslatedCount = if (state.showTargetTranslation && state.isTranslationSupported && state.hasTranscript) {
                         state.chunks.count { chunk -> isChunkEligibleForTranslation(chunk, state.languagePair) }
                     } else {
                         0
                     }
-                    Triple(state.mediaId, state.showTargetTranslation && state.isTranslationSupported && state.isAllTranscriptionCompleted, untranslatedCount)
+                    Triple(state.mediaId, state.showTargetTranslation && state.isTranslationSupported && state.hasTranscript, untranslatedCount)
                 }
                 .distinctUntilChanged()
                 .collect { (_, canTranslate, untranslatedCount) ->
@@ -1936,6 +1940,36 @@ class PlayerViewModel @Inject constructor(
                         newStartMs = event.newStartMs,
                         newEndMs = event.newEndMs,
                     )
+                }
+            }
+
+            is PlayerEvent.DeleteChunk -> {
+                val id = resolveActiveMediaId() ?: return
+                pendingLanguageCommitJobs.remove(event.chunkId)?.cancel()
+                viewModelScope.launch {
+                    withContext(NonCancellable) {
+                        val currentRepeatIds = playbackController.practice.value.repeatChunkIds
+                        val selectedRanges = if (currentRepeatIds.isNotEmpty()) {
+                            uiState.value.chunks
+                                .filter { it.id in currentRepeatIds && it.id != event.chunkId }
+                                .map { it.startMs to it.endMs }
+                                .toSet()
+                        } else {
+                            emptySet()
+                        }
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                        }
+                        val deleted = analysisRepository.deleteChunk(id, event.chunkId)
+                        if (deleted && currentRepeatIds.isNotEmpty()) {
+                            val updatedChunks = analysisRepository.observeChunks(id).first()
+                            val preservedIds = updatedChunks
+                                .filter { (it.startMs to it.endMs) in selectedRanges }
+                                .map { it.id }
+                                .toSet()
+                            playbackController.updatePractice { it.copy(repeatChunkIds = preservedIds) }
+                        }
+                    }
                 }
             }
 
@@ -2693,7 +2727,7 @@ class PlayerViewModel @Inject constructor(
         val mediaId = resolveActiveMediaId() ?: return
         if (!initialState.showTargetTranslation ||
             !initialState.isTranslationSupported ||
-            !initialState.isAllTranscriptionCompleted
+            !initialState.hasTranscript
         ) {
             return
         }
@@ -2709,7 +2743,7 @@ class PlayerViewModel @Inject constructor(
                         activeMediaId != mediaId ||
                         !state.showTargetTranslation ||
                         !state.isTranslationSupported ||
-                        !state.isAllTranscriptionCompleted ||
+                        !state.hasTranscript ||
                         pair == null ||
                         baseLang == null
                     ) {
@@ -2769,10 +2803,24 @@ class PlayerViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             withContext(NonCancellable) {
+                val currentRepeatIds = playbackController.practice.value.repeatChunkIds
+                val selectedRanges = if (currentRepeatIds.isNotEmpty()) {
+                    uiState.value.chunks
+                        .filter { it.id in currentRepeatIds && it.id != chunkId }
+                        .map { it.startMs to it.endMs }
+                        .toSet()
+                } else {
+                    emptySet()
+                }
                 val split = analysisRepository.splitChunk(id, chunkId, splitPositionMs)
-                if (split && playbackController.practice.value.repeatChunkIds.isNotEmpty()) {
+                if (split && currentRepeatIds.isNotEmpty()) {
+                    val updatedChunks = analysisRepository.observeChunks(id).first()
+                    val preservedIds = updatedChunks
+                        .filter { (it.startMs to it.endMs) in selectedRanges }
+                        .map { it.id }
+                        .toSet()
                     playbackController.updatePractice { current ->
-                        if (current.repeatChunkIds.isEmpty()) current else current.copy(repeatChunkIds = emptySet())
+                        if (current.repeatChunkIds.isEmpty()) current else current.copy(repeatChunkIds = preservedIds)
                     }
                 }
             }
