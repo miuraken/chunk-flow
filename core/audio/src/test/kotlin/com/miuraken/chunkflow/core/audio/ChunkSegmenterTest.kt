@@ -188,7 +188,7 @@ class ChunkSegmenterTest {
     }
 
     @Test
-    fun `splitAndTrimSilence_分割後の前半と後半から無音部分がトリミングされ元チャンクと分割境界内に収まる`() {
+    fun `splitAndTrimSilence_分割後の前半と後半から無音部分がトリミングされパディングで埋まらない`() {
         // 5秒 = 500フレーム (10ms/frame)。ノイズフロア -60dB、発話 -12dB
         val energy = FloatArray(500) { -60f }
         // 元チャンク [500..4500ms] のうち:
@@ -199,7 +199,7 @@ class ChunkSegmenterTest {
         for (f in 260 until 390) energy[f] = -12f
 
         val segmenter = ChunkSegmenter()
-        val params = SegmentationParams(prePaddingMs = 100, postPaddingMs = 150)
+        val params = SegmentationParams(prePaddingMs = 150, postPaddingMs = 200)
         val (first, second) = segmenter.splitAndTrimSilence(
             logEnergyDb = energy,
             chunkStartMs = 500L,
@@ -209,34 +209,71 @@ class ChunkSegmenterTest {
             binMs = 10,
         )
 
-        // 前半: 発話 [800..1600ms] に pre=100, post=150 -> [700..1750ms]（500..2100ms の範囲内）
-        assertEquals(700L to 1_750L, first)
-        // 後半: 発話 [2600..3900ms] に pre=100, post=150 -> [2500..4050ms]（2100..4500ms の範囲内）
-        assertEquals(2_500L to 4_050L, second)
+        // 前半: 発話 [800..1600ms] に最小限のパディング（最大 30ms）-> [770..1630ms]
+        assertEquals(770L to 1_630L, first)
+        // 後半: 発話 [2600..3900ms] に最小限のパディング（最大 30ms）-> [2570..3930ms]
+        assertEquals(2_570L to 3_930L, second)
     }
 
     @Test
-    fun `splitAndTrimSilence_パディングが元チャンク境界や分割点を超える場合は半区間内にクランプされる`() {
-        val energy = FloatArray(400) { -60f }
-        // 元チャンク [1000..3000ms]、分割点 2000ms
-        // 前半発話: [1050..1950ms] (frame 105..195)、後半発話: [2050..2950ms] (frame 205..295)
-        for (f in 105 until 195) energy[f] = -10f
-        for (f in 205 until 295) energy[f] = -10f
+    fun `splitAndTrimSilence_チャンク内部のポーズがマイナス40dBでもファイル全体のデジタル無音に引きずられずトリミングされる`() {
+        // ファイル全体 10秒 (1000フレーム): 大部分が -100dB のデジタル無音
+        val energy = FloatArray(1_000) { -100f }
+        // チャンク [1000..4000ms] のうち:
+        // - 前半発話: [1200..2000ms] (-12dB)
+        // - チャンク内部ポーズ: [2000..2600ms] (-40dB: 室温ノイズや息継ぎ想定、分割点 2300ms)
+        // - 後半発話: [2600..3700ms] (-12dB)
+        for (f in 100 until 400) energy[f] = -40f
+        for (f in 120 until 200) energy[f] = -12f
+        for (f in 260 until 370) energy[f] = -12f
 
         val segmenter = ChunkSegmenter()
-        val params = SegmentationParams(prePaddingMs = 200, postPaddingMs = 250)
-        val (first, second) = segmenter.splitAndTrimSilence(
+        val pieces = segmenter.splitAndTrimSilencePieces(
             logEnergyDb = energy,
             chunkStartMs = 1_000L,
-            chunkEndMs = 3_000L,
-            splitPositionMs = 2_000L,
-            params = params,
+            chunkEndMs = 4_000L,
+            splitPositionMs = 2_300L,
+            params = SegmentationParams(prePaddingMs = 150, postPaddingMs = 200),
             binMs = 10,
         )
 
-        // パディング 200/250ms を足すと 1000ms・2000ms・3000ms を超えるが、それぞれの半区間内にクランプされる
-        assertEquals(1_000L to 2_000L, first)
-        assertEquals(2_000L to 3_000L, second)
+        assertEquals(2, pieces.size)
+        // ポーズ区間 [2000..2600ms] (-40dB) とチャンク端の無音 (-40dB) がトリミングされ、パディングは最大 30ms 以下に抑えられる
+        assertTrue(pieces[0].first in 1_170L..1_200L, "first.start=${pieces[0].first}")
+        assertTrue(pieces[0].second in 2_000L..2_030L, "first.end=${pieces[0].second}")
+        assertTrue(pieces[1].first in 2_570L..2_600L, "second.start=${pieces[1].first}")
+        assertTrue(pieces[1].second in 3_700L..3_730L, "second.end=${pieces[1].second}")
+    }
+
+    @Test
+    fun `splitAndTrimSilencePieces_片側の半区間が無音のみの場合は発話のある1区間のみを返す`() {
+        val energy = FloatArray(500) { -60f }
+        // 元チャンク [1000..3500ms] のうち、前半 [1000..1800ms] は無音 (-42dB)、後半 [1900..3200ms] のみ発話 (-12dB)
+        for (f in 100 until 190) energy[f] = -42f
+        for (f in 190 until 320) energy[f] = -12f
+        for (f in 320 until 350) energy[f] = -42f
+
+        val segmenter = ChunkSegmenter()
+        val piecesLeadingSilence = segmenter.splitAndTrimSilencePieces(
+            logEnergyDb = energy,
+            chunkStartMs = 1_000L,
+            chunkEndMs = 3_500L,
+            splitPositionMs = 1_800L,
+            binMs = 10,
+        )
+        assertEquals(1, piecesLeadingSilence.size)
+        assertEquals(1_875L to 3_230L, piecesLeadingSilence[0])
+
+        // 逆に後半 [3200..3500ms] の無音を切り落とすために 3250ms で分割した場合も前半の 1 区間のみを返す
+        val piecesTrailingSilence = segmenter.splitAndTrimSilencePieces(
+            logEnergyDb = energy,
+            chunkStartMs = 1_000L,
+            chunkEndMs = 3_500L,
+            splitPositionMs = 3_250L,
+            binMs = 10,
+        )
+        assertEquals(1, piecesTrailingSilence.size)
+        assertEquals(1_870L to 3_212L, piecesTrailingSilence[0])
     }
 
     @Test

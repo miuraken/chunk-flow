@@ -214,12 +214,76 @@ class ChunkSegmenter(
 
     /**
      * チャンク区間 `[chunkStartMs, chunkEndMs]` を [splitPositionMs] で前後に分割し、
+     * それぞれの半区間から前後の無音部分をトリミングした区間リスト（最大 2 件、片側が無音のみなら 1 件）を返す。
+     *
+     * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
+     * @param chunkStartMs 分割対象チャンクの開始時刻（ミリ秒）。
+     * @param chunkEndMs 分割対象チャンクの終了時刻（ミリ秒）。
+     * @param splitPositionMs 分割位置の時刻（ミリ秒、`chunkStartMs < splitPositionMs < chunkEndMs`）。
+     * @param params 分割・パディングのパラメータ。
+     * @param binMs 1 フレームの長さ（ミリ秒）。
+     * @return トリミング後のチャンク区間（`startMs to endMs`）のリスト（1 件または 2 件）。
+     */
+    fun splitAndTrimSilencePieces(
+        logEnergyDb: FloatArray,
+        chunkStartMs: Long,
+        chunkEndMs: Long,
+        splitPositionMs: Long,
+        params: SegmentationParams = SegmentationParams(),
+        binMs: Int = defaultBinMs,
+    ): List<Pair<Long, Long>> {
+        require(binMs > 0) { "binMs must be > 0: $binMs" }
+        require(chunkStartMs < splitPositionMs && splitPositionMs < chunkEndMs) {
+            "splitPositionMs ($splitPositionMs) must be strictly between chunkStartMs ($chunkStartMs) and chunkEndMs ($chunkEndMs)"
+        }
+        val firstRaw = chunkStartMs to splitPositionMs
+        val secondRaw = splitPositionMs to chunkEndMs
+        if (logEnergyDb.isEmpty()) {
+            return listOf(firstRaw, secondRaw)
+        }
+
+        val smoothed = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
+        val (effectiveThresholdDb, localS) = computeSplitSilenceThresholdDb(
+            smoothed = smoothed,
+            chunkStartMs = chunkStartMs,
+            chunkEndMs = chunkEndMs,
+            splitPositionMs = splitPositionMs,
+            params = params,
+            binMs = binMs,
+        )
+        val firstTrimmed = trimPieceSilenceOrNull(
+            rawEnergyDb = logEnergyDb,
+            smoothed = smoothed,
+            effectiveThresholdDb = effectiveThresholdDb,
+            localS = localS,
+            pieceStartMs = chunkStartMs,
+            pieceEndMs = splitPositionMs,
+            isFirstHalf = true,
+            binMs = binMs,
+        )
+        val secondTrimmed = trimPieceSilenceOrNull(
+            rawEnergyDb = logEnergyDb,
+            smoothed = smoothed,
+            effectiveThresholdDb = effectiveThresholdDb,
+            localS = localS,
+            pieceStartMs = splitPositionMs,
+            pieceEndMs = chunkEndMs,
+            isFirstHalf = false,
+            binMs = binMs,
+        )
+        return when {
+            firstTrimmed != null && secondTrimmed != null -> listOf(firstTrimmed, secondTrimmed)
+            firstTrimmed != null -> listOf(firstTrimmed)
+            secondTrimmed != null -> listOf(secondTrimmed)
+            else -> listOf(firstRaw, secondRaw)
+        }
+    }
+
+    /**
+     * チャンク区間 `[chunkStartMs, chunkEndMs]` を [splitPositionMs] で前後に分割し、
      * それぞれの半区間から前後の無音部分をトリミングした 2 つの区間（前半と後半の `startMs to endMs`）を返す。
      *
-     * ファイル全体の [logEnergyDb] を渡すことで適応閾値（P10/P90）を安定して推定し、
-     * 各半区間内の発話フレーム範囲に `params.prePaddingMs` / `params.postPaddingMs` の余白を付与して
-     * 元の半区間 `[chunkStartMs, splitPositionMs]` および `[splitPositionMs, chunkEndMs]` の範囲内にクランプする。
-     * 半区間内に発話フレームが 1 つも見つからない場合は、チャンクが消滅しないよう元の半区間をそのまま返す。
+     * 半区間内に発話フレームが 1 つも見つからない場合は、元の半区間をそのまま返す。
      *
      * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
      * @param chunkStartMs 分割対象チャンクの開始時刻（ミリ秒）。
@@ -247,75 +311,224 @@ class ChunkSegmenter(
             return firstRaw to secondRaw
         }
 
-        val vadResult = vad.detect(logEnergyDb, params)
-        val firstTrimmed = trimPieceSilence(
-            vadResult = vadResult,
+        val smoothed = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
+        val (effectiveThresholdDb, localS) = computeSplitSilenceThresholdDb(
+            smoothed = smoothed,
+            chunkStartMs = chunkStartMs,
+            chunkEndMs = chunkEndMs,
+            splitPositionMs = splitPositionMs,
+            params = params,
+            binMs = binMs,
+        )
+        val firstTrimmed = trimPieceSilenceOrNull(
+            rawEnergyDb = logEnergyDb,
+            smoothed = smoothed,
+            effectiveThresholdDb = effectiveThresholdDb,
+            localS = localS,
             pieceStartMs = chunkStartMs,
             pieceEndMs = splitPositionMs,
-            params = params,
+            isFirstHalf = true,
             binMs = binMs,
         )
-        val secondTrimmed = trimPieceSilence(
-            vadResult = vadResult,
+        val secondTrimmed = trimPieceSilenceOrNull(
+            rawEnergyDb = logEnergyDb,
+            smoothed = smoothed,
+            effectiveThresholdDb = effectiveThresholdDb,
+            localS = localS,
             pieceStartMs = splitPositionMs,
             pieceEndMs = chunkEndMs,
-            params = params,
+            isFirstHalf = false,
             binMs = binMs,
         )
-        return firstTrimmed to secondTrimmed
+        return (firstTrimmed ?: firstRaw) to (secondTrimmed ?: secondRaw)
     }
 
-    private fun trimPieceSilence(
-        vadResult: VadResult,
-        pieceStartMs: Long,
-        pieceEndMs: Long,
+    private fun computeSplitSilenceThresholdDb(
+        smoothed: FloatArray,
+        chunkStartMs: Long,
+        chunkEndMs: Long,
+        splitPositionMs: Long,
         params: SegmentationParams,
         binMs: Int,
-    ): Pair<Long, Long> {
-        if (pieceEndMs <= pieceStartMs) return pieceStartMs to pieceEndMs
-        val totalFrames = vadResult.speechFrames.size
-        if (totalFrames == 0) return pieceStartMs to pieceEndMs
+    ): Pair<Float, Float> {
+        val totalFrames = smoothed.size
+        val globalSorted = FloatArray(totalFrames) { i ->
+            smoothed[i].coerceAtLeast(DbfsQuantizer.FLOOR_DB)
+        }.apply { sort() }
+        val globalN = EnergyVoiceActivityDetector.percentileSorted(globalSorted, 0.10f)
+        val globalS = EnergyVoiceActivityDetector.percentileSorted(globalSorted, 0.90f)
+        val ratio = params.thresholdRatio.coerceIn(0f, 1f)
+        val globalThresholdDb = (globalN + ratio * (globalS - globalN)).coerceIn(-55f, -25f)
+
+        val chunkStartFrame = (chunkStartMs / binMs).toInt().coerceIn(0, totalFrames)
+        val chunkEndFrame = ((chunkEndMs + binMs - 1L) / binMs).toInt().coerceIn(chunkStartFrame, totalFrames)
+        if (chunkStartFrame >= chunkEndFrame) {
+            return globalThresholdDb to globalS
+        }
+
+        val chunkSorted = FloatArray(chunkEndFrame - chunkStartFrame) { idx ->
+            smoothed[chunkStartFrame + idx].coerceAtLeast(DbfsQuantizer.FLOOR_DB)
+        }.apply { sort() }
+        val localN = EnergyVoiceActivityDetector.percentileSorted(chunkSorted, 0.10f)
+        val localS = EnergyVoiceActivityDetector.percentileSorted(chunkSorted, 0.90f)
+        val localRatio = max(ratio, 0.35f)
+        val localThresholdDb = if (localS - localN >= 5f) {
+            (localN + localRatio * (localS - localN)).coerceIn(-55f, max(-55f, localS - 4f))
+        } else {
+            globalThresholdDb
+        }
+
+        val localSilenceCeilingDb = (localS - 15f).coerceIn(-55f, -22f)
+
+        val splitFrame = (splitPositionMs / binMs).toInt().coerceIn(chunkStartFrame, chunkEndFrame - 1)
+        val valleyStart = (splitFrame - 3).coerceAtLeast(chunkStartFrame)
+        val valleyEnd = (splitFrame + 3).coerceAtMost(chunkEndFrame - 1)
+        var splitLocalDb = Float.POSITIVE_INFINITY
+        for (f in valleyStart..valleyEnd) {
+            val v = smoothed[f].coerceAtLeast(DbfsQuantizer.FLOOR_DB)
+            if (v < splitLocalDb) {
+                splitLocalDb = v
+            }
+        }
+        val valleyThresholdDb = if (splitLocalDb.isFinite() && localS - splitLocalDb >= 5f) {
+            (splitLocalDb + 0.40f * (localS - splitLocalDb)).coerceIn(-55f, max(-55f, localS - 4f))
+        } else {
+            globalThresholdDb
+        }
+
+        val effectiveThresholdDb = maxOf(
+            globalThresholdDb,
+            localThresholdDb,
+            localSilenceCeilingDb,
+            valleyThresholdDb,
+        ).coerceAtMost(localS - 3f)
+
+        return effectiveThresholdDb to localS
+    }
+
+    private fun trimPieceSilenceOrNull(
+        rawEnergyDb: FloatArray,
+        smoothed: FloatArray,
+        effectiveThresholdDb: Float,
+        localS: Float,
+        pieceStartMs: Long,
+        pieceEndMs: Long,
+        isFirstHalf: Boolean,
+        binMs: Int,
+    ): Pair<Long, Long>? {
+        if (pieceEndMs <= pieceStartMs) return null
+        val totalFrames = smoothed.size
+        if (totalFrames == 0) return null
 
         val startFrame = (pieceStartMs / binMs).toInt().coerceIn(0, totalFrames)
         val endFrame = ((pieceEndMs + binMs - 1L) / binMs).toInt().coerceIn(startFrame, totalFrames)
-        if (startFrame >= endFrame) return pieceStartMs to pieceEndMs
+        if (startFrame >= endFrame) return null
 
-        var firstSpeechFrame = -1
-        var lastSpeechFrame = -1
+        var maxSmoothed = Float.NEGATIVE_INFINITY
+        var maxPeak = Float.NEGATIVE_INFINITY
         for (f in startFrame until endFrame) {
-            if (vadResult.speechFrames[f]) {
-                if (firstSpeechFrame < 0) {
-                    firstSpeechFrame = f
+            val s = smoothed[f]
+            if (s > maxSmoothed) maxSmoothed = s
+            val p = max(rawEnergyDb[f], s)
+            if (p > maxPeak) maxPeak = p
+        }
+        if (maxSmoothed < effectiveThresholdDb) {
+            return null
+        }
+
+        val onset = effectiveThresholdDb + 1.5f
+        val offset = effectiveThresholdDb
+        val pieceFrameCount = endFrame - startFrame
+        val pieceSpeech = BooleanArray(pieceFrameCount)
+        var inSpeech = false
+        var anyOnset = false
+        for (i in 0 until pieceFrameCount) {
+            val e = smoothed[startFrame + i]
+            if (!inSpeech && e > onset) {
+                inSpeech = true
+                anyOnset = true
+            } else if (inSpeech && e < offset) {
+                inSpeech = false
+            }
+            pieceSpeech[i] = inSpeech
+        }
+
+        if (!anyOnset) {
+            if (maxSmoothed >= effectiveThresholdDb && maxPeak >= localS - 8f) {
+                for (i in 0 until pieceFrameCount) {
+                    pieceSpeech[i] = smoothed[startFrame + i] >= effectiveThresholdDb
                 }
-                lastSpeechFrame = f
+            } else {
+                return null
             }
         }
 
-        if (firstSpeechFrame < 0) {
-            val thresholdDb = vadResult.thresholdDb
-            val smoothed = vadResult.smoothedEnergyDb
-            for (f in startFrame until endFrame) {
-                if (smoothed[f] >= thresholdDb) {
-                    if (firstSpeechFrame < 0) {
-                        firstSpeechFrame = f
-                    }
-                    lastSpeechFrame = f
+        val bridgedLocal = extractAndBridgeIntervals(
+            speechFrames = pieceSpeech,
+            minSilenceMs = 40,
+            binMs = binMs,
+        )
+        if (bridgedLocal.isEmpty()) return null
+
+        val runs = bridgedLocal.mapNotNull { localRun ->
+            val globalRun = FrameInterval(
+                startFrame = startFrame + localRun.startFrame,
+                endFrame = startFrame + localRun.endFrame,
+            )
+            val durationMs = globalRun.durationMs(binMs)
+            val peakDb = maxPeakEnergyDb(globalRun, rawEnergyDb, smoothed)
+            if (durationMs < 60 && peakDb < effectiveThresholdDb + 5f) {
+                null
+            } else {
+                globalRun
+            }
+        }.toMutableList()
+
+        if (runs.isEmpty()) return null
+
+        if (runs.size >= 2) {
+            val maxRunDurationMs = runs.maxOf { it.durationMs(binMs) }
+            if (isFirstHalf) {
+                val boundaryRun = runs.last()
+                val prevRun = runs[runs.size - 2]
+                val boundaryDurationMs = boundaryRun.durationMs(binMs)
+                val gapMs = (boundaryRun.startFrame - prevRun.endFrame) * binMs
+                if (boundaryDurationMs < 180 &&
+                    boundaryDurationMs < maxRunDurationMs * 0.30f &&
+                    gapMs >= 80
+                ) {
+                    runs.removeAt(runs.lastIndex)
+                }
+            } else {
+                val boundaryRun = runs.first()
+                val nextRun = runs[1]
+                val boundaryDurationMs = boundaryRun.durationMs(binMs)
+                val gapMs = (nextRun.startFrame - boundaryRun.endFrame) * binMs
+                if (boundaryDurationMs < 180 &&
+                    boundaryDurationMs < maxRunDurationMs * 0.30f &&
+                    gapMs >= 80
+                ) {
+                    runs.removeAt(0)
                 }
             }
         }
 
-        if (firstSpeechFrame < 0 || lastSpeechFrame < firstSpeechFrame) {
-            return pieceStartMs to pieceEndMs
-        }
+        if (runs.isEmpty()) return null
+
+        val firstSpeechFrame = runs.first().startFrame
+        val lastSpeechFrame = runs.last().endFrame - 1
+        if (lastSpeechFrame < firstSpeechFrame) return null
 
         val rawSpeechStartMs = (firstSpeechFrame.toLong() * binMs).coerceIn(pieceStartMs, pieceEndMs)
         val rawSpeechEndMs = ((lastSpeechFrame + 1).toLong() * binMs).coerceIn(rawSpeechStartMs, pieceEndMs)
         if (rawSpeechEndMs <= rawSpeechStartMs) {
-            return pieceStartMs to pieceEndMs
+            return null
         }
 
-        val preMs = params.prePaddingMs.coerceAtLeast(0).toLong()
-        val postMs = params.postPaddingMs.coerceAtLeast(0).toLong()
+        val leadingSilenceMs = (rawSpeechStartMs - pieceStartMs).coerceAtLeast(0L)
+        val trailingSilenceMs = (pieceEndMs - rawSpeechEndMs).coerceAtLeast(0L)
+        val preMs = min(30L, leadingSilenceMs / 4L)
+        val postMs = min(30L, trailingSilenceMs / 4L)
         val trimmedStartMs = (rawSpeechStartMs - preMs).coerceIn(pieceStartMs, rawSpeechStartMs)
         val trimmedEndMs = (rawSpeechEndMs + postMs).coerceIn(max(rawSpeechEndMs, trimmedStartMs + 1L), pieceEndMs)
         return trimmedStartMs to trimmedEndMs
