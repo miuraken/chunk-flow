@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
@@ -201,6 +202,7 @@ fun SettingsScreen(
                             defaultSpeed = state.defaultSpeed,
                             defaultAutoPause = state.defaultAutoPause,
                             defaultAutoPauseScope = state.defaultAutoPauseScope,
+                            skipOriginalSilence = state.skipOriginalSilence,
                             onEvent = onEvent,
                         )
                     }
@@ -246,6 +248,7 @@ private fun PlaybackSettingsSection(
     defaultSpeed: Float,
     defaultAutoPause: AutoPause,
     defaultAutoPauseScope: AutoPauseScope,
+    skipOriginalSilence: Boolean,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_playback)) {
@@ -407,6 +410,38 @@ private fun PlaybackSettingsSection(
                         modifier = Modifier.padding(start = 6.dp),
                     )
                 }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .toggleable(
+                    value = skipOriginalSilence,
+                    onValueChange = { onEvent(SettingsEvent.SetSkipOriginalSilence(it)) },
+                    role = Role.Checkbox,
+                )
+                .padding(vertical = 4.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(
+                checked = skipOriginalSilence,
+                onCheckedChange = null,
+            )
+            Column(
+                modifier = Modifier.padding(start = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_skip_original_silence_label),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = stringResource(R.string.settings_skip_original_silence_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
