@@ -14,9 +14,11 @@ import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.UserSettings
 import java.io.IOException
 import javax.inject.Inject
@@ -27,10 +29,14 @@ import kotlinx.coroutines.flow.map
 
 /**
  * Preferences [DataStore] を使った [UserSettingsRepository] の実装（§6.4）。
+ *
+ * 言語設定（選べる言語）と言語ごとの文字起こしエンジンは、ADR-0011 の新しいキーに保存する。
+ * 以前のキー（`enabled_languages`）は読まない（前の選択は引き継がない。人間の判断）。
  */
 @Singleton
 class DataStoreUserSettingsRepository @Inject constructor(
     private val dataStore: DataStore<Preferences>,
+    private val deviceLanguagesProvider: DeviceLanguagesProvider,
 ) : UserSettingsRepository {
 
     override val settings: Flow<UserSettings> = dataStore.data
@@ -146,8 +152,15 @@ class DataStoreUserSettingsRepository @Inject constructor(
     override suspend fun setEnabledLanguages(languages: Set<LanguageTag>) {
         require(languages.isNotEmpty()) { "enabledLanguages must not be empty" }
         require(languages.all { it.value.isNotBlank() }) { "language tag must not be blank" }
+        val codes = languages
+            .map { LanguageSettings.normalizeCode(it.value) }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        require(codes.isNotEmpty()) { "enabledLanguages must contain at least one valid language" }
         dataStore.edit { prefs ->
-            prefs[KEY_ENABLED_LANGUAGES] = languages.joinToString(",") { it.value }
+            prefs[KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES] = codes.joinToString(",")
+            // 以前のキーは読まないので、残さないようにする（ADR-0011 §2.1）
+            prefs.remove(KEY_LEGACY_ENABLED_LANGUAGES)
         }
     }
 
@@ -166,6 +179,24 @@ class DataStoreUserSettingsRepository @Inject constructor(
     override suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) {
         dataStore.edit { prefs ->
             prefs[KEY_TRANSCRIPTION_ENGINE] = engine.name
+        }
+    }
+
+    override suspend fun setSttEngineForLanguage(language: LanguageTag, engine: SttEngine?) {
+        val code = LanguageSettings.normalizeCode(language.value)
+        require(code.isNotEmpty()) { "language tag must not be blank" }
+        dataStore.edit { prefs ->
+            val current = decodeEngineByLanguage(prefs[KEY_STT_ENGINE_BY_LANGUAGE]).toMutableMap()
+            if (engine == null) {
+                current.remove(LanguageTag(code))
+            } else {
+                current[LanguageTag(code)] = engine
+            }
+            if (current.isEmpty()) {
+                prefs.remove(KEY_STT_ENGINE_BY_LANGUAGE)
+            } else {
+                prefs[KEY_STT_ENGINE_BY_LANGUAGE] = encodeEngineByLanguage(current)
+            }
         }
     }
 
@@ -225,17 +256,18 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val thresholdRatio = this[KEY_SEG_THRESHOLD_RATIO]
             ?.takeIf { it in 0.0f..1.0f }
             ?: defaultSeg.thresholdRatio
-        val enabledLanguages = this[KEY_ENABLED_LANGUAGES]
+        val enabledLanguages = this[KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES]
             ?.split(",")
-            ?.map { it.trim() }
+            ?.map { LanguageSettings.normalizeCode(it) }
             ?.filter { it.isNotEmpty() }
             ?.map(::LanguageTag)
-            ?.toSet()
+            ?.toCollection(LinkedHashSet())
             ?.takeIf { it.isNotEmpty() }
-            ?: UserSettings.DEFAULT_ENABLED_LANGUAGES
+            ?: LanguageSettings.defaultEnabledLanguages(deviceLanguagesProvider.deviceLanguageTags())
         val transcriptionEngine = this[KEY_TRANSCRIPTION_ENGINE]
             ?.let { name -> OnDeviceTranscriptionEngine.entries.firstOrNull { it.name == name } }
             ?: defaults.transcriptionEngine
+        val sttEngineByLanguage = decodeEngineByLanguage(this[KEY_STT_ENGINE_BY_LANGUAGE])
 
         return UserSettings(
             defaultLanguagePair = LanguagePair(target = targetLang, base = baseLang),
@@ -260,6 +292,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
             lookaheadTranscriptionEnabled = this[KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED]
                 ?: defaults.lookaheadTranscriptionEnabled,
             transcriptionEngine = transcriptionEngine,
+            sttEngineByLanguage = sttEngineByLanguage,
         )
     }
 
@@ -284,10 +317,33 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_SEG_PRE_PADDING_MS = intPreferencesKey("seg_pre_padding_ms")
         val KEY_SEG_POST_PADDING_MS = intPreferencesKey("seg_post_padding_ms")
         val KEY_SEG_THRESHOLD_RATIO = floatPreferencesKey("seg_threshold_ratio")
-        val KEY_ENABLED_LANGUAGES = stringPreferencesKey("enabled_languages")
+
+        /** 以前の「選べる言語」のキー。読まない（ADR-0011 §2.1）。書き込むときに消す。 */
+        val KEY_LEGACY_ENABLED_LANGUAGES = stringPreferencesKey("enabled_languages")
+
+        /** 言語設定タブで選んだ言語（カタログの言語コードのカンマ区切り。ADR-0011 §2.1）。 */
+        val KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES = stringPreferencesKey("language_settings_enabled_languages")
         val KEY_SHOW_TARGET_ROMANIZATION = booleanPreferencesKey("show_target_romanization")
         val KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED = booleanPreferencesKey("lookahead_transcription_enabled")
         val KEY_TRANSCRIPTION_ENGINE = stringPreferencesKey("transcription_engine")
+
+        /** 言語ごとに優先する文字起こしエンジン（`code=ENGINE` のカンマ区切り。ADR-0011 §2.2）。 */
+        val KEY_STT_ENGINE_BY_LANGUAGE = stringPreferencesKey("stt_engine_by_language")
+
+        /** 言語ごとのエンジンを `code=ENGINE` のカンマ区切りにする（言語コード順で、保存の内容を安定させる）。 */
+        fun encodeEngineByLanguage(engineByLanguage: Map<LanguageTag, SttEngine>): String = engineByLanguage.entries
+            .sortedBy { it.key.value }
+            .joinToString(",") { (language, engine) -> "${language.value}=${engine.name}" }
+
+        /** [encodeEngineByLanguage] の逆。壊れた項目や知らないエンジン名は読み飛ばす。 */
+        fun decodeEngineByLanguage(raw: String?): Map<LanguageTag, SttEngine> {
+            if (raw.isNullOrBlank()) return emptyMap()
+            return raw.split(",").mapNotNull { item ->
+                val code = LanguageSettings.normalizeCode(item.substringBefore('=', missingDelimiterValue = ""))
+                val engine = SttEngine.fromNameOrNull(item.substringAfter('=', missingDelimiterValue = "").trim())
+                if (code.isEmpty() || engine == null) null else LanguageTag(code) to engine
+            }.toMap()
+        }
 
         fun encodeAutoPause(autoPause: AutoPause): String = when (autoPause) {
             AutoPause.Off -> AUTO_PAUSE_OFF

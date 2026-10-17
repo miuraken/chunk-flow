@@ -12,6 +12,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.UserSettings
 import java.io.File
 import kotlin.test.Test
@@ -30,13 +31,16 @@ class DataStoreUserSettingsRepositoryTest {
     @get:Rule
     val tempFolder: TemporaryFolder = TemporaryFolder()
 
-    private fun createRepository(scope: TestScope): Pair<DataStoreUserSettingsRepository, androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>> {
+    private fun createRepository(
+        scope: TestScope,
+        deviceLanguageTags: List<String> = listOf("ja-JP"),
+    ): Pair<DataStoreUserSettingsRepository, androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>> {
         val file = File(tempFolder.newFolder(), "test_user_settings.preferences_pb")
         val dataStore = PreferenceDataStoreFactory.create(
             scope = scope.backgroundScope,
             produceFile = { file },
         )
-        return DataStoreUserSettingsRepository(dataStore) to dataStore
+        return DataStoreUserSettingsRepository(dataStore) { deviceLanguageTags } to dataStore
     }
 
     @Test
@@ -155,5 +159,75 @@ class DataStoreUserSettingsRepositoryTest {
         assertEquals(AutoPause.Off, current.defaultAutoPause)
         assertEquals(SegmentationParams(), current.defaultSegmentationParams)
         assertEquals(OnDeviceTranscriptionEngine.AUTO, current.transcriptionEngine)
+    }
+
+    @Test
+    fun `言語設定が未保存_端末の言語と英語が既定で有効になる`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, _) = createRepository(this, deviceLanguageTags = listOf("ko-KR", "zh-Hant-TW", "xx-YY"))
+
+        // 一覧にない言語（xx）は使わず、繁体中国語は zh-tw にそろえる
+        assertEquals(
+            listOf(LanguageTag("ko"), LanguageTag("zh-tw"), LanguageTag("en")),
+            repository.settings.first().enabledLanguages.toList(),
+        )
+    }
+
+    @Test
+    fun `以前のキーenabled_languagesは読まずに新しい既定から始める`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, dataStore) = createRepository(this, deviceLanguageTags = listOf("ja-JP"))
+        dataStore.edit { prefs -> prefs[stringPreferencesKey("enabled_languages")] = "ko,hi" }
+
+        assertEquals(setOf(LanguageTag("ja"), LanguageTag("en")), repository.settings.first().enabledLanguages)
+
+        // 新しいキーに書くと、以前のキーは消える
+        repository.setEnabledLanguages(setOf(LanguageTag("fr")))
+        assertEquals(null, dataStore.data.first()[stringPreferencesKey("enabled_languages")])
+        assertEquals(setOf(LanguageTag("fr")), repository.settings.first().enabledLanguages)
+    }
+
+    @Test
+    fun `選んだ言語は設定用の言語コードにそろえて保存する`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, _) = createRepository(this)
+
+        repository.setEnabledLanguages(setOf(LanguageTag("zh"), LanguageTag("zh-Hant"), LanguageTag("EN")))
+
+        assertEquals(
+            setOf(LanguageTag("zh-cn"), LanguageTag("zh-tw"), LanguageTag("en")),
+            repository.settings.first().enabledLanguages,
+        )
+    }
+
+    @Test
+    fun `言語ごとのエンジンを設定と解除でき_言語コードはそろえて保存する`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, _) = createRepository(this)
+        assertEquals(emptyMap(), repository.settings.first().sttEngineByLanguage)
+
+        repository.setSttEngineForLanguage(LanguageTag("ko"), SttEngine.SHERPA_ONNX)
+        repository.setSttEngineForLanguage(LanguageTag("zh-Hans"), SttEngine.SPEECH_RECOGNIZER)
+        assertEquals(
+            mapOf(LanguageTag("ko") to SttEngine.SHERPA_ONNX, LanguageTag("zh-cn") to SttEngine.SPEECH_RECOGNIZER),
+            repository.settings.first().sttEngineByLanguage,
+        )
+
+        repository.setSttEngineForLanguage(LanguageTag("ko"), null)
+        assertEquals(
+            mapOf(LanguageTag("zh-cn") to SttEngine.SPEECH_RECOGNIZER),
+            repository.settings.first().sttEngineByLanguage,
+        )
+
+        assertFailsWith<IllegalArgumentException> { repository.setSttEngineForLanguage(LanguageTag(" "), SttEngine.ML_KIT) }
+    }
+
+    @Test
+    fun `保存済みの言語ごとのエンジンが壊れていても読める項目だけを使う`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, dataStore) = createRepository(this)
+        dataStore.edit { prefs ->
+            prefs[stringPreferencesKey("stt_engine_by_language")] = "ja=ML_KIT,ko=UNKNOWN,=SHERPA_ONNX,broken,hi=SHERPA_ONNX"
+        }
+
+        assertEquals(
+            mapOf(LanguageTag("ja") to SttEngine.ML_KIT, LanguageTag("hi") to SttEngine.SHERPA_ONNX),
+            repository.settings.first().sttEngineByLanguage,
+        )
     }
 }

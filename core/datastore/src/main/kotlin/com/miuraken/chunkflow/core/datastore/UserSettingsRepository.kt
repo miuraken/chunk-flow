@@ -7,6 +7,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
 
@@ -57,4 +58,12 @@ interface UserSettingsRepository {
 
     /** 端末内文字起こしで使用する音声認識ライブラリ（エンジン）を更新する。 */
     suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) = Unit
+
+    /**
+     * 言語 [language] で優先する文字起こしエンジンを更新する（ADR-0011 §2.2）。
+     *
+     * [engine] が `null` のときは言語ごとの設定を消し、自動（[SttEngine.AUTO_ORDER]）に戻す。
+     * 言語は [com.miuraken.chunkflow.core.model.LanguageSettings.normalize] でそろえて保存する。
+     */
+    suspend fun setSttEngineForLanguage(language: LanguageTag, engine: SttEngine?) = Unit
 }

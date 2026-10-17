@@ -8,6 +8,7 @@ import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
+import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import dagger.Module
@@ -31,7 +32,7 @@ object DatabaseModule {
         ChunkFlowDatabase::class.java,
         ChunkFlowDatabase.DATABASE_NAME,
     )
-        .addMigrations(ChunkFlowDatabase.MIGRATION_1_2, ChunkFlowDatabase.MIGRATION_2_3)
+        .addMigrations(*ChunkFlowDatabase.ALL_MIGRATIONS)
         .build()
 
     /** [MediaItemDao] を提供する。 */
@@ -61,4 +62,8 @@ object DatabaseModule {
     /** [DriveFileDao] を提供する。 */
     @Provides
     fun providesDriveFileDao(database: ChunkFlowDatabase): DriveFileDao = database.driveFileDao()
+
+    /** [ItemSttOverrideDao] を提供する（ADR-0011 §2.3）。 */
+    @Provides
+    fun providesItemSttOverrideDao(database: ChunkFlowDatabase): ItemSttOverrideDao = database.itemSttOverrideDao()
 }

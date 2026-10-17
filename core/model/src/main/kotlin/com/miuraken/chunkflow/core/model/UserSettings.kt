@@ -83,10 +83,14 @@ enum class PhoneticGuideKind {
  * @property defaultAutoPause 新しく開く教材の既定の自動ポーズ設定（F6.3、F9.1）。
  * @property defaultAutoPauseScope 既定の自動ポーズ対象言語範囲（両言語・学習言語のみ・解説言語のみ）。
  * @property defaultSegmentationParams 端末内の自動チャンク分割の既定パラメータ（§7.3.3、F5.2、F9.1）。
- * @property enabledLanguages 設定画面やダイアログの言語選択肢として表示する言語の集合。
+ * @property enabledLanguages 設定画面やダイアログの言語選択肢として表示する言語の集合（言語設定タブで選ぶ。ADR-0011 §2.1）。
+ *   保存されていないときの既定は、端末の設定言語と英語（[LanguageSettings.defaultEnabledLanguages]）。
  * @property showTargetRomanization 対象言語が非ラテン文字（日本語・中国語・ヒンディー語・韓国語など）のときに、アルファベットによる読み方（ローマ字・Pinyin・IAST など）をチャンクに付加して表示するかどうか。
  * @property lookaheadTranscriptionEnabled 再生中に未検出のチャンクの先読み文字起こしを自動的に行うかどうか（既定はオン `true`）。
  * @property transcriptionEngine 端末内文字起こしで使用する音声認識ライブラリ（エンジン）の選択（既定は [OnDeviceTranscriptionEngine.AUTO]）。
+ *   ADR-0011 の移行の途中の設定で、言語ごとの設定（[sttEngineByLanguage]）に切り替わったら消す。
+ * @property sttEngineByLanguage 言語ごとに優先する文字起こしエンジン（ADR-0011 §2.2）。キーは [LanguageSettings.normalize] で
+ *   そろえた言語。キーがない言語は自動（[SttEngine.AUTO_ORDER]）。
  */
 data class UserSettings(
     val defaultLanguagePair: LanguagePair = LanguagePair(
@@ -105,6 +109,7 @@ data class UserSettings(
     val showTargetRomanization: Boolean = false,
     val lookaheadTranscriptionEnabled: Boolean = true,
     val transcriptionEngine: OnDeviceTranscriptionEngine = OnDeviceTranscriptionEngine.AUTO,
+    val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
 ) {
     init {
         require(defaultSpeed in ItemState.MIN_SPEED..ItemState.MAX_SPEED) {
@@ -122,7 +127,11 @@ data class UserSettings(
         /** 早送りの既定値（5 秒、F3.3）。 */
         const val DEFAULT_SEEK_FORWARD_MS: Long = 5_000L
 
-        /** 選択肢として有効な言語の既定セット（日本語・英語）。 */
+        /**
+         * 端末の言語がわからないとき（プレビュー・テストなど）に使う、選択肢として有効な言語の既定セット（日本語・英語）。
+         *
+         * アプリの実行時の既定は、端末の設定言語と英語（[LanguageSettings.defaultEnabledLanguages]）。
+         */
         val DEFAULT_ENABLED_LANGUAGES: Set<LanguageTag> = setOf(
             LanguageTag("ja"),
             LanguageTag("en"),

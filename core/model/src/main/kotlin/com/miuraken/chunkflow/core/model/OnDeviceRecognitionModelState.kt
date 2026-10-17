@@ -69,6 +69,19 @@ enum class OnDeviceTranscriptionEngine {
 }
 
 /**
+ * ML Kit GenAI Speech Recognition の認識モード（ADR-0011 §2.2）。
+ *
+ * 端末と言語に合わせて自動で選ぶ（高度 → 基本の順に試す）。
+ */
+enum class MlKitRecognitionMode {
+    /** 基本モード（API 31 以上の多くの端末。対応言語は少なめ）。 */
+    BASIC,
+
+    /** 高度モード（Gemini Nano を使う。対応端末は Pixel 10・11 など。対応言語が多い）。 */
+    ADVANCED,
+}
+
+/**
  * 言語ごとの端末内音声認識モデルの情報（F6.2、F9.1）。
  *
  * @property language 言語タグ（`ja`、`en`、`zh` など）。
@@ -78,6 +91,9 @@ enum class OnDeviceTranscriptionEngine {
  * @property sherpaModelId この言語で使用する `sherpa-onnx` のモデル識別子（例: `sherpa-onnx-whisper-tiny`）。
  * @property sherpaModelSizeBytes `sherpa-onnx` モデルの合計バイトサイズ（目安）。
  * @property canDeleteSherpaModel ローカルにダウンロード済みの `sherpa-onnx` モデルを削除可能かどうか。
+ * @property mlKitStatus ML Kit GenAI Speech Recognition の利用可能状態（ADR-0011）。モデルは OS が管理するので、
+ *   アプリからは取得の要求だけができる（削除はできない）。
+ * @property mlKitMode ML Kit で使う認識モード。使えないとき・未確認のときは `null`。
  */
 data class OnDeviceLanguageModelInfo(
     val language: LanguageTag,
@@ -87,7 +103,16 @@ data class OnDeviceLanguageModelInfo(
     val sherpaModelId: String? = null,
     val sherpaModelSizeBytes: Long = 0L,
     val canDeleteSherpaModel: Boolean = false,
-)
+    val mlKitStatus: OnDeviceLanguageModelStatus = OnDeviceLanguageModelStatus.CHECKING,
+    val mlKitMode: MlKitRecognitionMode? = null,
+) {
+    /** エンジン [engine] のモデルの利用可能状態を返す。 */
+    fun statusOf(engine: SttEngine): OnDeviceLanguageModelStatus = when (engine) {
+        SttEngine.ML_KIT -> mlKitStatus
+        SttEngine.SPEECH_RECOGNIZER -> status
+        SttEngine.SHERPA_ONNX -> sherpaModelStatus
+    }
+}
 
 /**
  * 「より詳しく文字起こし」ダイアログでの試行結果（F6.2）。

@@ -10,6 +10,8 @@ import com.miuraken.chunkflow.core.data.library.DefaultLibraryRepository
 import com.miuraken.chunkflow.core.data.library.LibraryMediaFileResolver
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
+import com.miuraken.chunkflow.core.data.stt.DefaultItemSttOverrideRepository
+import com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository
 import com.miuraken.chunkflow.core.data.transcript.DefaultTranscriptImporter
 import com.miuraken.chunkflow.core.data.transcript.TranscriptImporter
 import com.miuraken.chunkflow.core.transcript.CompositeTranscriptParser
@@ -64,6 +66,13 @@ abstract class DataModule {
     abstract fun bindsLibraryMediaFileResolver(
         impl: MediaFileLocator,
     ): LibraryMediaFileResolver
+
+    /** [DefaultItemSttOverrideRepository] を [ItemSttOverrideRepository] として束縛する（ADR-0011 §2.3）。 */
+    @Binds
+    @Singleton
+    abstract fun bindsItemSttOverrideRepository(
+        impl: DefaultItemSttOverrideRepository,
+    ): ItemSttOverrideRepository
 
     /**
      * WorkManager 用のカスタム [WorkerFactory] のマルチバインディング（§7.3.4）。

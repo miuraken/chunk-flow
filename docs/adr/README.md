@@ -17,4 +17,5 @@
 | [0007](0007-chunk-boundary-timing.md) | チャンク境界の処理の精度（dynamic scheduling を無効にする） | 承認済み |
 | [0008](0008-time-axis-alignment.md) | 時間軸の対応（文字起こしの時刻の補正の初期値、シーク後の一定の誤差） | 承認済み |
 | [0009](0009-transcriber-parameters.md) | PC ツールのパラメータと、人間のレビュー待ちで保留する判断 | 承認済み |
-| [0010](0010-on-device-speech-and-whisper-lid.md) | 端末内の音声認識（SpeechRecognizer）と量子化 Whisper Tiny による 2 言語判定 | 承認済み |
+| [0010](0010-on-device-speech-and-whisper-lid.md) | 端末内の音声認識（SpeechRecognizer）と量子化 Whisper Tiny による 2 言語判定 | 承認済み（エンジンの選び方は 0011 で置き換え） |
+| [0011](0011-stt-engine-selection-and-language-settings.md) | 文字起こしエンジンの選び方（ML Kit を既定にする）と、言語設定・言語ごと・ファイルごとの上書き | 承認済み |

@@ -2,13 +2,18 @@ package com.miuraken.chunkflow.core.database
 
 import android.database.sqlite.SQLiteException
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
+import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
+import com.miuraken.chunkflow.core.model.SttEngine
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -155,7 +160,7 @@ class ChunkFlowDatabaseRobolectricTest {
         assertEquals("zh", afterBulk?.language)
         assertEquals(true, afterBulk?.userEdited)
 
-        // bookmark + drive_file
+        // bookmark + drive_file + item_stt_override
         db.bookmarkDao().insert(BookmarkEntity(mediaId = mediaId, positionMs = 1_500L, note = "重要"))
         db.driveFileDao().upsert(
             DriveFileEntity(
@@ -168,6 +173,23 @@ class ChunkFlowDatabaseRobolectricTest {
             ),
         )
         assertEquals(1, db.driveFileDao().getByMediaId(mediaId).size)
+        assertTrue(
+            db.itemSttOverrideDao().setIfMediaExists(
+                ItemSttOverrideEntity(
+                    mediaId = mediaId,
+                    targetEngine = SttEngine.ML_KIT.name,
+                    baseEngine = SttEngine.SHERPA_ONNX.name,
+                ),
+            ),
+        )
+        assertEquals(
+            ItemSttOverrideEntity(
+                mediaId = mediaId,
+                targetEngine = SttEngine.ML_KIT.name,
+                baseEngine = SttEngine.SHERPA_ONNX.name,
+            ),
+            db.itemSttOverrideDao().observeByMediaId(mediaId).first(),
+        )
 
         // media_item を削除すると ON DELETE CASCADE で全テーブルの関連行が消える
         db.mediaItemDao().deleteById(mediaId)
@@ -177,6 +199,7 @@ class ChunkFlowDatabaseRobolectricTest {
         assertEquals(emptyList(), db.transcriptDao().observeByMediaId(mediaId).first())
         assertEquals(emptyList(), db.bookmarkDao().getByMediaId(mediaId))
         assertEquals(emptyList(), db.driveFileDao().getAll())
+        assertNull(db.itemSttOverrideDao().getByMediaId(mediaId))
     }
 
     @Test
@@ -197,18 +220,119 @@ class ChunkFlowDatabaseRobolectricTest {
             ),
         )
         assertTrue(db.itemStateDao().updatePlaybackPosition(mediaId, positionMs = 1_000L, speed = 1.0f, updatedAt = 2_000L))
+        assertTrue(
+            db.itemSttOverrideDao().setIfMediaExists(
+                ItemSttOverrideEntity(mediaId = mediaId, targetEngine = SttEngine.ML_KIT.name, baseEngine = null),
+            ),
+        )
+        // 両方 null を渡すと行が消える
+        assertTrue(
+            db.itemSttOverrideDao().setIfMediaExists(
+                ItemSttOverrideEntity(mediaId = mediaId, targetEngine = null, baseEngine = null),
+            ),
+        )
+        assertNull(db.itemSttOverrideDao().getByMediaId(mediaId))
+
         db.mediaItemDao().deleteById(mediaId)
         assertFalse(db.itemStateDao().mediaItemExists(mediaId))
+        assertFalse(db.itemSttOverrideDao().mediaItemExists(mediaId))
 
         // この環境でも外部キーが効いている（削除済みの教材の行をそのまま書くと失敗する）
         assertFailsWith<SQLiteException> {
             db.itemStateDao().upsert(ItemStateEntity(mediaId = mediaId, updatedAt = 3_000L))
         }
+        assertFailsWith<SQLiteException> {
+            db.itemSttOverrideDao().upsert(ItemSttOverrideEntity(mediaId = mediaId, targetEngine = SttEngine.ML_KIT.name))
+        }
 
-        // 再生中に削除された教材について、プレイヤーが位置・聴取済み・学習モードを保存しようとしても、書かずに false を返す
+        // 再生中に削除された教材について、プレイヤーが位置・聴取済み・学習モード・STT上書きを保存しようとしても、書かずに false を返す
         assertFalse(db.itemStateDao().updatePlaybackPosition(mediaId, positionMs = 2_000L, speed = 1.0f, updatedAt = 4_000L))
         assertFalse(db.itemStateDao().updateListenedStatus(mediaId = mediaId, isListened = true, updatedAt = 5_000L))
         assertFalse(db.itemStateDao().upsertIfMediaExists(ItemStateEntity(mediaId = mediaId, updatedAt = 6_000L)))
+        assertFalse(
+            db.itemSttOverrideDao().setIfMediaExists(
+                ItemSttOverrideEntity(mediaId = mediaId, targetEngine = SttEngine.ML_KIT.name, baseEngine = null),
+            ),
+        )
         assertNull(db.itemStateDao().getByMediaId(mediaId))
+        assertNull(db.itemSttOverrideDao().getByMediaId(mediaId))
+    }
+
+    @Test
+    fun `MIGRATION_1_2_から_3_4_まで適用したDBをRoom_v4で開いて読み書きできる`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val dbName = "migration_test_${System.nanoTime()}.db"
+        val v1Helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbName)
+                .callback(
+                    object : SupportSQLiteOpenHelper.Callback(1) {
+                        override fun onCreate(db: SupportSQLiteDatabase) {
+                            db.execSQL(
+                                "CREATE TABLE IF NOT EXISTS `media_item` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `duration_ms` INTEGER NOT NULL, `mime_type` TEXT NOT NULL, `size_bytes` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `course` TEXT, `target_lang` TEXT NOT NULL, `base_lang` TEXT, `transcript_offset_ms` INTEGER NOT NULL, `imported_at` INTEGER NOT NULL, `mp3_has_header` INTEGER NOT NULL DEFAULT 0, `mp3_samples_per_frame` INTEGER NOT NULL DEFAULT 1152, `mp3_encoder_delay` INTEGER NOT NULL DEFAULT 576, PRIMARY KEY(`id`))",
+                            )
+                            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_media_item_sha256` ON `media_item` (`sha256`)")
+                            db.execSQL(
+                                "CREATE TABLE IF NOT EXISTS `item_state` (`media_id` TEXT NOT NULL, `position_ms` INTEGER NOT NULL, `speed` REAL NOT NULL, `chunk_source` TEXT NOT NULL, `auto_pause` TEXT NOT NULL, `auto_pause_scope` TEXT NOT NULL, `language_filter` TEXT NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`media_id`), FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                            )
+                            db.execSQL(
+                                "CREATE TABLE IF NOT EXISTS `analysis_state` (`media_id` TEXT NOT NULL, `stage` TEXT NOT NULL, `status` TEXT NOT NULL, `progress` REAL, `error` TEXT, `algorithm_version` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`media_id`, `stage`), FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                            )
+                            db.execSQL(
+                                "CREATE TABLE IF NOT EXISTS `chunk` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_id` TEXT NOT NULL, `start_ms` INTEGER NOT NULL, `end_ms` INTEGER NOT NULL, `origin` TEXT NOT NULL, `algorithm_version` INTEGER NOT NULL, FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                            )
+                            db.execSQL("CREATE INDEX IF NOT EXISTS `index_chunk_media_id_start_ms` ON `chunk` (`media_id`, `start_ms`)")
+                            db.execSQL(
+                                "CREATE TABLE IF NOT EXISTS `transcript` (`chunk_id` INTEGER NOT NULL, `text` TEXT NOT NULL, `text_variants` TEXT NOT NULL, `language` TEXT, `language_confidence` REAL, `words` TEXT NOT NULL, `engine` TEXT NOT NULL, `user_edited` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, PRIMARY KEY(`chunk_id`), FOREIGN KEY(`chunk_id`) REFERENCES `chunk`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                            )
+                            db.execSQL(
+                                "CREATE TABLE IF NOT EXISTS `bookmark` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_id` TEXT NOT NULL, `position_ms` INTEGER NOT NULL, `note` TEXT NOT NULL, `created_at` INTEGER NOT NULL, FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                            )
+                            db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmark_media_id_position_ms` ON `bookmark` (`media_id`, `position_ms`)")
+                            db.execSQL(
+                                "CREATE TABLE IF NOT EXISTS `drive_file` (`drive_file_id` TEXT NOT NULL, `kind` TEXT NOT NULL, `course` TEXT NOT NULL, `modified_time` INTEGER NOT NULL, `sha256` TEXT, `media_id` TEXT, PRIMARY KEY(`drive_file_id`), FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                            )
+                            db.execSQL("CREATE INDEX IF NOT EXISTS `index_drive_file_media_id` ON `drive_file` (`media_id`)")
+                            db.execSQL("CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)")
+                            db.execSQL("INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ed9f4d5d606130efa2c10e6a66a9411f')")
+                            db.execSQL(
+                                "INSERT INTO `media_item` (`id`, `title`, `duration_ms`, `mime_type`, `size_bytes`, `sha256`, `course`, `target_lang`, `base_lang`, `transcript_offset_ms`, `imported_at`) VALUES ('$mediaId', 'Migrated', 10000, 'audio/mpeg', 1000, '${"e".repeat(64)}', 'c', 'ko', 'ja', 0, 100)",
+                            )
+                            db.execSQL(
+                                "INSERT INTO `item_state` (`media_id`, `position_ms`, `speed`, `chunk_source`, `auto_pause`, `auto_pause_scope`, `language_filter`, `updated_at`) VALUES ('$mediaId', 4500, 1.0, 'AUTO', 'OFF', 'ALL_CHUNKS', 'ALL', 200)",
+                            )
+                        }
+
+                        override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                    },
+                )
+                .build(),
+        )
+        v1Helper.writableDatabase.close()
+        v1Helper.close()
+
+        val migratedDb = Room.databaseBuilder(context, ChunkFlowDatabase::class.java, dbName)
+            .addMigrations(*ChunkFlowDatabase.ALL_MIGRATIONS)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val state = migratedDb.itemStateDao().getByMediaId(mediaId)
+            assertEquals(4_500L, state?.positionMs)
+            assertEquals(4_500L, state?.maxPositionMs)
+            assertEquals(false, state?.isListened)
+
+            assertTrue(
+                migratedDb.itemSttOverrideDao().setIfMediaExists(
+                    ItemSttOverrideEntity(mediaId = mediaId, targetEngine = SttEngine.ML_KIT.name, baseEngine = SttEngine.SPEECH_RECOGNIZER.name),
+                ),
+            )
+            assertEquals(
+                SttEngine.ML_KIT.name,
+                migratedDb.itemSttOverrideDao().getByMediaId(mediaId)?.targetEngine,
+            )
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
     }
 }
