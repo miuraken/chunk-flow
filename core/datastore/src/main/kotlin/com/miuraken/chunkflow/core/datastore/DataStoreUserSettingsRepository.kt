@@ -165,7 +165,6 @@ class DataStoreUserSettingsRepository @Inject constructor(
         require(codes.isNotEmpty()) { "enabledLanguages must contain at least one valid language" }
         dataStore.edit { prefs ->
             prefs[KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES] = codes.joinToString(",")
-            prefs[KEY_LANGUAGE_ONBOARDING_COMPLETED] = true
             // 以前のキーは読まないので、残さないようにする（ADR-0011 §2.1）
             prefs.remove(KEY_LEGACY_ENABLED_LANGUAGES)
         }
@@ -280,8 +279,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
             ?.toCollection(LinkedHashSet())
             ?.takeIf { it.isNotEmpty() }
             ?: LanguageSettings.defaultEnabledLanguages(deviceLanguagesProvider.deviceLanguageTags())
-        val hasCompletedLanguageOnboarding = this[KEY_LANGUAGE_ONBOARDING_COMPLETED]
-            ?: (savedEnabledLanguagesRaw != null)
+        val hasCompletedLanguageOnboarding = this[KEY_LANGUAGE_ONBOARDING_COMPLETED] ?: false
         val transcriptionEngine = this[KEY_TRANSCRIPTION_ENGINE]
             ?.let { name -> OnDeviceTranscriptionEngine.entries.firstOrNull { it.name == name } }
             ?: defaults.transcriptionEngine

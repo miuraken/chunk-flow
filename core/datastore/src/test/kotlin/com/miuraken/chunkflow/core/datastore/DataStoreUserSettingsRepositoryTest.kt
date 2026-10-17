@@ -244,16 +244,14 @@ class DataStoreUserSettingsRepositoryTest {
     }
 
     @Test
-    fun `初回起動の言語選択完了フラグを更新でき_言語保存時にも完了になる`() = runTest(UnconfinedTestDispatcher()) {
+    fun `初回起動の言語選択完了フラグはcompleteLanguageOnboardingでのみ完了になり言語変更だけでは閉じない`() = runTest(UnconfinedTestDispatcher()) {
         val (repository, _) = createRepository(this)
+        assertEquals(false, repository.settings.first().hasCompletedLanguageOnboarding)
+
+        repository.setEnabledLanguages(setOf(LanguageTag("en"), LanguageTag("ja"), LanguageTag("ko")))
         assertEquals(false, repository.settings.first().hasCompletedLanguageOnboarding)
 
         repository.completeLanguageOnboarding()
         assertEquals(true, repository.settings.first().hasCompletedLanguageOnboarding)
-
-        val (repository2, _) = createRepository(this)
-        assertEquals(false, repository2.settings.first().hasCompletedLanguageOnboarding)
-        repository2.setEnabledLanguages(setOf(LanguageTag("en"), LanguageTag("ja")))
-        assertEquals(true, repository2.settings.first().hasCompletedLanguageOnboarding)
     }
 }
