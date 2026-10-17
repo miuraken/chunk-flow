@@ -79,4 +79,12 @@
     <string name="library_drive_sync_config_hint">選択したフォルダと同期する際に適用するコース名・対象言語・ベース言語を指定してください。</string>
     <string name="library_drive_sync_config_confirm">この設定で同期する</string>
     <string name="library_drive_sync_select_folder_action">同期フォルダを選択</string>
+    <string name="library_rescan_directories_button">フォルダ再スキャン</string>
+    <string name="library_create_virtual_folder_button">新規フォルダ作成</string>
+    <string name="library_create_virtual_folder_dialog_title">新規仮想フォルダを作成</string>
+    <string name="library_create_virtual_folder_name_label">フォルダ名（例: imported / 韓国語基礎）</string>
+    <string name="library_create_virtual_folder_confirm">作成</string>
+    <string name="library_item_drive_remote_only_badge">Drive 未DL</string>
+    <string name="library_item_drive_download_button">音声をDL</string>
+    <string name="library_edit_delete_local_audio_copy_button">ローカルの音声キャッシュを削除（Drive 未DLに戻す）</string>
 </resources>

@@ -85,6 +85,7 @@ import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
@@ -164,8 +165,15 @@ fun LibraryRoute(
             runCatching {
                 context.contentResolver.takePersistableUriPermission(
                     treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
+            }.onFailure {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        treeUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
             }
             val scanned = scanDocumentTree(context.contentResolver, treeUri)
             val targetUris = scanned.documentUris.ifEmpty { listOf(treeUri) }
@@ -173,6 +181,7 @@ fun LibraryRoute(
                 LibraryEvent.ImportDirectory(
                     directoryName = scanned.directoryName,
                     uris = targetUris,
+                    treeUri = treeUri,
                 ),
             )
         }
@@ -305,6 +314,7 @@ fun LibraryScreen(
 ) {
     val listState = rememberLazyListState()
     var lastScrolledDirectoryPath by remember { mutableStateOf<String?>("__uninitialized__") }
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
 
     val currentDirs = state.currentDirectories
     val currentFiles = state.currentFiles
@@ -438,7 +448,7 @@ fun LibraryScreen(
                 onDismiss = { onEvent(LibraryEvent.DismissImportStatus) },
             )
 
-            if (state.items.isEmpty()) {
+            if (state.items.isEmpty() && state.courseFolders.isEmpty()) {
                 LibraryEmptyContent(
                     onImportDirectoryClick = { onEvent(LibraryEvent.RequestImportDirectory) },
                     onImportFilesClick = { onEvent(LibraryEvent.RequestImport) },
@@ -449,6 +459,8 @@ fun LibraryScreen(
                 LibraryActionToolbar(
                     onSelectDirectory = { onEvent(LibraryEvent.RequestImportDirectory) },
                     onImportFiles = { onEvent(LibraryEvent.RequestImport) },
+                    onCreateVirtualFolder = { showCreateFolderDialog = true },
+                    onRescanDirectories = { onEvent(LibraryEvent.RescanLocalDirectories) },
                     onImportTranscript = { onEvent(LibraryEvent.RequestImportTranscript) },
                     onSyncFromDrive = { onEvent(LibraryEvent.SyncFromDrive) },
                 )
@@ -533,6 +545,9 @@ fun LibraryScreen(
                                     onDeleteClick = {
                                         onEvent(LibraryEvent.RequestDelete(itemModel.item))
                                     },
+                                    onDownloadDriveAudioClick = {
+                                        onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
+                                    },
                                 )
                                 if (!isLastFile) {
                                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -561,12 +576,33 @@ fun LibraryScreen(
         )
     }
 
+    if (showCreateFolderDialog) {
+        CreateVirtualFolderDialog(
+            enabledLanguages = state.enabledLanguages,
+            onConfirm = { folderName, languages ->
+                showCreateFolderDialog = false
+                onEvent(
+                    LibraryEvent.CreateVirtualFolder(
+                        folderName = folderName,
+                        languages = languages,
+                    ),
+                )
+            },
+            onDismiss = { showCreateFolderDialog = false },
+        )
+    }
+
     state.pendingEditItem?.let { itemToEdit ->
         EditItemMetadataDialog(
             item = itemToEdit,
             enabledLanguages = state.enabledLanguages,
             onImportTranscript = {
                 onEvent(LibraryEvent.RequestImportTranscriptForItem(itemToEdit.id))
+            },
+            onDeleteLocalAudioCopy = if (itemToEdit.storageState == AudioStorageState.DRIVE_DOWNLOADED) {
+                { onEvent(LibraryEvent.DeleteLocalAudioCopy(itemToEdit.id)) }
+            } else {
+                null
             },
             onConfirm = { course, languages ->
                 onEvent(
@@ -660,6 +696,8 @@ private fun LibraryActionToolbar(
     onImportTranscript: () -> Unit,
     onSyncFromDrive: () -> Unit,
     modifier: Modifier = Modifier,
+    onCreateVirtualFolder: () -> Unit = {},
+    onRescanDirectories: () -> Unit = {},
 ) {
     Row(
         modifier = modifier
@@ -711,6 +749,36 @@ private fun LibraryActionToolbar(
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = stringResource(R.string.library_import_transcript_button),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        OutlinedButton(
+            onClick = onCreateVirtualFolder,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Folder,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(R.string.library_create_virtual_folder_button),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        OutlinedButton(
+            onClick = onRescanDirectories,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Sync,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(R.string.library_rescan_directories_button),
                 style = MaterialTheme.typography.labelMedium,
             )
         }
@@ -1188,6 +1256,7 @@ private fun LibraryItemRow(
     onEditMetadataClick: () -> Unit,
     onDeleteClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onDownloadDriveAudioClick: () -> Unit = {},
 ) {
     val item = itemModel.item
     val formattedDuration = formatDurationMs(item.durationMs)
@@ -1293,7 +1362,30 @@ private fun LibraryItemRow(
                 style = MaterialTheme.typography.labelSmall,
                 color = transcriptStatusColor,
             )
-            if (itemModel.isAudioMissing) {
+            if (item.isRemoteOnly) {
+                Surface(
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    shape = MaterialTheme.shapes.extraSmall,
+                    modifier = Modifier.clickable(onClick = onDownloadDriveAudioClick),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.library_item_drive_remote_only_badge),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+            } else if (itemModel.isAudioMissing) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -1611,12 +1703,78 @@ private fun ImportConfigDialog(
 }
 
 @Composable
+private fun CreateVirtualFolderDialog(
+    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
+    onConfirm: (String, LanguagePair) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var folderNameText by remember { mutableStateOf("") }
+    var targetLangText by remember { mutableStateOf("en") }
+    var baseLangText by remember { mutableStateOf("ja") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = stringResource(R.string.library_create_virtual_folder_dialog_title)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = folderNameText,
+                    onValueChange = { folderNameText = it },
+                    label = { Text(text = stringResource(R.string.library_create_virtual_folder_name_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                LanguagePairDropdownSection(
+                    targetLangCode = targetLangText,
+                    baseLangCode = baseLangText,
+                    onTargetLangChange = { targetLangText = it },
+                    onBaseLangChange = { baseLangText = it },
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleanName = folderNameText.trim().trim('/')
+                    if (cleanName.isNotEmpty()) {
+                        val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
+                        val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
+                        onConfirm(
+                            cleanName,
+                            LanguagePair(
+                                target = LanguageTag(cleanTarget),
+                                base = cleanBase?.let { LanguageTag(it) },
+                            ),
+                        )
+                    }
+                },
+                enabled = folderNameText.trim().trim('/').isNotEmpty(),
+            ) {
+                Text(text = stringResource(R.string.library_create_virtual_folder_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.library_edit_cancel))
+            }
+        },
+    )
+}
+
+@Composable
 private fun EditItemMetadataDialog(
     item: AudioItem,
     @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
     onImportTranscript: () -> Unit,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
+    onDeleteLocalAudioCopy: (() -> Unit)? = null,
 ) {
     var courseText by remember(item) { mutableStateOf(item.course.orEmpty()) }
     var targetLangText by remember(item) {
@@ -1669,6 +1827,21 @@ private fun EditItemMetadataDialog(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(text = stringResource(R.string.library_edit_import_transcript_button))
+                }
+
+                if (onDeleteLocalAudioCopy != null) {
+                    OutlinedButton(
+                        onClick = onDeleteLocalAudioCopy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = stringResource(R.string.library_edit_delete_local_audio_copy_button))
+                    }
                 }
             }
         },

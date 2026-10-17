@@ -654,4 +654,128 @@ class LibraryViewModelTest {
         assertEquals(LibraryTranscriptStatus.PARTIAL, byId.getValue(itemPartial.id).transcriptStatus)
         assertEquals(LibraryTranscriptStatus.COMPLETED, byId.getValue(itemCompleted.id).transcriptStatus)
     }
+
+    @Test
+    fun `ローカルディレクトリ登録と再スキャン_treeUri付きImportDirectoryでlinkLocalDirectoryが呼ばれRescanLocalDirectoriesで再スキャンされる`() = runTest {
+        val item = SampleMaterials.jaKo.item
+        val repo = FakeLibraryRepository()
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val treeUri = StubUri.create()
+        val selectedPair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+        repo.importResult = {
+            flowOf(ImportProgress.Done(mediaIds = listOf(item.id), duplicates = 0, transcriptsAttached = 1))
+        }
+
+        // 1. treeUri 付きの ImportDirectory を送ると PendingImportConfig.treeUri が保持され、確定時に linkLocalDirectory が呼ばれる
+        viewModel.onEvent(
+            LibraryEvent.ImportDirectory(
+                directoryName = "NHKハングル",
+                uris = listOf(treeUri),
+                treeUri = treeUri,
+            ),
+        )
+        assertSame(treeUri, viewModel.uiState.value.pendingImportConfig?.treeUri)
+        assertEquals("NHKハングル", viewModel.uiState.value.pendingImportConfig?.initialCourse)
+
+        viewModel.onEvent(
+            LibraryEvent.ConfirmImportConfig(
+                course = "NHKハングル",
+                languages = selectedPair,
+            ),
+        )
+        assertEquals(1, repo.linkedLocalDirectories.size)
+        assertSame(treeUri, repo.linkedLocalDirectories.single().first)
+        assertEquals("NHKハングル", repo.linkedLocalDirectories.single().second)
+        assertEquals(selectedPair, repo.linkedLocalDirectories.single().third)
+        assertEquals(
+            LibraryImportUiState.Done(addedCount = 1, duplicates = 0, transcriptsAttached = 1),
+            viewModel.uiState.value.importState,
+        )
+
+        // 2. RescanLocalDirectories を送ると rescanLocalDirectories が呼ばれ importState が更新される
+        repo.rescanResultCount = 2
+        viewModel.onEvent(LibraryEvent.RescanLocalDirectories)
+        assertEquals(listOf<String?>(null), repo.rescanRequests)
+        assertEquals(
+            LibraryImportUiState.Done(addedCount = 2, duplicates = 0, transcriptsAttached = 0),
+            viewModel.uiState.value.importState,
+        )
+    }
+
+    @Test
+    fun `仮想フォルダ作成と教材移動_空の仮想フォルダもcurrentDirectoriesに表示されMoveItemsToCourseで移動できる`() = runTest {
+        val item1 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("v1"),
+            course = "imported",
+        )
+        val item2 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("v2"),
+            course = "imported",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2))
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. ファイル未選択の状態で ImportUris を呼ぶと既定コース名が "imported" になる
+        val fakeUri = StubUri.create()
+        viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
+        assertEquals("imported", viewModel.uiState.value.pendingImportConfig?.initialCourse)
+        viewModel.onEvent(LibraryEvent.CancelImportConfig)
+
+        // 2. CreateVirtualFolder で空の仮想フォルダを作成すると、教材が 0 件でも currentDirectories と directories に表示される
+        val folderLang = LanguagePair(target = LanguageTag("zh-cn"), base = LanguageTag("ja"))
+        viewModel.onEvent(
+            LibraryEvent.CreateVirtualFolder(
+                folderName = "中国語会話",
+                languages = folderLang,
+            ),
+        )
+        val dirNames = viewModel.uiState.value.currentDirectories.mapNotNull { it.name }
+        assertTrue("中国語会話" in dirNames)
+        assertEquals(0, viewModel.uiState.value.currentDirectories.first { it.name == "中国語会話" }.items.size)
+
+        // 3. MoveItemsToCourse で教材を新しいフォルダへ移動するとコース名と言語ペアが更新される
+        viewModel.onEvent(
+            LibraryEvent.MoveItemsToCourse(
+                ids = setOf(item1.id),
+                targetCourse = "中国語会話",
+            ),
+        )
+        val movedItem = viewModel.uiState.value.items.first { it.item.id == item1.id }.item
+        assertEquals("中国語会話", movedItem.course)
+        assertEquals(folderLang, movedItem.languagePair)
+        assertEquals(1, viewModel.uiState.value.currentDirectories.first { it.name == "中国語会話" }.items.size)
+    }
+
+    @Test
+    fun `Drive音声のオンデマンドDLとローカル音声キャッシュ削除_DownloadDriveAudioとDeleteLocalAudioCopyでstorageStateが切り替わる`() = runTest {
+        val remoteItem = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("drive-1"),
+            storageState = com.miuraken.chunkflow.core.model.AudioStorageState.DRIVE_REMOTE_ONLY,
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(remoteItem))
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        assertTrue(viewModel.uiState.value.items.single().item.isRemoteOnly)
+
+        // 1. DownloadDriveAudio で DRIVE_DOWNLOADED になる
+        viewModel.onEvent(LibraryEvent.DownloadDriveAudio(remoteItem.id))
+        assertEquals(
+            com.miuraken.chunkflow.core.model.AudioStorageState.DRIVE_DOWNLOADED,
+            viewModel.uiState.value.items.single().item.storageState,
+        )
+
+        // 2. DeleteLocalAudioCopy で再び DRIVE_REMOTE_ONLY に戻る
+        viewModel.onEvent(LibraryEvent.DeleteLocalAudioCopy(remoteItem.id))
+        assertEquals(
+            com.miuraken.chunkflow.core.model.AudioStorageState.DRIVE_REMOTE_ONLY,
+            viewModel.uiState.value.items.single().item.storageState,
+        )
+    }
 }

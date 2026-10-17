@@ -396,13 +396,6 @@ fun TranscriptList(
     // 進捗カードと、リストの端・ほかの部品との間隔
     val progressOverlayMargin = 8.dp
 
-    // 進捗カードが出ている間は、カードの高さと上下の間隔の分だけリストの下に余白を付ける
-    val progressOverlayInset = if (showTranscriptionProgress) {
-        with(density) { progressOverlayHeightPx.toDp() } + progressOverlayMargin * 2
-    } else {
-        0.dp
-    }
-
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             transcriptImportBanner?.let { banner ->
@@ -450,7 +443,7 @@ fun TranscriptList(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp + progressOverlayInset),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp),
             ) {
                 itemsIndexed(
                     items = chunks,
@@ -557,7 +550,7 @@ fun TranscriptList(
                 inFlightChunkNumber = activeChunkNumber,
                 onAbortTranscription = onResetTranscription,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.TopStart)
                     .padding(horizontal = 12.dp, vertical = progressOverlayMargin)
                     .onSizeChanged { size -> progressOverlayHeightPx = size.height },
             )
@@ -596,8 +589,7 @@ fun TranscriptList(
                         start = 12.dp,
                         top = 12.dp,
                         end = 12.dp,
-                        // 進捗カードが出ているときは、カードに重ならないようその上に出す
-                        bottom = if (showTranscriptionProgress) progressOverlayInset else 12.dp,
+                        bottom = 12.dp,
                     ),
             )
         }
