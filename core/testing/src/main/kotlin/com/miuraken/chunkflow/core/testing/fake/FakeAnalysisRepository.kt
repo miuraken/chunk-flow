@@ -503,6 +503,29 @@ class FakeAnalysisRepository : AnalysisRepository {
         return success
     }
 
+    /** [deleteChunk] の呼び出し履歴（呼ばれた順）。 */
+    val deleteChunkRequests: MutableList<Pair<MediaId, ChunkId>> = mutableListOf()
+
+    override suspend fun deleteChunk(id: MediaId, chunkId: ChunkId): Boolean {
+        deleteChunkRequests += id to chunkId
+        var success = false
+        update(id) { entry ->
+            val idx = entry.chunks.indexOfFirst { it.id == chunkId }
+            if (idx < 0) return@update entry
+            success = true
+            val manualChunks = entry.chunks.filterIndexed { index, _ -> index != idx }
+                .map { it.copy(origin = ChunkOrigin.MANUAL) }
+            val updatedTranscripts = entry.transcripts - chunkId
+            chunkSources[id] = ChunkOrigin.MANUAL
+            entry.copy(
+                chunks = manualChunks,
+                transcripts = updatedTranscripts,
+                chunksByOrigin = entry.chunksByOrigin + (ChunkOrigin.MANUAL to manualChunks),
+            )
+        }
+        return success
+    }
+
     override suspend fun mergeWithNextChunk(id: MediaId, chunkId: ChunkId): Boolean {
         var success = false
         update(id) { entry ->

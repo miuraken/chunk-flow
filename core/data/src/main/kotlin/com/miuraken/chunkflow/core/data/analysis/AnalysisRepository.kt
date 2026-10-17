@@ -228,6 +228,15 @@ interface AnalysisRepository {
     suspend fun mergeChunks(id: MediaId, chunkIds: List<ChunkId>): Boolean = false
 
     /**
+     * 指定したチャンク [chunkId] を解除（削除）し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
+     *
+     * 解除された区間 `[startMs, endMs)` はチャンク間の無音区間と同様に扱われる。
+     *
+     * @return 解除が成立した場合は `true`、対象チャンクが存在しない等で解除できない場合は `false`。
+     */
+    suspend fun deleteChunk(id: MediaId, chunkId: ChunkId): Boolean = false
+
+    /**
      * チャンクの開始・終了境界を [newStartMs] / [newEndMs] に移動し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
      *
      * @return 境界移動が成立した場合は `true`、隣接チャンクとの整合性や最小チャンク長を満たさない場合は `false`。
