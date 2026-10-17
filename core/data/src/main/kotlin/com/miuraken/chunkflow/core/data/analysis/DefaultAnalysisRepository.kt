@@ -18,6 +18,7 @@ import com.miuraken.chunkflow.core.data.di.Dispatcher
 import com.miuraken.chunkflow.core.data.library.DefaultLibraryRepository
 import com.miuraken.chunkflow.core.data.library.LibraryMediaFileResolver
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
+import com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository
 import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
 import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
@@ -119,6 +120,7 @@ class DefaultAnalysisRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val audioStreamDecoder: AudioStreamDecoder? = null,
     private val userSettingsRepository: UserSettingsRepository? = null,
+    private val itemSttOverrideRepository: ItemSttOverrideRepository? = null,
 ) : AnalysisRepository {
 
     @Inject
@@ -134,6 +136,7 @@ class DefaultAnalysisRepository(
         onDeviceChunkTranscriber: OnDeviceChunkTranscriber,
         bookmarkDao: BookmarkDao,
         userSettingsRepository: UserSettingsRepository,
+        itemSttOverrideRepository: ItemSttOverrideRepository,
     ) : this(
         context = context,
         analysisStateDao = analysisStateDao,
@@ -147,6 +150,7 @@ class DefaultAnalysisRepository(
         bookmarkDao = bookmarkDao,
         clock = System::currentTimeMillis,
         userSettingsRepository = userSettingsRepository,
+        itemSttOverrideRepository = itemSttOverrideRepository,
     )
 
     private data class ChunkLangCacheKey(
@@ -858,6 +862,8 @@ class DefaultAnalysisRepository(
                                     skippedEmptyChunkIds = currentSkippedChunkIds(id),
                                 )
                             }
+                            val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                            val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
                             val recognized = try {
                                 onDeviceChunkTranscriber.transcribeChunk(
                                     audioFile = audioFile,
@@ -865,6 +871,8 @@ class DefaultAnalysisRepository(
                                     endMs = targetChunk.endMs,
                                     languagePair = effectiveLanguagePair,
                                     forceRefresh = true,
+                                    itemSttOverride = itemSttOverride,
+                                    engineByLanguage = engineByLanguage,
                                     highPriority = true,
                                 )
                             } catch (ce: CancellationException) {
@@ -1038,6 +1046,20 @@ class DefaultAnalysisRepository(
     override suspend fun downloadSherpaModel(language: LanguageTag): Boolean = withContext(ioDispatcher) {
         try {
             val ok = onDeviceChunkTranscriber.downloadSherpaModel(language)
+            if (ok) {
+                attemptedEmptyChunkIds.clear()
+            }
+            ok
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override suspend fun requestSttModelDownload(language: LanguageTag, engine: com.miuraken.chunkflow.core.model.SttEngine): Boolean = withContext(ioDispatcher) {
+        try {
+            val ok = onDeviceChunkTranscriber.requestSttModelDownload(language, engine)
             if (ok) {
                 attemptedEmptyChunkIds.clear()
             }
@@ -1364,6 +1386,9 @@ class DefaultAnalysisRepository(
 
                 val existing = transcriptDao.getByChunkId(chunkId.value)
                 val mediaItem = mediaItemDao.getById(id.value)
+                val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
+
                 val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
                 val overlappingImported = if (existing == null) {
                     val importedChunks = allChunks.filter { it.origin == ChunkOrigin.IMPORTED.name }
@@ -1439,6 +1464,8 @@ class DefaultAnalysisRepository(
                                         endMs = targetChunk.endMs,
                                         languagePair = effectiveLanguagePair,
                                         forceRefresh = false,
+                                        itemSttOverride = itemSttOverride,
+                                        engineByLanguage = engineByLanguage,
                                         highPriority = true,
                                     )
                                 } catch (ce: CancellationException) {
@@ -1534,6 +1561,9 @@ class DefaultAnalysisRepository(
     override suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) {
         withContext(ioDispatcher) {
             withTrackedTranscriptionJob(id) {
+                val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
+
                 attemptedEmptyChunkIds[id]?.remove(chunkId.value)
 
                 val allChunks = chunkDao.observeByMediaId(id.value).first()
@@ -1658,6 +1688,8 @@ class DefaultAnalysisRepository(
                                 skippedEmptyChunkIds = currentSkippedChunkIds(id),
                             )
                         }
+                        val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                        val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
                         val recognized = try {
                             onDeviceChunkTranscriber.transcribeChunk(
                                 audioFile = audioFile,
@@ -1665,6 +1697,8 @@ class DefaultAnalysisRepository(
                                 endMs = targetChunk.endMs,
                                 languagePair = effectiveLanguagePair,
                                 forceRefresh = true,
+                                itemSttOverride = itemSttOverride,
+                                engineByLanguage = engineByLanguage,
                                 highPriority = true,
                             )
                         } catch (ce: CancellationException) {
@@ -2107,6 +2141,8 @@ class DefaultAnalysisRepository(
 
                             try {
                                 // チャンク区間 [startMs, endMs] のみを切り出して認識し、チャンク間の無音はスキップする（F6.2）
+                                val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                                val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
                                 val result: OnDeviceChunkTranscriptionResult? = try {
                                     onDeviceChunkTranscriber.transcribeChunk(
                                         audioFile = audioFile,
@@ -2114,6 +2150,8 @@ class DefaultAnalysisRepository(
                                         endMs = targetChunk.endMs,
                                         languagePair = effectiveLanguagePair,
                                         forceRefresh = false,
+                                        itemSttOverride = itemSttOverride,
+                                        engineByLanguage = engineByLanguage,
                                         highPriority = false,
                                     )
                                 } catch (ce: CancellationException) {
@@ -3235,6 +3273,8 @@ private object NoOpOnDeviceChunkTranscriber : OnDeviceChunkTranscriber {
         startMs: Long,
         endMs: Long,
         languagePair: LanguagePair?,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
     ): OnDeviceChunkTranscriptionResult? = null
 }
 

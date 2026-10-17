@@ -471,7 +471,9 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
-            ): OnDeviceChunkTranscriptionResult {
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
                 transcribedRanges.add(startMs to endMs)
                 return OnDeviceChunkTranscriptionResult(
                     text = "Chunk $startMs-$endMs",
@@ -556,7 +558,9 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
-            ): OnDeviceChunkTranscriptionResult {
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
                 requestedPairs += languagePair
                 return if (modelInstalled) {
                     OnDeviceChunkTranscriptionResult(text = "안녕하세요", language = LanguageTag("ko"), confidence = 0.9f)
@@ -1162,7 +1166,9 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
-            ): OnDeviceChunkTranscriptionResult {
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
                 activeRecognitions += 1
                 if (activeRecognitions > maxActiveRecognitions) {
                     maxActiveRecognitions = activeRecognitions
@@ -1241,6 +1247,8 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? {
                 attemptedStartMsList += startMs
                 // 先頭チャンク (0ms) と 2番目チャンク (1,000ms) はチャイム・無音想定で null を返す
@@ -1324,6 +1332,8 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
                 audioFile = audioFile,
                 startMs = startMs,
@@ -1340,6 +1350,8 @@ class DefaultAnalysisRepositoryTest {
                 languagePair: LanguagePair?,
                 forceRefresh: Boolean,
                 highPriority: Boolean,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? {
                 callSeq += 1
                 transcribeCalls += CallRecord(
@@ -1457,7 +1469,9 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
-            ): OnDeviceChunkTranscriptionResult {
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
                 transcribeCallCount += 1
                 return OnDeviceChunkTranscriptionResult(
                     text = "自動認識テキスト",
@@ -1543,6 +1557,8 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
                 audioFile = audioFile,
                 startMs = startMs,
@@ -1559,7 +1575,9 @@ class DefaultAnalysisRepositoryTest {
                 languagePair: LanguagePair?,
                 forceRefresh: Boolean,
                 highPriority: Boolean,
-            ): OnDeviceChunkTranscriptionResult {
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
                 callCounter += 1
                 calls += CallRecord(
                     startMs = startMs,
@@ -1695,6 +1713,8 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
                 audioFile = audioFile,
                 startMs = startMs,
@@ -1711,7 +1731,9 @@ class DefaultAnalysisRepositoryTest {
                 languagePair: LanguagePair?,
                 forceRefresh: Boolean,
                 highPriority: Boolean,
-            ): OnDeviceChunkTranscriptionResult {
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
                 val tag = if (forceRefresh && languagePair?.base == null && languagePair?.target?.value == "ja") {
                     "langToggle:$startMs:${languagePair.target.value}"
                 } else if (forceRefresh) {
@@ -1861,7 +1883,9 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
-            ): OnDeviceChunkTranscriptionResult {
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
                 val idName = audioFile.nameWithoutExtension
                 transcribedChunks += idName to startMs
                 if (idName == "media_open_1" && startMs == 0L) {
@@ -2204,6 +2228,8 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
                 audioFile = audioFile,
                 startMs = startMs,
@@ -2220,6 +2246,8 @@ class DefaultAnalysisRepositoryTest {
                 languagePair: LanguagePair?,
                 forceRefresh: Boolean,
                 highPriority: Boolean,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? {
                 if (!highPriority && startMs == 0L) {
                     chunk1Started.complete(Unit)
@@ -2302,6 +2330,8 @@ class DefaultAnalysisRepositoryTest {
                 startMs: Long,
                 endMs: Long,
                 languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<com.miuraken.chunkflow.core.model.LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
             ): OnDeviceChunkTranscriptionResult? = null
 
             override fun releaseIdleResources() {

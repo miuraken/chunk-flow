@@ -39,8 +39,8 @@ internal interface MlKitSpeechRecognitionGateway {
     /** 端末が AICore / ML Kit GenAI に対応している可能性があるかどうかを返す。 */
     fun isDevicePotentiallySupported(): Boolean
 
-    /** 指定した BCP-47 ロケールタグ群のモデル利用可能状態を問い合わせる。 */
-    suspend fun checkSupport(bcp47LocaleTags: List<String>): Map<String, RecognitionModelSupport>
+    /** 指定した BCP-47 ロケールタグ群のモデル利用可能状態とモードを問い合わせる。 */
+    suspend fun checkMlKitSupport(bcp47LocaleTags: List<String>): Map<String, Pair<RecognitionModelSupport, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>>
 
     /** 指定した BCP-47 ロケールタグのモデルダウンロードを開始し、進捗イベントを通知する。 */
     suspend fun downloadModel(
@@ -73,16 +73,25 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
 
     override fun isDevicePotentiallySupported(): Boolean = runCatching { GenAiUtils.isAiCoreCompatible(context) }.getOrDefault(false)
 
-    override suspend fun checkSupport(
+    override suspend fun checkMlKitSupport(
         bcp47LocaleTags: List<String>,
-    ): Map<String, RecognitionModelSupport> {
+    ): Map<String, Pair<RecognitionModelSupport, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>> {
         if (bcp47LocaleTags.isEmpty() || !isDevicePotentiallySupported()) {
             return emptyMap()
         }
-        val result = LinkedHashMap<String, RecognitionModelSupport>(bcp47LocaleTags.size)
+        val result = LinkedHashMap<String, Pair<RecognitionModelSupport, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>>(bcp47LocaleTags.size)
         for (tag in bcp47LocaleTags) {
-            val status = checkFeatureStatusForTag(tag)?.second ?: FeatureStatus.UNAVAILABLE
-            result[tag] = featureStatusToModelSupport(status)
+            val modeAndStatus = checkFeatureStatusForTag(tag)
+            if (modeAndStatus == null) {
+                result[tag] = RecognitionModelSupport.UNSUPPORTED to null
+            } else {
+                val mode = if (modeAndStatus.first == SpeechRecognizerOptions.Mode.MODE_ADVANCED) {
+                    com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED
+                } else {
+                    com.miuraken.chunkflow.core.model.MlKitRecognitionMode.BASIC
+                }
+                result[tag] = featureStatusToModelSupport(modeAndStatus.second) to mode
+            }
         }
         return result
     }
