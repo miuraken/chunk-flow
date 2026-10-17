@@ -844,7 +844,7 @@ private fun speechModelLanguageDisplayName(language: LanguageTag): String {
             if (displayName != null) {
                 "$displayName ($code)"
             } else {
-                language.value.uppercase(Locale.ROOT)
+                code
             }
         }
     }
