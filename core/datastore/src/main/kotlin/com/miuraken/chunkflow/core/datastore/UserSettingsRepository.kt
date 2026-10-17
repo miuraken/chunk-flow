@@ -69,4 +69,7 @@ interface UserSettingsRepository {
      * 言語は [com.miuraken.chunkflow.core.model.LanguageSettings.normalize] でそろえて保存する。
      */
     suspend fun setSttEngineForLanguage(language: LanguageTag, engine: SttEngine?) = Unit
+
+    /** 初回起動時の言語選択ダイアログの表示・確認が完了したことを記録する。 */
+    suspend fun completeLanguageOnboarding() = Unit
 }

@@ -92,6 +92,7 @@ enum class PhoneticGuideKind {
  *   ADR-0011 の移行の途中の設定で、言語ごとの設定（[sttEngineByLanguage]）に切り替わったら消す。
  * @property sttEngineByLanguage 言語ごとに優先する文字起こしエンジン（ADR-0011 §2.2）。キーは [LanguageSettings.normalize] で
  *   そろえた言語。キーがない言語は自動（[SttEngine.AUTO_ORDER]）。
+ * @property hasCompletedLanguageOnboarding 初回起動時の言語選択ダイアログを表示・完了したかどうか（既定は `false`）。
  */
 data class UserSettings(
     val defaultLanguagePair: LanguagePair = LanguagePair(
@@ -112,6 +113,7 @@ data class UserSettings(
     val lookaheadTranscriptionEnabled: Boolean = true,
     val transcriptionEngine: OnDeviceTranscriptionEngine = OnDeviceTranscriptionEngine.AUTO,
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    val hasCompletedLanguageOnboarding: Boolean = false,
 ) {
     init {
         require(defaultSpeed in ItemState.MIN_SPEED..ItemState.MAX_SPEED) {

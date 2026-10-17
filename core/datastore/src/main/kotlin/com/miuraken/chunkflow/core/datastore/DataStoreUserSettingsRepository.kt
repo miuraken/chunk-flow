@@ -165,8 +165,15 @@ class DataStoreUserSettingsRepository @Inject constructor(
         require(codes.isNotEmpty()) { "enabledLanguages must contain at least one valid language" }
         dataStore.edit { prefs ->
             prefs[KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES] = codes.joinToString(",")
+            prefs[KEY_LANGUAGE_ONBOARDING_COMPLETED] = true
             // 以前のキーは読まないので、残さないようにする（ADR-0011 §2.1）
             prefs.remove(KEY_LEGACY_ENABLED_LANGUAGES)
+        }
+    }
+
+    override suspend fun completeLanguageOnboarding() {
+        dataStore.edit { prefs ->
+            prefs[KEY_LANGUAGE_ONBOARDING_COMPLETED] = true
         }
     }
 
@@ -264,7 +271,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val thresholdRatio = this[KEY_SEG_THRESHOLD_RATIO]
             ?.takeIf { it in 0.0f..1.0f }
             ?: defaultSeg.thresholdRatio
-        val enabledLanguages = this[KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES]
+        val savedEnabledLanguagesRaw = this[KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES]
+        val enabledLanguages = savedEnabledLanguagesRaw
             ?.split(",")
             ?.map { LanguageSettings.normalizeCode(it) }
             ?.filter { it.isNotEmpty() }
@@ -272,6 +280,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
             ?.toCollection(LinkedHashSet())
             ?.takeIf { it.isNotEmpty() }
             ?: LanguageSettings.defaultEnabledLanguages(deviceLanguagesProvider.deviceLanguageTags())
+        val hasCompletedLanguageOnboarding = this[KEY_LANGUAGE_ONBOARDING_COMPLETED]
+            ?: (savedEnabledLanguagesRaw != null)
         val transcriptionEngine = this[KEY_TRANSCRIPTION_ENGINE]
             ?.let { name -> OnDeviceTranscriptionEngine.entries.firstOrNull { it.name == name } }
             ?: defaults.transcriptionEngine
@@ -302,6 +312,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
                 ?: defaults.lookaheadTranscriptionEnabled,
             transcriptionEngine = transcriptionEngine,
             sttEngineByLanguage = sttEngineByLanguage,
+            hasCompletedLanguageOnboarding = hasCompletedLanguageOnboarding,
         )
     }
 
@@ -333,6 +344,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
 
         /** 言語設定タブで選んだ言語（カタログの言語コードのカンマ区切り。ADR-0011 §2.1）。 */
         val KEY_LANGUAGE_SETTINGS_ENABLED_LANGUAGES = stringPreferencesKey("language_settings_enabled_languages")
+        val KEY_LANGUAGE_ONBOARDING_COMPLETED = booleanPreferencesKey("language_onboarding_completed")
         val KEY_SHOW_TARGET_ROMANIZATION = booleanPreferencesKey("show_target_romanization")
         val KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED = booleanPreferencesKey("lookahead_transcription_enabled")
         val KEY_TRANSCRIPTION_ENGINE = stringPreferencesKey("transcription_engine")
