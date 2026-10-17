@@ -281,6 +281,86 @@ internal fun nextToggledChunkLanguage(
 }
 
 /**
+ * 「より詳しく文字起こし」ダイアログの実行前チェック結果から表示する警告カード情報。
+ */
+internal data class DetailedPrecheckWarningUiModel(
+    val issue: DetailedTranscriptionPrecheckIssue,
+    val message: String,
+    val actionLabel: String?,
+    val isErrorStyle: Boolean,
+)
+
+/**
+ * [DetailedTranscriptionDialogState] と選択中の言語・エンジン・マイク権限から、
+ * 実行前に表示する警告カードモデルを返す。問題がない場合は `null` を返す。
+ */
+internal fun resolveDetailedPrecheckWarning(
+    dialogState: DetailedTranscriptionDialogState,
+    selectedLanguage: LanguageTag = dialogState.selectedLanguageTag,
+    selectedEngine: OnDeviceTranscriptionEngine = dialogState.selectedEngine,
+    hasRecordAudioPermission: Boolean = dialogState.hasRecordAudioPermission,
+): DetailedPrecheckWarningUiModel? {
+    val issue = dialogState.precheckIssue(
+        language = selectedLanguage,
+        targetEngine = selectedEngine,
+        recordAudioPermissionGranted = hasRecordAudioPermission,
+    ) ?: return null
+    return when (issue) {
+        DetailedTranscriptionPrecheckIssue.MIC_PERMISSION_REQUIRED ->
+            DetailedPrecheckWarningUiModel(
+                issue = issue,
+                message = "SpeechRecognizer の使用にはマイク権限（RECORD_AUDIO）が必要です",
+                actionLabel = "マイク権限を許可する",
+                isErrorStyle = true,
+            )
+
+        DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOAD_REQUIRED ->
+            DetailedPrecheckWarningUiModel(
+                issue = issue,
+                message = "選択中の言語（${selectedLanguage.value}）とエンジンの音声認識モデルがダウンロードされていません。このままでは文字起こしに失敗します。",
+                actionLabel = "モデルをダウンロード",
+                isErrorStyle = true,
+            )
+
+        DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING ->
+            DetailedPrecheckWarningUiModel(
+                issue = issue,
+                message = "現在モデルをダウンロード中です。完了するまでお待ちいただくか、別のエンジンを選択してください。",
+                actionLabel = null,
+                isErrorStyle = false,
+            )
+
+        DetailedTranscriptionPrecheckIssue.ENGINE_UNSUPPORTED ->
+            DetailedPrecheckWarningUiModel(
+                issue = issue,
+                message = "このエンジンは選択した言語に対応していません。別のエンジンを選択してください。",
+                actionLabel = null,
+                isErrorStyle = true,
+            )
+    }
+}
+
+/**
+ * 先読み文字起こしの `recognitionModelIssues` のうち、未導入・失敗・非対応のモデル問題に対して
+ * 進捗ツールチップ等に表示する警告文言を組み立てる。
+ */
+internal fun formatProgressModelIssueWarning(languageTag: LanguageTag): String = "設定の確認: ${languageTag.value} の音声認識モデルが未準備です（設定からダウンロードまたはエンジン変更が必要です）"
+
+/**
+ * 先読み文字起こしの `recognitionModelIssues` から、未準備（`NOT_INSTALLED` / `DOWNLOAD_FAILED` / `UNSUPPORTED`）の
+ * 言語タグ一覧を抽出する。
+ */
+internal fun extractUnpreparedModelIssueLanguages(
+    recognitionModelIssues: Map<LanguageTag, OnDeviceRecognitionModelState>,
+): List<LanguageTag> = recognitionModelIssues.entries
+    .filter { (_, state) ->
+        state == OnDeviceRecognitionModelState.NOT_INSTALLED ||
+            state == OnDeviceRecognitionModelState.DOWNLOAD_FAILED ||
+            state == OnDeviceRecognitionModelState.UNSUPPORTED
+    }
+    .map { (lang, _) -> lang }
+
+/**
  * 再生位置に同期したチャンク / スクリプト一覧（F5.3、F7.1〜F7.7、F8.1、§7.5.5）。
  *
  * - `LazyColumn` の `key` にチャンク ID を指定し、現在のチャンク（[activeChunkIndex]）を背景色と左端バーで強調する。
@@ -345,6 +425,12 @@ fun TranscriptList(
     onRunDetailedTranscriptionTrial: (ChunkId, OnDeviceTranscriptionEngine, LanguageTag?, Float) -> Unit =
         { _, _, _, _ -> },
     onApplyDetailedTranscriptionResult: (ChunkId, String, LanguageTag?) -> Unit = { _, _, _ -> },
+    hasSameTargetAndBaseLanguage: Boolean = languagePair?.base != null &&
+        matchesLanguageRole(languagePair.target, languagePair.base),
+    isAllTranscriptionEmptyAfterCompletion: Boolean = false,
+    onOpenFileSettings: () -> Unit = {},
+    hasRecordAudioPermission: Boolean = detailedTranscriptionDialog?.hasRecordAudioPermission ?: true,
+    onRequestRecordAudioPermission: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -429,6 +515,23 @@ fun TranscriptList(
                     language = issueLanguage,
                     state = issueState,
                     onRequestDownload = { onRequestRecognitionModelDownload(issueLanguage) },
+                    onOpenFileSettings = onOpenFileSettings,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+
+            if (hasSameTargetAndBaseLanguage && languagePair != null) {
+                SameTargetAndBaseLanguageBanner(
+                    language = languagePair.target,
+                    onOpenFileSettings = onOpenFileSettings,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+
+            if (isAllTranscriptionEmptyAfterCompletion) {
+                AllTranscriptionEmptyWarningBanner(
+                    languagePair = languagePair,
+                    onOpenFileSettings = onOpenFileSettings,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
@@ -559,6 +662,8 @@ fun TranscriptList(
                 lookaheadStatus = lookaheadStatus,
                 inFlightChunkNumber = activeChunkNumber,
                 onAbortTranscription = onResetTranscription,
+                onRequestRecognitionModelDownload = onRequestRecognitionModelDownload,
+                onOpenFileSettings = onOpenFileSettings,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(horizontal = 12.dp, vertical = progressOverlayMargin)
@@ -627,6 +732,8 @@ fun TranscriptList(
             waveform = waveform,
             languagePair = languagePair,
             positionProvider = positionProvider,
+            hasRecordAudioPermission = hasRecordAudioPermission,
+            onRequestRecordAudioPermission = onRequestRecordAudioPermission,
             onSelectLanguage = onSelectDetailedTranscriptionLanguage,
             onSelectEngine = onSelectDetailedTranscriptionEngine,
             onRequestModelDownload = onRequestDetailedTranscriptionModelDownload,
@@ -688,6 +795,8 @@ private fun DetailedChunkTranscriptionDialog(
     waveform: Waveform?,
     languagePair: LanguagePair?,
     positionProvider: PositionProvider,
+    hasRecordAudioPermission: Boolean,
+    onRequestRecordAudioPermission: () -> Unit,
     onSelectLanguage: (LanguageTag) -> Unit,
     onSelectEngine: (OnDeviceTranscriptionEngine) -> Unit,
     onRequestModelDownload: (LanguageTag, OnDeviceTranscriptionEngine) -> Unit,
@@ -711,11 +820,14 @@ private fun DetailedChunkTranscriptionDialog(
     var editableText by remember(dialogState.chunkId, dialogState.resultText, dialogState.hasAttempted) {
         mutableStateOf(dialogState.resultText)
     }
-    var pendingDownloadEngine by remember(dialogState.chunkId) {
-        mutableStateOf<OnDeviceTranscriptionEngine?>(null)
-    }
 
     val selectedEngineStatus = dialogState.engineStatus(selectedLanguage, selectedEngine)
+    val precheckWarning = resolveDetailedPrecheckWarning(
+        dialogState = dialogState,
+        selectedLanguage = selectedLanguage,
+        selectedEngine = selectedEngine,
+        hasRecordAudioPermission = hasRecordAudioPermission,
+    )
     val isAnyEngineDownloading = DetailedTranscriptionDialogState.ENGINE_OPTIONS.any { engine ->
         dialogState.engineStatus(selectedLanguage, engine) == OnDeviceLanguageModelStatus.DOWNLOADING
     }
@@ -828,19 +940,12 @@ private fun DetailedChunkTranscriptionDialog(
                                 R.string.player_detailed_transcribe_engine_sherpa
                         }
                         val status = dialogState.engineStatus(selectedLanguage, engine)
-                        val isUnsupported = status == OnDeviceLanguageModelStatus.UNSUPPORTED
                         val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
-                        val needsDownload = status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
-                            status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
                         FilterChip(
                             selected = selectedEngine == engine,
                             onClick = {
-                                if (needsDownload) {
-                                    pendingDownloadEngine = engine
-                                } else {
-                                    selectedEngine = engine
-                                    onSelectEngine(engine)
-                                }
+                                selectedEngine = engine
+                                onSelectEngine(engine)
                             },
                             leadingIcon = if (isDownloading) {
                                 {
@@ -853,11 +958,11 @@ private fun DetailedChunkTranscriptionDialog(
                                 null
                             },
                             label = { Text(text = stringResource(labelRes)) },
-                            enabled = !dialogState.isRunning && !isUnsupported,
+                            enabled = !dialogState.isRunning,
                         )
                     }
                 }
-                if (isAnyEngineDownloading) {
+                if (isAnyEngineDownloading && precheckWarning?.issue != DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -927,6 +1032,27 @@ private fun DetailedChunkTranscriptionDialog(
                     },
                 )
 
+                // 4.5. 実行前チェックの警告カード（マイク権限不足 / モデル未DL / モデルDL中 / 非対応エンジン）
+                precheckWarning?.let { warning ->
+                    DetailedPrecheckWarningCard(
+                        warning = warning,
+                        selectedLanguage = selectedLanguage,
+                        onAction = {
+                            when (warning.issue) {
+                                DetailedTranscriptionPrecheckIssue.MIC_PERMISSION_REQUIRED ->
+                                    onRequestRecordAudioPermission()
+
+                                DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOAD_REQUIRED ->
+                                    onRequestModelDownload(selectedLanguage, selectedEngine)
+
+                                DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING,
+                                DetailedTranscriptionPrecheckIssue.ENGINE_UNSUPPORTED,
+                                -> Unit
+                            }
+                        },
+                    )
+                }
+
                 // 5. 「この条件で文字起こしを試す」ボタン
                 FilledTonalButton(
                     onClick = {
@@ -963,11 +1089,23 @@ private fun DetailedChunkTranscriptionDialog(
                 }
 
                 if (dialogState.hasAttempted && dialogState.resultText.isBlank() && !dialogState.isRunning) {
-                    Text(
-                        text = stringResource(R.string.player_detailed_transcribe_result_empty),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                    val emptyReasonText = dialogState.trialEmptyMessage
+                        ?: stringResource(
+                            R.string.player_detailed_transcribe_empty_general,
+                            selectedLanguage.value,
+                        )
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = emptyReasonText,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        )
+                    }
                 }
 
                 OutlinedTextField(
@@ -995,33 +1133,97 @@ private fun DetailedChunkTranscriptionDialog(
             }
         },
     )
+}
 
-    pendingDownloadEngine?.let { engineToDownload ->
-        AlertDialog(
-            onDismissRequest = { pendingDownloadEngine = null },
-            title = {
-                Text(text = stringResource(R.string.player_detailed_transcribe_model_download_confirm_title))
-            },
-            text = {
-                Text(text = stringResource(R.string.player_detailed_transcribe_model_download_confirm_message))
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        selectedEngine = engineToDownload
-                        pendingDownloadEngine = null
-                        onRequestModelDownload(selectedLanguage, engineToDownload)
-                    },
+@Composable
+private fun DetailedPrecheckWarningCard(
+    warning: DetailedPrecheckWarningUiModel,
+    selectedLanguage: LanguageTag,
+    onAction: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val containerColor = if (warning.isErrorStyle) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.tertiaryContainer
+    }
+    val contentColor = if (warning.isErrorStyle) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onTertiaryContainer
+    }
+    val localizedMessage = when (warning.issue) {
+        DetailedTranscriptionPrecheckIssue.MIC_PERMISSION_REQUIRED ->
+            stringResource(R.string.player_detailed_transcribe_warning_mic_permission)
+
+        DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOAD_REQUIRED ->
+            stringResource(
+                R.string.player_detailed_transcribe_warning_model_download_required,
+                selectedLanguage.value,
+            )
+
+        DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING ->
+            stringResource(R.string.player_detailed_transcribe_warning_model_downloading)
+
+        DetailedTranscriptionPrecheckIssue.ENGINE_UNSUPPORTED ->
+            stringResource(R.string.player_detailed_transcribe_warning_engine_unsupported)
+    }
+    val localizedActionLabel = when (warning.issue) {
+        DetailedTranscriptionPrecheckIssue.MIC_PERMISSION_REQUIRED ->
+            stringResource(R.string.player_detailed_transcribe_action_grant_mic_permission)
+
+        DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOAD_REQUIRED ->
+            stringResource(R.string.player_detailed_transcribe_action_download_model)
+
+        DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING,
+        DetailedTranscriptionPrecheckIssue.ENGINE_UNSUPPORTED,
+        -> null
+    }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (warning.issue == DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = contentColor,
+                    )
+                }
+                Text(
+                    text = localizedMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (localizedActionLabel != null) {
+                FilledTonalButton(
+                    onClick = onAction,
+                    modifier = Modifier.align(Alignment.End),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
-                    Text(text = stringResource(R.string.player_detailed_transcribe_model_download_confirm_ok))
+                    Text(
+                        text = localizedActionLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDownloadEngine = null }) {
-                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
-                }
-            },
-        )
+            }
+        }
     }
 }
 
@@ -1164,6 +1366,8 @@ private fun TranscriptionProgressOverlay(
     inFlightChunkNumber: Int?,
     onAbortTranscription: () -> Unit,
     modifier: Modifier = Modifier,
+    onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
+    onOpenFileSettings: () -> Unit = {},
 ) {
     val isInspectionMode = LocalInspectionMode.current
     val startedAtMs = lookaheadStatus.inFlightStartedAtEpochMs
@@ -1295,6 +1499,54 @@ private fun TranscriptionProgressOverlay(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(end = 8.dp),
             )
+
+            val unpreparedLanguages = remember(lookaheadStatus.recognitionModelIssues) {
+                extractUnpreparedModelIssueLanguages(lookaheadStatus.recognitionModelIssues)
+            }
+            for (issueLang in unpreparedLanguages) {
+                val issueState = lookaheadStatus.recognitionModelIssues[issueLang]
+                val canDownload = issueState == OnDeviceRecognitionModelState.NOT_INSTALLED ||
+                    issueState == OnDeviceRecognitionModelState.DOWNLOAD_FAILED
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(end = 8.dp, top = 2.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = stringResource(
+                                R.string.player_transcription_progress_model_issue,
+                                issueLang.value,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        TextButton(
+                            onClick = {
+                                if (canDownload) {
+                                    onRequestRecognitionModelDownload(issueLang)
+                                } else {
+                                    onOpenFileSettings()
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.align(Alignment.End),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.player_transcription_progress_model_issue_action),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1448,6 +1700,7 @@ internal fun RecognitionModelIssueBanner(
     state: OnDeviceRecognitionModelState,
     onRequestDownload: () -> Unit,
     modifier: Modifier = Modifier,
+    onOpenFileSettings: () -> Unit = {},
 ) {
     val uiLocale = LocalLocale.current.platformLocale
     val languageName = remember(language, uiLocale) {
@@ -1500,12 +1753,103 @@ internal fun RecognitionModelIssueBanner(
                 )
             }
             if (canRequestDownload) {
+                Row(
+                    modifier = Modifier.align(Alignment.End),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    TextButton(onClick = onOpenFileSettings) {
+                        Text(text = stringResource(R.string.player_open_file_settings_action))
+                    }
+                    TextButton(onClick = onRequestDownload) {
+                        Text(text = stringResource(R.string.player_recognition_model_download_action))
+                    }
+                }
+            } else if (state == OnDeviceRecognitionModelState.UNSUPPORTED) {
                 TextButton(
-                    onClick = onRequestDownload,
+                    onClick = onOpenFileSettings,
                     modifier = Modifier.align(Alignment.End),
                 ) {
-                    Text(text = stringResource(R.string.player_recognition_model_download_action))
+                    Text(text = stringResource(R.string.player_open_file_settings_action))
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 学習言語（target）と母語（base）に同じ言語が設定されているときの警告バナー。
+ */
+@Composable
+internal fun SameTargetAndBaseLanguageBanner(
+    language: LanguageTag,
+    onOpenFileSettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
+        ) {
+            Text(
+                text = stringResource(
+                    R.string.player_same_target_base_language_warning,
+                    language.value,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            TextButton(
+                onClick = onOpenFileSettings,
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Text(text = stringResource(R.string.player_open_file_settings_action))
+            }
+        }
+    }
+}
+
+/**
+ * 全チャンクの文字起こしが完了したにもかかわらず認識テキストが 0 件だったときの案内バナー。
+ */
+@Composable
+internal fun AllTranscriptionEmptyWarningBanner(
+    languagePair: LanguagePair?,
+    onOpenFileSettings: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val pairLabel = buildString {
+        append(languagePair?.target?.value ?: "und")
+        languagePair?.base?.takeIf { !matchesLanguageRole(it, languagePair.target) }?.let { base ->
+            append(" / ")
+            append(base.value)
+        }
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
+        ) {
+            Text(
+                text = stringResource(
+                    R.string.player_all_transcription_empty_warning,
+                    pairLabel,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            TextButton(
+                onClick = onOpenFileSettings,
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Text(text = stringResource(R.string.player_open_file_settings_action))
             }
         }
     }

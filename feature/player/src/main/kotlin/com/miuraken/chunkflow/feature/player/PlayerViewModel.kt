@@ -26,6 +26,7 @@ import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
+import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.PracticeSettings
@@ -440,6 +441,23 @@ internal fun resolveInitialDetailedLanguage(
 }
 
 /**
+ * 「より詳しく文字起こし」ダイアログで試験文字起こしを実行する前に検出された設定・準備状態の問題。
+ */
+enum class DetailedTranscriptionPrecheckIssue {
+    /** `ANDROID_SPEECH_RECOGNIZER` が選択されているが、マイク権限（`RECORD_AUDIO`）が付与されていない。 */
+    MIC_PERMISSION_REQUIRED,
+
+    /** 選択中の言語とエンジンの音声認識モデルが未ダウンロードまたはダウンロード失敗（`NOT_INSTALLED` / `DOWNLOAD_FAILED`）。 */
+    MODEL_DOWNLOAD_REQUIRED,
+
+    /** 選択中の言語とエンジンの音声認識モデルを現在ダウンロード中（`DOWNLOADING`）。 */
+    MODEL_DOWNLOADING,
+
+    /** 選択中の文字起こしエンジンが選択中の言語に非対応（`UNSUPPORTED`）。 */
+    ENGINE_UNSUPPORTED,
+}
+
+/**
  * チャンクの「より詳しく文字起こし」ダイアログの UI 状態。
  */
 data class DetailedTranscriptionDialogState(
@@ -451,11 +469,49 @@ data class DetailedTranscriptionDialogState(
     val isRunning: Boolean = false,
     val hasAttempted: Boolean = false,
     val resultText: String = "",
+    val trialEmptyMessage: String? = null,
     val recognizedLanguage: LanguageTag? = null,
     val recognizedEngineId: String? = null,
     val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
     val isPreviewPlaying: Boolean = false,
+    val hasRecordAudioPermission: Boolean = true,
 ) {
+    /** 選択中の認識言語タグ。 */
+    val selectedLanguageTag: LanguageTag
+        get() = languageOverride ?: recognizedLanguage ?: LanguageTag("en")
+
+    /** 選択中の文字起こしエンジン。 */
+    val selectedEngine: OnDeviceTranscriptionEngine
+        get() = engine
+
+    /**
+     * 言語 [language] とエンジン [targetEngine]（およびマイク権限 [recordAudioPermissionGranted]）に対して、
+     * 実行前にユーザーへ警告すべき設定・モデル準備の問題があれば返す。問題がなければ `null` を返す。
+     */
+    fun precheckIssue(
+        language: LanguageTag? = languageOverride,
+        targetEngine: OnDeviceTranscriptionEngine = engine,
+        recordAudioPermissionGranted: Boolean = hasRecordAudioPermission,
+    ): DetailedTranscriptionPrecheckIssue? {
+        val status = engineStatus(language, targetEngine)
+        return when {
+            status == OnDeviceLanguageModelStatus.UNSUPPORTED ->
+                DetailedTranscriptionPrecheckIssue.ENGINE_UNSUPPORTED
+
+            targetEngine == OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER && !recordAudioPermissionGranted ->
+                DetailedTranscriptionPrecheckIssue.MIC_PERMISSION_REQUIRED
+
+            status == OnDeviceLanguageModelStatus.DOWNLOADING ->
+                DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING
+
+            status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED ->
+                DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOAD_REQUIRED
+
+            else -> null
+        }
+    }
+
     /**
      * 指定した言語 [language] に対する [OnDeviceLanguageModelInfo] を返す。
      * [SupportedLanguageCatalog] の対応フラグも反映する。
@@ -556,6 +612,29 @@ data class DetailedTranscriptionDialogState(
 }
 
 /**
+ * 詳細文字起こしの試行結果が空だったときに、モデル状態・エンジン・マイク権限に応じた具体的な理由メッセージを返す。
+ */
+internal fun resolveDetailedTrialEmptyMessage(
+    targetLanguage: LanguageTag,
+    engine: OnDeviceTranscriptionEngine,
+    modelStatus: OnDeviceLanguageModelStatus,
+    hasRecordAudioPermission: Boolean = true,
+): String = when {
+    modelStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+        modelStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED ->
+        "選択した言語（${targetLanguage.value}）の音声認識モデルがダウンロードされていません。モデルをダウンロードしてから再試行してください。"
+
+    modelStatus == OnDeviceLanguageModelStatus.UNSUPPORTED ->
+        "選択した文字起こしエンジンは言語（${targetLanguage.value}）に対応していません。別のエンジンを選択してください。"
+
+    engine == OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER && !hasRecordAudioPermission ->
+        "SpeechRecognizer で認識できませんでした。マイク権限が許可されているか確認するか、ML Kit / sherpa-onnx をお試しください。"
+
+    else ->
+        "音声を認識できませんでした。このチャンクが無音・BGM のみであるか、認識言語（現在: ${targetLanguage.value}）が実際の音声の言語と異なっている可能性があります。認識言語やエンジン・入力速度を変えて再試行してください。"
+}
+
+/**
  * プレイヤー画面の UI 状態（§6.2、F3.1〜F8.1）。
  *
  * 高頻度で変わる再生位置はここには含めず、[PositionProvider] から描画・子 Composable で読む。
@@ -624,6 +703,38 @@ data class PlayerUiState(
             }
         }
 
+    /** 開いている教材の言語のうち、端末内音声認識モデルに問題（未導入・DL中・失敗・非対応）がある状態マップ。 */
+    val recognitionModelIssues: Map<LanguageTag, OnDeviceRecognitionModelState>
+        get() = lookaheadStatus.recognitionModelIssues
+
+    /** 学習言語（target）と母語（base）に同じ言語が設定されているかどうか。 */
+    val hasSameTargetAndBaseLanguage: Boolean
+        get() {
+            val pair = languagePair ?: return false
+            val base = pair.base ?: return false
+            return matchesLanguageRole(pair.target, base)
+        }
+
+    /**
+     * 先読み文字起こしが全対象チャンクを一通り試行し終えたものの、
+     * 認識できたテキストが 1 件もなく（すべて空結果スキップまたはスキップ済み）、実行中・待機中のキューもない状態かどうか。
+     */
+    val isAllTranscriptionEmptyAfterCompletion: Boolean
+        get() {
+            if (chunks.isEmpty() || hasTranscript) return false
+            if (lookaheadStatus.inFlightChunkId != null ||
+                lookaheadStatus.isForcedChunkInFlight ||
+                lookaheadStatus.queuedChunkIds.isNotEmpty()
+            ) {
+                return false
+            }
+            val finishedByCount = lookaheadStatus.totalTargetCount > 0 &&
+                lookaheadStatus.completedCount >= lookaheadStatus.totalTargetCount
+            val finishedBySkippedSet = lookaheadStatus.skippedEmptyChunkIds.isNotEmpty() &&
+                chunks.all { chunk -> chunk.isSkipped || chunk.id in lookaheadStatus.skippedEmptyChunkIds }
+            return finishedByCount || finishedBySkippedSet
+        }
+
     /** 全チャンク分の文字起こしが完了しているかどうか。 */
     val isTranscriptionCompleted: Boolean
         get() = isAllTranscriptionCompleted
@@ -633,7 +744,12 @@ data class PlayerUiState(
         get() = lookaheadStatus.inFlightChunkId != null ||
             lookaheadStatus.isForcedChunkInFlight ||
             lookaheadStatus.queuedChunkIds.isNotEmpty() ||
-            (lookaheadStatus.enabled && !isAllTranscriptionCompleted && chunks.isNotEmpty())
+            (
+                lookaheadStatus.enabled &&
+                    !isAllTranscriptionCompleted &&
+                    !isAllTranscriptionEmptyAfterCompletion &&
+                    chunks.isNotEmpty()
+                )
 
     /** 文字起こし進捗ペーン（カード）を表示するかどうか。文字起こし開始時は自動で `true` になり、バッジタップでトグルできる。 */
     val isTranscriptionProgressVisible: Boolean
@@ -904,7 +1020,11 @@ sealed interface PlayerEvent {
         val engine: OnDeviceTranscriptionEngine,
         val languageOverride: LanguageTag?,
         val audioSpeed: Float,
+        val hasRecordAudioPermission: Boolean = true,
     ) : PlayerEvent
+
+    /** 端末のマイク権限（`RECORD_AUDIO`）の付与状態を UI 状態へ同期する。 */
+    data class SetRecordAudioPermissionGranted(val granted: Boolean) : PlayerEvent
 
     /** 「より詳しく文字起こし」ダイアログの結果をチャンクの文字起こしへ反映して閉じる。 */
     data class ApplyDetailedTranscriptionResult(
@@ -992,6 +1112,7 @@ private data class LocalUiSnapshot(
     val clearingChunkIds: Set<ChunkId> = emptySet(),
     val manuallyClearedChunkIds: Set<ChunkId> = emptySet(),
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
+    val hasRecordAudioPermission: Boolean = true,
 )
 
 /**
@@ -1979,7 +2100,9 @@ class PlayerViewModel @Inject constructor(
                     isRunning = false,
                     hasAttempted = false,
                     resultText = initialText,
+                    trialEmptyMessage = null,
                     recognizedLanguage = initialLanguage,
+                    hasRecordAudioPermission = localUiState.value.hasRecordAudioPermission,
                 ).let { d ->
                     d.copy(engine = d.selectDefaultEngineForLanguage(initialLanguage))
                 }
@@ -2016,6 +2139,7 @@ class PlayerViewModel @Inject constructor(
                             languageOverride = event.language,
                             recognizedLanguage = event.language,
                             engine = nextEngine,
+                            trialEmptyMessage = null,
                         ),
                     )
                 }
@@ -2024,11 +2148,22 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.SelectDetailedTranscriptionEngine -> {
                 localUiState.update { state ->
                     val current = state.detailedTranscriptionDialog ?: return@update state
-                    if (current.engineStatus(current.languageOverride, event.engine) == OnDeviceLanguageModelStatus.UNSUPPORTED) {
-                        return@update state
-                    }
                     state.copy(
-                        detailedTranscriptionDialog = current.copy(engine = event.engine),
+                        detailedTranscriptionDialog = current.copy(
+                            engine = event.engine,
+                            trialEmptyMessage = null,
+                        ),
+                    )
+                }
+            }
+
+            is PlayerEvent.SetRecordAudioPermissionGranted -> {
+                localUiState.update { state ->
+                    state.copy(
+                        hasRecordAudioPermission = event.granted,
+                        detailedTranscriptionDialog = state.detailedTranscriptionDialog?.copy(
+                            hasRecordAudioPermission = event.granted,
+                        ),
                     )
                 }
             }
@@ -2131,11 +2266,14 @@ class PlayerViewModel @Inject constructor(
                 localUiState.update { state ->
                     val currentDialog = state.detailedTranscriptionDialog ?: return@update state
                     state.copy(
+                        hasRecordAudioPermission = event.hasRecordAudioPermission,
                         detailedTranscriptionDialog = currentDialog.copy(
                             engine = event.engine,
                             languageOverride = resolvedLanguage,
                             audioSpeed = event.audioSpeed,
                             isRunning = true,
+                            trialEmptyMessage = null,
+                            hasRecordAudioPermission = event.hasRecordAudioPermission,
                         ),
                     )
                 }
@@ -2152,11 +2290,24 @@ class PlayerViewModel @Inject constructor(
                         if (currentDialog == null || currentDialog.chunkId != event.chunkId) {
                             state
                         } else {
+                            val resultText = trialResult?.text.orEmpty()
+                            val emptyMessage = if (resultText.isBlank()) {
+                                val modelStatus = currentDialog.engineStatus(resolvedLanguage, event.engine)
+                                resolveDetailedTrialEmptyMessage(
+                                    targetLanguage = resolvedLanguage,
+                                    engine = event.engine,
+                                    modelStatus = modelStatus,
+                                    hasRecordAudioPermission = event.hasRecordAudioPermission,
+                                )
+                            } else {
+                                null
+                            }
                             state.copy(
                                 detailedTranscriptionDialog = currentDialog.copy(
                                     isRunning = false,
                                     hasAttempted = true,
-                                    resultText = trialResult?.text.orEmpty(),
+                                    resultText = resultText,
+                                    trialEmptyMessage = emptyMessage,
                                     recognizedLanguage = trialResult?.language ?: resolvedLanguage,
                                     recognizedEngineId = trialResult?.engineId?.value,
                                 ),

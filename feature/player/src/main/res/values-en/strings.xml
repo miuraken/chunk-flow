@@ -213,4 +213,19 @@
     <string name="player_long_press_prev_checked">Previous checked chunk</string>
     <string name="player_long_press_next_checked">Next checked chunk</string>
     <string name="player_long_press_next_file">Next file</string>
+    <string name="player_detailed_transcribe_warning_mic_permission">SpeechRecognizer requires microphone permission (RECORD_AUDIO)</string>
+    <string name="player_detailed_transcribe_action_grant_mic_permission">Grant microphone permission</string>
+    <string name="player_detailed_transcribe_warning_model_download_required">The speech recognition model for the selected language (%1$s) and engine is not downloaded. Transcription will fail without it.</string>
+    <string name="player_detailed_transcribe_action_download_model">Download model</string>
+    <string name="player_detailed_transcribe_warning_model_downloading">Currently downloading model. Please wait until it finishes or select another engine.</string>
+    <string name="player_detailed_transcribe_warning_engine_unsupported">This engine does not support the selected language. Please select another engine.</string>
+    <string name="player_detailed_transcribe_empty_model_not_installed">The speech recognition model for the selected language (%1$s) is not downloaded. Please download the model and try again.</string>
+    <string name="player_detailed_transcribe_empty_engine_unsupported">The selected speech recognition engine does not support the language (%1$s). Please select another engine.</string>
+    <string name="player_detailed_transcribe_empty_mic_permission">Could not recognize with SpeechRecognizer. Check microphone permission or try ML Kit / sherpa-onnx.</string>
+    <string name="player_detailed_transcribe_empty_general">Could not recognize speech. This chunk may contain only silence/BGM, or the recognition language (current: %1$s) may not match the actual spoken language. Try changing language, engine, or input speed.</string>
+    <string name="player_transcription_progress_model_issue">Check settings: speech model for %1$s is not ready (download or change engine in settings)</string>
+    <string name="player_transcription_progress_model_issue_action">Prepare model / Check settings</string>
+    <string name="player_same_target_base_language_warning">Target and base languages are set to the same language (%1$s). For bilingual audio, one language may not be recognized. Check language settings.</string>
+    <string name="player_all_transcription_empty_warning">Tried transcribing all chunks, but no speech was recognized. Check file settings to verify that the language (%1$s) matches the audio and the recognition model is ready.</string>
+    <string name="player_open_file_settings_action">Check file settings</string>
 </resources>
