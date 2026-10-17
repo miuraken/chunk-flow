@@ -1,11 +1,8 @@
 package com.miuraken.chunkflow.feature.player
 
-import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -96,7 +93,6 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
@@ -115,8 +111,6 @@ import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 import java.util.Locale as JavaLocale
 import kotlin.math.abs
 import kotlin.math.max
@@ -315,12 +309,17 @@ fun TranscriptList(
     onDismissTranscriptBanner: () -> Unit,
     modifier: Modifier = Modifier,
     showTargetRomanization: Boolean = false,
+    showTargetTranslation: Boolean = false,
     positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
+    showTranscriptionProgress: Boolean = lookaheadStatus.inFlightChunkId != null ||
+        lookaheadStatus.isForcedChunkInFlight ||
+        (lookaheadStatus.enabled && lookaheadStatus.queuedChunkIds.isNotEmpty()),
     transcriptExportBanner: TranscriptExportBannerState? = null,
     onDismissExportBanner: () -> Unit = {},
     onToggleBookmark: (ChunkId) -> Unit = {},
     onToggleRepeatChunk: (ChunkId) -> Unit = {},
+    onSetChunksSkipped: (Set<ChunkId>, Boolean) -> Unit = { _, _ -> },
     onUpdateChunkLanguage: (ChunkId, LanguageTag?) -> Unit = { _, _ -> },
     onUpdateChunkText: (ChunkId, String) -> Unit = { _, _ -> },
     onRetranscribeChunk: (ChunkId) -> Unit = {},
@@ -390,15 +389,15 @@ fun TranscriptList(
     val loopHighlightedIds = remember(loopMode, chunks) {
         resolveLoopChunkIds(loopMode, chunks)
     }
-
-    val isTranscriptionActive = lookaheadStatus.inFlightChunkId != null ||
-        (lookaheadStatus.enabled && lookaheadStatus.queuedChunkIds.isNotEmpty())
+    val selectedChunks = remember(chunks) {
+        chunks.filter { it.isRepeatChecked }
+    }
 
     // 進捗カードと、リストの端・ほかの部品との間隔
     val progressOverlayMargin = 8.dp
 
     // 進捗カードが出ている間は、カードの高さと上下の間隔の分だけリストの下に余白を付ける
-    val progressOverlayInset = if (isTranscriptionActive) {
+    val progressOverlayInset = if (showTranscriptionProgress) {
         with(density) { progressOverlayHeightPx.toDp() } + progressOverlayMargin * 2
     } else {
         0.dp
@@ -492,6 +491,9 @@ fun TranscriptList(
                         chineseScript = chineseScript,
                         cantoneseScript = cantoneseScript,
                         showTargetRomanization = showTargetRomanization,
+                        showTargetTranslation = showTargetTranslation,
+                        selectedChunks = selectedChunks,
+                        onSetChunksSkipped = onSetChunksSkipped,
                         positionProvider = positionProvider,
                         onRowClick = {
                             val startId = rangeSelectionStartChunkId
@@ -546,7 +548,7 @@ fun TranscriptList(
             }
         }
 
-        if (isTranscriptionActive) {
+        if (showTranscriptionProgress) {
             val activeChunkNumber = lookaheadStatus.inFlightChunkId?.let { inFlightId ->
                 chunks.indexOfFirst { it.id == inFlightId }.takeIf { it >= 0 }?.plus(1)
             }
@@ -595,7 +597,7 @@ fun TranscriptList(
                         top = 12.dp,
                         end = 12.dp,
                         // 進捗カードが出ているときは、カードに重ならないようその上に出す
-                        bottom = if (isTranscriptionActive) progressOverlayInset else 12.dp,
+                        bottom = if (showTranscriptionProgress) progressOverlayInset else 12.dp,
                     ),
             )
         }
@@ -870,145 +872,6 @@ private fun DetailedChunkTranscriptionDialog(
     )
 }
 
-/**
- * 選択した文字起こしテキストを Google 翻訳（Web / アプリ連携）で開くための URL を組み立てる。
- *
- * チャンクの言語（未判定なら学習言語、それもなければ `"auto"`）を翻訳元（`sl`）とし、
- * ベース言語（未設定なら [fallbackTargetLang]）を翻訳先（`tl`）に設定する。
- * 翻訳元と翻訳先が同一になった場合は `sl="auto"` にフォールバックする。
- */
-internal fun buildGoogleTranslateUrl(
-    text: String,
-    chunkLanguage: LanguageTag?,
-    languagePair: LanguagePair?,
-    fallbackTargetLang: String = "ja",
-): String {
-    val rawSource = chunkLanguage?.value?.trim()?.takeUnless {
-        it.isEmpty() || it.equals("und", ignoreCase = true)
-    } ?: languagePair?.target?.value?.trim()?.takeIf { it.isNotEmpty() }
-    val normalizedSource = rawSource?.let(::normalizeGoogleTranslateLanguageCode) ?: "auto"
-
-    val rawTarget = languagePair?.base?.value?.trim()?.takeIf { it.isNotEmpty() }
-        ?: fallbackTargetLang.trim().ifEmpty { "ja" }
-    val targetLang = normalizeGoogleTranslateLanguageCode(rawTarget)
-
-    val sourceLang = if (normalizedSource.equals(targetLang, ignoreCase = true)) {
-        "auto"
-    } else {
-        normalizedSource
-    }
-
-    val trimmedText = text.trim()
-    val encodedText = URLEncoder.encode(trimmedText, StandardCharsets.UTF_8.name()).replace("+", "%20")
-    return "https://translate.google.com/?sl=$sourceLang&tl=$targetLang&text=$encodedText&op=translate"
-}
-
-/**
- * チャンクのテキストを Google 翻訳で開く。
- *
- * Google 翻訳の Android アプリは `https://translate.google.com/?sl=...&tl=...&text=...` の App Link を捕捉した際に
- * クエリ文字列（`text` / `sl` / `tl`）を破棄して空のホーム画面を開く挙動があるため、
- * デフォルトの Web ブラウザパッケージが解決できる場合はブラウザを明示指定して Web 版 Google 翻訳（テキスト・言語指定済み）を開く。
- * ブラウザが見つからない環境では `ACTION_PROCESS_TEXT` または通常の `ACTION_VIEW` にフォールバックする。
- */
-internal fun openInGoogleTranslate(
-    context: Context,
-    url: String,
-    text: String,
-) {
-    val trimmed = text.trim()
-    if (trimmed.isEmpty()) return
-
-    // 万一ブラウザや翻訳アプリ側でパラメータが失われた場合にもすぐ貼り付けられるようクリップボードにもコピーしておく
-    runCatching {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("Chunk Flow transcript", trimmed))
-    }
-
-    val targetUri = url.toUri()
-    val pm = context.packageManager
-
-    // 1. まず汎用 https URL で Web ブラウザのパッケージを特定し、Google 翻訳アプリに横取りさせずに Web 版を開く
-    val browserProbe = Intent(Intent.ACTION_VIEW, "https://www.example.com".toUri()).apply {
-        addCategory(Intent.CATEGORY_BROWSABLE)
-    }
-
-    // QueryPermissionsNeeded を抑える理由:
-    // - パッケージ可視性の制限（Android 11 以降）で見えるアプリが絞られるため、queryIntentActivities が既定以外のブラウザを返さないことがある。
-    // - ブラウザが返らなくても、ACTION_PROCESS_TEXT や通常の ACTION_VIEW に切り替わるので、Google 翻訳で開く機能は使える。
-    // - 他のアプリの一覧を見られる範囲を広げないため、マニフェストに <queries> は足さずに抑える（人間の判断）。
-    @SuppressLint("QueryPermissionsNeeded")
-    val browserPackage = runCatching {
-        val defaultResolved = pm.resolveActivity(browserProbe, 0)?.activityInfo?.packageName
-        if (!defaultResolved.isNullOrBlank() &&
-            defaultResolved != "android" &&
-            defaultResolved != "com.google.android.apps.translate"
-        ) {
-            defaultResolved
-        } else {
-            pm.queryIntentActivities(browserProbe, 0)
-                .mapNotNull { it.activityInfo?.packageName }
-                .firstOrNull { pkg ->
-                    pkg.isNotBlank() &&
-                        pkg != "android" &&
-                        pkg != "com.google.android.apps.translate"
-                }
-        }
-    }.getOrNull()
-
-    if (browserPackage != null) {
-        val browserOpened = runCatching {
-            val browserIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-                setPackage(browserPackage)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(browserIntent)
-            true
-        }.getOrDefault(false)
-        if (browserOpened) return
-    }
-
-    // 2. ブラウザが利用できない場合は Google 翻訳アプリの PROCESS_TEXT (テキスト引き渡し) を試みる
-    val processTextOpened = runCatching {
-        val processIntent = Intent(Intent.ACTION_PROCESS_TEXT).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_PROCESS_TEXT, trimmed)
-            putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true)
-            setPackage("com.google.android.apps.translate")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(processIntent)
-        true
-    }.getOrDefault(false)
-    if (processTextOpened) return
-
-    // 3. 最終フォールバック: 通常の ACTION_VIEW
-    runCatching {
-        val fallbackIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(fallbackIntent)
-    }
-}
-
-internal fun normalizeGoogleTranslateLanguageCode(rawTag: String): String {
-    val normalized = rawTag.trim().replace('_', '-')
-    val lower = normalized.lowercase(JavaLocale.ROOT)
-    return when {
-        lower == "cmn" || lower == "zh" || lower.startsWith("zh-hans") || lower == "zh-cn" || lower == "zh-sg" ->
-            "zh-CN"
-
-        lower.startsWith("zh-hant") || lower == "zh-tw" || lower == "zh-hk" || lower == "zh-mo" ->
-            "zh-TW"
-
-        lower == "yue" || lower.startsWith("yue-") ->
-            "yue"
-
-        else -> normalized.substringBefore('-').lowercase(JavaLocale.ROOT).ifEmpty { "auto" }
-    }
-}
-
 @Composable
 internal fun transcriptionStepLabel(step: TranscriptionStep?): String = when (step) {
     TranscriptionStep.WAITING_LOCK -> stringResource(R.string.player_transcription_step_waiting_lock)
@@ -1088,7 +951,6 @@ private fun TranscriptionProgressOverlay(
             R.string.player_transcription_progress_summary,
             lookaheadStatus.completedCount,
             totalCount,
-            lookaheadStatus.queuedChunkIds.size,
         )
     }
     val stepLabel = transcriptionStepLabel(lookaheadStatus.inFlightStep)
@@ -1557,6 +1419,9 @@ private fun TranscriptChunkRow(
     onStartRangeSelection: () -> Unit,
     onUpdateLanguage: (LanguageTag?) -> Unit,
     onRequestEditText: () -> Unit,
+    showTargetTranslation: Boolean = false,
+    selectedChunks: List<ChunkUi> = emptyList(),
+    onSetChunksSkipped: (Set<ChunkId>, Boolean) -> Unit = { _, _ -> },
     isForcedInFlight: Boolean = false,
     inFlightStep: TranscriptionStep? = null,
     inFlightDetail: String? = null,
@@ -1567,7 +1432,6 @@ private fun TranscriptChunkRow(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val uiLocale = LocalLocale.current.platformLocale
     val colorScheme = MaterialTheme.colorScheme
     val langPalette = chunkFlowLanguagePalette()
     val isTargetLang = matchesLanguageRole(chunk.language, languagePair?.target)
@@ -1723,9 +1587,20 @@ private fun TranscriptChunkRow(
             }
             Spacer(modifier = Modifier.width(8.dp))
 
+            val primaryTextColor = if (chunk.isSkipped) {
+                colorScheme.onSurface.copy(alpha = 0.38f)
+            } else {
+                colorScheme.onSurface
+            }
+            val secondaryTextColor = if (chunk.isSkipped) {
+                colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+            } else {
+                colorScheme.onSurfaceVariant
+            }
+
             if (!displayText.isNullOrBlank() && !isForcedInFlight) {
-                val shouldShowPhonetic = showTargetRomanization &&
-                    (isTargetLang || languagePair == null)
+                val isTargetOrNoPair = isTargetLang || languagePair == null
+                val shouldShowPhonetic = showTargetRomanization && isTargetOrNoPair
                 val phoneticReading = remember(
                     shouldShowPhonetic,
                     chunk,
@@ -1741,26 +1616,40 @@ private fun TranscriptChunkRow(
                         null
                     }
                 }
+                val translatedReading = if (showTargetTranslation && isTargetOrNoPair) {
+                    chunk.translatedText?.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                }
                 if (isMasked) {
-                    if (phoneticReading != null) {
-                        // 「学習言語を隠す」かつ「読み」がオンのときは、マスクバナーや本文は出さず読みだけを表示する
+                    if (phoneticReading != null || translatedReading != null) {
+                        // 「学習言語を隠す」かつ「読み」または「翻訳」がオンで表示するテキストがあるときは、マスクバナーや本文は出さず「読み」とその下に「翻訳」だけを表示する
                         Column(
                             modifier = Modifier
                                 .weight(1f)
                                 .padding(vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
-                            Text(
-                                text = phoneticReading,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = colorScheme.onSurface,
-                            )
+                            if (phoneticReading != null) {
+                                Text(
+                                    text = phoneticReading,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = primaryTextColor,
+                                )
+                            }
+                            if (translatedReading != null) {
+                                Text(
+                                    text = translatedReading,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = secondaryTextColor,
+                                )
+                            }
                         }
                     } else {
                         Surface(
                             color = colorScheme.surfaceContainerHighest,
-                            contentColor = colorScheme.onSurfaceVariant,
+                            contentColor = secondaryTextColor,
                             shape = RoundedCornerShape(6.dp),
                             modifier = Modifier
                                 .weight(1f)
@@ -1812,21 +1701,28 @@ private fun TranscriptChunkRow(
                                 text = highlightedText,
                                 style = localizedTextStyle,
                                 fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = colorScheme.onSurface,
+                                color = primaryTextColor,
                             )
                         } else {
                             Text(
                                 text = displayText,
                                 style = localizedTextStyle,
                                 fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = colorScheme.onSurface,
+                                color = primaryTextColor,
                             )
                         }
                         if (phoneticReading != null) {
                             Text(
                                 text = phoneticReading,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = colorScheme.onSurfaceVariant,
+                                color = secondaryTextColor,
+                            )
+                        }
+                        if (translatedReading != null) {
+                            Text(
+                                text = translatedReading,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = secondaryTextColor,
                             )
                         }
                     }
@@ -1881,14 +1777,14 @@ private fun TranscriptChunkRow(
                                 text = stringResource(R.string.player_chunk_number_format, index + 1),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = colorScheme.onSurface,
+                                color = primaryTextColor,
                             )
                         }
                         // 時刻の範囲は左の開始時刻と重なる補足情報のため、幅が足りないときは省略して状態の表示を優先する
                         Text(
                             text = "${formatDurationMs(chunk.startMs)} - ${formatDurationMs(chunk.endMs)}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = colorScheme.onSurfaceVariant,
+                            color = secondaryTextColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
@@ -1977,25 +1873,62 @@ private fun TranscriptChunkRow(
                 },
             )
             DropdownMenuItem(
-                text = { Text(text = stringResource(R.string.player_chunk_open_google_translate)) },
-                enabled = !textToUse.isNullOrBlank(),
+                text = {
+                    Text(
+                        text = stringResource(
+                            if (chunk.isSkipped) {
+                                R.string.player_chunk_skip_disable
+                            } else {
+                                R.string.player_chunk_skip_enable
+                            },
+                        ),
+                    )
+                },
                 onClick = {
                     menuExpanded = false
-                    if (!textToUse.isNullOrBlank()) {
-                        val url = buildGoogleTranslateUrl(
-                            text = textToUse,
-                            chunkLanguage = chunk.language,
-                            languagePair = languagePair,
-                            fallbackTargetLang = uiLocale.language.ifBlank { "ja" },
-                        )
-                        openInGoogleTranslate(
-                            context = context,
-                            url = url,
-                            text = textToUse,
-                        )
-                    }
+                    onSetChunksSkipped(setOf(chunk.id), !chunk.isSkipped)
                 },
             )
+            val targetChunks = if (selectedChunks.isNotEmpty()) {
+                if (chunk.isRepeatChecked) selectedChunks else (selectedChunks + chunk).distinctBy { it.id }
+            } else {
+                emptyList()
+            }
+            if (targetChunks.size >= 2) {
+                val targetChunkIds = targetChunks.map { it.id }.toSet()
+                if (targetChunks.any { !it.isSkipped }) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = stringResource(
+                                    R.string.player_chunk_skip_enable_selected,
+                                    targetChunks.size,
+                                ),
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onSetChunksSkipped(targetChunkIds, true)
+                        },
+                    )
+                }
+                if (targetChunks.any { it.isSkipped }) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = stringResource(
+                                    R.string.player_chunk_skip_disable_selected,
+                                    targetChunks.size,
+                                ),
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onSetChunksSkipped(targetChunkIds, false)
+                        },
+                    )
+                }
+            }
             DropdownMenuItem(
                 text = { Text(text = stringResource(R.string.player_chunk_retranscribe)) },
                 onClick = {

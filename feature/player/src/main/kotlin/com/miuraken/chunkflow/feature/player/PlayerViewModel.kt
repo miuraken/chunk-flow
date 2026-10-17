@@ -146,6 +146,9 @@ data class ChunkUi(
     val language: LanguageTag?,
     val isBookmarked: Boolean = false,
     val isRepeatChecked: Boolean = false,
+    val isSkipped: Boolean = false,
+    val translatedText: String? = null,
+    val translatedLanguage: LanguageTag? = null,
     val textVariants: Map<String, String> = emptyMap(),
     val words: List<WordTiming> = emptyList(),
     val origin: ChunkOrigin = ChunkOrigin.AUTO,
@@ -451,6 +454,11 @@ data class PlayerUiState(
     val chineseScript: ChineseScript = ChineseScript.HANS,
     val cantoneseScript: ChineseScript = ChineseScript.HANT,
     val showTargetRomanization: Boolean = false,
+    val showTargetTranslation: Boolean = false,
+    val isTranslationSupported: Boolean = false,
+    val translatingChunkId: ChunkId? = null,
+    val failedTranslationChunkIds: Set<ChunkId> = emptySet(),
+    val isTranscriptionProgressDismissed: Boolean = false,
     val chunkSource: ChunkOrigin = ChunkOrigin.AUTO,
     val availableChunkOrigins: Set<ChunkOrigin> = emptySet(),
     val segmentationParams: SegmentationParams = SegmentationParams(),
@@ -466,25 +474,67 @@ data class PlayerUiState(
     val hasTranscript: Boolean
         get() = chunks.any { it.text != null }
 
-    /** 全チャンク分の文字起こしが完了しているかどうか。 */
-    val isTranscriptionCompleted: Boolean
+    /** 全チャンクの文字起こし（スキップ済み・空結果スキップ済みを含む）が完了し、実行中・待機中のキューもないかどうか。 */
+    val isAllTranscriptionCompleted: Boolean
         get() {
             if (chunks.isEmpty()) return false
-            if (lookaheadStatus.inFlightChunkId != null || lookaheadStatus.queuedChunkIds.isNotEmpty()) {
+            if (lookaheadStatus.inFlightChunkId != null ||
+                lookaheadStatus.isForcedChunkInFlight ||
+                lookaheadStatus.queuedChunkIds.isNotEmpty()
+            ) {
                 return false
             }
-            if (hasTranscript &&
-                lookaheadStatus.totalTargetCount > 0 &&
-                lookaheadStatus.completedCount >= lookaheadStatus.totalTargetCount
-            ) {
-                return true
-            }
+            if (chunks.none { !it.text.isNullOrBlank() }) return false
             return chunks.all { chunk ->
-                !chunk.text.isNullOrBlank() &&
-                    chunk.language != null &&
-                    chunk.language.value.isNotBlank() &&
-                    !chunk.language.value.equals("und", ignoreCase = true)
+                !chunk.text.isNullOrBlank() ||
+                    chunk.isSkipped ||
+                    chunk.id in lookaheadStatus.skippedEmptyChunkIds
             }
+        }
+
+    /** 全チャンク分の文字起こしが完了しているかどうか。 */
+    val isTranscriptionCompleted: Boolean
+        get() = isAllTranscriptionCompleted
+
+    /** 先読み文字起こしまたは強制再文字起こしキューが現在実行中かどうか。 */
+    val isTranscriptionRunning: Boolean
+        get() = lookaheadStatus.inFlightChunkId != null ||
+            lookaheadStatus.isForcedChunkInFlight ||
+            lookaheadStatus.queuedChunkIds.isNotEmpty() ||
+            (lookaheadStatus.enabled && !isAllTranscriptionCompleted && chunks.isNotEmpty())
+
+    /** 文字起こし進捗ペーン（カード）を表示するかどうか。文字起こし開始時は自動で `true` になり、バッジタップでトグルできる。 */
+    val isTranscriptionProgressVisible: Boolean
+        get() = isTranscriptionRunning && !isTranscriptionProgressDismissed
+
+    /** 翻訳表示が有効なとき、すべての対象チャンクの翻訳が完了しているかどうか。 */
+    val isAllTranslationCompleted: Boolean
+        get() {
+            if (!showTargetTranslation || !isTranslationSupported) return true
+            if (!isAllTranscriptionCompleted || translatingChunkId != null) return false
+            val pair = languagePair ?: return true
+            val baseLang = pair.base ?: return true
+            return chunks.none { chunk ->
+                val isTargetRole = matchesLanguageRole(chunk.language, pair.target) || chunk.language == null
+                isTargetRole &&
+                    !chunk.isSkipped &&
+                    !chunk.text.isNullOrBlank() &&
+                    chunk.id !in failedTranslationChunkIds &&
+                    (
+                        chunk.translatedText.isNullOrBlank() ||
+                            (chunk.translatedLanguage != null && !matchesLanguageRole(chunk.translatedLanguage, baseLang))
+                        )
+            }
+        }
+
+    /** 「文字起こし」バッジを表示するかどうか（全文字起こし・有効時の全翻訳・実行中キューがすべて完了したら非表示）。 */
+    val isTranscriptionBadgeVisible: Boolean
+        get() {
+            if (isTranscriptionRunning) return true
+            if (chunks.isEmpty()) return false
+            if (!isAllTranscriptionCompleted) return true
+            if (showTargetTranslation && isTranslationSupported && !isAllTranslationCompleted) return true
+            return false
         }
 
     /** 学習言語に対する読み方ガイド種別（ラテン文字言語の場合は `null`）。 */
@@ -590,6 +640,12 @@ sealed interface PlayerEvent {
     /** 学習言語の読み方ガイド（ローマ字 / IAST / Pinyin 等）の表示 ON / OFF を切り替える。 */
     data class SetShowTargetRomanization(val enabled: Boolean) : PlayerEvent
 
+    /** 学習言語からベース言語への翻訳テキスト表示の ON / OFF を切り替える。 */
+    data class SetShowTargetTranslation(val enabled: Boolean) : PlayerEvent
+
+    /** 指定したチャンク群のスキップ状態（`Chunk.isSkipped`）を設定または解除する。 */
+    data class SetChunksSkipped(val chunkIds: Set<ChunkId>, val skipped: Boolean) : PlayerEvent
+
     /** チャンクの出どころ（文字起こし / 自動分割）を切り替える（F5.4）。 */
     data class SetChunkSource(val origin: ChunkOrigin) : PlayerEvent
 
@@ -632,6 +688,9 @@ sealed interface PlayerEvent {
 
     /** 端末内の先読み簡易文字起こし（F6.2）の有効・無効を切り替える。 */
     data class SetLookaheadEnabled(val enabled: Boolean) : PlayerEvent
+
+    /** 文字起こし実行中に進捗ペーン（カード）の表示・非表示を切り替える。 */
+    data object ToggleTranscriptionProgress : PlayerEvent
 
     /** 実行中・待機中のすべての文字起こし処理とロックを強制中断・リセットする。 */
     data object ResetTranscription : PlayerEvent
@@ -707,6 +766,10 @@ private data class AnalysisSnapshot(
 private data class LocalUiSnapshot(
     val blindMode: BlindMode = BlindMode.OFF,
     val revealedChunkIds: Set<ChunkId> = emptySet(),
+    val showTargetTranslation: Boolean = false,
+    val translatingChunkId: ChunkId? = null,
+    val failedTranslationChunkIds: Set<ChunkId> = emptySet(),
+    val isTranscriptionProgressDismissed: Boolean = false,
     val customSegmentationParams: SegmentationParams? = null,
     val transcriptImportBanner: TranscriptImportBannerState? = null,
     val transcriptExportBanner: TranscriptExportBannerState? = null,
@@ -714,6 +777,7 @@ private data class LocalUiSnapshot(
     val localTranscriptExported: Boolean = false,
     val languageOverrides: Map<ChunkId, LanguageTag?> = emptyMap(),
     val clearingChunkIds: Set<ChunkId> = emptySet(),
+    val manuallyClearedChunkIds: Set<ChunkId> = emptySet(),
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
 )
 
@@ -754,6 +818,8 @@ class PlayerViewModel @Inject constructor(
     /** 言語バッジのトグル後、文字起こしのやり直しを待っているチャンクごとのジョブ（最後のトグルから 1 秒後に実行）。 */
     private val pendingLanguageCommitJobs = mutableMapOf<ChunkId, Job>()
     private var lookaheadLoopJob: Job? = null
+    private var translationLoopJob: Job? = null
+    private val failedTranslationChunkIds = mutableSetOf<ChunkId>()
     private var detailedTrialJob: Job? = null
     private var retranscribeJob: Job? = null
     private var chunkSeekPrioritizeJob: Job? = null
@@ -894,6 +960,45 @@ class PlayerViewModel @Inject constructor(
                 }
             }
         }
+
+        // 「翻訳」トグルが ON のとき、全文字起こし完了や未翻訳チャンクの発生に合わせて順次翻訳を開始する
+        viewModelScope.launch {
+            uiState
+                .map { state ->
+                    val untranslatedCount = if (state.showTargetTranslation && state.isTranslationSupported && state.isAllTranscriptionCompleted) {
+                        state.chunks.count { chunk -> isChunkEligibleForTranslation(chunk, state.languagePair) }
+                    } else {
+                        0
+                    }
+                    Triple(state.mediaId, state.showTargetTranslation && state.isTranslationSupported && state.isAllTranscriptionCompleted, untranslatedCount)
+                }
+                .distinctUntilChanged()
+                .collect { (_, canTranslate, untranslatedCount) ->
+                    if (!canTranslate) {
+                        stopTranslationLoop()
+                    } else if (untranslatedCount > 0 && translationLoopJob?.isActive != true) {
+                        startTranslationLoopIfNeeded()
+                    }
+                }
+        }
+
+        // 文字起こしが停止したときに進捗ペーン非表示フラグをリセットし、次回開始時に自動表示されるようにする
+        viewModelScope.launch {
+            uiState
+                .map { it.isTranscriptionRunning }
+                .distinctUntilChanged()
+                .collect { isRunning ->
+                    if (!isRunning) {
+                        localUiState.update { state ->
+                            if (state.isTranscriptionProgressDismissed) {
+                                state.copy(isTranscriptionProgressDismissed = false)
+                            } else {
+                                state
+                            }
+                        }
+                    }
+                }
+        }
     }
 
     /** 開いている教材の言語（学習言語・母語）のうち、端末内音声認識モデルに問題がある言語。 */
@@ -965,6 +1070,9 @@ class PlayerViewModel @Inject constructor(
         lastOpenedMediaId = mediaId
         lookaheadLoopJob?.cancel()
         lookaheadLoopJob = null
+        translationLoopJob?.cancel()
+        translationLoopJob = null
+        failedTranslationChunkIds.clear()
         detailedTrialJob?.cancel()
         detailedTrialJob = null
         retranscribeJob?.cancel()
@@ -993,6 +1101,7 @@ class PlayerViewModel @Inject constructor(
         val targetId = mediaId ?: lastOpenedMediaId ?: currentMediaId.value
         lookaheadLoopJob?.cancel()
         lookaheadLoopJob = null
+        stopTranslationLoop()
         chunkSeekPrioritizeJob?.cancel()
         chunkSeekPrioritizeJob = null
         if (targetId != null) {
@@ -1264,6 +1373,35 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            is PlayerEvent.SetShowTargetTranslation -> {
+                if (!event.enabled) {
+                    stopTranslationLoop()
+                    localUiState.update {
+                        it.copy(
+                            showTargetTranslation = false,
+                            translatingChunkId = null,
+                        )
+                    }
+                } else {
+                    failedTranslationChunkIds.clear()
+                    localUiState.update {
+                        it.copy(
+                            showTargetTranslation = true,
+                            failedTranslationChunkIds = emptySet(),
+                        )
+                    }
+                    startTranslationLoopIfNeeded()
+                }
+            }
+
+            is PlayerEvent.SetChunksSkipped -> {
+                val id = resolveActiveMediaId() ?: return
+                if (event.chunkIds.isEmpty()) return
+                viewModelScope.launch {
+                    analysisRepository.setChunksSkipped(id, event.chunkIds, event.skipped)
+                }
+            }
+
             is PlayerEvent.SetChunkSource -> {
                 val id = resolveActiveMediaId() ?: return
                 viewModelScope.launch {
@@ -1298,7 +1436,11 @@ class PlayerViewModel @Inject constructor(
                 chunkSeekPrioritizeJob?.cancel()
                 chunkSeekPrioritizeJob = null
                 localUiState.update { state ->
-                    state.copy(clearingChunkIds = state.clearingChunkIds + event.chunkId)
+                    state.copy(
+                        clearingChunkIds = state.clearingChunkIds + event.chunkId,
+                        manuallyClearedChunkIds = state.manuallyClearedChunkIds - event.chunkId,
+                        isTranscriptionProgressDismissed = false,
+                    )
                 }
                 viewModelScope.launch {
                     try {
@@ -1330,6 +1472,14 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.UpdateChunkText -> {
                 val id = resolveActiveMediaId() ?: return
+                localUiState.update { state ->
+                    val nextCleared = if (event.text.isBlank()) {
+                        state.manuallyClearedChunkIds + event.chunkId
+                    } else {
+                        state.manuallyClearedChunkIds - event.chunkId
+                    }
+                    state.copy(manuallyClearedChunkIds = nextCleared)
+                }
                 viewModelScope.launch {
                     withContext(NonCancellable) {
                         analysisRepository.updateChunkText(id, event.chunkId, event.text)
@@ -1420,6 +1570,7 @@ class PlayerViewModel @Inject constructor(
                 if (!event.enabled) {
                     abortActiveViewModelTranscriptionJobs()
                 }
+                localUiState.update { it.copy(isTranscriptionProgressDismissed = false) }
                 perMediaLookaheadEnabled.update { it + (id to event.enabled) }
                 viewModelScope.launch {
                     userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
@@ -1427,9 +1578,16 @@ class PlayerViewModel @Inject constructor(
                 syncLookaheadState(id, event.enabled)
             }
 
+            PlayerEvent.ToggleTranscriptionProgress -> {
+                localUiState.update { state ->
+                    state.copy(isTranscriptionProgressDismissed = !state.isTranscriptionProgressDismissed)
+                }
+            }
+
             PlayerEvent.ResetTranscription -> {
                 val id = resolveActiveMediaId() ?: return
                 abortActiveViewModelTranscriptionJobs()
+                localUiState.update { it.copy(isTranscriptionProgressDismissed = false) }
                 perMediaLookaheadEnabled.update { it + (id to false) }
                 viewModelScope.launch {
                     userSettingsRepository.setLookaheadTranscriptionEnabled(false)
@@ -1522,6 +1680,8 @@ class PlayerViewModel @Inject constructor(
                         state.copy(
                             languageOverrides = emptyMap(),
                             clearingChunkIds = emptySet(),
+                            manuallyClearedChunkIds = emptySet(),
+                            isTranscriptionProgressDismissed = false,
                             localTranscriptExported = false,
                             transcriptImportBanner = null,
                             transcriptExportBanner = if (success) {
@@ -1665,6 +1825,130 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         close()
+    }
+
+    private fun stopTranslationLoop() {
+        translationLoopJob?.cancel()
+        translationLoopJob = null
+        localUiState.update { state ->
+            if (state.translatingChunkId == null) state else state.copy(translatingChunkId = null)
+        }
+    }
+
+    private fun isChunkEligibleForTranslation(
+        chunk: ChunkUi,
+        languagePair: LanguagePair?,
+    ): Boolean {
+        val baseLang = languagePair?.base ?: return false
+        val isTargetRole = matchesLanguageRole(chunk.language, languagePair.target) || chunk.language == null
+        if (!isTargetRole) return false
+        if (chunk.isSkipped || chunk.text.isNullOrBlank()) return false
+        if (chunk.id in failedTranslationChunkIds) return false
+        val needsTranslation = chunk.translatedText.isNullOrBlank() ||
+            (chunk.translatedLanguage != null && !matchesLanguageRole(chunk.translatedLanguage, baseLang))
+        return needsTranslation
+    }
+
+    private fun orderTranslationCandidateChunks(
+        chunks: List<ChunkUi>,
+        practice: PracticeSettings,
+        positionMs: Long,
+    ): List<ChunkUi> {
+        if (chunks.isEmpty()) return emptyList()
+        fun rotateFromPosition(list: List<ChunkUi>): List<ChunkUi> {
+            if (list.isEmpty()) return emptyList()
+            val idx = list.indexOfFirst { positionMs < it.endMs }.takeIf { it >= 0 } ?: 0
+            return list.subList(idx, list.size) + list.subList(0, idx)
+        }
+
+        // 1. 複数選択リピート中
+        if (practice.repeatCheckedOnly && practice.repeatChunkIds.isNotEmpty()) {
+            val checked = chunks.filter { it.id in practice.repeatChunkIds }
+            val unchecked = chunks.filterNot { it.id in practice.repeatChunkIds }
+            return rotateFromPosition(checked) + rotateFromPosition(unchecked)
+        }
+
+        // 2. 区間リピート中
+        val loop = practice.loop
+        if (loop is LoopMode.ChunkRange) {
+            val firstIdx = chunks.indexOfFirst { it.id == loop.firstChunkId }
+            val lastIdx = chunks.indexOfFirst { it.id == loop.lastChunkId }
+            if (firstIdx >= 0 && lastIdx >= 0) {
+                val rangeStart = minOf(firstIdx, lastIdx)
+                val rangeEnd = maxOf(firstIdx, lastIdx)
+                val inRange = chunks.subList(rangeStart, rangeEnd + 1)
+                val afterRange = chunks.subList(rangeEnd + 1, chunks.size)
+                val beforeRange = chunks.subList(0, rangeStart)
+                return rotateFromPosition(inRange) + afterRange + beforeRange
+            }
+        }
+
+        // 3. 通常再生時
+        val startIndex = chunks.indexOfFirst { positionMs < it.endMs }.takeIf { it >= 0 } ?: 0
+        return chunks.subList(startIndex, chunks.size) + chunks.subList(0, startIndex)
+    }
+
+    private fun startTranslationLoopIfNeeded() {
+        if (translationLoopJob?.isActive == true) return
+        val initialState = uiState.value
+        val mediaId = resolveActiveMediaId() ?: return
+        if (!initialState.showTargetTranslation ||
+            !initialState.isTranslationSupported ||
+            !initialState.isAllTranscriptionCompleted
+        ) {
+            return
+        }
+        translationLoopJob = viewModelScope.launch {
+            val attemptedInCurrentPass = mutableSetOf<ChunkId>()
+            try {
+                while (isActive) {
+                    val state = uiState.value
+                    val activeMediaId = state.mediaId ?: resolveActiveMediaId()
+                    val pair = state.languagePair
+                    val baseLang = pair?.base
+                    if (activeMediaId == null ||
+                        activeMediaId != mediaId ||
+                        !state.showTargetTranslation ||
+                        !state.isTranslationSupported ||
+                        !state.isAllTranscriptionCompleted ||
+                        pair == null ||
+                        baseLang == null
+                    ) {
+                        break
+                    }
+                    val posMs = playbackController.position.currentPositionMs()
+                    val ordered = orderTranslationCandidateChunks(
+                        chunks = state.chunks,
+                        practice = state.practice,
+                        positionMs = posMs,
+                    )
+                    val nextChunk = ordered.firstOrNull { chunk ->
+                        chunk.id !in attemptedInCurrentPass && isChunkEligibleForTranslation(chunk, pair)
+                    } ?: break
+
+                    attemptedInCurrentPass.add(nextChunk.id)
+                    localUiState.update { it.copy(translatingChunkId = nextChunk.id) }
+                    val translated = analysisRepository.translateChunk(
+                        id = activeMediaId,
+                        chunkId = nextChunk.id,
+                        sourceLanguage = pair.target,
+                        targetLanguage = baseLang,
+                    )
+                    if (translated.isNullOrBlank()) {
+                        failedTranslationChunkIds.add(nextChunk.id)
+                        localUiState.update {
+                            it.copy(failedTranslationChunkIds = failedTranslationChunkIds.toSet())
+                        }
+                    }
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    localUiState.update { state ->
+                        if (state.translatingChunkId == null) state else state.copy(translatingChunkId = null)
+                    }
+                }
+            }
+        }
     }
 
     private fun abortActiveViewModelTranscriptionJobs() {
@@ -1931,6 +2215,9 @@ class PlayerViewModel @Inject constructor(
                 language = resolvedLanguage,
                 isBookmarked = isBookmarked,
                 isRepeatChecked = chunk.id in practice.repeatChunkIds,
+                isSkipped = chunk.isSkipped,
+                translatedText = if (isClearing) null else transcript?.translatedText?.takeIf { it.isNotBlank() },
+                translatedLanguage = if (isClearing) null else transcript?.translatedLanguage,
                 textVariants = if (isClearing) emptyMap() else transcript?.textVariants.orEmpty(),
                 words = if (isClearing) emptyList() else transcript?.words.orEmpty(),
                 origin = chunk.origin,
@@ -1944,6 +2231,17 @@ class PlayerViewModel @Inject constructor(
             ?: ChunkOrigin.AUTO
         val effectiveQueuedIds = (analysis.lookaheadStatus.queuedChunkIds + local.clearingChunkIds) -
             setOfNotNull(analysis.lookaheadStatus.inFlightChunkId)
+        val effectiveLookaheadStatus = analysis.lookaheadStatus.copy(
+            queuedChunkIds = effectiveQueuedIds,
+            skippedEmptyChunkIds = analysis.lookaheadStatus.skippedEmptyChunkIds - local.manuallyClearedChunkIds,
+            recognitionModelIssues = analysis.lookaheadStatus.recognitionModelIssues.filterKeys { language ->
+                val pair = item?.languagePair
+                matchesLanguageRole(language, pair?.target) || matchesLanguageRole(language, pair?.base)
+            },
+        )
+        val isTranslationSupported = item?.languagePair?.let { pair ->
+            analysisRepository.isTranslationSupported(pair.target, pair.base)
+        } ?: false
 
         return PlayerUiState(
             mediaId = mediaId ?: status.mediaId ?: item?.id,
@@ -1970,21 +2268,21 @@ class PlayerViewModel @Inject constructor(
                 ?: settings.chineseScript,
             cantoneseScript = settings.cantoneseScript,
             showTargetRomanization = settings.showTargetRomanization,
+            showTargetTranslation = local.showTargetTranslation,
+            isTranslationSupported = isTranslationSupported,
+            translatingChunkId = local.translatingChunkId,
+            failedTranslationChunkIds = local.failedTranslationChunkIds,
+            isTranscriptionProgressDismissed = local.isTranscriptionProgressDismissed,
             chunkSource = resolvedOrigin,
             availableChunkOrigins = analysis.availableOrigins,
             segmentationParams = local.customSegmentationParams ?: settings.defaultSegmentationParams,
             transcriptImportBanner = local.transcriptImportBanner,
             transcriptExportBanner = local.transcriptExportBanner,
             transcriptOffsetMs = local.transcriptOffsetMs,
-            lookaheadStatus = analysis.lookaheadStatus.copy(
-                queuedChunkIds = effectiveQueuedIds,
-                recognitionModelIssues = analysis.lookaheadStatus.recognitionModelIssues.filterKeys { language ->
-                    val pair = item?.languagePair
-                    matchesLanguageRole(language, pair?.target) || matchesLanguageRole(language, pair?.base)
-                },
-            ),
+            lookaheadStatus = effectiveLookaheadStatus,
             localTranscriptExported = local.localTranscriptExported,
             detailedTranscriptionDialog = local.detailedTranscriptionDialog,
+            itemSttOverride = itemSttOverride,
         )
     }
 

@@ -65,6 +65,7 @@
 
     <string name="player_chip_transcribe">文字起こし</string>
     <string name="player_chip_reading">読み</string>
+    <string name="player_chip_translate">翻訳</string>
     <string name="player_chip_blind_off">ブラインド: OFF</string>
     <string name="player_chip_blind_target">学習言語を隠す</string>
     <string name="player_chip_blind_all">すべて隠す</string>
@@ -162,7 +163,7 @@
     <string name="player_transcription_step_recognizing_primary">音声認識中（第1候補）…</string>
     <string name="player_transcription_step_recognizing_fallback">音声認識中（フォールバック）…</string>
     <string name="player_transcription_step_saving">認識結果を保存中…</string>
-    <string name="player_transcription_progress_summary">文字起こし進捗: %1$d / %2$d（待機 %3$d 件）</string>
+    <string name="player_transcription_progress_summary">文字起こし進捗: %1$d / %2$d</string>
     <string name="player_transcription_progress_forced_summary">⚡ 強制文字起こし割り込み実行中（全体 %1$d / %2$d）</string>
     <string name="player_transcription_stall_short">⚠️ 遅れています</string>
     <string name="player_transcription_abort_button">中断</string>
@@ -180,7 +181,10 @@
     <string name="player_chunk_transcription_active_cd">文字起こし中</string>
     <string name="player_open_global_settings">アプリ全体の設定画面へ</string>
     <string name="player_chunk_copy_text">テキストをコピー</string>
-    <string name="player_chunk_open_google_translate">テキストをGoogle 翻訳で開く</string>
+    <string name="player_chunk_skip_enable">スキップを設定</string>
+    <string name="player_chunk_skip_disable">スキップを解除</string>
+    <string name="player_chunk_skip_enable_selected">選択したチャンクをまとめてスキップ設定 (%1$d件)</string>
+    <string name="player_chunk_skip_disable_selected">選択したチャンクのスキップをまとめて解除 (%1$d件)</string>
     <string name="player_chunk_detailed_transcribe">より詳しく文字起こし</string>
     <string name="player_detailed_transcribe_dialog_title">チャンク #%1$d の詳細文字起こし</string>
     <string name="player_detailed_transcribe_engine_label">文字起こしエンジン</string>
