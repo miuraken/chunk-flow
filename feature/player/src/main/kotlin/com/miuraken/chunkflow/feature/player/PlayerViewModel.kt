@@ -33,6 +33,7 @@ import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
@@ -635,6 +636,40 @@ internal fun resolveDetailedTrialEmptyMessage(
 }
 
 /**
+ * バックグラウンド文字起こしを有効化した際、対象言語で `SpeechRecognizer` が使われる場合の警告ダイアログ状態。
+ *
+ * @property speechRecognizerLanguages 実効エンジンが [SttEngine.SPEECH_RECOGNIZER] となる言語の一覧。
+ * @property sherpaSupportedLanguages [speechRecognizerLanguages] のうち `sherpa-onnx` がサポートされている言語の一覧。
+ */
+data class BackgroundSpeechRecognizerWarningState(
+    val speechRecognizerLanguages: List<LanguageTag>,
+    val sherpaSupportedLanguages: List<LanguageTag>,
+)
+
+/**
+ * [OnDeviceLanguageModelInfo] とファイル別上書き [override]・全体設定 [userPreferred] から、
+ * 実際に使用される [SttEngine] を解決する。
+ */
+internal fun OnDeviceLanguageModelInfo.effectiveEngine(
+    override: SttEngine? = null,
+    userPreferred: SttEngine? = null,
+): SttEngine? {
+    val enriched = DetailedTranscriptionDialogState.enrichWithCatalog(this, language)
+    val preferred = override ?: userPreferred
+    if (preferred != null) {
+        val preferredStatus = enriched.statusOf(preferred)
+        if (preferredStatus == OnDeviceLanguageModelStatus.INSTALLED ||
+            preferredStatus == OnDeviceLanguageModelStatus.CHECKING
+        ) {
+            return preferred
+        }
+    }
+    val tryOrder = SttEngine.tryOrder(preferred)
+    SttEngineSelection.firstUsableEngine(tryOrder, enriched)?.let { return it }
+    return tryOrder.firstOrNull { enriched.statusOf(it) != OnDeviceLanguageModelStatus.UNSUPPORTED }
+}
+
+/**
  * プレイヤー画面の UI 状態（§6.2、F3.1〜F8.1）。
  *
  * 高頻度で変わる再生位置はここには含めず、[PositionProvider] から描画・子 Composable で読む。
@@ -680,6 +715,7 @@ data class PlayerUiState(
     val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
     val enabledLanguages: List<LanguageTag> = UserSettings.DEFAULT_ENABLED_LANGUAGES.toList(),
     val nextMediaId: MediaId? = null,
+    val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
 ) {
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
@@ -978,6 +1014,12 @@ sealed interface PlayerEvent {
     /** 端末内の先読み簡易文字起こし（F6.2）の有効・無効を切り替える。 */
     data class SetLookaheadEnabled(val enabled: Boolean) : PlayerEvent
 
+    /** バックグラウンドでの文字起こし継続の有効・無効を切り替える。 */
+    data class SetBackgroundTranscriptionEnabled(val enabled: Boolean) : PlayerEvent
+
+    /** バックグラウンド文字起こしでの `SpeechRecognizer` 制限警告ダイアログを閉じる。 */
+    data object DismissBackgroundSpeechRecognizerWarning : PlayerEvent
+
     /** 文字起こし実行中に進捗ペーン（カード）の表示・非表示を切り替える。 */
     data object ToggleTranscriptionProgress : PlayerEvent
 
@@ -1113,6 +1155,7 @@ private data class LocalUiSnapshot(
     val manuallyClearedChunkIds: Set<ChunkId> = emptySet(),
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
     val hasRecordAudioPermission: Boolean = true,
+    val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
 )
 
 /**
@@ -1957,6 +2000,88 @@ class PlayerViewModel @Inject constructor(
                     userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
                 }
                 syncLookaheadState(id, event.enabled)
+            }
+
+            is PlayerEvent.SetBackgroundTranscriptionEnabled -> {
+                val mediaId = resolveActiveMediaId() ?: return
+                if (!event.enabled) {
+                    localUiState.update { it.copy(backgroundSpeechRecognizerWarning = null) }
+                }
+                viewModelScope.launch {
+                    analysisRepository.setBackgroundTranscriptionEnabled(mediaId, event.enabled)
+                    if (event.enabled) {
+                        val item = libraryRepository.observeItem(mediaId).firstOrNull()
+                        val pair = uiState.value.languagePair ?: item?.languagePair
+                        val targetAndBaseLanguages = buildList {
+                            pair?.target?.takeIf { isValidLanguageTag(it) }?.let { add(it) }
+                            pair?.base?.takeIf { isValidLanguageTag(it) }?.let { baseTag ->
+                                if (none { matchesLanguageRole(it, baseTag) }) {
+                                    add(baseTag)
+                                }
+                            }
+                        }
+                        if (targetAndBaseLanguages.isNotEmpty()) {
+                            val itemOverride = itemSttOverrideRepository.get(mediaId)
+                                .takeIf { it != com.miuraken.chunkflow.core.model.ItemSttOverride.NONE }
+                                ?: uiState.value.itemSttOverride
+                            val settings = userSettingsRepository.settings.firstOrNull() ?: UserSettings()
+                            val queryLanguages = (targetAndBaseLanguages + buildDetailedQueryLanguages(pair, null)).distinct()
+                            val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                            val infoMap = queried.associateBy { it.language }
+                            val speechRecognizerLanguages = mutableListOf<LanguageTag>()
+                            val sherpaSupportedLanguages = mutableListOf<LanguageTag>()
+                            for (lang in targetAndBaseLanguages) {
+                                val normLang = LanguageSettings.normalize(lang)
+                                val mgmtLang = LanguageTag(
+                                    SupportedLanguageCatalog.normalizeToModelManagementCode(lang.value),
+                                )
+                                val rawInfo = listOfNotNull(
+                                    infoMap[lang],
+                                    infoMap[normLang],
+                                    infoMap[mgmtLang],
+                                ).firstOrNull { candidate ->
+                                    candidate != OnDeviceLanguageModelInfo(language = candidate.language)
+                                } ?: infoMap[lang] ?: OnDeviceLanguageModelInfo(language = lang)
+                                val info = rawInfo.copy(language = lang)
+                                val overrideEngine = when {
+                                    pair != null && matchesLanguageRole(lang, pair.target) -> itemOverride.targetEngine
+                                    pair?.base != null && matchesLanguageRole(lang, pair.base) -> itemOverride.baseEngine
+                                    else -> null
+                                }
+                                val userPreferred = settings.sttEngineByLanguage[lang]
+                                    ?: settings.sttEngineByLanguage[normLang]
+                                    ?: settings.sttEngineByLanguage[mgmtLang]
+                                val effective = info.effectiveEngine(
+                                    override = overrideEngine,
+                                    userPreferred = userPreferred,
+                                )
+                                if (effective == SttEngine.SPEECH_RECOGNIZER) {
+                                    speechRecognizerLanguages += lang
+                                    val enriched = DetailedTranscriptionDialogState.enrichWithCatalog(info, lang)
+                                    if (enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED) {
+                                        sherpaSupportedLanguages += lang
+                                    }
+                                }
+                            }
+                            localUiState.update { state ->
+                                state.copy(
+                                    backgroundSpeechRecognizerWarning = if (speechRecognizerLanguages.isNotEmpty()) {
+                                        BackgroundSpeechRecognizerWarningState(
+                                            speechRecognizerLanguages = speechRecognizerLanguages,
+                                            sherpaSupportedLanguages = sherpaSupportedLanguages,
+                                        )
+                                    } else {
+                                        null
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            PlayerEvent.DismissBackgroundSpeechRecognizerWarning -> {
+                localUiState.update { it.copy(backgroundSpeechRecognizerWarning = null) }
             }
 
             PlayerEvent.ToggleTranscriptionProgress -> {
@@ -3018,7 +3143,13 @@ class PlayerViewModel @Inject constructor(
             itemSttOverride = itemSttOverride,
             enabledLanguages = settings.enabledLanguages.toList(),
             nextMediaId = nextMediaId,
+            backgroundSpeechRecognizerWarning = local.backgroundSpeechRecognizerWarning,
         )
+    }
+
+    private fun isValidLanguageTag(tag: LanguageTag): Boolean {
+        val cleaned = tag.value.trim()
+        return cleaned.isNotEmpty() && !cleaned.equals("und", ignoreCase = true)
     }
 
     private fun compareFileNamesNatural(a: String, b: String): Int {

@@ -165,4 +165,40 @@ class PlayerScreenTest {
         assertTrue(uiState.isAllTranscriptionEmptyAfterCompletion)
         assertFalse(uiState.isTranscriptionRunning)
     }
+
+    @Test
+    fun `文字起こし進捗ペーンのバックグラウンドチェックボックス_ラベルとchecked状態がLookaheadTranscriptionStatusを反映する`() {
+        val disabledState = resolveTranscriptionProgressCheckbox(
+            LookaheadTranscriptionStatus(enabled = true, backgroundEnabled = false),
+        )
+        assertEquals("バックグラウンドで文字起こしを行う", disabledState.label)
+        assertFalse(disabledState.checked)
+
+        val enabledState = resolveTranscriptionProgressCheckbox(
+            LookaheadTranscriptionStatus(enabled = true, backgroundEnabled = true),
+        )
+        assertEquals("バックグラウンドで文字起こしを行う", enabledState.label)
+        assertTrue(enabledState.checked)
+    }
+
+    @Test
+    fun `SpeechRecognizerバックグラウンド警告メッセージ_sherpa対応言語がある場合は推奨文を含み非対応言語のみなら省く`() {
+        val withSherpa = formatBackgroundSpeechRecognizerWarningMessage(
+            BackgroundSpeechRecognizerWarningState(
+                speechRecognizerLanguages = listOf(LanguageTag("ko"), LanguageTag("fr")),
+                sherpaSupportedLanguages = listOf(LanguageTag("ko")),
+            ),
+        )
+        assertTrue(withSherpa.contains("韓国語 (ko)・フランス語 (fr)では標準の音声認識（SpeechRecognizer）が使用されるため、バックグラウンドでは処理が進まない可能性があります。"))
+        assertTrue(withSherpa.contains("韓国語 (ko)ではオフラインモデルの sherpa-onnx が利用可能です。sherpa-onnx の導入を検討してください。"))
+
+        val withoutSherpa = formatBackgroundSpeechRecognizerWarningMessage(
+            BackgroundSpeechRecognizerWarningState(
+                speechRecognizerLanguages = listOf(LanguageTag("fr")),
+                sherpaSupportedLanguages = emptyList(),
+            ),
+        )
+        assertTrue(withoutSherpa.contains("フランス語 (fr)では標準の音声認識（SpeechRecognizer）が使用されるため、バックグラウンドでは処理が進まない可能性があります。"))
+        assertFalse(withoutSherpa.contains("sherpa-onnx"))
+    }
 }
