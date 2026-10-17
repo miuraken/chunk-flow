@@ -186,4 +186,81 @@ class ChunkSegmenterTest {
         assertEquals(1_750L, chunks[2].startMs)
         assertEquals(2_000L, chunks[2].endMs)
     }
+
+    @Test
+    fun `splitAndTrimSilence_分割後の前半と後半から無音部分がトリミングされ元チャンクと分割境界内に収まる`() {
+        // 5秒 = 500フレーム (10ms/frame)。ノイズフロア -60dB、発話 -12dB
+        val energy = FloatArray(500) { -60f }
+        // 元チャンク [500..4500ms] のうち:
+        // - 前半の発話: [800..1600ms] (frame 80..160)
+        // - 中間の無音: [1600..2600ms] (分割点 2100ms はこの無音区間の中)
+        // - 後半の発話: [2600..3900ms] (frame 260..390)
+        for (f in 80 until 160) energy[f] = -12f
+        for (f in 260 until 390) energy[f] = -12f
+
+        val segmenter = ChunkSegmenter()
+        val params = SegmentationParams(prePaddingMs = 100, postPaddingMs = 150)
+        val (first, second) = segmenter.splitAndTrimSilence(
+            logEnergyDb = energy,
+            chunkStartMs = 500L,
+            chunkEndMs = 4_500L,
+            splitPositionMs = 2_100L,
+            params = params,
+            binMs = 10,
+        )
+
+        // 前半: 発話 [800..1600ms] に pre=100, post=150 -> [700..1750ms]（500..2100ms の範囲内）
+        assertEquals(700L to 1_750L, first)
+        // 後半: 発話 [2600..3900ms] に pre=100, post=150 -> [2500..4050ms]（2100..4500ms の範囲内）
+        assertEquals(2_500L to 4_050L, second)
+    }
+
+    @Test
+    fun `splitAndTrimSilence_パディングが元チャンク境界や分割点を超える場合は半区間内にクランプされる`() {
+        val energy = FloatArray(400) { -60f }
+        // 元チャンク [1000..3000ms]、分割点 2000ms
+        // 前半発話: [1050..1950ms] (frame 105..195)、後半発話: [2050..2950ms] (frame 205..295)
+        for (f in 105 until 195) energy[f] = -10f
+        for (f in 205 until 295) energy[f] = -10f
+
+        val segmenter = ChunkSegmenter()
+        val params = SegmentationParams(prePaddingMs = 200, postPaddingMs = 250)
+        val (first, second) = segmenter.splitAndTrimSilence(
+            logEnergyDb = energy,
+            chunkStartMs = 1_000L,
+            chunkEndMs = 3_000L,
+            splitPositionMs = 2_000L,
+            params = params,
+            binMs = 10,
+        )
+
+        // パディング 200/250ms を足すと 1000ms・2000ms・3000ms を超えるが、それぞれの半区間内にクランプされる
+        assertEquals(1_000L to 2_000L, first)
+        assertEquals(2_000L to 3_000L, second)
+    }
+
+    @Test
+    fun `splitAndTrimSilence_無音のみの区間や空特徴量ではチャンクが消滅せず元の半区間にフォールバックする`() {
+        val segmenter = ChunkSegmenter()
+        val silentEnergy = FloatArray(400) { -65f }
+        val (firstSilent, secondSilent) = segmenter.splitAndTrimSilence(
+            logEnergyDb = silentEnergy,
+            chunkStartMs = 500L,
+            chunkEndMs = 3_500L,
+            splitPositionMs = 1_800L,
+            params = SegmentationParams(prePaddingMs = 150, postPaddingMs = 200),
+            binMs = 10,
+        )
+        assertEquals(500L to 1_800L, firstSilent)
+        assertEquals(1_800L to 3_500L, secondSilent)
+
+        val (firstEmpty, secondEmpty) = segmenter.splitAndTrimSilence(
+            logEnergyDb = FloatArray(0),
+            chunkStartMs = 500L,
+            chunkEndMs = 3_500L,
+            splitPositionMs = 1_800L,
+        )
+        assertEquals(500L to 1_800L, firstEmpty)
+        assertEquals(1_800L to 3_500L, secondEmpty)
+    }
 }

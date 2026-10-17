@@ -2493,6 +2493,26 @@ class DefaultAnalysisRepository(
             return@withContext false
         }
 
+        val storedFeatures = resolveAnalysisFile(id, FEATURES_FILE_NAME)?.let {
+            AnalysisBinaryFormat.readFeatures(it)
+        }
+        val (firstRange, secondRange) = if (storedFeatures != null && storedFeatures.logEnergyDb.isNotEmpty()) {
+            val segmentationParams = userSettingsRepository?.settings?.first()?.defaultSegmentationParams
+                ?: SegmentationParams()
+            chunkSegmenter.splitAndTrimSilence(
+                logEnergyDb = storedFeatures.logEnergyDb,
+                chunkStartMs = target.startMs,
+                chunkEndMs = target.endMs,
+                splitPositionMs = splitPositionMs,
+                params = segmentationParams,
+                binMs = storedFeatures.binMs,
+            )
+        } else {
+            (target.startMs to splitPositionMs) to (splitPositionMs to target.endMs)
+        }
+        val (firstStartMs, firstEndMs) = firstRange
+        val (secondStartMs, secondEndMs) = secondRange
+
         val now = clock()
         val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
         val newChunks = ArrayList<ChunkEntity>(activeChunks.size + 1)
@@ -2508,16 +2528,16 @@ class DefaultAnalysisRepository(
                 newChunks.add(
                     chunk.copy(
                         id = 0L,
-                        startMs = chunk.startMs,
-                        endMs = splitPositionMs,
+                        startMs = firstStartMs,
+                        endMs = firstEndMs,
                         origin = ChunkOrigin.MANUAL.name,
                     ),
                 )
                 newChunks.add(
                     chunk.copy(
                         id = 0L,
-                        startMs = splitPositionMs,
-                        endMs = chunk.endMs,
+                        startMs = secondStartMs,
+                        endMs = secondEndMs,
                         origin = ChunkOrigin.MANUAL.name,
                     ),
                 )
@@ -2529,8 +2549,8 @@ class DefaultAnalysisRepository(
                         val (firstWordsRaw, secondWordsRaw) = domain.words.partition { word ->
                             (word.startMs + word.endMs) / 2L < splitPositionMs
                         }
-                        val firstWords = clampWordTimings(firstWordsRaw, chunk.startMs, splitPositionMs)
-                        val secondWords = clampWordTimings(secondWordsRaw, splitPositionMs, chunk.endMs)
+                        val firstWords = clampWordTimings(firstWordsRaw, firstStartMs, firstEndMs)
+                        val secondWords = clampWordTimings(secondWordsRaw, secondStartMs, secondEndMs)
                         val separator = if (domain.text.contains(' ')) " " else ""
                         val firstText = truncateCodePoints(
                             firstWords.joinToString(separator) { it.text }.trim(),
