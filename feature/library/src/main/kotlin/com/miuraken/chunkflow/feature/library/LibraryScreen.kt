@@ -58,6 +58,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +79,8 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.SyncError
+import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
+import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithModalLink
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
@@ -583,10 +586,20 @@ fun LibraryScreen(
         }
     }
 
+    if (state.showLanguageOnboardingDialog) {
+        LanguageSettingsModalDialog(
+            enabledLanguages = state.enabledLanguages.toSet(),
+            onToggleLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
+            onDismiss = { onEvent(LibraryEvent.CompleteLanguageOnboarding) },
+            isFirstLaunchOnboarding = true,
+        )
+    }
+
     state.pendingImportConfig?.let { config ->
         ImportConfigDialog(
             config = config,
             enabledLanguages = state.enabledLanguages,
+            onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
             onConfirm = { course, languages ->
                 onEvent(
                     LibraryEvent.ConfirmImportConfig(
@@ -602,6 +615,7 @@ fun LibraryScreen(
     if (showCreateFolderDialog) {
         CreateVirtualFolderDialog(
             enabledLanguages = state.enabledLanguages,
+            onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
             onConfirm = { folderName, languages ->
                 showCreateFolderDialog = false
                 onEvent(
@@ -619,6 +633,7 @@ fun LibraryScreen(
         EditItemMetadataDialog(
             item = itemToEdit,
             enabledLanguages = state.enabledLanguages,
+            onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
             onImportTranscript = {
                 onEvent(LibraryEvent.RequestImportTranscriptForItem(itemToEdit.id))
             },
@@ -644,6 +659,7 @@ fun LibraryScreen(
         EditDirectoryMetadataDialog(
             directoryEdit = directoryToEdit,
             enabledLanguages = state.enabledLanguages,
+            onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
             onConfirm = { newCourse, languages ->
                 onEvent(
                     LibraryEvent.ConfirmEditDirectoryMetadata(
@@ -1499,7 +1515,9 @@ private fun LanguagePairDropdownSection(
     onTargetLangChange: (String) -> Unit,
     onBaseLangChange: (String) -> Unit,
     enabledLanguages: List<LanguageTag> = emptyList(),
+    onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
 ) {
+    var showLanguageSettingsModal by rememberSaveable { mutableStateOf(false) }
     val langPalette = chunkFlowLanguagePalette()
     val noneLabel = stringResource(R.string.library_edit_base_lang_none)
 
@@ -1644,6 +1662,19 @@ private fun LanguagePairDropdownSection(
             }
         }
     }
+
+    MissingLanguageHintWithModalLink(
+        onOpenLanguageSettingsModal = { showLanguageSettingsModal = true },
+    )
+
+    if (showLanguageSettingsModal) {
+        LanguageSettingsModalDialog(
+            enabledLanguages = enabledLanguages.toSet(),
+            onToggleLanguage = onToggleEnabledLanguage,
+            onDismiss = { showLanguageSettingsModal = false },
+            isFirstLaunchOnboarding = false,
+        )
+    }
 }
 
 @Composable
@@ -1652,6 +1683,7 @@ private fun ImportConfigDialog(
     enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
+    onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
 ) {
     var courseText by remember(config) { mutableStateOf(config.initialCourse.orEmpty()) }
     var targetLangText by remember(config) {
@@ -1707,6 +1739,7 @@ private fun ImportConfigDialog(
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
                     enabledLanguages = enabledLanguages,
+                    onToggleEnabledLanguage = onToggleEnabledLanguage,
                 )
             }
         },
@@ -1740,6 +1773,7 @@ private fun CreateVirtualFolderDialog(
     enabledLanguages: List<LanguageTag>,
     onConfirm: (String, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
+    onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
 ) {
     val defaultTarget = remember(enabledLanguages) {
         enabledLanguages.firstOrNull { normalizeDialogLanguageCode(it.value) != "ja" }
@@ -1784,6 +1818,7 @@ private fun CreateVirtualFolderDialog(
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
                     enabledLanguages = enabledLanguages,
+                    onToggleEnabledLanguage = onToggleEnabledLanguage,
                 )
             }
         },
@@ -1824,6 +1859,7 @@ private fun EditItemMetadataDialog(
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
     onDeleteLocalAudioCopy: (() -> Unit)? = null,
+    onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
 ) {
     var courseText by remember(item) { mutableStateOf(item.course.orEmpty()) }
     var targetLangText by remember(item) {
@@ -1856,6 +1892,7 @@ private fun EditItemMetadataDialog(
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
                     enabledLanguages = enabledLanguages,
+                    onToggleEnabledLanguage = onToggleEnabledLanguage,
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
@@ -1926,6 +1963,7 @@ private fun EditDirectoryMetadataDialog(
     enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
+    onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
 ) {
     var courseText by remember(directoryEdit) {
         mutableStateOf(directoryEdit.currentCourse?.substringAfterLast('/').orEmpty())
@@ -1960,6 +1998,7 @@ private fun EditDirectoryMetadataDialog(
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
                     enabledLanguages = enabledLanguages,
+                    onToggleEnabledLanguage = onToggleEnabledLanguage,
                 )
             }
         },

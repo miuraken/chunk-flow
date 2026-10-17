@@ -64,9 +64,11 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
@@ -137,29 +139,16 @@ fun PlayerRoute(
     }
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var hasRequestedAudioPermissionForMedia by remember(mediaId) { mutableStateOf(false) }
+    var showRecordAudioRationaleDialog by rememberSaveable { mutableStateOf(false) }
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { isGranted ->
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
         if (isGranted) {
             val activeChunkId = state.activeChunkIndex
                 ?.let { idx -> state.chunks.getOrNull(idx)?.id }
                 ?: state.chunks.firstOrNull()?.id
-            viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
             viewModel.onEvent(PlayerEvent.TriggerLookahead(activeChunkId))
-        }
-    }
-
-    LaunchedEffect(mediaId, state.lookaheadStatus.enabled) {
-        if (state.lookaheadStatus.enabled && !hasRequestedAudioPermissionForMedia) {
-            hasRequestedAudioPermissionForMedia = true
-            val granted = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO,
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!granted) {
-                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            }
         }
     }
     val transcriptPickerLauncher = rememberLauncherForActivityResult(
@@ -191,7 +180,7 @@ fun PlayerRoute(
                     onBack()
                 }
 
-                event is PlayerEvent.SetLookaheadEnabled && event.enabled -> {
+                event is PlayerEvent.SetLookaheadEnabled && event.enabled && !state.lookaheadStatus.enabled -> {
                     if (ContextCompat.checkSelfPermission(
                             context,
                             Manifest.permission.RECORD_AUDIO,
@@ -199,7 +188,7 @@ fun PlayerRoute(
                     ) {
                         viewModel.onEvent(event)
                     } else {
-                        recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        showRecordAudioRationaleDialog = true
                     }
                 }
 
@@ -219,6 +208,35 @@ fun PlayerRoute(
         },
         modifier = modifier,
     )
+
+    if (showRecordAudioRationaleDialog) {
+        AlertDialog(
+            onDismissRequest = { showRecordAudioRationaleDialog = false },
+            title = {
+                Text(text = "音声認識のための権限について")
+            },
+            text = {
+                Text(
+                    text = "文字起こしには端末の音声認識機能を使用するため、Android の仕様により「録音（マイク）」へのアクセス権限が必要です。\n\n※このアプリ内でマイクを使った実際の録音は一切行われません。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRecordAudioRationaleDialog = false
+                        recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                ) {
+                    Text(text = "次へ")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecordAudioRationaleDialog = false }) {
+                    Text(text = "キャンセル")
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -506,6 +524,9 @@ fun PlayerScreen(
                 enabledLanguages = state.enabledLanguages,
                 onChangeLanguages = { pair ->
                     onEvent(PlayerEvent.UpdateItemLanguages(target = pair.target, base = pair.base))
+                },
+                onToggleEnabledLanguage = { language ->
+                    onEvent(PlayerEvent.ToggleEnabledLanguage(language))
                 },
                 onChangeTargetEngine = { engine ->
                     onEvent(PlayerEvent.SetTargetEngineOverride(engine))
@@ -1009,9 +1030,11 @@ private fun ChunkDisplaySettingsStrip(
         }
 
         // 1. 「言語」（*すべて、{target_language_code}のみ、{base_language_code}のみ）
+        val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
         Column {
             FilterChip(
                 selected = languageFilter != LanguageFilter.ALL,
+                enabled = state.hasTranscript,
                 onClick = { langFilterMenuExpanded = true },
                 label = {
                     Text(
@@ -1021,6 +1044,7 @@ private fun ChunkDisplaySettingsStrip(
                     )
                 },
                 colors = langFilterChipColors,
+                modifier = transcriptChipModifier,
             )
             DropdownMenu(
                 expanded = langFilterMenuExpanded,
@@ -1079,6 +1103,7 @@ private fun ChunkDisplaySettingsStrip(
         // 2. 「学習言語を隠す」（on, *off）
         FilterChip(
             selected = isHideTargetLangOn,
+            enabled = state.hasTranscript,
             onClick = {
                 val nextBlindMode = if (isHideTargetLangOn) {
                     BlindMode.OFF
@@ -1095,11 +1120,13 @@ private fun ChunkDisplaySettingsStrip(
                 )
             },
             colors = toggleColors,
+            modifier = transcriptChipModifier,
         )
 
         // 3. 「読み」（on, *off）
         FilterChip(
             selected = isReadingOn,
+            enabled = state.hasTranscript,
             onClick = {
                 onEvent(PlayerEvent.SetShowTargetRomanization(!isReadingOn))
             },
@@ -1111,13 +1138,14 @@ private fun ChunkDisplaySettingsStrip(
                 )
             },
             colors = toggleColors,
+            modifier = transcriptChipModifier,
         )
 
         // 4. 「翻訳」（on, *off）
         if (state.isTranslationSupported) {
             FilterChip(
                 selected = state.showTargetTranslation,
-                enabled = state.isAllTranscriptionCompleted || state.showTargetTranslation,
+                enabled = state.hasTranscript && (state.isAllTranscriptionCompleted || state.showTargetTranslation),
                 onClick = {
                     onEvent(PlayerEvent.SetShowTargetTranslation(!state.showTargetTranslation))
                 },
@@ -1129,6 +1157,7 @@ private fun ChunkDisplaySettingsStrip(
                     )
                 },
                 colors = toggleColors,
+                modifier = transcriptChipModifier,
             )
         }
     }
@@ -1765,6 +1794,7 @@ private fun ResegmentSheetContent(
     onChangeLanguages: (LanguagePair) -> Unit,
     onChangeTargetEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
     onChangeBaseEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
+    onToggleEnabledLanguage: (com.miuraken.chunkflow.core.model.LanguageTag) -> Unit = {},
     transcriptOffsetMs: Int,
     onAdjustTranscriptOffset: (Int) -> Unit,
     onAutoAlignTranscriptOffset: () -> Unit,
@@ -1803,6 +1833,7 @@ private fun ResegmentSheetContent(
             onChangeTargetEngine = onChangeTargetEngine,
             onChangeBaseEngine = onChangeBaseEngine,
             enabledLanguages = enabledLanguages,
+            onToggleEnabledLanguage = onToggleEnabledLanguage,
         )
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
