@@ -5,6 +5,7 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
@@ -50,6 +51,12 @@ data class MediaItemEntity(
     val mp3SamplesPerFrame: Int = 1152,
     @ColumnInfo(name = "mp3_encoder_delay", defaultValue = "576")
     val mp3EncoderDelay: Int = 576,
+    @ColumnInfo(name = "source_uri")
+    val sourceUri: String? = null,
+    @ColumnInfo(name = "local_file_path")
+    val localFilePath: String? = null,
+    @ColumnInfo(name = "storage_state", defaultValue = "'APP_MANAGED'")
+    val storageState: String = AudioStorageState.APP_MANAGED.name,
 )
 
 /** [MediaItemEntity] をドメインモデルの [AudioItem] に変換する。 */
@@ -67,6 +74,10 @@ fun MediaItemEntity.toExternalModel(): AudioItem = AudioItem(
     ),
     transcriptOffsetMs = transcriptOffsetMs,
     importedAtEpochMs = importedAt,
+    sourceUri = sourceUri,
+    localFilePath = localFilePath,
+    storageState = AudioStorageState.entries.firstOrNull { it.name == storageState }
+        ?: AudioStorageState.APP_MANAGED,
 )
 
 /** ドメインモデルの [AudioItem] を [MediaItemEntity] に変換する。 */
@@ -89,4 +100,7 @@ fun AudioItem.toEntity(
     mp3HasHeader = mp3HasHeader,
     mp3SamplesPerFrame = mp3SamplesPerFrame,
     mp3EncoderDelay = mp3EncoderDelay,
+    sourceUri = sourceUri,
+    localFilePath = localFilePath,
+    storageState = storageState.name,
 )

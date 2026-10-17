@@ -246,5 +246,15 @@ class DatabaseEntityAndTransactionTest {
                 transcripts.remove(id)
             }
         }
+
+        override suspend fun updateSkippedByIds(mediaId: String, chunkIds: List<Long>, skipped: Boolean) {
+            val idSet = chunkIds.toSet()
+            for (i in chunks.indices) {
+                val c = chunks[i]
+                if (c.mediaId == mediaId && c.id in idSet) {
+                    chunks[i] = c.copy(isSkipped = skipped)
+                }
+            }
+        }
     }
 }

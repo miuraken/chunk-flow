@@ -38,8 +38,8 @@ kotlinxCoroutines = "1.11.0"
 kotlinxSerialization = "1.11.0"
 onnxruntime = "1.31.0"
 mlkitGenaiSpeechRecognition = "1.0.0-alpha1"
-# スパイク S4（spikes/textai だけで使う。本体には入れない）
 mlkitTranslate = "17.0.3"
+# スパイク S4（spikes/textai だけで使う）
 mlkitGenaiProofreading = "1.0.0-beta1"
 mlkitGenaiPrompt = "1.0.0-beta4"
 

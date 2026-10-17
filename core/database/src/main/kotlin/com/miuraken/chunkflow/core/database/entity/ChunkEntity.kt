@@ -43,6 +43,8 @@ data class ChunkEntity(
     val origin: String,
     @ColumnInfo(name = "algorithm_version")
     val algorithmVersion: Int = 1,
+    @ColumnInfo(name = "is_skipped", defaultValue = "0")
+    val isSkipped: Boolean = false,
 )
 
 /** [ChunkEntity] をドメインモデルの [Chunk] に変換する。 */
@@ -51,6 +53,7 @@ fun ChunkEntity.toExternalModel(): Chunk = Chunk(
     startMs = startMs,
     endMs = endMs,
     origin = ChunkOrigin.entries.firstOrNull { it.name == origin } ?: ChunkOrigin.AUTO,
+    isSkipped = isSkipped,
 )
 
 /** ドメインモデルの [Chunk] を [ChunkEntity] に変換する。 */
@@ -64,4 +67,5 @@ fun Chunk.toEntity(
     endMs = endMs,
     origin = origin.name,
     algorithmVersion = algorithmVersion,
+    isSkipped = isSkipped,
 )

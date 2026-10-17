@@ -467,6 +467,7 @@ class FakeAnalysisRepository : AnalysisRepository {
                 startMs = splitPositionMs,
                 endMs = target.endMs,
                 origin = ChunkOrigin.MANUAL,
+                isSkipped = target.isSkipped,
             )
             val manualChunks = entry.chunks.flatMapIndexed { index, chunk ->
                 if (index == idx) {
@@ -493,7 +494,11 @@ class FakeAnalysisRepository : AnalysisRepository {
             val next = entry.chunks[idx + 1]
             success = true
 
-            val merged = current.copy(endMs = next.endMs, origin = ChunkOrigin.MANUAL)
+            val merged = current.copy(
+                endMs = next.endMs,
+                origin = ChunkOrigin.MANUAL,
+                isSkipped = current.isSkipped && next.isSkipped,
+            )
             val manualChunks = buildList {
                 for (i in entry.chunks.indices) {
                     when (i) {
@@ -546,7 +551,12 @@ class FakeAnalysisRepository : AnalysisRepository {
             success = true
 
             val first = entry.chunks[firstIndex]
-            val merged = first.copy(endMs = entry.chunks[lastIndex].endMs, origin = ChunkOrigin.MANUAL)
+            val mergedSkipped = (firstIndex..lastIndex).all { entry.chunks[it].isSkipped }
+            val merged = first.copy(
+                endMs = entry.chunks[lastIndex].endMs,
+                origin = ChunkOrigin.MANUAL,
+                isSkipped = mergedSkipped,
+            )
             val manualChunks = entry.chunks.mapIndexedNotNull { index, chunk ->
                 when (index) {
                     firstIndex -> merged
@@ -628,5 +638,84 @@ class FakeAnalysisRepository : AnalysisRepository {
             )
         }
         return success
+    }
+
+    /** [translateChunk] の呼び出し履歴（呼ばれた順）。 */
+    val translatedChunkRequests: MutableList<Triple<MediaId, ChunkId, Pair<LanguageTag, LanguageTag>>> = mutableListOf()
+
+    /** [isTranslationSupported] でサポート対象とみなす言語コード（主言語サブタグ）の集合。 */
+    val supportedTranslationLanguages: MutableSet<String> = mutableSetOf(
+        "en", "ja", "ko", "zh", "cmn", "fr", "de", "es", "it", "pt", "ru", "ar", "hi", "th", "vi", "id", "nl", "pl", "tr", "uk",
+    )
+
+    /** [translateChunk] のカスタム翻訳関数スタブ。 */
+    var translateChunkStub: ((String, LanguageTag, LanguageTag) -> String?)? = { text, _, targetLang ->
+        "[${targetLang.value}] $text"
+    }
+
+    override suspend fun setChunksSkipped(
+        id: MediaId,
+        chunkIds: Set<ChunkId>,
+        skipped: Boolean,
+    ) {
+        if (chunkIds.isEmpty()) return
+        update(id) { entry ->
+            val updatedChunks = entry.chunks.map { chunk ->
+                if (chunk.id in chunkIds) chunk.copy(isSkipped = skipped) else chunk
+            }
+            val updatedByOrigin = entry.chunksByOrigin.mapValues { (_, list) ->
+                list.map { chunk ->
+                    if (chunk.id in chunkIds) chunk.copy(isSkipped = skipped) else chunk
+                }
+            }
+            entry.copy(
+                chunks = updatedChunks,
+                chunksByOrigin = updatedByOrigin,
+            )
+        }
+    }
+
+    override fun isTranslationSupported(
+        sourceLanguage: LanguageTag?,
+        targetLanguage: LanguageTag?,
+    ): Boolean {
+        val src = normalizeTranslatePrimaryTag(sourceLanguage) ?: return false
+        val dst = normalizeTranslatePrimaryTag(targetLanguage) ?: return false
+        return src != dst && src in supportedTranslationLanguages && dst in supportedTranslationLanguages
+    }
+
+    override suspend fun translateChunk(
+        id: MediaId,
+        chunkId: ChunkId,
+        sourceLanguage: LanguageTag,
+        targetLanguage: LanguageTag,
+    ): String? {
+        if (!isTranslationSupported(sourceLanguage, targetLanguage)) return null
+        translatedChunkRequests += Triple(id, chunkId, sourceLanguage to targetLanguage)
+        val currentEntry = entries.value[id] ?: return null
+        val transcript = currentEntry.transcripts[chunkId] ?: return null
+        val rawText = transcript.text.trim()
+        if (rawText.isEmpty()) return null
+        if (!transcript.translatedText.isNullOrBlank() && transcript.translatedLanguage == targetLanguage) {
+            return transcript.translatedText
+        }
+        val translated = translateChunkStub?.invoke(rawText, sourceLanguage, targetLanguage) ?: return null
+        update(id) { entry ->
+            val existing = entry.transcripts[chunkId] ?: return@update entry
+            val updated = existing.copy(
+                translatedText = translated,
+                translatedLanguage = targetLanguage,
+            )
+            entry.copy(transcripts = entry.transcripts + (chunkId to updated))
+        }
+        return translated
+    }
+
+    private fun normalizeTranslatePrimaryTag(tag: LanguageTag?): String? {
+        val raw = tag?.value?.trim()?.lowercase()?.replace('_', '-') ?: return null
+        if (raw.isEmpty() || raw == "und") return null
+        if (raw == "zh-yue" || raw == "zh-hk" || raw.startsWith("yue")) return "yue"
+        val primary = raw.substringBefore('-')
+        return if (primary == "cmn") "zh" else primary
     }
 }

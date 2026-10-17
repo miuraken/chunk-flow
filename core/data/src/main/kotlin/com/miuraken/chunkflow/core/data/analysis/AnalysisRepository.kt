@@ -233,4 +233,32 @@ interface AnalysisRepository {
         newStartMs: Long,
         newEndMs: Long,
     ): Boolean = false
+
+    /**
+     * 指定した複数のチャンク [chunkIds] のスキップ状態（[Chunk.isSkipped]）を一括で更新する。
+     */
+    suspend fun setChunksSkipped(
+        id: MediaId,
+        chunkIds: Set<ChunkId>,
+        skipped: Boolean,
+    ) = Unit
+
+    /**
+     * 対象言語 [sourceLanguage] からベース言語 [targetLanguage] への端末内翻訳（ML Kit）に対応しているかどうかを返す。
+     */
+    fun isTranslationSupported(
+        sourceLanguage: LanguageTag?,
+        targetLanguage: LanguageTag?,
+    ): Boolean = false
+
+    /**
+     * チャンク 1 件のテキストを [sourceLanguage] から [targetLanguage] へ端末内翻訳（ML Kit）し、
+     * 翻訳結果を保存して返す。失敗または未対応の場合は `null` を返す。
+     */
+    suspend fun translateChunk(
+        id: MediaId,
+        chunkId: ChunkId,
+        sourceLanguage: LanguageTag,
+        targetLanguage: LanguageTag,
+    ): String? = null
 }

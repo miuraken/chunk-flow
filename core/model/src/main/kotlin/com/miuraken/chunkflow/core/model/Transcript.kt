@@ -11,6 +11,8 @@ package com.miuraken.chunkflow.core.model
  * @property words 単語単位の時刻（JSON にある場合）。
  * @property engine 文字起こしの出どころ。
  * @property userEdited `true` なら再取り込みで上書きしない（§7.4.6）。
+ * @property translatedText 対象言語からベース言語へ翻訳されたテキスト（未翻訳なら `null`）。
+ * @property translatedLanguage [translatedText] の翻訳先言語タグ（未翻訳なら `null`）。
  */
 data class Transcript(
     val chunkId: ChunkId,
@@ -21,6 +23,8 @@ data class Transcript(
     val words: List<WordTiming> = emptyList(),
     val engine: EngineId,
     val userEdited: Boolean = false,
+    val translatedText: String? = null,
+    val translatedLanguage: LanguageTag? = null,
 )
 
 /**
