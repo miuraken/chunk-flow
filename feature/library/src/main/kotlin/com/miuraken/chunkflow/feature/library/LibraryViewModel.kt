@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -331,16 +332,18 @@ sealed interface DriveSyncUiState {
 /**
  * ライブラリ画面下部のミニプレイヤーの状態（§7.5.1）。
  *
- * @property mediaId 現在開いている教材の ID。
- * @property title 現在開いている教材のタイトル。
+ * @property mediaId 現在開いている（または前回最後に開いていた）教材の ID。
+ * @property title 現在開いている（または前回最後に開いていた）教材のタイトル。
  * @property isPlaying 再生中かどうか。
  * @property durationMs 教材の長さ（ミリ秒）。
+ * @property positionMs レジューム再生位置（ミリ秒）。
  */
 data class MiniPlayerUiState(
     val mediaId: MediaId,
     val title: String,
     val isPlaying: Boolean,
     val durationMs: Long,
+    val positionMs: Long = 0L,
 )
 
 /**
@@ -415,6 +418,23 @@ data class LibraryUiState(
     val selectedDirectoryPaths: Set<String> = emptySet(),
     val selectedItemIds: Set<MediaId> = emptySet(),
 ) {
+    companion object {
+        /** 最近開いたファイル欄に表示する最大件数。 */
+        const val MAX_RECENT_ITEMS = 5
+    }
+
+    /**
+     * 直近に開いた（アクセス日時が記録されている）最大 5 件の教材一覧（新しい順）。
+     */
+    val recentItems: List<LibraryItemUiModel>
+        get() = items
+            .filter { it.lastAccessedAtEpochMs != null }
+            .sortedWith(
+                compareByDescending<LibraryItemUiModel> { it.lastAccessedAtEpochMs ?: 0L }
+                    .thenBy { it.item.id.value },
+            )
+            .take(MAX_RECENT_ITEMS)
+
     /** 複数選択モード中かどうか。 */
     val isSelectionMode: Boolean
         get() = selectedDirectoryPaths.isNotEmpty() || selectedItemIds.isNotEmpty()
@@ -1563,6 +1583,31 @@ class LibraryViewModel @Inject constructor(
     }
 
     private fun toggleMiniPlayerPlayPause() {
+        val targetMiniPlayer = uiState.value.miniPlayer ?: return
+        val currentActiveId = playbackController.status.value.mediaId
+        if (currentActiveId != targetMiniPlayer.mediaId) {
+            viewModelScope.launch {
+                val savedState = libraryRepository.observeItemState(targetMiniPlayer.mediaId).firstOrNull()
+                playbackController.open(targetMiniPlayer.mediaId)
+                val player = playbackController.player.value
+                if (player != null) {
+                    player.play()
+                } else if (playbackController is FakePlaybackController) {
+                    if (savedState != null) {
+                        playbackController.position.positionMs = savedState.positionMs
+                        playbackController.setSpeed(savedState.speed)
+                    }
+                    playbackController.statusState.update { current ->
+                        current.copy(
+                            mediaId = targetMiniPlayer.mediaId,
+                            isPlaying = true,
+                            durationMs = targetMiniPlayer.durationMs,
+                        )
+                    }
+                }
+            }
+            return
+        }
         val player = playbackController.player.value
         if (player != null) {
             if (playbackController.status.value.isPlaying || player.isPlaying) {
@@ -1634,9 +1679,26 @@ class LibraryViewModel @Inject constructor(
                 } else {
                     activeAudioItem.durationMs
                 },
+                positionMs = itemStates[activeMediaId]?.positionMs ?: 0L,
             )
         } else {
-            null
+            val lastAccessedItem = uiItems
+                .filter { it.lastAccessedAtEpochMs != null && !it.isAudioMissing && !it.item.isRemoteOnly }
+                .maxWithOrNull(
+                    compareBy<LibraryItemUiModel> { it.lastAccessedAtEpochMs ?: 0L }
+                        .thenBy { it.item.id.value },
+                )
+            if (lastAccessedItem != null) {
+                MiniPlayerUiState(
+                    mediaId = lastAccessedItem.item.id,
+                    title = lastAccessedItem.item.title,
+                    isPlaying = false,
+                    durationMs = lastAccessedItem.item.durationMs,
+                    positionMs = lastAccessedItem.positionMs,
+                )
+            } else {
+                null
+            }
         }
         val validItemIds = items.mapTo(mutableSetOf()) { it.id }
         val filteredSelectedItemIds = navAndSelection.selectedItemIds.intersect(validItemIds)

@@ -833,4 +833,93 @@ class LibraryViewModelTest {
         viewModel.onEvent(LibraryEvent.CompleteLanguageOnboarding)
         assertFalse(viewModel.uiState.value.showLanguageOnboardingDialog)
     }
+
+    @Test
+    fun `アプリ再起動時のミニプレイヤー復元_未再生状態でも直近アクセスした教材を復元し再生ボタンで途中から再開できる`() = runTest {
+        val item1 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("recent-1"),
+            title = "Older Lesson",
+            durationMs = 30_000L,
+        )
+        val item2 = SampleMaterials.jaZh.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("recent-2"),
+            title = "Latest Lesson",
+            durationMs = 45_000L,
+        )
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(item1, item2),
+            initialItemStates = mapOf(
+                item1.id to ItemState(
+                    mediaId = item1.id,
+                    positionMs = 5_000L,
+                    speed = 1.0f,
+                    updatedAtEpochMs = 1_000L,
+                ),
+                item2.id to ItemState(
+                    mediaId = item2.id,
+                    positionMs = 18_500L,
+                    speed = 1.5f,
+                    updatedAtEpochMs = 2_000L,
+                ),
+            ),
+        )
+        // playbackStatus.mediaId == null（別日にアプリを起動した直後の状態）
+        val playback = FakePlaybackController(initialStatus = PlaybackStatus())
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val restoredMini = viewModel.uiState.value.miniPlayer
+        assertEquals(
+            MiniPlayerUiState(
+                mediaId = item2.id,
+                title = "Latest Lesson",
+                isPlaying = false,
+                durationMs = 45_000L,
+                positionMs = 18_500L,
+            ),
+            restoredMini,
+        )
+
+        // ミニプレイヤーの再生ボタンを押すと open(item2.id) が呼ばれ、保存済み位置と速度を復元して再生開始になる
+        viewModel.onEvent(LibraryEvent.ToggleMiniPlayerPlayPause)
+        assertEquals(listOf(item2.id), playback.openedMediaIds)
+        assertEquals(18_500L, playback.position.positionMs)
+        assertEquals(1.5f, playback.status.value.speed)
+        assertEquals(true, viewModel.uiState.value.miniPlayer?.isPlaying)
+        assertEquals(item2.id, viewModel.uiState.value.miniPlayer?.mediaId)
+    }
+
+    @Test
+    fun `recentItems_アクセス日時がある教材を新しい順に最大5件返す`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val items = (1..7).map { i ->
+            base.copy(
+                id = com.miuraken.chunkflow.core.model.MediaId("item-$i"),
+                title = "Lesson $i",
+            )
+        }
+        // item-1 は未アクセス (updatedAtEpochMs = 0L)、item-2..item-7 はアクセス日時あり
+        val states = mapOf(
+            items[0].id to ItemState(mediaId = items[0].id, updatedAtEpochMs = 0L),
+            items[1].id to ItemState(mediaId = items[1].id, updatedAtEpochMs = 200L),
+            items[2].id to ItemState(mediaId = items[2].id, updatedAtEpochMs = 600L),
+            items[3].id to ItemState(mediaId = items[3].id, updatedAtEpochMs = 100L),
+            items[4].id to ItemState(mediaId = items[4].id, updatedAtEpochMs = 500L),
+            items[5].id to ItemState(mediaId = items[5].id, updatedAtEpochMs = 300L),
+            items[6].id to ItemState(mediaId = items[6].id, updatedAtEpochMs = 400L),
+        )
+        val repo = FakeLibraryRepository(
+            initialItems = items,
+            initialItemStates = states,
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val recent = viewModel.uiState.value.recentItems
+        assertEquals(5, recent.size)
+        assertEquals(
+            listOf("Lesson 3", "Lesson 5", "Lesson 7", "Lesson 6", "Lesson 2"),
+            recent.map { it.item.title },
+        )
+    }
 }

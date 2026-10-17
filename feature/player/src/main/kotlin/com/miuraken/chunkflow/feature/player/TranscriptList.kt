@@ -1438,6 +1438,11 @@ private fun TranscriptionProgressOverlay(
         stepFraction
     }
 
+    val progressPercent = if (totalCount > 0) {
+        ((lookaheadStatus.completedCount * 100) / totalCount).coerceIn(0, 100)
+    } else {
+        0
+    }
     val summaryText = if (lookaheadStatus.isForcedChunkInFlight) {
         stringResource(
             R.string.player_transcription_progress_forced_summary,
@@ -1447,6 +1452,7 @@ private fun TranscriptionProgressOverlay(
     } else {
         stringResource(
             R.string.player_transcription_progress_summary,
+            progressPercent,
             lookaheadStatus.completedCount,
             totalCount,
         )

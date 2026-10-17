@@ -87,4 +87,5 @@
     <string name="library_item_drive_remote_only_badge">Drive (not downloaded)</string>
     <string name="library_item_drive_download_button">Download audio</string>
     <string name="library_edit_delete_local_audio_copy_button">Delete local audio cache (keep on Drive)</string>
+    <string name="library_recent_files_title">Recently opened files</string>
 </resources>

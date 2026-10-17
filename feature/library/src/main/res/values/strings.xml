@@ -87,4 +87,5 @@
     <string name="library_item_drive_remote_only_badge">Drive 未DL</string>
     <string name="library_item_drive_download_button">音声をDL</string>
     <string name="library_edit_delete_local_audio_copy_button">ローカルの音声キャッシュを削除（Drive 未DLに戻す）</string>
+    <string name="library_recent_files_title">最近開いたファイル</string>
 </resources>

@@ -1489,9 +1489,17 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
             playbackController.open(mediaId)
-            if (playbackController is FakePlaybackController && savedState != null) {
-                playbackController.position.positionMs = savedState.positionMs
-                playbackController.setSpeed(savedState.speed)
+            if (playbackController is FakePlaybackController) {
+                val initialPos = savedState?.positionMs ?: 0L
+                val initialSpeed = savedState?.speed ?: 1.0f
+                playbackController.position.positionMs = initialPos
+                playbackController.setSpeed(initialSpeed)
+                libraryRepository.updatePlaybackPosition(
+                    id = mediaId,
+                    positionMs = initialPos,
+                    speed = initialSpeed,
+                    updatedAtEpochMs = System.currentTimeMillis(),
+                )
             }
         }
         viewModelScope.launch {

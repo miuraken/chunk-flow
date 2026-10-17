@@ -482,6 +482,7 @@ fun LibraryScreen(
                     modifier = Modifier.weight(1f),
                 )
             } else {
+                val hasRecentItems = state.recentItems.isNotEmpty()
                 LibraryActionToolbar(
                     onSelectDirectory = { onEvent(LibraryEvent.RequestImportDirectory) },
                     onImportFiles = { onEvent(LibraryEvent.RequestImport) },
@@ -492,7 +493,7 @@ fun LibraryScreen(
                 )
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(if (hasRecentItems) 2f else 1f),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     items(
@@ -581,6 +582,13 @@ fun LibraryScreen(
                             }
                         }
                     }
+                }
+                if (hasRecentItems) {
+                    RecentFilesSection(
+                        recentItems = state.recentItems,
+                        onOpenItem = { id -> onEvent(LibraryEvent.OpenItem(id)) },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }
@@ -2090,6 +2098,143 @@ private fun LanguagePairBadge(
 }
 
 @Composable
+private fun RecentFilesSection(
+    recentItems: List<LibraryItemUiModel>,
+    onOpenItem: (MediaId) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            HorizontalDivider()
+            Text(
+                text = stringResource(R.string.library_recent_files_title),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                itemsIndexed(
+                    items = recentItems,
+                    key = { _, itemModel -> "recent_${itemModel.item.id.value}" },
+                ) { index, itemModel ->
+                    val isFirst = index == 0
+                    val isLast = index == recentItems.lastIndex
+                    val shape = when {
+                        isFirst && isLast -> RoundedCornerShape(10.dp)
+                        isFirst -> RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
+                        isLast -> RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp)
+                        else -> RectangleShape
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        shape = shape,
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            RecentFileCompactRow(
+                                itemModel = itemModel,
+                                onClick = { onOpenItem(itemModel.item.id) },
+                            )
+                            if (!isLast) {
+                                HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentFileCompactRow(
+    itemModel: LibraryItemUiModel,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val item = itemModel.item
+    val langPalette = chunkFlowLanguagePalette()
+    val maxPercent = itemModel.maxProgressPercent
+    val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
+    val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
+    val timeText = if (hasProgress) {
+        stringResource(
+            R.string.library_item_duration_progress,
+            formatDurationMs(itemModel.positionMs),
+            formatDurationMs(item.durationMs),
+        )
+    } else {
+        formatDurationMs(item.durationMs)
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.AudioFile,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (!item.course.isNullOrBlank()) {
+                Text(
+                    text = item.course.orEmpty().substringAfterLast('/'),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            LanguagePairBadge(pair = item.languagePair)
+            Text(
+                text = timeText,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isCompleted) {
+                    langPalette.completedProgressText
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        LinearProgressIndicator(
+            progress = { itemModel.maxProgressFraction },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp),
+            color = if (isCompleted) {
+                langPalette.completedProgressIndicator
+            } else {
+                ProgressIndicatorDefaults.linearColor
+            },
+        )
+    }
+}
+
+@Composable
 private fun MiniPlayerBar(
     miniPlayer: MiniPlayerUiState,
     onOpenPlayer: () -> Unit,
@@ -2101,6 +2246,15 @@ private fun MiniPlayerBar(
         stringResource(R.string.library_mini_player_pause)
     } else {
         stringResource(R.string.library_mini_player_play)
+    }
+    val durationAndPositionText = if (miniPlayer.positionMs > 0L) {
+        stringResource(
+            R.string.library_item_duration_progress,
+            formatDurationMs(miniPlayer.positionMs),
+            formatDurationMs(miniPlayer.durationMs),
+        )
+    } else {
+        formatDurationMs(miniPlayer.durationMs)
     }
 
     Surface(
@@ -2131,7 +2285,7 @@ private fun MiniPlayerBar(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = formatDurationMs(miniPlayer.durationMs),
+                    text = durationAndPositionText,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

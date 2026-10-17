@@ -117,7 +117,7 @@
     <string name="player_bookmark_toggle_add">ブックマークに追加</string>
     <string name="player_bookmark_toggle_remove">ブックマークを解除</string>
     <string name="player_chunk_edit_text">テキストを編集</string>
-    <string name="player_chunk_retranscribe">⚡ 強制文字起こし（最優先で再実行）</string>
+    <string name="player_chunk_retranscribe">強制文字起こし</string>
     <string name="player_chunk_edit_text_dialog_title">チャンク #%1$d のテキスト編集</string>
     <string name="player_chunk_edit_text_label">文字起こし本文</string>
     <string name="player_chunk_edit_save">保存</string>
@@ -164,7 +164,7 @@
     <string name="player_transcription_step_recognizing_primary">音声認識中（第1候補）…</string>
     <string name="player_transcription_step_recognizing_fallback">音声認識中（フォールバック）…</string>
     <string name="player_transcription_step_saving">認識結果を保存中…</string>
-    <string name="player_transcription_progress_summary">文字起こし進捗: %1$d / %2$d</string>
+    <string name="player_transcription_progress_summary">文字起こし進捗: %1$d%% (%2$d/%3$d)</string>
     <string name="player_transcription_progress_forced_summary">⚡ 強制文字起こし割り込み実行中（全体 %1$d / %2$d）</string>
     <string name="player_transcription_stall_short">⚠️ 遅れています</string>
     <string name="player_transcription_abort_button">中断</string>
