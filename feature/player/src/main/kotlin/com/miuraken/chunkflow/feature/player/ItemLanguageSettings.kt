@@ -26,8 +26,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import java.util.Locale
 
@@ -127,7 +129,10 @@ internal fun languagePairWithBase(
 @Composable
 internal fun ItemLanguageSettingsSection(
     languagePair: LanguagePair?,
+    itemSttOverride: ItemSttOverride,
     onChangeLanguages: (LanguagePair) -> Unit,
+    onChangeTargetEngine: (SttEngine?) -> Unit,
+    onChangeBaseEngine: (SttEngine?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val langPalette = chunkFlowLanguagePalette()
@@ -157,6 +162,13 @@ internal fun ItemLanguageSettingsSection(
             accentColor = langPalette.onTargetBadgeContainer,
             onSelect = { code -> languagePairWithTarget(languagePair, code)?.let(onChangeLanguages) },
         )
+        SttEngineDropdown(
+            label = stringResource(R.string.player_settings_target_stt_engine_label),
+            selectedEngine = itemSttOverride.targetEngine,
+            containerColor = langPalette.targetRowBackground,
+            accentColor = langPalette.onTargetBadgeContainer,
+            onSelect = onChangeTargetEngine,
+        )
         ItemLanguageDropdown(
             label = stringResource(R.string.player_settings_base_lang_label),
             selectedCode = baseCode,
@@ -166,6 +178,83 @@ internal fun ItemLanguageSettingsSection(
             accentColor = langPalette.onBaseBadgeContainer,
             onSelect = { code -> languagePairWithBase(languagePair, code)?.let(onChangeLanguages) },
         )
+        SttEngineDropdown(
+            label = stringResource(R.string.player_settings_base_stt_engine_label),
+            selectedEngine = itemSttOverride.baseEngine,
+            containerColor = langPalette.baseRowBackground,
+            accentColor = langPalette.onBaseBadgeContainer,
+            onSelect = onChangeBaseEngine,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SttEngineDropdown(
+    label: String,
+    selectedEngine: SttEngine?,
+    containerColor: Color,
+    accentColor: Color,
+    onSelect: (SttEngine?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    val options = listOf(
+        null to stringResource(R.string.player_settings_stt_engine_default),
+        SttEngine.ML_KIT to stringResource(R.string.player_settings_stt_engine_mlkit),
+        SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.player_settings_stt_engine_speech_recognizer),
+        SttEngine.SHERPA_ONNX to stringResource(R.string.player_settings_stt_engine_sherpa_onnx),
+    )
+
+    val selectedLabel = options.firstOrNull { it.first == selectedEngine }?.second ?: options.first().second
+
+    Surface(
+        color = containerColor,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    ) {
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = Modifier.fillMaxWidth().padding(10.dp),
+        ) {
+            OutlinedTextField(
+                value = selectedLabel,
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                label = { Text(text = label) },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = accentColor,
+                    focusedLabelColor = accentColor,
+                ),
+                modifier = Modifier
+                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                    .fillMaxWidth(),
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                options.forEach { (engine, optionLabel) ->
+                    val isSelected = engine == selectedEngine
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = optionLabel,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            )
+                        },
+                        onClick = {
+                            expanded = false
+                            onSelect(engine)
+                        },
+                        contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                    )
+                }
+            }
+        }
     }
 }
 

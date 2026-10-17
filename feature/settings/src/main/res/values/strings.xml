@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="settings_title">設定</string>
     <string name="settings_back">戻る</string>
@@ -65,4 +65,4 @@
     <string name="settings_lang_de">ドイツ語 (DE)</string>
     <string name="settings_lang_el">ギリシャ語 (EL)</string>
     <string name="settings_lang_id">インドネシア語 (ID)</string>
-</resources>
+<string name="settings_tab_language">言語設定</string><string name="settings_search_language">言語を検索</string><string name="settings_language_pinned">おすすめ</string><string name="settings_language_others">すべての言語</string><string name="settings_stt_engine_auto">自動</string><string name="settings_stt_engine_mlkit">ML Kit</string><string name="settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="settings_stt_engine_sherpa_onnx">sherpa-onnx</string><string name="settings_stt_engine_priority">優先するエンジン</string><string name="settings_stt_engine_current">現在: %1$s</string><string name="settings_stt_engine_unsupported">未対応</string></resources>

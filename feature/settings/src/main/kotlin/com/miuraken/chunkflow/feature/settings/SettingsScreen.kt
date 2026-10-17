@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.settings
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -18,6 +20,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -26,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -40,6 +46,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,11 +65,15 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -73,6 +85,7 @@ private enum class SettingsTab {
     PLAYBACK,
     SEGMENTATION,
     TRANSCRIPTION,
+    LANGUAGE,
 }
 
 /**
@@ -155,6 +168,11 @@ fun SettingsScreen(
                     onClick = { selectedTabOrdinal = SettingsTab.TRANSCRIPTION.ordinal },
                     text = { Text(text = stringResource(R.string.settings_tab_transcription)) },
                 )
+                Tab(
+                    selected = selectedTab == SettingsTab.LANGUAGE,
+                    onClick = { selectedTabOrdinal = SettingsTab.LANGUAGE.ordinal },
+                    text = { Text(text = stringResource(R.string.settings_tab_language)) },
+                )
             }
 
             Column(
@@ -188,6 +206,15 @@ fun SettingsScreen(
                             lookaheadEnabled = state.lookaheadTranscriptionEnabled,
                             transcriptionEngine = state.transcriptionEngine,
                             languageModels = state.languageModels,
+                            enabledLanguages = state.enabledLanguages,
+                            sttEngineByLanguage = state.sttEngineByLanguage,
+                            onEvent = onEvent,
+                        )
+                    }
+
+                    SettingsTab.LANGUAGE -> {
+                        LanguageSettingsSection(
+                            enabledLanguages = state.enabledLanguages,
                             onEvent = onEvent,
                         )
                     }
@@ -452,6 +479,8 @@ private fun TranscriptionSettingsSection(
     lookaheadEnabled: Boolean,
     transcriptionEngine: OnDeviceTranscriptionEngine,
     languageModels: List<OnDeviceLanguageModelInfo>,
+    enabledLanguages: Set<LanguageTag>,
+    sttEngineByLanguage: Map<LanguageTag, SttEngine>,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_transcription)) {
@@ -486,57 +515,6 @@ private fun TranscriptionSettingsSection(
         }
     }
 
-    SettingsCard(title = stringResource(R.string.settings_section_transcription_engine)) {
-        Text(
-            text = stringResource(R.string.settings_transcription_engine_description),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .selectableGroup(),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.TRANSCRIPTION_ENGINE_OPTIONS.forEach { option ->
-                val isSelected = transcriptionEngine == option
-                val (titleText, descText) = transcriptionEngineLabelAndDescription(option)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .selectable(
-                            selected = isSelected,
-                            onClick = { onEvent(SettingsEvent.SetTranscriptionEngine(option)) },
-                            role = Role.RadioButton,
-                        )
-                        .padding(vertical = 6.dp, horizontal = 4.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    RadioButton(
-                        selected = isSelected,
-                        onClick = null,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                    Column(
-                        modifier = Modifier.padding(start = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text(
-                            text = titleText,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            text = descText,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-    }
-
     SettingsCard(title = stringResource(R.string.settings_section_speech_models)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -556,14 +534,27 @@ private fun TranscriptionSettingsSection(
             }
         }
 
-        languageModels.forEachIndexed { index, info ->
+        val displayEntries = LanguageSettings.SELECTABLE_LANGUAGES.filter {
+            enabledLanguages.contains(LanguageTag(it.code))
+        }
+
+        displayEntries.forEachIndexed { index, entry ->
+            val langTag = LanguageTag(entry.code)
+            val info = languageModels.firstOrNull { it.language.value == entry.code }
+                ?: OnDeviceLanguageModelInfo(language = langTag)
+            val preferredEngine = sttEngineByLanguage[LanguageSettings.normalize(langTag)]
+
             if (index > 0) {
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                 )
             }
-            SpeechModelRow(
+            SttEngineAccordion(
                 info = info,
+                preferredEngine = preferredEngine,
+                onPreferredEngineChange = { engine ->
+                    onEvent(SettingsEvent.SetSttEngineForLanguage(langTag, engine))
+                },
                 onRequestOsDownload = {
                     onEvent(SettingsEvent.RequestRecognitionModelDownload(info.language))
                 },
@@ -872,5 +863,166 @@ internal fun SettingsScreenDefaultPreview() {
             state = SettingsUiState(),
             onEvent = {},
         )
+    }
+}
+
+@Composable
+private fun LanguageSettingsSection(
+    enabledLanguages: Set<LanguageTag>,
+    onEvent: (SettingsEvent) -> Unit,
+) {
+    val searchQuery = remember { mutableStateOf("") }
+
+    SettingsCard(title = stringResource(R.string.settings_tab_language)) {
+        OutlinedTextField(
+            value = searchQuery.value,
+            onValueChange = { searchQuery.value = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text(stringResource(R.string.settings_search_language)) },
+            leadingIcon = { Icon(ChunkFlowIcons.Search, contentDescription = null) },
+            singleLine = true,
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        val query = searchQuery.value.lowercase()
+        val allLanguages = LanguageSettings.SELECTABLE_LANGUAGES
+
+        val filtered = if (query.isBlank()) {
+            allLanguages
+        } else {
+            allLanguages.filter {
+                it.code.lowercase().contains(query) ||
+                    (it.englishName?.lowercase()?.contains(query) == true) ||
+                    (it.japaneseName?.lowercase()?.contains(query) == true)
+            }
+        }
+
+        val pinned = filtered.filter { LanguageSettings.isPinned(it.code) }
+        val others = filtered.filter { !LanguageSettings.isPinned(it.code) }
+
+        if (pinned.isNotEmpty()) {
+            Text(stringResource(R.string.settings_language_pinned), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
+            pinned.forEach { entry ->
+                LanguageToggleRow(
+                    entry = entry,
+                    isEnabled = enabledLanguages.contains(LanguageTag(entry.code)),
+                    onToggle = { onEvent(SettingsEvent.ToggleEnabledLanguage(LanguageTag(entry.code))) },
+                )
+            }
+        }
+
+        if (others.isNotEmpty()) {
+            Text(stringResource(R.string.settings_language_others), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
+            others.forEach { entry ->
+                LanguageToggleRow(
+                    entry = entry,
+                    isEnabled = enabledLanguages.contains(LanguageTag(entry.code)),
+                    onToggle = { onEvent(SettingsEvent.ToggleEnabledLanguage(LanguageTag(entry.code))) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LanguageToggleRow(
+    entry: com.miuraken.chunkflow.core.model.SupportedLanguageEntry,
+    isEnabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(
+                selected = isEnabled,
+                onClick = onToggle,
+                role = Role.Checkbox,
+            )
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = isEnabled, onCheckedChange = null)
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = speechModelLanguageDisplayName(LanguageTag(entry.code)),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SttEngineAccordion(
+    info: OnDeviceLanguageModelInfo,
+    preferredEngine: SttEngine?,
+    onPreferredEngineChange: (SttEngine?) -> Unit,
+    onRequestOsDownload: () -> Unit,
+    onRequestSherpaDownload: () -> Unit,
+    onDeleteSherpaModel: () -> Unit,
+) {
+    val expanded = remember { mutableStateOf(false) }
+
+    // Auto order based on preferred engine
+    val tryOrder = SttEngine.tryOrder(preferredEngine)
+    val firstUsable = SttEngineSelection.firstUsableEngine(tryOrder, info)
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectable(selected = expanded.value, onClick = { expanded.value = !expanded.value }, role = Role.Button)
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = speechModelLanguageDisplayName(info.language),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = if (firstUsable != null) stringResource(R.string.settings_stt_engine_current, firstUsable.name) else stringResource(R.string.settings_stt_engine_unsupported),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                imageVector = if (expanded.value) ChunkFlowIcons.ExpandLess else ChunkFlowIcons.ExpandMore,
+                contentDescription = null,
+            )
+        }
+
+        AnimatedVisibility(visible = expanded.value) {
+            Column(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, bottom = 8.dp)) {
+                Text(stringResource(R.string.settings_stt_engine_priority), style = MaterialTheme.typography.labelMedium)
+
+                val options = listOf(
+                    null to stringResource(R.string.settings_stt_engine_auto),
+                    SttEngine.ML_KIT to stringResource(R.string.settings_stt_engine_mlkit),
+                    SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.settings_stt_engine_speech_recognizer),
+                    SttEngine.SHERPA_ONNX to stringResource(R.string.settings_stt_engine_sherpa_onnx),
+                )
+
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    options.forEach { (engine, label) ->
+                        FilterChip(
+                            selected = preferredEngine == engine,
+                            onClick = { onPreferredEngineChange(engine) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                SpeechModelRow(
+                    info = info,
+                    onRequestOsDownload = onRequestOsDownload,
+                    onRequestSherpaDownload = onRequestSherpaDownload,
+                    onDeleteSherpaModel = onDeleteSherpaModel,
+                )
+            }
+        }
     }
 }

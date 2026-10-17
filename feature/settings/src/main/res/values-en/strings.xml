@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="settings_title">Settings</string>
     <string name="settings_back">Back</string>
@@ -65,4 +65,4 @@
     <string name="settings_lang_de">German (DE)</string>
     <string name="settings_lang_el">Greek (EL)</string>
     <string name="settings_lang_id">Indonesian (ID)</string>
-</resources>
+<string name="settings_tab_language">Language Settings</string><string name="settings_search_language">Search language</string><string name="settings_language_pinned">Suggested</string><string name="settings_language_others">All languages</string><string name="settings_stt_engine_auto">Auto</string><string name="settings_stt_engine_mlkit">ML Kit</string><string name="settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="settings_stt_engine_sherpa_onnx">sherpa-onnx</string><string name="settings_stt_engine_priority">Preferred Engine</string><string name="settings_stt_engine_current">Current: %1$s</string><string name="settings_stt_engine_unsupported">Unsupported</string></resources>

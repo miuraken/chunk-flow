@@ -512,8 +512,15 @@ fun PlayerScreen(
             ResegmentSheetContent(
                 initialParams = state.segmentationParams,
                 languagePair = state.languagePair,
+                itemSttOverride = state.itemSttOverride,
                 onChangeLanguages = { pair ->
                     onEvent(PlayerEvent.UpdateItemLanguages(target = pair.target, base = pair.base))
+                },
+                onChangeTargetEngine = { engine ->
+                    onEvent(PlayerEvent.SetTargetEngineOverride(engine))
+                },
+                onChangeBaseEngine = { engine ->
+                    onEvent(PlayerEvent.SetBaseEngineOverride(engine))
                 },
                 transcriptOffsetMs = state.transcriptOffsetMs,
                 onAdjustTranscriptOffset = { deltaMs ->
@@ -1321,7 +1328,10 @@ private fun PlayerSpeedSheetContent(
 private fun ResegmentSheetContent(
     initialParams: SegmentationParams,
     languagePair: LanguagePair?,
+    itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
     onChangeLanguages: (LanguagePair) -> Unit,
+    onChangeTargetEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
+    onChangeBaseEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
     transcriptOffsetMs: Int,
     onAdjustTranscriptOffset: (Int) -> Unit,
     onAutoAlignTranscriptOffset: () -> Unit,
@@ -1355,7 +1365,10 @@ private fun ResegmentSheetContent(
         // 教材の言語（学習言語・ベース言語）を選び直す
         ItemLanguageSettingsSection(
             languagePair = languagePair,
+            itemSttOverride = itemSttOverride,
             onChangeLanguages = onChangeLanguages,
+            onChangeTargetEngine = onChangeTargetEngine,
+            onChangeBaseEngine = onChangeBaseEngine,
         )
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))

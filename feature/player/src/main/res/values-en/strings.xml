@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="PluralsCandidate">
+<?xml version='1.0' encoding='utf-8'?>
+<resources xmlns:ns0="http://schemas.android.com/tools" ns0:ignore="PluralsCandidate">
     <string name="player_title">Player</string>
     <string name="player_back">Back</string>
     <string name="player_play">Play</string>
@@ -19,7 +19,7 @@
     <string name="player_error_decoder">Failed to decode the audio file.</string>
     <string name="player_error_unknown">An error occurred during playback.</string>
 
-    <!-- Waveform (F4.1, F4.2, §7.5.4) -->
+    
     <string name="player_waveform_overview_label">Overview</string>
     <string name="player_waveform_zoomed_label">Zoomed</string>
     <string name="player_waveform_overview_cd">Overview waveform seek bar</string>
@@ -30,7 +30,7 @@
     <string name="player_waveform_analysis_failed">Failed to analyze waveform.</string>
     <string name="player_waveform_zoom_window">Window: %1$s</string>
 
-    <!-- Transcript list (F7.1, F7.2, F6.1, §7.5.5) -->
+    
     <string name="player_return_to_current">Back to current</string>
     <string name="player_blind_masked_hint">Tap to reveal transcript</string>
     <string name="player_chunk_repeat_3">Repeat this chunk (3x)</string>
@@ -45,7 +45,7 @@
     <string name="player_transcript_invalid">Invalid transcript file format</string>
     <string name="player_dismiss_banner">Dismiss</string>
 
-    <!-- Practice controls (F5.2, F5.4, F6.1, F6.2, F6.3, F7.2) -->
+    
     <string name="player_chip_repeat">Repeat</string>
     <string name="player_chip_playback_settings">Playback settings</string>
     <string name="player_chip_repeat_off">Repeat: OFF</string>
@@ -87,7 +87,7 @@
     <string name="player_resegment_threshold">Silence threshold ratio: %1$s</string>
     <string name="player_resegment_apply">Resegment now</string>
     <string name="player_sheet_close">Close</string>
-    <!-- M3: Language filter, instant composition, language edit, timing offset, lookahead STT -->
+    
     <string name="player_chip_lang_filter_all">Lang: All</string>
     <string name="player_chip_lang_filter_target">Lang: Target only</string>
     <string name="player_chip_lang_filter_base">Lang: Base only</string>
@@ -104,7 +104,7 @@
     <string name="player_offset_auto_align">Auto-align to speech onset</string>
     <string name="player_lookahead_chip_off">Lookahead STT: OFF</string>
     <string name="player_lookahead_export_json">Save JSON</string>
-    <!-- M4: Bookmarks, manual text editing, chunk split/merge, transcript export -->
+    
     <string name="player_chip_bookmarks_only">Bookmarks only</string>
     <string name="player_bookmark_toggle_add">Add bookmark</string>
     <string name="player_bookmark_toggle_remove">Remove bookmark</string>
@@ -192,4 +192,4 @@
     <string name="player_detailed_transcribe_result_empty">Could not recognize speech (try different settings)</string>
     <string name="player_detailed_transcribe_result_meta">Engine: %1$s / Language: %2$s</string>
     <string name="player_detailed_transcribe_apply">Apply result</string>
-</resources>
+<string name="player_settings_target_stt_engine_label">STT Engine (Target)</string><string name="player_settings_base_stt_engine_label">STT Engine (Base)</string><string name="player_settings_stt_engine_default">Follow language setting (Default)</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string></resources>
