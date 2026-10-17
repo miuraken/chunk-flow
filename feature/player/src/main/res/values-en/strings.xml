@@ -74,6 +74,11 @@
     <string name="player_file_settings_cd">File settings</string>
     <string name="player_selection_clear_all">Clear selection</string>
     <string name="player_selection_merge">Merge</string>
+    <string name="player_merge_confirm_title">Merge selected chunks?</string>
+    <string name="player_merge_confirm_message_contiguous">Merge %3$d chunks (#%1$d to #%2$d) into a single chunk. The merged chunk will use the language of the first chunk (#%1$d: %4$s).</string>
+    <string name="player_merge_confirm_message_with_gaps">Merge chunks from #%1$d to #%2$d into a single chunk (%4$d chunks total, including %3$d unselected chunks in between). The merged chunk will use the language of the first chunk (#%1$d: %5$s).</string>
+    <string name="player_merge_confirm_ok">Merge</string>
+    <string name="player_merge_lang_unknown">Unknown</string>
     <string name="player_split_at_cursor">Split at playhead</string>
     <string name="player_settings_language_section_title">Languages</string>
     <string name="player_settings_target_lang_label">Target language</string>
@@ -91,9 +96,11 @@
     <string name="player_chip_lang_filter_all">Lang: All</string>
     <string name="player_chip_lang_filter_target">Lang: Target only</string>
     <string name="player_chip_lang_filter_base">Lang: Base only</string>
+    <string name="player_chip_lang_filter_code">Lang: %1$s only</string>
     <string name="player_menu_lang_filter_all">All</string>
     <string name="player_menu_lang_filter_target">Target only</string>
     <string name="player_menu_lang_filter_base">Base only</string>
+    <string name="player_menu_lang_filter_code">%1$s only</string>
     <string name="player_chunk_set_lang_target">Set as target (%1$s)</string>
     <string name="player_chunk_set_lang_base">Set as base (%1$s)</string>
     <string name="player_chunk_set_lang_unknown">Reset language (-)</string>

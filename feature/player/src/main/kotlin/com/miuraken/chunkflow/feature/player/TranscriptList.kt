@@ -1724,50 +1724,67 @@ private fun TranscriptChunkRow(
             Spacer(modifier = Modifier.width(8.dp))
 
             if (!displayText.isNullOrBlank() && !isForcedInFlight) {
+                val shouldShowPhonetic = showTargetRomanization &&
+                    (isTargetLang || languagePair == null)
+                val phoneticReading = remember(
+                    shouldShowPhonetic,
+                    chunk,
+                    chineseScript,
+                    cantoneseScript,
+                ) {
+                    if (shouldShowPhonetic) {
+                        chunk.resolvePhoneticReading(
+                            chineseScript = chineseScript,
+                            cantoneseScript = cantoneseScript,
+                        )
+                    } else {
+                        null
+                    }
+                }
                 if (isMasked) {
-                    Surface(
-                        color = colorScheme.surfaceContainerHighest,
-                        contentColor = colorScheme.onSurfaceVariant,
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(vertical = 8.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    if (phoneticReading != null) {
+                        // 「学習言語を隠す」かつ「読み」がオンのときは、マスクバナーや本文は出さず読みだけを表示する
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.VisibilityOff,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
                             Text(
-                                text = stringResource(R.string.player_blind_masked_hint),
-                                style = MaterialTheme.typography.bodySmall,
+                                text = phoneticReading,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                color = colorScheme.onSurface,
                             )
+                        }
+                    } else {
+                        Surface(
+                            color = colorScheme.surfaceContainerHighest,
+                            contentColor = colorScheme.onSurfaceVariant,
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(vertical = 8.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.VisibilityOff,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Text(
+                                    text = stringResource(R.string.player_blind_masked_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
                         }
                     }
                 } else {
                     val currentActiveWord = activeWordRange
-                    val shouldShowPhonetic = showTargetRomanization &&
-                        (isTargetLang || languagePair == null)
-                    val phoneticReading = remember(
-                        shouldShowPhonetic,
-                        chunk,
-                        chineseScript,
-                        cantoneseScript,
-                    ) {
-                        if (shouldShowPhonetic) {
-                            chunk.resolvePhoneticReading(
-                                chineseScript = chineseScript,
-                                cantoneseScript = cantoneseScript,
-                            )
-                        } else {
-                            null
-                        }
-                    }
                     Column(
                         modifier = Modifier
                             .weight(1f)

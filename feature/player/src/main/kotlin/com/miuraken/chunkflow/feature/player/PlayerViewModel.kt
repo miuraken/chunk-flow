@@ -572,7 +572,7 @@ sealed interface PlayerEvent {
     /** チャンクの選択（チェックボックス）をすべて外す。 */
     data object ClearChunkSelection : PlayerEvent
 
-    /** 選択中の連続したチャンクを 1 つに連結する（両端のチャンクの言語が同じ場合のみ）。 */
+    /** 選択中のチャンク（先頭から末尾までの範囲）を 1 つに連結する（言語は最初のチャンクの設定に合わせる）。 */
     data object MergeSelectedChunks : PlayerEvent
 
     /** 現在の再生位置（拡大波形の中央のカーソル）でチャンクを 2 つに分割する。 */
@@ -1151,7 +1151,15 @@ class PlayerViewModel @Inject constructor(
                     } else {
                         current.repeatChunkIds + event.chunkId
                     }
-                    current.copy(repeatChunkIds = nextIds)
+                    val nextLoop = if (nextIds.isNotEmpty() && current.loop is LoopMode.SingleChunk) {
+                        LoopMode.Off
+                    } else {
+                        current.loop
+                    }
+                    current.copy(
+                        loop = nextLoop,
+                        repeatChunkIds = nextIds,
+                    )
                 }
             }
 
@@ -1162,7 +1170,19 @@ class PlayerViewModel @Inject constructor(
                     } else {
                         current.repeatChunkIds - event.chunkId
                     }
-                    if (nextIds == current.repeatChunkIds) current else current.copy(repeatChunkIds = nextIds)
+                    if (nextIds == current.repeatChunkIds) {
+                        current
+                    } else {
+                        val nextLoop = if (nextIds.isNotEmpty() && current.loop is LoopMode.SingleChunk) {
+                            LoopMode.Off
+                        } else {
+                            current.loop
+                        }
+                        current.copy(
+                            loop = nextLoop,
+                            repeatChunkIds = nextIds,
+                        )
+                    }
                 }
             }
 
@@ -1176,8 +1196,20 @@ class PlayerViewModel @Inject constructor(
                 val id = resolveActiveMediaId() ?: return
                 val chunkIds = mergeableSelectedChunkIds(uiState.value.chunks)
                 if (chunkIds.size < 2) return
+                val firstChunkId = chunkIds.first()
+                val hasFirstOverride = firstChunkId in localUiState.value.languageOverrides
+                val firstOverrideLang = localUiState.value.languageOverrides[firstChunkId]
+                chunkIds.forEach { cid ->
+                    pendingLanguageCommitJobs.remove(cid)?.cancel()
+                }
                 viewModelScope.launch {
                     withContext(NonCancellable) {
+                        if (hasFirstOverride) {
+                            analysisRepository.updateChunkLanguage(id, firstChunkId, firstOverrideLang)
+                        }
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = state.languageOverrides - chunkIds.toSet())
+                        }
                         val merged = analysisRepository.mergeChunks(id, chunkIds)
                         if (merged) {
                             // 連結するとチャンクの ID が変わるため、選択を外す

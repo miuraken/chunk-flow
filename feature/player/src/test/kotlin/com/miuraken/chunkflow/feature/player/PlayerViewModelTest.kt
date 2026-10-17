@@ -1056,7 +1056,7 @@ class PlayerViewModelTest {
     }
 
     @Test
-    fun `連結_連続して両端の言語が同じ選択だけを1つのチャンクに連結し選択を外す`() = runTest {
+    fun `連結_非連続や異言語の選択も先頭チャンクの言語に合わせて1つに連結し未確定の言語変更も反映する`() = runTest {
         val sample = SampleMaterials.jaKo
         val item = sample.item
         val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
@@ -1069,26 +1069,28 @@ class PlayerViewModelTest {
         viewModel.open(item.id)
 
         val chunks = sample.chunks
-        // 連続していない選択（1 と 3）は連結しない
-        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[1].id, selected = true))
-        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[3].id, selected = true))
-        assertFalse(canMergeSelectedChunks(viewModel.uiState.value.chunks))
-        viewModel.onEvent(PlayerEvent.MergeSelectedChunks)
-        assertTrue(analysisRepo.mergeChunksRequests.isEmpty())
+        // SingleChunk ループ中にチャンクを選択すると、複数選択リピートと干渉しないよう LoopMode.Off に戻る
+        viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.SingleChunk(chunks[0].id, times = null)))
+        assertEquals(LoopMode.SingleChunk(chunks[0].id, times = null), viewModel.uiState.value.practice.loop)
 
-        // 連続していて両端が ko（3 と 4）なら連結する。本文は半角スペースを挟んでつなぐ
-        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[1].id, selected = false))
-        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[4].id, selected = true))
+        // 先頭チャンク (chunks[1]: ko) の言語バッジをトグルして未コミット状態で ja に切り替え、非連続の chunks[3] (ko) と選択
+        viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(chunks[1].id, LanguageTag("ja")))
+        assertEquals(LanguageTag("ja"), viewModel.uiState.value.chunks[1].language)
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[1].id, selected = true))
+        assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunks[3].id, selected = true))
+
         assertTrue(canMergeSelectedChunks(viewModel.uiState.value.chunks))
         viewModel.onEvent(PlayerEvent.MergeSelectedChunks)
 
-        assertEquals(listOf(item.id to listOf(chunks[3].id, chunks[4].id)), analysisRepo.mergeChunksRequests)
+        assertEquals(listOf(item.id to listOf(chunks[1].id, chunks[3].id)), analysisRepo.mergeChunksRequests)
         val merged = viewModel.uiState.value.chunks
-        assertEquals(4, merged.size)
-        assertEquals(chunks[3].startMs, merged[3].startMs)
-        assertEquals(chunks[4].endMs, merged[3].endMs)
-        assertEquals("이건 얼마예요? 저는 한국어를 공부하고 있어요.", merged[3].text)
-        assertEquals(LanguageTag("ko"), merged[3].language)
+        // chunks[1]..chunks[3] の 3 件が 1 件に統合されるので 5 -> 3 件になる
+        assertEquals(3, merged.size)
+        assertEquals(chunks[1].startMs, merged[1].startMs)
+        assertEquals(chunks[3].endMs, merged[1].endMs)
+        // 先頭チャンク (chunks[1]) の未コミット言語オーバーライド (ja) が反映されている
+        assertEquals(LanguageTag("ja"), merged[1].language)
         assertTrue(playback.practiceState.value.repeatChunkIds.isEmpty())
     }
 
