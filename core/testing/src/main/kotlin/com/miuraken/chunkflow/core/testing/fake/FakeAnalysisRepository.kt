@@ -16,6 +16,7 @@ import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterial
@@ -280,6 +281,28 @@ class FakeAnalysisRepository : AnalysisRepository {
             canDeleteSherpaModel = false,
         )
         return true
+    }
+
+    /** [requestSttModelDownload] の呼び出し履歴（呼ばれた順）。 */
+    val requestedSttModelDownloads: MutableList<Pair<LanguageTag, SttEngine>> = mutableListOf()
+
+    override suspend fun requestSttModelDownload(language: LanguageTag, engine: SttEngine): Boolean {
+        requestedSttModelDownloads += language to engine
+        return when (engine) {
+            SttEngine.SHERPA_ONNX -> downloadSherpaModel(language)
+
+            SttEngine.SPEECH_RECOGNIZER -> {
+                val existing = languageModelInfos[language] ?: OnDeviceLanguageModelInfo(language = language)
+                languageModelInfos[language] = existing.copy(status = OnDeviceLanguageModelStatus.DOWNLOADING)
+                true
+            }
+
+            SttEngine.ML_KIT -> {
+                val existing = languageModelInfos[language] ?: OnDeviceLanguageModelInfo(language = language)
+                languageModelInfos[language] = existing.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
+                true
+            }
+        }
     }
 
     override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> {

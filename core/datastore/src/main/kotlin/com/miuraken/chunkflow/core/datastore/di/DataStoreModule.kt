@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import com.miuraken.chunkflow.core.datastore.DataStoreUserSettingsRepository
+import com.miuraken.chunkflow.core.datastore.DeviceLanguagesProvider
+import com.miuraken.chunkflow.core.datastore.SystemDeviceLanguagesProvider
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import dagger.Binds
 import dagger.Module
@@ -29,6 +31,12 @@ abstract class DataStoreModule {
     abstract fun bindsUserSettingsRepository(
         impl: DataStoreUserSettingsRepository,
     ): UserSettingsRepository
+
+    /** 端末の設定言語を、システムの言語設定から読む実装に束縛する（言語設定の既定に使う。ADR-0011）。 */
+    @Binds
+    abstract fun bindsDeviceLanguagesProvider(
+        impl: SystemDeviceLanguagesProvider,
+    ): DeviceLanguagesProvider
 
     companion object {
         private const val USER_SETTINGS_FILE_NAME = "user_settings"

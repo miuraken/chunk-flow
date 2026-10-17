@@ -13,6 +13,7 @@ import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.Waveform
 import kotlinx.coroutines.flow.Flow
@@ -94,6 +95,16 @@ interface AnalysisRepository {
      * [language] の `sherpa-onnx` ローカル音声認識モデルを削除する（Stage 2）。
      */
     suspend fun deleteSherpaModel(language: LanguageTag): Boolean = false
+
+    /**
+     * [language] で、エンジン [engine] のモデルの取得を要求する（ADR-0011 §2.4）。
+     *
+     * - [SttEngine.ML_KIT]・[SttEngine.SPEECH_RECOGNIZER]: モデルは OS が管理するので、OS に取得を要求するだけ（削除はできない）。
+     * - [SttEngine.SHERPA_ONNX]: アプリがダウンロードして検証する（[downloadSherpaModel] と同じ）。
+     *
+     * 要求を送れた（または取得できた）場合は `true`。状態は [queryLanguageModelInfos] で確かめる。
+     */
+    suspend fun requestSttModelDownload(language: LanguageTag, engine: SttEngine): Boolean = false
 
     /**
      * 端末内音声認識の言語モデルの状態を OS に問い合わせ直す（ダウンロードの完了を検出する）。

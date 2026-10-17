@@ -9,6 +9,7 @@ import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
+import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
@@ -16,6 +17,7 @@ import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
+import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 
@@ -33,8 +35,9 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         TranscriptEntity::class,
         BookmarkEntity::class,
         DriveFileEntity::class,
+        ItemSttOverrideEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -59,6 +62,9 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
     /** `drive_file` テーブルの DAO。 */
     abstract fun driveFileDao(): DriveFileDao
 
+    /** `item_stt_override` テーブルの DAO（ADR-0011 §2.3）。 */
+    abstract fun itemSttOverrideDao(): ItemSttOverrideDao
+
     companion object {
         /** データベースファイル名（`data_extraction_rules.xml` の `database` ドメイン対象）。 */
         const val DATABASE_NAME: String = "chunkflow.db"
@@ -77,5 +83,20 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
                 db.execSQL("UPDATE item_state SET max_position_ms = position_ms WHERE position_ms > max_position_ms")
             }
         }
+
+        /** バージョン 3 から 4 へのマイグレーション（教材ごとの文字起こしエンジンの上書き `item_stt_override` を追加。ADR-0011 §2.3）。 */
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `item_stt_override` (" +
+                        "`media_id` TEXT NOT NULL, `target_engine` TEXT, `base_engine` TEXT, " +
+                        "PRIMARY KEY(`media_id`), " +
+                        "FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                )
+            }
+        }
+
+        /** アプリで使うすべてのマイグレーション（古い順）。データベースを開くときに渡す。 */
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
     }
 }

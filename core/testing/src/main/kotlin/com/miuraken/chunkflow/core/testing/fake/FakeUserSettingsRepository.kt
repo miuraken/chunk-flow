@@ -5,9 +5,11 @@ import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -81,5 +83,18 @@ class FakeUserSettingsRepository(
 
     override suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) {
         state.update { it.copy(transcriptionEngine = engine) }
+    }
+
+    override suspend fun setSttEngineForLanguage(language: LanguageTag, engine: SttEngine?) {
+        val normalized = LanguageSettings.normalize(language)
+        require(normalized.value.isNotEmpty()) { "language tag must not be blank" }
+        state.update { current ->
+            val next = if (engine == null) {
+                current.sttEngineByLanguage - normalized
+            } else {
+                current.sttEngineByLanguage + (normalized to engine)
+            }
+            current.copy(sttEngineByLanguage = next)
+        }
     }
 }

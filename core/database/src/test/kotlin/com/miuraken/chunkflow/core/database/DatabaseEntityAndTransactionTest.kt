@@ -3,6 +3,7 @@ package com.miuraken.chunkflow.core.database
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
+import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
 import com.miuraken.chunkflow.core.database.entity.toExternalModel
@@ -19,11 +20,13 @@ import com.miuraken.chunkflow.core.model.DriveFile
 import com.miuraken.chunkflow.core.model.DriveFileKind
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.WordTiming
 import kotlin.test.Test
@@ -127,6 +130,20 @@ class DatabaseEntityAndTransactionTest {
             mediaId = mediaId,
         )
         assertEquals(driveFile, driveFile.toEntity().toExternalModel())
+
+        val sttOverride = ItemSttOverride(
+            targetEngine = SttEngine.ML_KIT,
+            baseEngine = SttEngine.SHERPA_ONNX,
+        )
+        assertEquals(sttOverride, sttOverride.toEntity(mediaId).toExternalModel())
+        assertEquals(
+            ItemSttOverride(targetEngine = null, baseEngine = SttEngine.SPEECH_RECOGNIZER),
+            ItemSttOverrideEntity(
+                mediaId = mediaId.value,
+                targetEngine = "UNKNOWN_ENGINE",
+                baseEngine = "SPEECH_RECOGNIZER",
+            ).toExternalModel(),
+        )
     }
 
     @Test
