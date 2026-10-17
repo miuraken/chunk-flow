@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -788,7 +789,7 @@ private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
  * 1 行に収まらないとき（文字サイズが大きいときや、2 ペインの左側が狭いとき）は、横にスクロールさせずに次の行へ折り返す。
  * 「再生位置で分割」が途中で切れて「再生位置」とだけ読めると、押したときの動作がわからなくなるため。
  * - 「全選択解除」: チャンクを 1 つ以上選択しているとき
- * - 「連結」: 選択が連続していて、両端のチャンクの言語が同じとき（[canMergeSelectedChunks]）
+ * - 「連結」: チャンクを 2 つ以上選択しているとき（[canMergeSelectedChunks]）。押すと確認ダイアログを表示する
  * - 「再生位置で分割」: チャンクがあり、選択がないとき（再生位置（拡大波形の中央のカーソル）でチャンクを 2 つに分ける）
  */
 @OptIn(ExperimentalLayoutApi::class)
@@ -799,8 +800,10 @@ private fun ChunkSelectionActionStrip(
     modifier: Modifier = Modifier,
 ) {
     val hasSelection = state.chunks.any { it.isRepeatChecked }
-    val canMergeSelection = remember(state.chunks) { canMergeSelectedChunks(state.chunks) }
+    val mergeSummary = remember(state.chunks) { summarizeMergeSelection(state.chunks) }
+    val canMergeSelection = mergeSummary != null
     val canSplitAtCursor = state.chunks.isNotEmpty() && !hasSelection
+    var showMergeConfirmDialog by remember { mutableStateOf(false) }
 
     FlowRow(
         modifier = modifier.fillMaxWidth(),
@@ -812,7 +815,7 @@ private fun ChunkSelectionActionStrip(
             label = { Text(text = stringResource(R.string.player_selection_clear_all), maxLines = 1) },
         )
         AssistChip(
-            onClick = { onEvent(PlayerEvent.MergeSelectedChunks) },
+            onClick = { showMergeConfirmDialog = true },
             enabled = canMergeSelection,
             label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
         )
@@ -822,13 +825,64 @@ private fun ChunkSelectionActionStrip(
             label = { Text(text = stringResource(R.string.player_split_at_cursor), maxLines = 1) },
         )
     }
+
+    val currentSummary = mergeSummary
+    if (showMergeConfirmDialog && currentSummary != null) {
+        val rawLangCode = currentSummary.targetLanguage?.value?.trim()?.takeUnless {
+            it.isEmpty() || it.equals("und", ignoreCase = true)
+        }?.uppercase(Locale.ROOT)
+        val langLabel = rawLangCode ?: stringResource(R.string.player_merge_lang_unknown)
+        val confirmMessage = if (currentSummary.unselectedGapCount > 0) {
+            stringResource(
+                R.string.player_merge_confirm_message_with_gaps,
+                currentSummary.firstChunkNumber,
+                currentSummary.lastChunkNumber,
+                currentSummary.unselectedGapCount,
+                currentSummary.totalSpanCount,
+                langLabel,
+            )
+        } else {
+            stringResource(
+                R.string.player_merge_confirm_message_contiguous,
+                currentSummary.firstChunkNumber,
+                currentSummary.lastChunkNumber,
+                currentSummary.totalSpanCount,
+                langLabel,
+            )
+        }
+
+        AlertDialog(
+            onDismissRequest = { showMergeConfirmDialog = false },
+            title = {
+                Text(text = stringResource(R.string.player_merge_confirm_title))
+            },
+            text = {
+                Text(text = confirmMessage)
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showMergeConfirmDialog = false
+                        onEvent(PlayerEvent.MergeSelectedChunks)
+                    },
+                ) {
+                    Text(text = stringResource(R.string.player_merge_confirm_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMergeConfirmDialog = false }) {
+                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
+                }
+            },
+        )
+    }
 }
 
 /**
  * チャンクの表示に関する設定の行（チャンクリストの上に置く）。
  *
  * 表示項目:
- * - 「言語」（*すべて、学習言語のみ、母語のみ）
+ * - 「言語」（*すべて、{target_language_code}のみ、{base_language_code}のみ）
  * - 「学習言語を隠す」（on, *off）
  * - 「読み」（on, *off）
  */
@@ -840,11 +894,57 @@ private fun ChunkDisplaySettingsStrip(
 ) {
     var langFilterMenuExpanded by remember { mutableStateOf(false) }
 
+    val langPalette = chunkFlowLanguagePalette()
+    val targetLangCode = state.languagePair?.target?.value?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.uppercase(Locale.ROOT)
+    val baseLangCode = state.languagePair?.base?.value?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.uppercase(Locale.ROOT)
+
     val languageFilter = state.practice.languageFilter
     val languageFilterLabel = when (languageFilter) {
         LanguageFilter.ALL -> stringResource(R.string.player_chip_lang_filter_all)
-        LanguageFilter.TARGET_ONLY -> stringResource(R.string.player_chip_lang_filter_target)
-        LanguageFilter.BASE_ONLY -> stringResource(R.string.player_chip_lang_filter_base)
+
+        LanguageFilter.TARGET_ONLY -> if (targetLangCode != null) {
+            stringResource(R.string.player_chip_lang_filter_code, targetLangCode)
+        } else {
+            stringResource(R.string.player_chip_lang_filter_target)
+        }
+
+        LanguageFilter.BASE_ONLY -> if (baseLangCode != null) {
+            stringResource(R.string.player_chip_lang_filter_code, baseLangCode)
+        } else {
+            stringResource(R.string.player_chip_lang_filter_base)
+        }
+    }
+    val targetMenuLabel = if (targetLangCode != null) {
+        stringResource(R.string.player_menu_lang_filter_code, targetLangCode)
+    } else {
+        stringResource(R.string.player_menu_lang_filter_target)
+    }
+    val baseMenuLabel = if (baseLangCode != null) {
+        stringResource(R.string.player_menu_lang_filter_code, baseLangCode)
+    } else {
+        stringResource(R.string.player_menu_lang_filter_base)
+    }
+
+    val langFilterChipColors = when (languageFilter) {
+        LanguageFilter.TARGET_ONLY -> FilterChipDefaults.filterChipColors(
+            selectedContainerColor = langPalette.targetBadgeContainer,
+            selectedLabelColor = langPalette.onTargetBadgeContainer,
+            selectedLeadingIconColor = langPalette.onTargetBadgeContainer,
+            selectedTrailingIconColor = langPalette.onTargetBadgeContainer,
+        )
+
+        LanguageFilter.BASE_ONLY -> FilterChipDefaults.filterChipColors(
+            selectedContainerColor = langPalette.baseBadgeContainer,
+            selectedLabelColor = langPalette.onBaseBadgeContainer,
+            selectedLeadingIconColor = langPalette.onBaseBadgeContainer,
+            selectedTrailingIconColor = langPalette.onBaseBadgeContainer,
+        )
+
+        LanguageFilter.ALL -> FilterChipDefaults.filterChipColors()
     }
 
     val isHideTargetLangOn = state.blindMode != BlindMode.OFF
@@ -858,12 +958,19 @@ private fun ChunkDisplaySettingsStrip(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 1. 「言語」（*すべて、学習言語のみ、母語のみ）
+        // 1. 「言語」（*すべて、{target_language_code}のみ、{base_language_code}のみ）
         Column {
             FilterChip(
                 selected = languageFilter != LanguageFilter.ALL,
                 onClick = { langFilterMenuExpanded = true },
-                label = { Text(text = languageFilterLabel, maxLines = 1) },
+                label = {
+                    Text(
+                        text = languageFilterLabel,
+                        fontWeight = if (languageFilter != LanguageFilter.ALL) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                    )
+                },
+                colors = langFilterChipColors,
             )
             DropdownMenu(
                 expanded = langFilterMenuExpanded,
@@ -877,14 +984,40 @@ private fun ChunkDisplaySettingsStrip(
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_menu_lang_filter_target)) },
+                    text = {
+                        Surface(
+                            color = langPalette.targetBadgeContainer,
+                            contentColor = langPalette.onTargetBadgeContainer,
+                            shape = RoundedCornerShape(6.dp),
+                        ) {
+                            Text(
+                                text = targetMenuLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
+                    },
                     onClick = {
                         langFilterMenuExpanded = false
                         onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_menu_lang_filter_base)) },
+                    text = {
+                        Surface(
+                            color = langPalette.baseBadgeContainer,
+                            contentColor = langPalette.onBaseBadgeContainer,
+                            shape = RoundedCornerShape(6.dp),
+                        ) {
+                            Text(
+                                text = baseMenuLabel,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
+                    },
                     onClick = {
                         langFilterMenuExpanded = false
                         onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))

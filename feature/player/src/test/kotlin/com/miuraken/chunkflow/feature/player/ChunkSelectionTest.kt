@@ -5,6 +5,7 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -25,8 +26,8 @@ class ChunkSelectionTest {
     )
 
     @Test
-    fun `canMergeSelectedChunks_連続していて両端の言語が同じときだけ連結できる`() {
-        // 両端が ko で連続（途中の ja は端ではないので問わない）
+    fun `canMergeSelectedChunks_2件以上選択されていれば非連続や異言語でも連結でき要約を返す`() {
+        // 連続・異言語混在
         val contiguous = listOf(
             chunk(1, 0, 1_000, "ja"),
             chunk(2, 1_000, 2_000, "ko", selected = true),
@@ -35,32 +36,45 @@ class ChunkSelectionTest {
         )
         assertTrue(canMergeSelectedChunks(contiguous))
         assertEquals(listOf(ChunkId(2), ChunkId(3), ChunkId(4)), mergeableSelectedChunkIds(contiguous))
+        val contiguousSummary = summarizeMergeSelection(contiguous)
+        assertNotNull(contiguousSummary)
+        assertEquals(2, contiguousSummary.firstChunkNumber)
+        assertEquals(4, contiguousSummary.lastChunkNumber)
+        assertEquals(3, contiguousSummary.selectedCount)
+        assertEquals(3, contiguousSummary.totalSpanCount)
+        assertEquals(0, contiguousSummary.unselectedGapCount)
+        assertEquals(LanguageTag("ko"), contiguousSummary.targetLanguage)
 
-        // 途中に選ばれていないチャンクがある
+        // 途中に選ばれていないチャンクがある場合（非連続）も連結可能で、unselectedGapCount が計算される
         val gap = listOf(
-            chunk(1, 0, 1_000, "ko", selected = true),
+            chunk(1, 0, 1_000, "ja", selected = true),
             chunk(2, 1_000, 2_000, "ko"),
             chunk(3, 2_000, 3_000, "ko", selected = true),
         )
-        assertFalse(canMergeSelectedChunks(gap))
-        assertTrue(mergeableSelectedChunkIds(gap).isEmpty())
+        assertTrue(canMergeSelectedChunks(gap))
+        assertEquals(listOf(ChunkId(1), ChunkId(3)), mergeableSelectedChunkIds(gap))
+        val gapSummary = summarizeMergeSelection(gap)
+        assertNotNull(gapSummary)
+        assertEquals(1, gapSummary.firstChunkNumber)
+        assertEquals(3, gapSummary.lastChunkNumber)
+        assertEquals(2, gapSummary.selectedCount)
+        assertEquals(3, gapSummary.totalSpanCount)
+        assertEquals(1, gapSummary.unselectedGapCount)
+        assertEquals(LanguageTag("ja"), gapSummary.targetLanguage)
 
-        // 両端の言語が違う
+        // 両端の言語が違う場合も連結でき、先頭チャンクの言語が targetLanguage になる
         val differentEdges = listOf(
             chunk(1, 0, 1_000, "ja", selected = true),
             chunk(2, 1_000, 2_000, "ko", selected = true),
         )
-        assertFalse(canMergeSelectedChunks(differentEdges))
-
-        // 両端とも未判定（null / und）なら同じ言語とみなす
-        val unknownEdges = listOf(
-            chunk(1, 0, 1_000, null, selected = true),
-            chunk(2, 1_000, 2_000, "und", selected = true),
-        )
-        assertTrue(canMergeSelectedChunks(unknownEdges))
+        assertTrue(canMergeSelectedChunks(differentEdges))
+        assertEquals(LanguageTag("ja"), summarizeMergeSelection(differentEdges)?.targetLanguage)
 
         // 1 件だけの選択では連結しない
-        assertFalse(canMergeSelectedChunks(listOf(chunk(1, 0, 1_000, "ko", selected = true))))
+        val singleSelected = listOf(chunk(1, 0, 1_000, "ko", selected = true))
+        assertFalse(canMergeSelectedChunks(singleSelected))
+        assertTrue(mergeableSelectedChunkIds(singleSelected).isEmpty())
+        assertNull(summarizeMergeSelection(singleSelected))
     }
 
     @Test

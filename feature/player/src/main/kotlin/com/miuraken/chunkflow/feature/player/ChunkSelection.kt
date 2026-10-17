@@ -9,6 +9,25 @@ import kotlin.math.min
 internal const val MIN_SPLIT_PIECE_MS: Long = 200L
 
 /**
+ * 選択したチャンクを連結するときの範囲と内容の要約（確認ダイアログ表示用）。
+ *
+ * @property firstChunkNumber 連結範囲の先頭チャンク番号（1 始まり）。
+ * @property lastChunkNumber 連結範囲の末尾チャンク番号（1 始まり）。
+ * @property selectedCount ユーザーが選択したチャンクの件数。
+ * @property totalSpanCount 先頭から末尾までに含まれる全チャンク件数（途中の未選択チャンクを含む）。
+ * @property unselectedGapCount 途中に挟まれている未選択チャンクの件数（`totalSpanCount - selectedCount`）。
+ * @property targetLanguage 連結後のチャンクに設定される言語（先頭チャンクの言語）。
+ */
+internal data class MergeSelectionSummary(
+    val firstChunkNumber: Int,
+    val lastChunkNumber: Int,
+    val selectedCount: Int,
+    val totalSpanCount: Int,
+    val unselectedGapCount: Int,
+    val targetLanguage: LanguageTag?,
+)
+
+/**
  * 選択中（[ChunkUi.isRepeatChecked]）のチャンクを開始時刻の順に返す。
  */
 internal fun selectedChunksInOrder(chunks: List<ChunkUi>): List<ChunkUi> = chunks.filter { it.isRepeatChecked }.sortedBy { it.startMs }
@@ -16,17 +35,9 @@ internal fun selectedChunksInOrder(chunks: List<ChunkUi>): List<ChunkUi> = chunk
 /**
  * 選択中のチャンクを 1 つに連結できるかどうかを判定する。
  *
- * 選択が 2 件以上で、チャンクリスト上で途切れずに連続しており、先頭と末尾のチャンクの言語が同じ
- * （どちらも未判定の場合を含む）ときに `true` を返す。
+ * 選択が 2 件以上であれば、連続していなくても、また異なる言語が混じっていても `true` を返す。
  */
-internal fun canMergeSelectedChunks(chunks: List<ChunkUi>): Boolean {
-    val selectedIndices = chunks.indices.filter { chunks[it].isRepeatChecked }
-    if (selectedIndices.size < 2) return false
-    val firstIndex = selectedIndices.first()
-    val lastIndex = selectedIndices.last()
-    if (lastIndex - firstIndex + 1 != selectedIndices.size) return false
-    return isSameChunkLanguage(chunks[firstIndex].language, chunks[lastIndex].language)
-}
+internal fun canMergeSelectedChunks(chunks: List<ChunkUi>): Boolean = chunks.count { it.isRepeatChecked } >= 2
 
 /**
  * 連結するチャンクの ID を開始時刻の順に返す。連結できない場合は空のリストを返す。
@@ -35,6 +46,27 @@ internal fun mergeableSelectedChunkIds(chunks: List<ChunkUi>): List<ChunkId> = i
     selectedChunksInOrder(chunks).map { it.id }
 } else {
     emptyList()
+}
+
+/**
+ * 選択中のチャンクから連結確認ダイアログ用の [MergeSelectionSummary] を計算する。
+ * 連結できない場合（選択が 2 件未満）は `null` を返す。
+ */
+internal fun summarizeMergeSelection(chunks: List<ChunkUi>): MergeSelectionSummary? {
+    val selectedIndices = chunks.indices.filter { chunks[it].isRepeatChecked }
+    if (selectedIndices.size < 2) return null
+    val firstIndex = selectedIndices.first()
+    val lastIndex = selectedIndices.last()
+    val totalSpanCount = lastIndex - firstIndex + 1
+    val selectedCount = selectedIndices.size
+    return MergeSelectionSummary(
+        firstChunkNumber = firstIndex + 1,
+        lastChunkNumber = lastIndex + 1,
+        selectedCount = selectedCount,
+        totalSpanCount = totalSpanCount,
+        unselectedGapCount = (totalSpanCount - selectedCount).coerceAtLeast(0),
+        targetLanguage = chunks[firstIndex].language,
+    )
 }
 
 /**
@@ -66,11 +98,4 @@ internal fun chunksInRange(chunks: List<ChunkUi>, fromMs: Long, toMs: Long): Lis
     val startMs = min(fromMs, toMs)
     val endMs = max(fromMs, toMs)
     return chunks.filter { it.startMs <= endMs && it.endMs > startMs }
-}
-
-private fun isSameChunkLanguage(first: LanguageTag?, second: LanguageTag?): Boolean {
-    val firstKnown = first?.value?.trim()?.takeUnless { it.isEmpty() || it.equals("und", ignoreCase = true) }
-    val secondKnown = second?.value?.trim()?.takeUnless { it.isEmpty() || it.equals("und", ignoreCase = true) }
-    if (firstKnown == null && secondKnown == null) return true
-    return matchesLanguageRole(first, second)
 }
