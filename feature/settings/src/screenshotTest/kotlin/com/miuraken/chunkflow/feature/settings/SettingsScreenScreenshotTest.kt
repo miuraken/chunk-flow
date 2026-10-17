@@ -57,11 +57,12 @@ fun SettingsScreenTranscriptionTabPreview() {
                         status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
                         sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
                         mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
-                    )
+                    ),
                 ),
             ),
             onEvent = {},
             initialTab = 2, // TRANSCRIPTION
+            expandFirstAccordion = true,
         )
     }
 }
@@ -74,8 +75,8 @@ fun SettingsScreenLanguageTabPreview() {
         SettingsScreen(
             state = SettingsUiState(
                 settings = UserSettings(
-                    enabledLanguages = setOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko"), LanguageTag("zh"))
-                )
+                    enabledLanguages = setOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko"), LanguageTag("zh")),
+                ),
             ),
             onEvent = {},
             initialTab = 3, // LANGUAGE

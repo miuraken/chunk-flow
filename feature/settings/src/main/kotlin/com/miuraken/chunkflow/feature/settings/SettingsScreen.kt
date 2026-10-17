@@ -114,6 +114,14 @@ fun SettingsRoute(
 /**
  * 設定画面のステートレス Composable。
  */
+
+@Composable
+private fun sttEngineDisplayName(engine: SttEngine): String = when (engine) {
+    SttEngine.ML_KIT -> stringResource(R.string.settings_engine_ml_kit)
+    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.settings_engine_speech_recognizer)
+    SttEngine.SHERPA_ONNX -> stringResource(R.string.settings_engine_sherpa_onnx)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -121,6 +129,7 @@ fun SettingsScreen(
     onEvent: (SettingsEvent) -> Unit,
     modifier: Modifier = Modifier,
     initialTab: Int = SettingsTab.PLAYBACK.ordinal,
+    expandFirstAccordion: Boolean = false,
 ) {
     var selectedTabOrdinal by rememberSaveable { mutableIntStateOf(initialTab) }
     val selectedTab = SettingsTab.entries.getOrElse(selectedTabOrdinal) { SettingsTab.PLAYBACK }
@@ -210,6 +219,7 @@ fun SettingsScreen(
                             enabledLanguages = state.enabledLanguages,
                             sttEngineByLanguage = state.sttEngineByLanguage,
                             onEvent = onEvent,
+                            expandFirstAccordion = expandFirstAccordion,
                         )
                     }
 
@@ -483,6 +493,7 @@ private fun TranscriptionSettingsSection(
     enabledLanguages: Set<LanguageTag>,
     sttEngineByLanguage: Map<LanguageTag, SttEngine>,
     onEvent: (SettingsEvent) -> Unit,
+    expandFirstAccordion: Boolean = false,
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_transcription)) {
         Row(
@@ -562,6 +573,7 @@ private fun TranscriptionSettingsSection(
                 onDeleteSherpaModel = {
                     onEvent(SettingsEvent.DeleteSherpaModel(info.language))
                 },
+                initialExpanded = expandFirstAccordion && index == 0,
             )
         }
     }
@@ -984,6 +996,7 @@ private fun SttEngineAccordion(
     onPreferredEngineChange: (SttEngine?) -> Unit,
     onRequestDownload: (SttEngine) -> Unit,
     onDeleteSherpaModel: () -> Unit,
+    initialExpanded: Boolean = false,
 ) {
     val expanded = remember { mutableStateOf(false) }
 
@@ -1006,7 +1019,7 @@ private fun SttEngineAccordion(
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = if (firstUsable != null) stringResource(R.string.settings_stt_engine_current, firstUsable.name) else stringResource(R.string.settings_stt_engine_unsupported),
+                    text = if (firstUsable != null) stringResource(R.string.settings_stt_engine_current, sttEngineDisplayName(firstUsable)) else stringResource(R.string.settings_stt_engine_unsupported),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
