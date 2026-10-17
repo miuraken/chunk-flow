@@ -125,12 +125,18 @@ class MediaControllerPlaybackController(
     }
 
     init {
-        // ユーザ設定のシーク秒数を監視し、LearningPlayer に反映する
+        // ユーザ設定のシーク秒数と自動ポーズ設定を監視し、LearningPlayer と PracticeController に反映する
         scope.launch {
             userSettingsRepository.settings.collect { settings ->
                 learningPlayerInstance?.apply {
                     seekBackIncrementMs = settings.seekBackMs.coerceAtLeast(1_000L)
                     seekForwardIncrementMs = settings.seekForwardMs.coerceAtLeast(1_000L)
+                }
+                practiceController.update {
+                    it.copy(
+                        autoPause = settings.defaultAutoPause,
+                        autoPauseScope = settings.defaultAutoPauseScope,
+                    )
                 }
             }
         }
@@ -244,6 +250,12 @@ class MediaControllerPlaybackController(
                 seekBackIncrementMs = userSettings.seekBackMs.coerceAtLeast(1_000L)
                 seekForwardIncrementMs = userSettings.seekForwardMs.coerceAtLeast(1_000L)
             }
+            practiceController.update {
+                it.copy(
+                    autoPause = userSettings.defaultAutoPause,
+                    autoPauseScope = userSettings.defaultAutoPauseScope,
+                )
+            }
             notifyLookaheadIfChanged(mediaId, _status.value.currentChunkId, force = true)
             return
         }
@@ -270,14 +282,15 @@ class MediaControllerPlaybackController(
             updatedAtEpochMs = clock(),
         )
 
-        // 保存済みの学習モード（オートポーズ・言語フィルタ・チャンク種別）を復元する（ループは常に Off、§7.2.5）
+        // 保存済みの学習モード（言語フィルタ・チャンク種別）を復元する。
+        // 自動ポーズは常に全体設定の再生設定（UserSettings.defaultAutoPause / defaultAutoPauseScope）に従う（ループは常に Off、§7.2.5）。
         if (savedState != null) {
             activeChunkSource = savedState.chunkSource
             practiceController.setSettings(
                 PracticeSettings(
                     loop = LoopMode.Off,
-                    autoPause = savedState.autoPause,
-                    autoPauseScope = savedState.autoPauseScope,
+                    autoPause = userSettings.defaultAutoPause,
+                    autoPauseScope = userSettings.defaultAutoPauseScope,
                     languageFilter = savedState.languageFilter,
                 ),
             )
@@ -370,6 +383,7 @@ class MediaControllerPlaybackController(
     }
 
     override fun updatePractice(transform: (PracticeSettings) -> PracticeSettings) {
+        // 自動ポーズは常に全体設定の再生設定（UserSettings.defaultAutoPause / defaultAutoPauseScope）に従う設計
         practiceController.update(transform)
         val updated = practiceController.settings.value
         val currentMediaId = _status.value.mediaId ?: return
@@ -443,8 +457,8 @@ class MediaControllerPlaybackController(
             practiceController.setSettings(
                 PracticeSettings(
                     loop = LoopMode.Off,
-                    autoPause = savedState.autoPause,
-                    autoPauseScope = savedState.autoPauseScope,
+                    autoPause = userSettings.defaultAutoPause,
+                    autoPauseScope = userSettings.defaultAutoPauseScope,
                     languageFilter = savedState.languageFilter,
                 ),
             )
