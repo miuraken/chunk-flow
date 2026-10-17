@@ -31,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -276,40 +277,6 @@ fun PlayerScreen(
                     }
                 },
                 actions = {
-                    if (state.isTranscriptionCompleted && state.lookaheadStatus.inFlightChunkId == null) {
-                        Text(
-                            text = "✅️",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.padding(horizontal = 8.dp),
-                        )
-                    } else {
-                        val isTranscribeOn = state.lookaheadStatus.enabled ||
-                            state.lookaheadStatus.isForcedChunkInFlight
-                        val baseChipLabel = stringResource(R.string.player_chip_transcribe)
-                        val chipLabel = if (isTranscribeOn && state.lookaheadStatus.totalTargetCount > 0) {
-                            "$baseChipLabel ${state.lookaheadStatus.completedCount}/${state.lookaheadStatus.totalTargetCount}"
-                        } else {
-                            baseChipLabel
-                        }
-                        FilterChip(
-                            selected = isTranscribeOn,
-                            onClick = {
-                                if (isTranscribeOn) {
-                                    onEvent(PlayerEvent.SetLookaheadEnabled(false))
-                                } else {
-                                    onEvent(PlayerEvent.SetLookaheadEnabled(true))
-                                }
-                            },
-                            label = {
-                                Text(
-                                    text = chipLabel,
-                                    fontWeight = if (isTranscribeOn) FontWeight.SemiBold else FontWeight.Normal,
-                                    maxLines = 1,
-                                )
-                            },
-                            colors = brightnessToggleChipColors(),
-                        )
-                    }
                     IconButton(onClick = { showResegmentSheet = true }) {
                         Icon(
                             imageVector = ChunkFlowIcons.Tune,
@@ -634,6 +601,7 @@ private fun PlayerChunkList(
         transcriptImportBanner = state.transcriptImportBanner,
         positionProvider = positionProvider,
         lookaheadStatus = state.lookaheadStatus,
+        showTranscriptionProgress = state.isTranscriptionProgressVisible,
         transcriptExportBanner = state.transcriptExportBanner,
         onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
         onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
@@ -962,6 +930,45 @@ private fun ChunkDisplaySettingsStrip(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // 0. 「文字起こし」（未完了または実行中のみ表示）
+        if (state.isTranscriptionBadgeVisible) {
+            val isRunning = state.isTranscriptionRunning
+            val baseChipLabel = stringResource(R.string.player_chip_transcribe)
+            val chipLabel = if (!isRunning && state.lookaheadStatus.totalTargetCount > 0) {
+                "$baseChipLabel ${state.lookaheadStatus.completedCount}/${state.lookaheadStatus.totalTargetCount}"
+            } else {
+                baseChipLabel
+            }
+            FilterChip(
+                selected = isRunning,
+                onClick = {
+                    if (isRunning) {
+                        onEvent(PlayerEvent.ToggleTranscriptionProgress)
+                    } else {
+                        onEvent(PlayerEvent.SetLookaheadEnabled(true))
+                    }
+                },
+                leadingIcon = if (isRunning) {
+                    {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    }
+                } else {
+                    null
+                },
+                label = {
+                    Text(
+                        text = chipLabel,
+                        fontWeight = if (isRunning) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                    )
+                },
+                colors = toggleColors,
+            )
+        }
+
         // 1. 「言語」（*すべて、{target_language_code}のみ、{base_language_code}のみ）
         Column {
             FilterChip(

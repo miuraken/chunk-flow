@@ -312,6 +312,9 @@ fun TranscriptList(
     showTargetTranslation: Boolean = false,
     positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
+    showTranscriptionProgress: Boolean = lookaheadStatus.inFlightChunkId != null ||
+        lookaheadStatus.isForcedChunkInFlight ||
+        (lookaheadStatus.enabled && lookaheadStatus.queuedChunkIds.isNotEmpty()),
     transcriptExportBanner: TranscriptExportBannerState? = null,
     onDismissExportBanner: () -> Unit = {},
     onToggleBookmark: (ChunkId) -> Unit = {},
@@ -390,14 +393,11 @@ fun TranscriptList(
         chunks.filter { it.isRepeatChecked }
     }
 
-    val isTranscriptionActive = lookaheadStatus.inFlightChunkId != null ||
-        (lookaheadStatus.enabled && lookaheadStatus.queuedChunkIds.isNotEmpty())
-
     // 進捗カードと、リストの端・ほかの部品との間隔
     val progressOverlayMargin = 8.dp
 
     // 進捗カードが出ている間は、カードの高さと上下の間隔の分だけリストの下に余白を付ける
-    val progressOverlayInset = if (isTranscriptionActive) {
+    val progressOverlayInset = if (showTranscriptionProgress) {
         with(density) { progressOverlayHeightPx.toDp() } + progressOverlayMargin * 2
     } else {
         0.dp
@@ -548,7 +548,7 @@ fun TranscriptList(
             }
         }
 
-        if (isTranscriptionActive) {
+        if (showTranscriptionProgress) {
             val activeChunkNumber = lookaheadStatus.inFlightChunkId?.let { inFlightId ->
                 chunks.indexOfFirst { it.id == inFlightId }.takeIf { it >= 0 }?.plus(1)
             }
@@ -597,7 +597,7 @@ fun TranscriptList(
                         top = 12.dp,
                         end = 12.dp,
                         // 進捗カードが出ているときは、カードに重ならないようその上に出す
-                        bottom = if (isTranscriptionActive) progressOverlayInset else 12.dp,
+                        bottom = if (showTranscriptionProgress) progressOverlayInset else 12.dp,
                     ),
             )
         }
@@ -951,7 +951,6 @@ private fun TranscriptionProgressOverlay(
             R.string.player_transcription_progress_summary,
             lookaheadStatus.completedCount,
             totalCount,
-            lookaheadStatus.queuedChunkIds.size,
         )
     }
     val stepLabel = transcriptionStepLabel(lookaheadStatus.inFlightStep)

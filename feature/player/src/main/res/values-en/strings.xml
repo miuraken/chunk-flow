@@ -163,7 +163,7 @@
     <string name="player_transcription_step_recognizing_primary">Recognizing (primary)…</string>
     <string name="player_transcription_step_recognizing_fallback">Recognizing (fallback)…</string>
     <string name="player_transcription_step_saving">Saving result…</string>
-    <string name="player_transcription_progress_summary">Transcription: %1$d / %2$d (%3$d queued)</string>
+    <string name="player_transcription_progress_summary">Transcription: %1$d / %2$d</string>
     <string name="player_transcription_progress_forced_summary">⚡ Forced transcription running (overall %1$d / %2$d)</string>
     <string name="player_transcription_stall_short">⚠️ Taking long</string>
     <string name="player_transcription_abort_button">Stop</string>

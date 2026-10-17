@@ -1449,4 +1449,122 @@ class PlayerViewModelTest {
         assertEquals("より詳しい文字起こし結果", updatedChunk.text)
         assertEquals(LanguageTag("ko"), updatedChunk.language)
     }
+
+    @Test
+    fun `文字起こしバッジと進捗ペインの表示制御_実行開始で進捗ペインが自動表示されバッジタップで表示非表示がトグルされ中断ボタンで停止する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository(UserSettings(lookaheadTranscriptionEnabled = false))
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            // 先頭チャンクを未文字起こし・先読み停止状態で開始
+            update(item.id) { entry ->
+                entry.copy(
+                    transcripts = entry.transcripts - sample.chunks[0].id,
+                    lookaheadStatus = LookaheadTranscriptionStatus(
+                        enabled = false,
+                        engineAvailable = true,
+                        completedCount = 4,
+                        totalTargetCount = 5,
+                    ),
+                )
+            }
+        }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(false))
+
+        // 1. 停止状態（未完了・停止中）: バッジは表示され、実行中ではなく、進捗ペインは非表示
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeVisible)
+        assertFalse(viewModel.uiState.value.isTranscriptionRunning)
+        assertFalse(viewModel.uiState.value.isTranscriptionProgressVisible)
+
+        // 2. 文字起こし開始: 実行中になり、進捗ペインが自動表示される
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(
+                    enabled = true,
+                    inFlightChunkId = sample.chunks[0].id,
+                ),
+            )
+        }
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeVisible)
+        assertTrue(viewModel.uiState.value.isTranscriptionRunning)
+        assertTrue(viewModel.uiState.value.isTranscriptionProgressVisible)
+
+        // 3. 実行中に「文字起こし」バッジをタップ (ToggleTranscriptionProgress): 文字起こし自体は停止せず、進捗ペインの表示・非表示だけを切り替える
+        viewModel.onEvent(PlayerEvent.ToggleTranscriptionProgress)
+        assertTrue(viewModel.uiState.value.isTranscriptionRunning)
+        assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertFalse(viewModel.uiState.value.isTranscriptionProgressVisible)
+
+        viewModel.onEvent(PlayerEvent.ToggleTranscriptionProgress)
+        assertTrue(viewModel.uiState.value.isTranscriptionRunning)
+        assertTrue(viewModel.uiState.value.isTranscriptionProgressVisible)
+
+        // 4. 進捗ペイン内の「中断」ボタン (ResetTranscription) を押すと文字起こしが停止し、進捗ペインも閉じる
+        viewModel.onEvent(PlayerEvent.ResetTranscription)
+        assertFalse(viewModel.uiState.value.isTranscriptionRunning)
+        assertFalse(viewModel.uiState.value.isTranscriptionProgressVisible)
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeVisible) // 未完了なのでバッジは残る
+    }
+
+    @Test
+    fun `文字起こしバッジの自動非表示と再表示_全完了で非表示になりテキスト削除や再文字起こしで再表示される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            update(item.id) { entry ->
+                entry.copy(
+                    lookaheadStatus = LookaheadTranscriptionStatus(
+                        enabled = false,
+                        engineAvailable = true,
+                        completedCount = sample.chunks.size,
+                        totalTargetCount = sample.chunks.size,
+                    ),
+                )
+            }
+        }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. 全チャンクの文字起こしが完了しており翻訳も OFF のとき、「文字起こし」バッジは非表示になる
+        assertTrue(viewModel.uiState.value.isAllTranscriptionCompleted)
+        assertFalse(viewModel.uiState.value.isTranscriptionBadgeVisible)
+
+        // 2. チャンクのテキストを空に編集（削除）すると未文字起こしチャンクが生じるため、「文字起こし」バッジが再表示される
+        val firstChunkId = sample.chunks[0].id
+        viewModel.onEvent(PlayerEvent.UpdateChunkText(firstChunkId, ""))
+        assertFalse(viewModel.uiState.value.isAllTranscriptionCompleted)
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeVisible)
+
+        // テキストを再入力すると再び全完了となりバッジは非表示に戻る
+        viewModel.onEvent(PlayerEvent.UpdateChunkText(firstChunkId, "復元したテキスト"))
+        assertTrue(viewModel.uiState.value.isAllTranscriptionCompleted)
+        assertFalse(viewModel.uiState.value.isTranscriptionBadgeVisible)
+
+        // 3. 単体または複数の強制再文字起こしがキューに入る・実行中になると、「文字起こし」バッジが再表示され進捗ペインも自動表示される
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(
+                    inFlightChunkId = firstChunkId,
+                    isForcedChunkInFlight = true,
+                ),
+            )
+        }
+        assertTrue(viewModel.uiState.value.isTranscriptionRunning)
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeVisible)
+        assertTrue(viewModel.uiState.value.isTranscriptionProgressVisible)
+    }
 }
