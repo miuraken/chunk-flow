@@ -460,6 +460,7 @@ data class PlayerUiState(
     val lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
     val localTranscriptExported: Boolean = false,
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
+    val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
 ) {
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
@@ -679,6 +680,12 @@ sealed interface PlayerEvent {
         val text: String,
         val language: LanguageTag?,
     ) : PlayerEvent
+
+    /** ファイル設定の対象言語の文字起こしエンジンを上書きする。 */
+    data class SetTargetEngineOverride(val engine: com.miuraken.chunkflow.core.model.SttEngine?) : PlayerEvent
+
+    /** ファイル設定のベース言語の文字起こしエンジンを上書きする。 */
+    data class SetBaseEngineOverride(val engine: com.miuraken.chunkflow.core.model.SttEngine?) : PlayerEvent
 }
 
 /** 端末内音声認識モデルの問題が残っている間、ダウンロードの完了を OS に問い合わせる間隔。 */
@@ -720,6 +727,7 @@ class PlayerViewModel @Inject constructor(
     private val analysisRepository: AnalysisRepository,
     private val playbackController: PlaybackController,
     private val userSettingsRepository: UserSettingsRepository,
+    private val itemSttOverrideRepository: com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository,
 ) : ViewModel() {
 
     constructor(
@@ -731,6 +739,11 @@ class PlayerViewModel @Inject constructor(
         analysisRepository = FakeAnalysisRepository(),
         playbackController = playbackController,
         userSettingsRepository = userSettingsRepository,
+        itemSttOverrideRepository = object : com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository {
+            override fun observe(id: MediaId): kotlinx.coroutines.flow.Flow<com.miuraken.chunkflow.core.model.ItemSttOverride> = kotlinx.coroutines.flow.flowOf(com.miuraken.chunkflow.core.model.ItemSttOverride.NONE)
+            override suspend fun get(id: MediaId): com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+            override suspend fun set(id: MediaId, override: com.miuraken.chunkflow.core.model.ItemSttOverride): Boolean = true
+        }
     )
 
     private val currentMediaId = MutableStateFlow<MediaId?>(null)
@@ -755,6 +768,10 @@ class PlayerViewModel @Inject constructor(
 
     private val currentItemState = currentMediaId.flatMapLatest { id ->
         if (id == null) flowOf(null) else libraryRepository.observeItemState(id)
+    }
+
+    private val currentItemSttOverride = currentMediaId.flatMapLatest { id ->
+        if (id == null) kotlinx.coroutines.flow.flowOf(com.miuraken.chunkflow.core.model.ItemSttOverride.NONE) else itemSttOverrideRepository.observe(id)
     }
 
     private val currentAnalysisSnapshot = currentMediaId.flatMapLatest { id ->
@@ -787,13 +804,22 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    private data class MediaStateInfo(
+        val mediaId: MediaId?,
+        val item: AudioItem?,
+        val itemState: ItemState?,
+        val analysis: AnalysisSnapshot,
+        val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+    )
+
     private val mediaAndAnalysisFlow = combine(
         currentMediaId,
         currentAudioItem,
         currentItemState,
         currentAnalysisSnapshot,
-    ) { mediaId, item, itemState, analysis ->
-        Quad(mediaId, item, itemState, analysis)
+        currentItemSttOverride,
+    ) { mediaId, item, itemState, analysis, override ->
+        MediaStateInfo(mediaId, item, itemState, analysis, override)
     }
 
     /** プレイヤー画面の UI 状態。 */
@@ -803,7 +829,12 @@ class PlayerViewModel @Inject constructor(
         playbackController.practice,
         userSettingsRepository.settings,
         localUiState,
-    ) { (mediaId, item, itemState, analysis), status, practice, settings, local ->
+    ) { mediaState, status, practice, settings, local ->
+        val mediaId = mediaState.mediaId
+        val item = mediaState.item
+        val itemState = mediaState.itemState
+        val analysis = mediaState.analysis
+        val override = mediaState.itemSttOverride
         buildUiState(
             mediaId = mediaId,
             item = item,
@@ -813,6 +844,7 @@ class PlayerViewModel @Inject constructor(
             practice = practice,
             settings = settings,
             local = local,
+            itemSttOverride = override,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -1501,6 +1533,22 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            is PlayerEvent.SetTargetEngineOverride -> {
+                val mediaId = uiState.value.mediaId ?: return
+                viewModelScope.launch {
+                    val current = itemSttOverrideRepository.get(mediaId)
+                    itemSttOverrideRepository.set(mediaId, current.copy(targetEngine = event.engine))
+                }
+            }
+
+            is PlayerEvent.SetBaseEngineOverride -> {
+                val mediaId = uiState.value.mediaId ?: return
+                viewModelScope.launch {
+                    val current = itemSttOverrideRepository.get(mediaId)
+                    itemSttOverrideRepository.set(mediaId, current.copy(baseEngine = event.engine))
+                }
+            }
+
             PlayerEvent.DismissDetailedTranscription -> {
                 detailedTrialJob?.cancel()
                 detailedTrialJob = null
@@ -1823,6 +1871,7 @@ class PlayerViewModel @Inject constructor(
         practice: PracticeSettings,
         settings: UserSettings,
         local: LocalUiSnapshot,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
     ): PlayerUiState {
         val resolvedDurationMs = when {
             status.durationMs > 0L -> status.durationMs

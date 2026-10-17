@@ -172,7 +172,8 @@ class PlayerViewModelTest {
         val analysisRepo = FakeAnalysisRepository().apply {
             put(sample)
         }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -243,7 +244,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -279,7 +281,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -319,7 +322,8 @@ class PlayerViewModelTest {
                 )
             }
         }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -358,7 +362,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -388,7 +393,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -407,7 +413,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -448,7 +455,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -518,7 +526,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -558,7 +567,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -634,7 +644,8 @@ class PlayerViewModelTest {
                 entry.copy(transcripts = emptyMap())
             }
         }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -683,7 +694,8 @@ class PlayerViewModelTest {
             put(sample)
             update(item.id) { entry -> entry.copy(transcripts = emptyMap()) }
         }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -710,7 +722,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -739,7 +752,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -806,7 +820,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -848,7 +863,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -948,7 +964,8 @@ class PlayerViewModelTest {
             put(sample1)
             put(sample2)
         }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
         // 1. sample1 を開くと sample1 のセッションが open=true になり、prioritizeOpenedMediaAnalysis が呼ばれる
@@ -974,7 +991,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository(UserSettings(lookaheadTranscriptionEnabled = false))
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -1012,7 +1030,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -1044,7 +1063,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -1080,7 +1100,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -1106,7 +1127,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -1129,7 +1151,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
         viewModel.open(item.id)
@@ -1261,7 +1284,8 @@ class PlayerViewModelTest {
                 )
             }
         }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
@@ -1289,7 +1313,8 @@ class PlayerViewModelTest {
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository()
         val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
-        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 

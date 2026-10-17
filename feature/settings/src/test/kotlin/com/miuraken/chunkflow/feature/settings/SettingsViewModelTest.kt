@@ -269,7 +269,7 @@ class SettingsViewModelTest {
         assertEquals("cmn-Hans-CN", zhBefore.resolvedBcp47Tag)
 
         // ダウンロード要求で DOWNLOADING に遷移する
-        viewModel.onEvent(SettingsEvent.RequestRecognitionModelDownload(LanguageTag("zh")))
+        viewModel.onEvent(SettingsEvent.RequestSttModelDownload(LanguageTag("zh"), com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER))
         assertEquals(listOf(LanguageTag("zh")), analysisRepo.requestedModelDownloads)
         val zhDownloading = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
         assertEquals(
@@ -341,7 +341,7 @@ class SettingsViewModelTest {
         )
 
         // sherpa-onnx モデルの入手要求で INSTALLED + canDeleteSherpaModel = true に遷移する
-        viewModel.onEvent(SettingsEvent.RequestSherpaModelDownload(LanguageTag("zh")))
+        viewModel.onEvent(SettingsEvent.RequestSttModelDownload(LanguageTag("zh"), com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
         assertEquals(listOf(LanguageTag("zh")), analysisRepo.requestedSherpaDownloads)
         val zhAfterDownload = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
         assertEquals(

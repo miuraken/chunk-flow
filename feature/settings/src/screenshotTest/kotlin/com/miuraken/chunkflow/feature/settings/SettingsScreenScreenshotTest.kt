@@ -34,3 +34,52 @@ fun SettingsScreenDefaultScreenshot() {
         )
     }
 }
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun SettingsScreenTranscriptionTabPreview() {
+    ChunkFlowTheme {
+        SettingsScreen(
+            state = SettingsUiState(
+                languageModels = listOf(
+                    com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                        language = LanguageTag("ja"),
+                        status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        mlKitMode = com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED,
+                        sherpaModelSizeBytes = 50 * 1024 * 1024,
+                        canDeleteSherpaModel = true,
+                    ),
+                    com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                        language = LanguageTag("en"),
+                        status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    ),
+                ),
+            ),
+            onEvent = {},
+            initialTab = 2, // TRANSCRIPTION
+            expandFirstAccordion = true,
+        )
+    }
+}
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun SettingsScreenLanguageTabPreview() {
+    ChunkFlowTheme {
+        SettingsScreen(
+            state = SettingsUiState(
+                settings = UserSettings(
+                    enabledLanguages = setOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko"), LanguageTag("zh")),
+                ),
+            ),
+            onEvent = {},
+            initialTab = 3, // LANGUAGE
+        )
+    }
+}

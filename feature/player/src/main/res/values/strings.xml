@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="player_title">プレイヤー</string>
     <string name="player_back">戻る</string>
@@ -19,7 +19,7 @@
     <string name="player_error_decoder">音声ファイルのデコードに失敗しました。</string>
     <string name="player_error_unknown">再生中にエラーが発生しました。</string>
 
-    <!-- 波形 (F4.1, F4.2, §7.5.4) -->
+    
     <string name="player_waveform_overview_label">全体波形</string>
     <string name="player_waveform_zoomed_label">拡大波形</string>
     <string name="player_waveform_overview_cd">全体波形シークバー</string>
@@ -30,7 +30,7 @@
     <string name="player_waveform_analysis_failed">波形の解析に失敗しました。</string>
     <string name="player_waveform_zoom_window">表示幅: %1$s</string>
 
-    <!-- スクリプト一覧 (F7.1, F7.2, F6.1, §7.5.5) -->
+    
     <string name="player_return_to_current">現在位置へ戻る</string>
     <string name="player_blind_masked_hint">タップしてスクリプトを表示</string>
     <string name="player_chunk_repeat_3">このチャンクをリピート（3回）</string>
@@ -45,7 +45,7 @@
     <string name="player_transcript_invalid">文字起こしファイルの形式が正しくありません</string>
     <string name="player_dismiss_banner">閉じる</string>
 
-    <!-- 学習コントロール (F5.2, F5.4, F6.1, F6.2, F6.3, F7.2) -->
+    
     <string name="player_chip_repeat">リピート</string>
     <string name="player_chip_playback_settings">再生設定</string>
     <string name="player_chip_repeat_off">リピート: OFF</string>
@@ -87,7 +87,7 @@
     <string name="player_resegment_threshold">無音判定の感度（閾値比）: %1$s</string>
     <string name="player_resegment_apply">この設定で再分割する</string>
     <string name="player_sheet_close">閉じる</string>
-    <!-- M3: 言語フィルタ・瞬間作文・言語修正・時刻ずれ補正・先読み文字起こし -->
+    
     <string name="player_chip_lang_filter_all">言語: すべて</string>
     <string name="player_chip_lang_filter_target">言語: 学習言語のみ</string>
     <string name="player_chip_lang_filter_base">言語: 母語のみ</string>
@@ -104,7 +104,7 @@
     <string name="player_offset_auto_align">音声の立ち上がりに自動補正</string>
     <string name="player_lookahead_chip_off">先読み文字起こし: OFF</string>
     <string name="player_lookahead_export_json">JSON保存</string>
-    <!-- M4: ブックマーク・テキスト手動編集・チャンク分割結合・字幕エクスポート -->
+    
     <string name="player_chip_bookmarks_only">ブックマークのみ</string>
     <string name="player_bookmark_toggle_add">ブックマークに追加</string>
     <string name="player_bookmark_toggle_remove">ブックマークを解除</string>
@@ -192,4 +192,4 @@
     <string name="player_detailed_transcribe_result_empty">音声を認識できませんでした（条件を変えて再試行できます）</string>
     <string name="player_detailed_transcribe_result_meta">エンジン: %1$s / 言語: %2$s</string>
     <string name="player_detailed_transcribe_apply">この結果を反映</string>
-</resources>
+<string name="player_settings_target_stt_engine_label">文字起こしエンジン (学習言語)</string><string name="player_settings_base_stt_engine_label">文字起こしエンジン (ベース言語)</string><string name="player_settings_stt_engine_default">言語の設定に従う（既定）</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string></resources>

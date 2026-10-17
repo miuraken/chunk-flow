@@ -15,6 +15,7 @@ import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.UserSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Locale
@@ -110,6 +111,10 @@ data class SettingsUiState(
     /** 端末内の自動チャンク分割の既定パラメータ。 */
     val defaultSegmentationParams: SegmentationParams
         get() = settings.defaultSegmentationParams
+
+    /** 言語ごとの文字起こしエンジン。 */
+    val sttEngineByLanguage: Map<LanguageTag, SttEngine>
+        get() = settings.sttEngineByLanguage
 
     /** 選択肢として有効な言語のセット（既定は日本語・英語）。 */
     val enabledLanguages: Set<LanguageTag>
@@ -286,11 +291,11 @@ sealed interface SettingsEvent {
     /** 端末内文字起こしで使用する認識ライブラリ（エンジン）を変更する。 */
     data class SetTranscriptionEngine(val engine: OnDeviceTranscriptionEngine) : SettingsEvent
 
-    /** 指定した言語の端末内音声認識モデル（OS SODA）のダウンロードを要求する。 */
-    data class RequestRecognitionModelDownload(val language: LanguageTag) : SettingsEvent
+    /** 指定した言語の文字起こしエンジンを変更する（null は自動）。 */
+    data class SetSttEngineForLanguage(val language: LanguageTag, val engine: SttEngine?) : SettingsEvent
 
-    /** 指定した言語向けに `sherpa-onnx` ローカルモデルのダウンロード・検証を要求する（Stage 2）。 */
-    data class RequestSherpaModelDownload(val language: LanguageTag) : SettingsEvent
+    /** 指定したエンジンと言語のモデルのダウンロード（またはOSへの取得要求）を行う。 */
+    data class RequestSttModelDownload(val language: LanguageTag, val engine: SttEngine) : SettingsEvent
 
     /** 指定した言語の `sherpa-onnx` ローカルモデルを削除する（Stage 2）。 */
     data class DeleteSherpaModel(val language: LanguageTag) : SettingsEvent
@@ -453,51 +458,37 @@ class SettingsViewModel @Inject constructor(
                 }
             }
 
-            is SettingsEvent.RequestRecognitionModelDownload -> {
-                languageModelsState.update { current ->
-                    current.map { info ->
-                        if (info.language == event.language) {
-                            info.copy(status = OnDeviceLanguageModelStatus.DOWNLOADING)
-                        } else {
-                            info
-                        }
-                    }
-                }
+            is SettingsEvent.SetSttEngineForLanguage -> {
                 viewModelScope.launch {
-                    val ok = analysisRepository.requestRecognitionModelDownload(event.language)
-                    if (!ok) {
-                        languageModelsState.update { current ->
-                            current.map { info ->
-                                if (info.language == event.language) {
-                                    info.copy(status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
-                                } else {
-                                    info
-                                }
-                            }
-                        }
-                    } else {
-                        refreshLanguageModelsInternal()
-                    }
+                    userSettingsRepository.setSttEngineForLanguage(event.language, event.engine)
                 }
             }
 
-            is SettingsEvent.RequestSherpaModelDownload -> {
+            is SettingsEvent.RequestSttModelDownload -> {
                 languageModelsState.update { current ->
                     current.map { info ->
                         if (info.language == event.language) {
-                            info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
+                            when (event.engine) {
+                                SttEngine.ML_KIT -> info.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
+                                SttEngine.SPEECH_RECOGNIZER -> info.copy(status = OnDeviceLanguageModelStatus.DOWNLOADING)
+                                SttEngine.SHERPA_ONNX -> info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
+                            }
                         } else {
                             info
                         }
                     }
                 }
                 viewModelScope.launch {
-                    val ok = analysisRepository.downloadSherpaModel(event.language)
+                    val ok = analysisRepository.requestSttModelDownload(event.language, event.engine)
                     if (!ok) {
                         languageModelsState.update { current ->
                             current.map { info ->
                                 if (info.language == event.language) {
-                                    info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                    when (event.engine) {
+                                        SttEngine.ML_KIT -> info.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                        SttEngine.SPEECH_RECOGNIZER -> info.copy(status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                        SttEngine.SHERPA_ONNX -> info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                    }
                                 } else {
                                     info
                                 }
