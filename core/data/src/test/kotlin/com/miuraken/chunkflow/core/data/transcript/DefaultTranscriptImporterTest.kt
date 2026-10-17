@@ -727,6 +727,15 @@ class DefaultTranscriptImporterTest {
                 .map { it.id }
             deleteByIds(targetIds)
         }
+
+        override suspend fun updateSkippedByIds(mediaId: String, chunkIds: List<Long>, skipped: Boolean) {
+            val idSet = chunkIds.toSet()
+            chunks.update { current ->
+                current.mapValues { (id, chunk) ->
+                    if (chunk.mediaId == mediaId && id in idSet) chunk.copy(isSkipped = skipped) else chunk
+                }
+            }
+        }
     }
 
     private class InMemoryItemStateDao : ItemStateDao {
