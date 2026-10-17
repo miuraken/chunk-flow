@@ -1,6 +1,7 @@
 package com.miuraken.chunkflow.core.data.analysis
 
 import android.content.Context
+import android.net.Uri
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -36,8 +37,10 @@ import com.miuraken.chunkflow.core.database.entity.toStageAndStatus
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.media.AudioDecodeResult
 import com.miuraken.chunkflow.core.media.AudioStreamDecoder
+import com.miuraken.chunkflow.core.media.MlKitOnDeviceTextTranslator
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
+import com.miuraken.chunkflow.core.media.OnDeviceTextTranslator
 import com.miuraken.chunkflow.core.model.AnalysisError
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.Bookmark
@@ -121,6 +124,7 @@ class DefaultAnalysisRepository(
     private val audioStreamDecoder: AudioStreamDecoder? = null,
     private val userSettingsRepository: UserSettingsRepository? = null,
     private val itemSttOverrideRepository: ItemSttOverrideRepository? = null,
+    private val textTranslator: OnDeviceTextTranslator = MlKitOnDeviceTextTranslator(),
 ) : AnalysisRepository {
 
     @Inject
@@ -137,6 +141,7 @@ class DefaultAnalysisRepository(
         bookmarkDao: BookmarkDao,
         userSettingsRepository: UserSettingsRepository,
         itemSttOverrideRepository: ItemSttOverrideRepository,
+        textTranslator: OnDeviceTextTranslator,
     ) : this(
         context = context,
         analysisStateDao = analysisStateDao,
@@ -151,6 +156,7 @@ class DefaultAnalysisRepository(
         clock = System::currentTimeMillis,
         userSettingsRepository = userSettingsRepository,
         itemSttOverrideRepository = itemSttOverrideRepository,
+        textTranslator = textTranslator,
     )
 
     private data class ChunkLangCacheKey(
@@ -390,9 +396,15 @@ class DefaultAnalysisRepository(
         decoder: AudioStreamDecoder,
         skipIfAlreadyDone: Boolean = false,
     ) {
-        val audioFile = mediaFileResolver.resolveAudioFile(mediaId)
+        val mediaItemForSource = mediaItemDao.getById(mediaId.value)
+        val audioSource = resolveAudioSource(
+            mediaId = mediaId,
+            mediaFileResolver = mediaFileResolver,
+            mediaItemDao = mediaItemDao,
+            cachedMediaItem = mediaItemForSource,
+        )
         val analysisDir = resolveAnalysisDir(mediaId)?.apply { mkdirs() }
-        if (audioFile == null || !audioFile.isFile || analysisDir == null || !analysisDir.exists()) {
+        if (audioSource == null || analysisDir == null || !analysisDir.exists()) {
             markStagesFailed(mediaId, requestedStages, AnalysisError.IO)
             return
         }
@@ -423,13 +435,20 @@ class DefaultAnalysisRepository(
                     ),
                 )
 
-                val mediaItem = mediaItemDao.getById(mediaId.value)
+                val mediaItem = mediaItemForSource ?: mediaItemDao.getById(mediaId.value)
                 val expectedDurationMs = mediaItem?.durationMs?.takeIf { it > 0L }
 
-                val coarseWaveform = decoder.decodeCoarseOverviewWaveform(
-                    file = audioFile,
-                    expectedDurationMs = expectedDurationMs,
-                )?.takeIf { it.peak.isNotEmpty() }
+                val coarseWaveform = when (audioSource) {
+                    is ResolvedAudioSource.LocalFile -> decoder.decodeCoarseOverviewWaveform(
+                        file = audioSource.file,
+                        expectedDurationMs = expectedDurationMs,
+                    )
+
+                    is ResolvedAudioSource.SourceUri -> decoder.decodeCoarseOverviewWaveform(
+                        uri = audioSource.uri,
+                        expectedDurationMs = expectedDurationMs,
+                    )
+                }?.takeIf { it.peak.isNotEmpty() }
                 if (coarseWaveform != null) {
                     val saved = AnalysisBinaryFormat.writeWaveformAtomic(
                         file = waveformFile,
@@ -450,58 +469,70 @@ class DefaultAnalysisRepository(
                 var lastProgressUpdateMs = now
                 var lastSavedDecodedBins = 0
 
-                val decodeResult = decoder.decode(
-                    file = audioFile,
-                    sink = SampleSink { samples, count ->
-                        if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
-                            throw AnalysisPreemptedException()
-                        }
-                        extractor.process(samples, count)
-                    },
-                    outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
-                    expectedDurationMs = expectedDurationMs,
-                    onProgress = { progress ->
-                        if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
-                            throw AnalysisPreemptedException()
-                        }
-                        val currentMs = clock()
-                        // 30 秒区間ごとの保存は、最初の区間はすぐ公開し、2 回目以降は前の保存から一定時間あける
-                        // （デコードが速いと 30 秒区間が数百 ms ごとにそろい、そのたびに波形全体を書き直すことになるため）
-                        val hasNew30sSegment =
-                            accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
-                                (
-                                    lastSavedDecodedBins == 0 ||
-                                        currentMs - lastCheckpointMs >= AnalysisWorker.MIN_SEGMENT_SAVE_INTERVAL_MS
-                                    )
-                        val shouldSaveWaveform =
-                            currentMs - lastCheckpointMs >= AnalysisWorker.PROGRESS_SAVE_INTERVAL_MS ||
-                                hasNew30sSegment
-                        val shouldUpdateProgress =
-                            currentMs - lastProgressUpdateMs >= AnalysisWorker.PROGRESS_DB_INTERVAL_MS
+                val sampleSink = SampleSink { samples, count ->
+                    if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                        throw AnalysisPreemptedException()
+                    }
+                    extractor.process(samples, count)
+                }
+                val onProgressCallback: suspend (com.miuraken.chunkflow.core.media.DecodeProgress) -> Unit = { progress ->
+                    if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                        throw AnalysisPreemptedException()
+                    }
+                    val currentMs = clock()
+                    // 30 秒区間ごとの保存は、最初の区間はすぐ公開し、2 回目以降は前の保存から一定時間あける
+                    // （デコードが速いと 30 秒区間が数百 ms ごとにそろい、そのたびに波形全体を書き直すことになるため）
+                    val hasNew30sSegment =
+                        accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
+                            (
+                                lastSavedDecodedBins == 0 ||
+                                    currentMs - lastCheckpointMs >= AnalysisWorker.MIN_SEGMENT_SAVE_INTERVAL_MS
+                                )
+                    val shouldSaveWaveform =
+                        currentMs - lastCheckpointMs >= AnalysisWorker.PROGRESS_SAVE_INTERVAL_MS ||
+                            hasNew30sSegment
+                    val shouldUpdateProgress =
+                        currentMs - lastProgressUpdateMs >= AnalysisWorker.PROGRESS_DB_INTERVAL_MS
 
-                        if (shouldSaveWaveform && accumulator.size > 0) {
-                            AnalysisBinaryFormat.writeWaveformAtomic(
-                                file = waveformFile,
-                                waveform = accumulator.toProgressiveWaveform(coarseWaveform),
-                            )
-                            lastCheckpointMs = currentMs
-                            lastSavedDecodedBins = accumulator.size
-                            notifyWaveformUpdated(mediaId)
-                        }
+                    if (shouldSaveWaveform && accumulator.size > 0) {
+                        AnalysisBinaryFormat.writeWaveformAtomic(
+                            file = waveformFile,
+                            waveform = accumulator.toProgressiveWaveform(coarseWaveform),
+                        )
+                        lastCheckpointMs = currentMs
+                        lastSavedDecodedBins = accumulator.size
+                        notifyWaveformUpdated(mediaId)
+                    }
 
-                        if (shouldUpdateProgress || shouldSaveWaveform) {
-                            lastProgressUpdateMs = currentMs
-                            analysisStateDao.upsert(
-                                StageStatus.Running(progress = progress.fraction).toEntity(
-                                    mediaId = mediaId,
-                                    stage = AnalysisStage.FEATURES,
-                                    algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                                    updatedAtEpochMs = currentMs,
-                                ),
-                            )
-                        }
-                    },
-                )
+                    if (shouldUpdateProgress || shouldSaveWaveform) {
+                        lastProgressUpdateMs = currentMs
+                        analysisStateDao.upsert(
+                            StageStatus.Running(progress = progress.fraction).toEntity(
+                                mediaId = mediaId,
+                                stage = AnalysisStage.FEATURES,
+                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                updatedAtEpochMs = currentMs,
+                            ),
+                        )
+                    }
+                }
+                val decodeResult = when (audioSource) {
+                    is ResolvedAudioSource.LocalFile -> decoder.decode(
+                        file = audioSource.file,
+                        sink = sampleSink,
+                        outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                        expectedDurationMs = expectedDurationMs,
+                        onProgress = onProgressCallback,
+                    )
+
+                    is ResolvedAudioSource.SourceUri -> decoder.decode(
+                        uri = audioSource.uri,
+                        sink = sampleSink,
+                        outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                        expectedDurationMs = expectedDurationMs,
+                        onProgress = onProgressCallback,
+                    )
+                }
 
                 when (decodeResult) {
                     is AudioDecodeResult.Failure -> {
@@ -823,7 +854,7 @@ class DefaultAnalysisRepository(
                 transcriptDao.upsert(clearedEntity)
 
                 val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-                val audioFile = mediaFileResolver.resolveAudioFile(id)
+                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
                 if (available && audioFile != null && audioFile.isFile && targetChunk != null && targetChunk.endMs > targetChunk.startMs) {
                     val stateFlow = lookaheadStateFor(id)
                     val highPrioritySet = pendingHighPriorityChunkIds.computeIfAbsent(id) {
@@ -1252,8 +1283,8 @@ class DefaultAnalysisRepository(
                 )
             }
 
-            val audioFile = mediaFileResolver.resolveAudioFile(id)
-            if (audioFile != null && audioFile.isFile) {
+            val audioSource = resolveAudioSource(id, mediaFileResolver, mediaItemDao, mediaItem)
+            if (audioSource != null) {
                 val existingByStage = analysisStateDao.getByMediaId(id.value)
                     .mapNotNull { it.toStageAndStatus() }
                     .toMap()
@@ -1288,7 +1319,7 @@ class DefaultAnalysisRepository(
             .filter { item ->
                 val itemId = MediaId(item.id)
                 isItemUnaccessed(item, statesByMediaId[item.id], activeOpenMediaIds) &&
-                    mediaFileResolver.resolveAudioFile(itemId)?.isFile == true
+                    resolveAudioSource(itemId, mediaFileResolver, mediaItemDao, item) != null
             }
             .sortedWith(
                 compareBy<MediaItemEntity, String>(DefaultLibraryRepository.naturalFileNameComparator) { it.title }
@@ -1406,7 +1437,7 @@ class DefaultAnalysisRepository(
                 val baseExisting = existing ?: overlappingImported
                 if (needsLookaheadTranscription(baseExisting) && isMediaOpenForTranscription(id) && stateFlow.value.enabled) {
                     val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-                    val audioFile = mediaFileResolver.resolveAudioFile(id)
+                    val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
                     if (available && audioFile != null && audioFile.isFile) {
                         val highPrioritySet = pendingHighPriorityChunkIds.computeIfAbsent(id) {
                             ConcurrentHashMap.newKeySet()
@@ -1625,7 +1656,7 @@ class DefaultAnalysisRepository(
                 )
 
                 val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-                val audioFile = mediaFileResolver.resolveAudioFile(id)
+                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
                 if (!available || audioFile == null || !audioFile.isFile) {
                     withContext(NonCancellable) {
                         persistTranscriptBackupFile(id)
@@ -1974,7 +2005,7 @@ class DefaultAnalysisRepository(
                     val initialIndex = latestLookaheadChunkIndex[id] ?: currentChunkIndex
                     if (initialIndex !in activeChunks.indices) return@withLock
 
-                    val audioFile = mediaFileResolver.resolveAudioFile(id)
+                    val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao)
                     if (audioFile == null || !audioFile.isFile) return@withLock
 
                     val skippedEmptyIds = attemptedEmptyChunkIds.computeIfAbsent(id) {
@@ -2295,6 +2326,8 @@ class DefaultAnalysisRepository(
                     existing.copy(
                         text = normalizedText,
                         userEdited = true,
+                        translatedText = null,
+                        translatedLang = null,
                     ),
                 )
             } else {
@@ -2323,6 +2356,8 @@ class DefaultAnalysisRepository(
                             text = normalizedText,
                             userEdited = true,
                             createdAt = now,
+                            translatedText = null,
+                            translatedLang = null,
                         ),
                     )
                 } else {
@@ -2353,7 +2388,7 @@ class DefaultAnalysisRepository(
         audioSpeed: Float,
     ): ChunkTranscriptionTrialResult? = withContext(ioDispatcher) {
         val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-        val audioFile = mediaFileResolver.resolveAudioFile(id)
+        val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao)
         if (!available || audioFile == null || !audioFile.isFile) {
             return@withContext null
         }
@@ -2420,6 +2455,8 @@ class DefaultAnalysisRepository(
                         text = normalizedText,
                         language = resolvedLang ?: existing.language,
                         userEdited = true,
+                        translatedText = null,
+                        translatedLang = null,
                     ),
                 )
             } else {
@@ -2535,6 +2572,7 @@ class DefaultAnalysisRepository(
             newTranscriptsByIndex = newTranscriptsByIndex,
             preserveAllOldTranscripts = true,
         )
+        syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
         syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
         setChunkSource(id, ChunkOrigin.MANUAL)
         persistTranscriptBackupFile(id)
@@ -2570,6 +2608,7 @@ class DefaultAnalysisRepository(
                         startMs = mergedStartMs,
                         endMs = mergedEndMs,
                         origin = ChunkOrigin.MANUAL.name,
+                        isSkipped = target.isSkipped && next.isSkipped,
                     ),
                 )
 
@@ -2600,6 +2639,7 @@ class DefaultAnalysisRepository(
             newTranscriptsByIndex = newTranscriptsByIndex,
             preserveAllOldTranscripts = true,
         )
+        syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
         syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
         setChunkSource(id, ChunkOrigin.MANUAL)
         persistTranscriptBackupFile(id)
@@ -2652,12 +2692,14 @@ class DefaultAnalysisRepository(
             when {
                 index == firstIndex -> {
                     val mergedIndex = newChunks.size
+                    val mergedSkipped = (firstIndex..lastIndex).all { activeChunks[it].isSkipped }
                     newChunks.add(
                         chunk.copy(
                             id = 0L,
                             startMs = mergedStartMs,
                             endMs = mergedEndMs,
                             origin = ChunkOrigin.MANUAL.name,
+                            isSkipped = mergedSkipped,
                         ),
                     )
                     mergedTranscript?.let { newTranscriptsByIndex[mergedIndex] = it }
@@ -2680,6 +2722,7 @@ class DefaultAnalysisRepository(
             newTranscriptsByIndex = newTranscriptsByIndex,
             preserveAllOldTranscripts = true,
         )
+        syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
         syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
         setChunkSource(id, ChunkOrigin.MANUAL)
         persistTranscriptBackupFile(id)
@@ -2797,10 +2840,57 @@ class DefaultAnalysisRepository(
             newTranscriptsByIndex = newTranscriptsByIndex,
             preserveAllOldTranscripts = true,
         )
+        syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
         syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
         setChunkSource(id, ChunkOrigin.MANUAL)
         persistTranscriptBackupFile(id)
         true
+    }
+
+    override suspend fun setChunksSkipped(
+        id: MediaId,
+        chunkIds: Set<ChunkId>,
+        skipped: Boolean,
+    ) {
+        if (chunkIds.isEmpty()) return
+        withContext(ioDispatcher) {
+            chunkDao.updateSkippedByIds(
+                mediaId = id.value,
+                chunkIds = chunkIds.map { it.value },
+                skipped = skipped,
+            )
+        }
+    }
+
+    override fun isTranslationSupported(
+        sourceLanguage: LanguageTag?,
+        targetLanguage: LanguageTag?,
+    ): Boolean = textTranslator.isSupported(sourceLanguage, targetLanguage)
+
+    override suspend fun translateChunk(
+        id: MediaId,
+        chunkId: ChunkId,
+        sourceLanguage: LanguageTag,
+        targetLanguage: LanguageTag,
+    ): String? = withContext(ioDispatcher) {
+        val entity = transcriptDao.getByChunkId(chunkId.value) ?: return@withContext null
+        if (entity.text.isBlank()) return@withContext null
+        if (!entity.translatedText.isNullOrBlank() &&
+            entity.translatedLang?.equals(targetLanguage.value, ignoreCase = true) == true
+        ) {
+            return@withContext entity.translatedText
+        }
+        val translated = textTranslator.translate(
+            text = entity.text,
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage,
+        )?.trim()?.takeIf { it.isNotEmpty() } ?: return@withContext null
+        transcriptDao.updateTranslation(
+            chunkId = chunkId.value,
+            translatedText = translated,
+            translatedLang = targetLanguage.value,
+        )
+        translated
     }
 
     /**
@@ -2961,6 +3051,32 @@ class DefaultAnalysisRepository(
         return result
     }
 
+    private suspend fun syncManualChunksSkippedExact(
+        mediaId: String,
+        insertedChunks: List<ChunkEntity>,
+        desiredChunks: List<ChunkEntity>,
+    ) {
+        val toSkip = ArrayList<Long>()
+        val toUnskip = ArrayList<Long>()
+        for (i in insertedChunks.indices) {
+            val inserted = insertedChunks[i]
+            val desired = desiredChunks.getOrNull(i) ?: continue
+            if (inserted.isSkipped != desired.isSkipped) {
+                if (desired.isSkipped) {
+                    toSkip.add(inserted.id)
+                } else {
+                    toUnskip.add(inserted.id)
+                }
+            }
+        }
+        if (toSkip.isNotEmpty()) {
+            chunkDao.updateSkippedByIds(mediaId, toSkip, true)
+        }
+        if (toUnskip.isNotEmpty()) {
+            chunkDao.updateSkippedByIds(mediaId, toUnskip, false)
+        }
+    }
+
     private suspend fun syncManualTranscriptsExact(
         insertedChunks: List<ChunkEntity>,
         newTranscriptsByIndex: Map<Int, TranscriptEntity>,
@@ -3051,6 +3167,23 @@ class DefaultAnalysisRepository(
             null
         }
         val mergedEngine = d1.engine.value.ifBlank { d2.engine.value }.ifBlank { USER_EDIT_ENGINE_ID }
+        val t1 = d1.translatedText?.trim().orEmpty()
+        val t2 = d2.translatedText?.trim().orEmpty()
+        val mergedTranslatedText = when {
+            t1.isNotEmpty() && t2.isNotEmpty() ->
+                truncateCodePoints("$t1 $t2", MAX_TRANSCRIPT_TEXT_CODE_POINTS)
+
+            t1.isNotEmpty() -> t1
+
+            t2.isNotEmpty() -> t2
+
+            else -> null
+        }
+        val mergedTranslatedLang = if (mergedTranslatedText != null) {
+            d1.translatedLanguage ?: d2.translatedLanguage
+        } else {
+            null
+        }
 
         return Transcript(
             chunkId = ChunkId(0L),
@@ -3061,6 +3194,8 @@ class DefaultAnalysisRepository(
             words = mergedWords,
             engine = EngineId(mergedEngine),
             userEdited = true,
+            translatedText = mergedTranslatedText,
+            translatedLanguage = mergedTranslatedLang,
         ).toEntity(createdAtEpochMs = createdAtEpochMs)
     }
 
@@ -3101,7 +3236,7 @@ class DefaultAnalysisRepository(
 
         val mediaItem = mediaItemDao.getById(id.value)
         val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
-        val audioFile = mediaFileResolver.resolveAudioFile(id)
+        val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
         val audioFileName = audioFile?.name ?: "${id.value}.mp3"
         val sha256 = mediaItem?.sha256?.takeIf { it.length == 64 && it.all { ch -> ch in '0'..'9' || ch in 'a'..'f' } }
             ?: "0".repeat(64)
@@ -3464,3 +3599,48 @@ private class PriorityRecognitionSlotGate(
         }
     }
 }
+
+internal sealed interface ResolvedAudioSource {
+    data class LocalFile(val file: File) : ResolvedAudioSource
+    data class SourceUri(val uri: Uri) : ResolvedAudioSource
+}
+
+internal suspend fun resolveAudioSource(
+    mediaId: MediaId,
+    mediaFileResolver: LibraryMediaFileResolver,
+    mediaItemDao: MediaItemDao,
+    cachedMediaItem: MediaItemEntity? = null,
+): ResolvedAudioSource? {
+    val managedFile = mediaFileResolver.resolveAudioFile(mediaId)
+    if (managedFile != null && managedFile.isFile && managedFile.canRead()) {
+        return ResolvedAudioSource.LocalFile(managedFile)
+    }
+    val item = cachedMediaItem ?: mediaItemDao.getById(mediaId.value) ?: return null
+    val localFile = item.localFilePath
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.let(::File)
+        ?.takeIf { it.isFile && it.canRead() }
+    if (localFile != null) {
+        return ResolvedAudioSource.LocalFile(localFile)
+    }
+    val rawUri = item.sourceUri?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val parsedUri = runCatching { Uri.parse(rawUri) }.getOrNull() ?: return null
+    val scheme = parsedUri.scheme?.lowercase(Locale.ROOT)
+    if (scheme == null || scheme == "file") {
+        val uriFile = parsedUri.path
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::File)
+            ?.takeIf { it.isFile && it.canRead() }
+            ?: File(rawUri).takeIf { it.isFile && it.canRead() }
+        return uriFile?.let(ResolvedAudioSource::LocalFile)
+    }
+    return ResolvedAudioSource.SourceUri(parsedUri)
+}
+
+internal suspend fun resolveReadableAudioFile(
+    mediaId: MediaId,
+    mediaFileResolver: LibraryMediaFileResolver,
+    mediaItemDao: MediaItemDao,
+    cachedMediaItem: MediaItemEntity? = null,
+): File? = (resolveAudioSource(mediaId, mediaFileResolver, mediaItemDao, cachedMediaItem) as? ResolvedAudioSource.LocalFile)?.file

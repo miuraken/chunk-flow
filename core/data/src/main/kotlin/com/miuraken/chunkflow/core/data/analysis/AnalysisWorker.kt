@@ -197,9 +197,16 @@ class AnalysisWorker(
         requestedStages: Set<AnalysisStage>,
         skipIfAlreadyDone: Boolean = false,
     ): Result {
-        val audioFile = mediaFileResolver.resolveAudioFile(mediaId)
-        val analysisDir = resolveAnalysisDir(mediaId, audioFile)
-        if (audioFile == null || !audioFile.isFile || analysisDir == null) {
+        val managedAudioFile = mediaFileResolver.resolveAudioFile(mediaId)
+        val mediaItemForSource = mediaItemDao.getById(mediaId.value)
+        val audioSource = resolveAudioSource(
+            mediaId = mediaId,
+            mediaFileResolver = mediaFileResolver,
+            mediaItemDao = mediaItemDao,
+            cachedMediaItem = mediaItemForSource,
+        )
+        val analysisDir = resolveAnalysisDir(mediaId, managedAudioFile)
+        if (audioSource == null || analysisDir == null) {
             markStagesFailed(mediaId, requestedStages, AnalysisError.IO)
             return Result.failure()
         }
@@ -235,13 +242,20 @@ class AnalysisWorker(
                     ),
                 )
 
-                val mediaItem = mediaItemDao.getById(mediaId.value)
+                val mediaItem = mediaItemForSource ?: mediaItemDao.getById(mediaId.value)
                 val expectedDurationMs = mediaItem?.durationMs?.takeIf { it > 0L }
 
-                val coarseWaveform = audioStreamDecoder.decodeCoarseOverviewWaveform(
-                    file = audioFile,
-                    expectedDurationMs = expectedDurationMs,
-                )?.takeIf { it.peak.isNotEmpty() }
+                val coarseWaveform = when (audioSource) {
+                    is ResolvedAudioSource.LocalFile -> audioStreamDecoder.decodeCoarseOverviewWaveform(
+                        file = audioSource.file,
+                        expectedDurationMs = expectedDurationMs,
+                    )
+
+                    is ResolvedAudioSource.SourceUri -> audioStreamDecoder.decodeCoarseOverviewWaveform(
+                        uri = audioSource.uri,
+                        expectedDurationMs = expectedDurationMs,
+                    )
+                }?.takeIf { it.peak.isNotEmpty() }
                 if (coarseWaveform != null) {
                     AnalysisBinaryFormat.writeWaveformAtomic(
                         file = waveformFile,
@@ -259,51 +273,63 @@ class AnalysisWorker(
                 var lastProgressUpdateMs = now
                 var lastSavedDecodedBins = 0
 
-                val decodeResult = audioStreamDecoder.decode(
-                    file = audioFile,
-                    sink = SampleSink { samples, count ->
-                        if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
-                            throw AnalysisPreemptedException()
-                        }
-                        extractor.process(samples, count)
-                    },
-                    outputSampleRate = TARGET_SAMPLE_RATE_HZ,
-                    expectedDurationMs = expectedDurationMs,
-                    onProgress = { progress ->
-                        if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
-                            throw AnalysisPreemptedException()
-                        }
-                        val currentMs = clock()
-                        // 30 秒区間ごとの保存は、最初の区間はすぐ、2 回目以降は前の保存から一定時間あける（DefaultAnalysisRepository と同じ）
-                        val hasNew30sSegment =
-                            accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
-                                (lastSavedDecodedBins == 0 || currentMs - lastCheckpointMs >= MIN_SEGMENT_SAVE_INTERVAL_MS)
-                        val shouldSaveWaveform =
-                            currentMs - lastCheckpointMs >= PROGRESS_SAVE_INTERVAL_MS || hasNew30sSegment
-                        val shouldUpdateProgress = currentMs - lastProgressUpdateMs >= PROGRESS_DB_INTERVAL_MS
+                val sampleSink = SampleSink { samples, count ->
+                    if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                        throw AnalysisPreemptedException()
+                    }
+                    extractor.process(samples, count)
+                }
+                val onProgressCallback: suspend (com.miuraken.chunkflow.core.media.DecodeProgress) -> Unit = { progress ->
+                    if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                        throw AnalysisPreemptedException()
+                    }
+                    val currentMs = clock()
+                    // 30 秒区間ごとの保存は、最初の区間はすぐ、2 回目以降は前の保存から一定時間あける（DefaultAnalysisRepository と同じ）
+                    val hasNew30sSegment =
+                        accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
+                            (lastSavedDecodedBins == 0 || currentMs - lastCheckpointMs >= MIN_SEGMENT_SAVE_INTERVAL_MS)
+                    val shouldSaveWaveform =
+                        currentMs - lastCheckpointMs >= PROGRESS_SAVE_INTERVAL_MS || hasNew30sSegment
+                    val shouldUpdateProgress = currentMs - lastProgressUpdateMs >= PROGRESS_DB_INTERVAL_MS
 
-                        if (shouldSaveWaveform && accumulator.size > 0) {
-                            AnalysisBinaryFormat.writeWaveformAtomic(
-                                file = waveformFile,
-                                waveform = accumulator.toProgressiveWaveform(coarseWaveform),
-                            )
-                            lastCheckpointMs = currentMs
-                            lastSavedDecodedBins = accumulator.size
-                        }
+                    if (shouldSaveWaveform && accumulator.size > 0) {
+                        AnalysisBinaryFormat.writeWaveformAtomic(
+                            file = waveformFile,
+                            waveform = accumulator.toProgressiveWaveform(coarseWaveform),
+                        )
+                        lastCheckpointMs = currentMs
+                        lastSavedDecodedBins = accumulator.size
+                    }
 
-                        if (shouldUpdateProgress || shouldSaveWaveform) {
-                            lastProgressUpdateMs = currentMs
-                            analysisStateDao.upsert(
-                                StageStatus.Running(progress = progress.fraction).toEntity(
-                                    mediaId = mediaId,
-                                    stage = AnalysisStage.FEATURES,
-                                    algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                                    updatedAtEpochMs = currentMs,
-                                ),
-                            )
-                        }
-                    },
-                )
+                    if (shouldUpdateProgress || shouldSaveWaveform) {
+                        lastProgressUpdateMs = currentMs
+                        analysisStateDao.upsert(
+                            StageStatus.Running(progress = progress.fraction).toEntity(
+                                mediaId = mediaId,
+                                stage = AnalysisStage.FEATURES,
+                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                updatedAtEpochMs = currentMs,
+                            ),
+                        )
+                    }
+                }
+                val decodeResult = when (audioSource) {
+                    is ResolvedAudioSource.LocalFile -> audioStreamDecoder.decode(
+                        file = audioSource.file,
+                        sink = sampleSink,
+                        outputSampleRate = TARGET_SAMPLE_RATE_HZ,
+                        expectedDurationMs = expectedDurationMs,
+                        onProgress = onProgressCallback,
+                    )
+
+                    is ResolvedAudioSource.SourceUri -> audioStreamDecoder.decode(
+                        uri = audioSource.uri,
+                        sink = sampleSink,
+                        outputSampleRate = TARGET_SAMPLE_RATE_HZ,
+                        expectedDurationMs = expectedDurationMs,
+                        onProgress = onProgressCallback,
+                    )
+                }
 
                 when (decodeResult) {
                     is AudioDecodeResult.Failure -> {
