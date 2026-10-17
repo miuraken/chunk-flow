@@ -364,9 +364,11 @@ class PlayerViewModelTest {
         assertEquals(-120, viewModel.uiState.value.transcriptOffsetMs)
         assertEquals(-120, analysisRepo.transcriptOffsets[item.id])
 
-        // 既定でファイルごとに先読み文字起こしが有効（ON）であり、OFF/ON 切り替えと現在チャンク変更時のトリガーが機能する
-        assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+        // 音声ファイルを開いた直後は自動で文字起こしを開始せず（enabled == false）、手動で ON/OFF を切り替えられる
+        assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
         assertTrue(viewModel.uiState.value.isTranscriptionCompleted)
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(false))
         assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
@@ -779,6 +781,7 @@ class PlayerViewModelTest {
         val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
 
         val targetChunkId = sample.chunks[1].id
         analysisRepo.lookaheadTriggers.clear()
@@ -891,8 +894,15 @@ class PlayerViewModelTest {
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
-        // 1. チャンクリストでチャンクを選択 (SeekToChunk) すると prioritizeChunkTranscription が呼ばれる
+        // 0. 文字起こしが OFF の間はチャンク選択・シークで prioritizeChunkTranscription を呼ばない
         val chunk1 = sample.chunks[1]
+        analysisRepo.prioritizedChunkRequests.clear()
+        viewModel.onEvent(PlayerEvent.SeekToChunk(chunk1.id))
+        assertTrue(analysisRepo.prioritizedChunkRequests.isEmpty())
+
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+
+        // 1. 文字起こしが ON のときチャンクリストでチャンクを選択 (SeekToChunk) すると prioritizeChunkTranscription が呼ばれる
         analysisRepo.prioritizedChunkRequests.clear()
         viewModel.onEvent(PlayerEvent.SeekToChunk(chunk1.id))
         assertTrue(analysisRepo.prioritizedChunkRequests.contains(item.id to chunk1.id))
@@ -1399,6 +1409,20 @@ class PlayerViewModelTest {
         val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    enabled = true,
+                    engineAvailable = true,
+                    inFlightChunkId = sample.chunks[0].id,
+                    queuedChunkIds = setOf(sample.chunks[1].id),
+                    completedCount = 1,
+                    totalTargetCount = 5,
+                    isForcedChunkInFlight = true,
+                ),
+            )
+        }
 
         // 文字起こし OFF にすると inFlightChunkId / queuedChunkIds / isForcedChunkInFlight が即座にクリアされる
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(false))
@@ -1785,5 +1809,50 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.OpenNextMediaItem)
         assertEquals(item2.id, viewModel.uiState.value.mediaId)
         assertNull(viewModel.uiState.value.nextMediaId)
+    }
+
+    @Test
+    fun `手動文字起こし開始と使用言語トグル_open直後は文字起こしが無効でToggleEnabledLanguageで使用言語を更新できる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository(
+            UserSettings(
+                lookaheadTranscriptionEnabled = true,
+                enabledLanguages = setOf(LanguageTag("en"), LanguageTag("ja")),
+            ),
+        )
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            update(item.id) { entry -> entry.copy(transcripts = emptyMap()) }
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. 教材を open しても自動では文字起こしは開始されず、hasTranscript も false
+        viewModel.open(item.id)
+        assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertFalse(viewModel.uiState.value.hasTranscript)
+        advanceTimeBy(1_000L)
+        assertTrue(analysisRepo.lookaheadTriggers.isEmpty())
+
+        // 2. ToggleEnabledLanguage で使用言語を追加・削除できる（最低 1 言語は維持）
+        viewModel.onEvent(PlayerEvent.ToggleEnabledLanguage(LanguageTag("ko")))
+        assertEquals(
+            setOf(LanguageTag("en"), LanguageTag("ja"), LanguageTag("ko")),
+            viewModel.uiState.value.enabledLanguages.toSet(),
+        )
+        viewModel.onEvent(PlayerEvent.ToggleEnabledLanguage(LanguageTag("en")))
+        viewModel.onEvent(PlayerEvent.ToggleEnabledLanguage(LanguageTag("ja")))
+        assertEquals(listOf(LanguageTag("ko")), viewModel.uiState.value.enabledLanguages)
+        viewModel.onEvent(PlayerEvent.ToggleEnabledLanguage(LanguageTag("ko")))
+        assertEquals(listOf(LanguageTag("ko")), viewModel.uiState.value.enabledLanguages)
     }
 }

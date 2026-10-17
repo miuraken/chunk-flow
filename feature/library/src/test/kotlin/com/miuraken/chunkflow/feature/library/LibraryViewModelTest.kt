@@ -793,4 +793,42 @@ class LibraryViewModelTest {
         assertEquals(listOf("", "en", "ja", "ko"), withUnlistedCurrent.map { it.code })
         assertEquals("ko - 韓国語", withUnlistedCurrent.first { it.code == "ko" }.label)
     }
+
+    @Test
+    fun `初回起動時の言語オンボーディングと使用言語トグル_CompleteLanguageOnboardingでダイアログが閉じToggleEnabledLanguageで更新される`() = runTest {
+        val settingsRepo = com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository(
+            com.miuraken.chunkflow.core.model.UserSettings(
+                enabledLanguages = setOf(LanguageTag("en"), LanguageTag("ja")),
+                hasCompletedLanguageOnboarding = false,
+            ),
+        )
+        val viewModel = LibraryViewModel(
+            libraryRepository = FakeLibraryRepository(),
+            playbackController = FakePlaybackController(),
+            analysisRepository = FakeAnalysisRepository(),
+            userSettingsRepository = settingsRepo,
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. hasCompletedLanguageOnboarding = false の間は showLanguageOnboardingDialog = true
+        assertTrue(viewModel.uiState.value.showLanguageOnboardingDialog)
+        assertEquals(setOf(LanguageTag("en"), LanguageTag("ja")), viewModel.uiState.value.enabledLanguages.toSet())
+
+        // 2. ToggleEnabledLanguage で ko を追加・削除できる（最後の 1 件は OFF にできない）
+        viewModel.onEvent(LibraryEvent.ToggleEnabledLanguage(LanguageTag("ko")))
+        assertEquals(
+            setOf(LanguageTag("en"), LanguageTag("ja"), LanguageTag("ko")),
+            viewModel.uiState.value.enabledLanguages.toSet(),
+        )
+        viewModel.onEvent(LibraryEvent.ToggleEnabledLanguage(LanguageTag("ko")))
+        assertEquals(setOf(LanguageTag("en"), LanguageTag("ja")), viewModel.uiState.value.enabledLanguages.toSet())
+        viewModel.onEvent(LibraryEvent.ToggleEnabledLanguage(LanguageTag("ja")))
+        assertEquals(listOf(LanguageTag("en")), viewModel.uiState.value.enabledLanguages)
+        viewModel.onEvent(LibraryEvent.ToggleEnabledLanguage(LanguageTag("en")))
+        assertEquals(listOf(LanguageTag("en")), viewModel.uiState.value.enabledLanguages)
+
+        // 3. CompleteLanguageOnboarding で showLanguageOnboardingDialog = false になる
+        viewModel.onEvent(LibraryEvent.CompleteLanguageOnboarding)
+        assertFalse(viewModel.uiState.value.showLanguageOnboardingDialog)
+    }
 }

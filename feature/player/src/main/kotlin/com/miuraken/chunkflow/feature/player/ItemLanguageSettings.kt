@@ -19,12 +19,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
+import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithModalLink
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
@@ -158,7 +161,9 @@ internal fun ItemLanguageSettingsSection(
     onChangeBaseEngine: (SttEngine?) -> Unit,
     modifier: Modifier = Modifier,
     enabledLanguages: List<LanguageTag> = emptyList(),
+    onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
 ) {
+    var showLanguageSettingsModal by rememberSaveable { mutableStateOf(false) }
     val langPalette = chunkFlowLanguagePalette()
     val noneLabel = stringResource(R.string.player_settings_base_lang_none)
     val targetCode = normalizeItemLanguageCode(languagePair?.target?.value.orEmpty())
@@ -214,6 +219,18 @@ internal fun ItemLanguageSettingsSection(
             containerColor = langPalette.baseRowBackground,
             accentColor = langPalette.onBaseBadgeContainer,
             onSelect = onChangeBaseEngine,
+        )
+        MissingLanguageHintWithModalLink(
+            onOpenLanguageSettingsModal = { showLanguageSettingsModal = true },
+        )
+    }
+
+    if (showLanguageSettingsModal) {
+        LanguageSettingsModalDialog(
+            enabledLanguages = enabledLanguages.toSet(),
+            onToggleLanguage = onToggleEnabledLanguage,
+            onDismiss = { showLanguageSettingsModal = false },
+            isFirstLaunchOnboarding = false,
         )
     }
 }

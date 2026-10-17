@@ -18,6 +18,7 @@ import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.MediaId
@@ -409,6 +410,7 @@ data class LibraryUiState(
     val selectedDirectoryName: String? = null,
     val collapsedDirectories: Set<String?> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
+    val showLanguageOnboardingDialog: Boolean = false,
     val currentDirectoryPath: String? = null,
     val selectedDirectoryPaths: Set<String> = emptySet(),
     val selectedItemIds: Set<MediaId> = emptySet(),
@@ -748,6 +750,12 @@ sealed interface LibraryEvent {
 
     /** Google Drive 由来教材のローカル音声コピーを削除し、`DRIVE_REMOTE_ONLY` に戻す。 */
     data class DeleteLocalAudioCopy(val id: MediaId) : LibraryEvent
+
+    /** 全体設定で選択可能な有効言語の ON / OFF を切り替える（最低 1 言語は維持）。 */
+    data class ToggleEnabledLanguage(val language: LanguageTag) : LibraryEvent
+
+    /** 初回起動時の言語選択オンボーディングを完了済みにする。 */
+    data object CompleteLanguageOnboarding : LibraryEvent
 }
 
 private data class ItemAnalysisSummary(
@@ -765,6 +773,7 @@ private data class LibraryRepositorySnapshot(
     val summaries: Map<MediaId, ItemAnalysisSummary> = emptyMap(),
     val missingAudioIds: Set<MediaId> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
+    val showLanguageOnboardingDialog: Boolean = false,
 )
 
 private data class DialogAndImportSnapshot(
@@ -994,6 +1003,7 @@ class LibraryViewModel @Inject constructor(
                 summaries = summaries,
                 missingAudioIds = missingAudioIds,
                 enabledLanguages = orderEnabledLanguages(userSettings.enabledLanguages),
+                showLanguageOnboardingDialog = !userSettings.hasCompletedLanguageOnboarding,
             )
         },
         playbackController.status,
@@ -1007,6 +1017,7 @@ class LibraryViewModel @Inject constructor(
             summaries = repoSnapshot.summaries,
             missingAudioIds = repoSnapshot.missingAudioIds,
             enabledLanguages = repoSnapshot.enabledLanguages,
+            showLanguageOnboardingDialog = repoSnapshot.showLanguageOnboardingDialog,
             playbackStatus = playbackStatus,
             dialogAndImport = dialogAndImport,
             navAndSelection = navAndSelection,
@@ -1356,6 +1367,29 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            is LibraryEvent.ToggleEnabledLanguage -> {
+                val normalized = LanguageSettings.normalize(event.language)
+                if (normalized.value.isBlank()) return
+                val current = uiState.value.enabledLanguages
+                    .map(LanguageSettings::normalize)
+                    .toSet()
+                val next = if (normalized in current) {
+                    if (current.size <= 1) return
+                    current - normalized
+                } else {
+                    current + normalized
+                }
+                viewModelScope.launch {
+                    userSettingsRepository.setEnabledLanguages(next)
+                }
+            }
+
+            LibraryEvent.CompleteLanguageOnboarding -> {
+                viewModelScope.launch {
+                    userSettingsRepository.completeLanguageOnboarding()
+                }
+            }
+
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.RequestImportTranscript,
@@ -1554,6 +1588,7 @@ class LibraryViewModel @Inject constructor(
         summaries: Map<MediaId, ItemAnalysisSummary>,
         missingAudioIds: Set<MediaId>,
         enabledLanguages: List<LanguageTag>,
+        showLanguageOnboardingDialog: Boolean,
         playbackStatus: PlaybackStatus,
         dialogAndImport: DialogAndImportSnapshot,
         navAndSelection: NavigationAndSelectionSnapshot,
@@ -1622,6 +1657,7 @@ class LibraryViewModel @Inject constructor(
             selectedDirectoryName = navAndSelection.selectedDirectoryName,
             collapsedDirectories = navAndSelection.collapsedDirectories,
             enabledLanguages = enabledLanguages,
+            showLanguageOnboardingDialog = showLanguageOnboardingDialog,
             currentDirectoryPath = navAndSelection.currentDirectoryPath,
             selectedDirectoryPaths = navAndSelection.selectedDirectoryPaths,
             selectedItemIds = filteredSelectedItemIds,

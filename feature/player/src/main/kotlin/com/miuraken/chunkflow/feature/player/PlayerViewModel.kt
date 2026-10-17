@@ -604,7 +604,7 @@ data class PlayerUiState(
 ) {
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
-        get() = chunks.any { it.text != null }
+        get() = chunks.any { !it.text.isNullOrBlank() }
 
     /** 全チャンクの文字起こし（スキップ済み・空結果スキップ済みを含む）が完了し、実行中・待機中のキューもないかどうか。 */
     val isAllTranscriptionCompleted: Boolean
@@ -800,6 +800,9 @@ sealed interface PlayerEvent {
 
     /** 開いている教材の学習言語とベース言語を変更する。 */
     data class UpdateItemLanguages(val target: LanguageTag, val base: LanguageTag?) : PlayerEvent
+
+    /** 全体設定で選択可能な有効言語の ON / OFF を切り替える（最低 1 言語は維持）。 */
+    data class ToggleEnabledLanguage(val language: LanguageTag) : PlayerEvent
 
     /** ブラインドモードを変更する（F7.2）。 */
     data class SetBlindMode(val blindMode: BlindMode) : PlayerEvent
@@ -1152,7 +1155,7 @@ class PlayerViewModel @Inject constructor(
     )
 
     init {
-        // ファイル単位の「文字起こし」トグル（既定は ON）と開いている教材・チャンク読み込みを同期する
+        // ファイル単位の「文字起こし」トグル（既定は OFF）と開いている教材・チャンク読み込みを同期する
         viewModelScope.launch {
             combine(
                 currentMediaId,
@@ -1161,7 +1164,7 @@ class PlayerViewModel @Inject constructor(
                     .map { it.chunks.firstOrNull()?.id }
                     .distinctUntilChanged(),
             ) { mediaId, enabledMap, firstChunkId ->
-                val enabled = if (mediaId != null) enabledMap[mediaId] ?: true else true
+                val enabled = if (mediaId != null) enabledMap[mediaId] ?: false else false
                 Triple(mediaId, enabled, firstChunkId)
             }.distinctUntilChanged().collect { (mediaId, enabled, _) ->
                 if (mediaId != null) {
@@ -1180,8 +1183,7 @@ class PlayerViewModel @Inject constructor(
                 Triple(mediaId, activeChunkId, isPlaying)
             }.distinctUntilChanged().collectLatest { (mediaId, activeChunkId, isPlaying) ->
                 if (mediaId != null && lastOpenedMediaId == mediaId) {
-                    val lookaheadEnabled = perMediaLookaheadEnabled.value[mediaId]
-                        ?: uiState.value.lookaheadStatus.enabled
+                    val lookaheadEnabled = perMediaLookaheadEnabled.value[mediaId] ?: false
                     if (!lookaheadEnabled) return@collectLatest
                     if (activeChunkId != null) {
                         analysisRepository.triggerLookaheadAt(mediaId, activeChunkId)
@@ -1295,7 +1297,7 @@ class PlayerViewModel @Inject constructor(
         currentMediaId.value = mediaId
         if (previousId == mediaId) {
             if (lookaheadLoopJob == null) {
-                val enabled = perMediaLookaheadEnabled.value[mediaId] ?: true
+                val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
                 syncLookaheadState(mediaId, enabled)
             }
             return
@@ -1314,6 +1316,8 @@ class PlayerViewModel @Inject constructor(
         chunkSeekPrioritizeJob?.cancel()
         chunkSeekPrioritizeJob = null
         localUiState.value = LocalUiSnapshot()
+        val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
+        syncLookaheadState(mediaId, enabled)
         viewModelScope.launch {
             val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
             playbackController.open(mediaId)
@@ -1583,6 +1587,23 @@ class PlayerViewModel @Inject constructor(
                     val newPair = LanguagePair(target = LanguageTag(target), base = base?.let(::LanguageTag))
                     if (item.languagePair == newPair) return@launch
                     libraryRepository.updateItemMetadata(id = id, course = item.course, languages = newPair)
+                }
+            }
+
+            is PlayerEvent.ToggleEnabledLanguage -> {
+                val normalized = LanguageSettings.normalize(event.language)
+                if (normalized.value.isBlank()) return
+                val current = uiState.value.enabledLanguages
+                    .map(LanguageSettings::normalize)
+                    .toSet()
+                val next = if (normalized in current) {
+                    if (current.size <= 1) return
+                    current - normalized
+                } else {
+                    current + normalized
+                }
+                viewModelScope.launch {
+                    userSettingsRepository.setEnabledLanguages(next)
                 }
             }
 
@@ -2582,7 +2603,7 @@ class PlayerViewModel @Inject constructor(
             }
         }
         val id = resolveActiveMediaId()
-        if (id != null && matchingChunk != null) {
+        if (id != null && matchingChunk != null && perMediaLookaheadEnabled.value[id] == true) {
             chunkSeekPrioritizeJob?.cancel()
             chunkSeekPrioritizeJob = viewModelScope.launch {
                 analysisRepository.prioritizeChunkTranscription(id, matchingChunk.id)
@@ -2643,7 +2664,7 @@ class PlayerViewModel @Inject constructor(
             }
         }
         val id = resolveActiveMediaId()
-        if (id != null) {
+        if (id != null && perMediaLookaheadEnabled.value[id] == true) {
             chunkSeekPrioritizeJob?.cancel()
             chunkSeekPrioritizeJob = viewModelScope.launch {
                 analysisRepository.prioritizeChunkTranscription(id, chunkId)

@@ -61,6 +61,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsListContent
+import com.miuraken.chunkflow.core.designsystem.component.languageSettingDisplayName
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
@@ -868,19 +870,7 @@ private fun speechModelLanguageDisplayName(language: LanguageTag): String {
 
         else -> {
             val currentLocale = androidx.compose.ui.text.intl.Locale.current.platformLocale
-            val entry = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(code)
-            val isJapanese = currentLocale.language.equals("ja", ignoreCase = true)
-            val displayName = if (isJapanese) {
-                entry?.japaneseName
-            } else {
-                entry?.englishName
-            } ?: Locale.forLanguageTag(code).getDisplayLanguage(currentLocale)
-                .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
-            if (displayName != null) {
-                "$displayName ($code)"
-            } else {
-                code
-            }
+            languageSettingDisplayName(language, currentLocale)
         }
     }
 }
@@ -944,82 +934,12 @@ private fun LanguageSettingsSection(
     enabledLanguages: Set<LanguageTag>,
     onEvent: (SettingsEvent) -> Unit,
 ) {
-    val searchQuery = remember { mutableStateOf("") }
-
     SettingsCard(title = stringResource(R.string.settings_tab_language)) {
-        OutlinedTextField(
-            value = searchQuery.value,
-            onValueChange = { searchQuery.value = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text(stringResource(R.string.settings_search_language)) },
-            leadingIcon = { Icon(ChunkFlowIcons.Search, contentDescription = null) },
-            singleLine = true,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        val query = searchQuery.value.lowercase()
-        val allLanguages = LanguageSettings.SELECTABLE_LANGUAGES
-
-        val filtered = if (query.isBlank()) {
-            allLanguages
-        } else {
-            allLanguages.filter {
-                it.code.lowercase().contains(query) ||
-                    (it.englishName?.lowercase()?.contains(query) == true) ||
-                    (it.japaneseName?.lowercase()?.contains(query) == true)
-            }
-        }
-
-        val pinned = filtered.filter { LanguageSettings.isPinned(it.code) }
-        val others = filtered.filter { !LanguageSettings.isPinned(it.code) }
-
-        if (pinned.isNotEmpty()) {
-            Text(stringResource(R.string.settings_language_pinned), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
-            pinned.forEach { entry ->
-                LanguageToggleRow(
-                    entry = entry,
-                    isEnabled = enabledLanguages.contains(LanguageTag(entry.code)),
-                    onToggle = { onEvent(SettingsEvent.ToggleEnabledLanguage(LanguageTag(entry.code))) },
-                )
-            }
-        }
-
-        if (others.isNotEmpty()) {
-            Text(stringResource(R.string.settings_language_others), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
-            others.forEach { entry ->
-                LanguageToggleRow(
-                    entry = entry,
-                    isEnabled = enabledLanguages.contains(LanguageTag(entry.code)),
-                    onToggle = { onEvent(SettingsEvent.ToggleEnabledLanguage(LanguageTag(entry.code))) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LanguageToggleRow(
-    entry: com.miuraken.chunkflow.core.model.SupportedLanguageEntry,
-    isEnabled: Boolean,
-    onToggle: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .selectable(
-                selected = isEnabled,
-                onClick = onToggle,
-                role = Role.Checkbox,
-            )
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Checkbox(checked = isEnabled, onCheckedChange = null)
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = speechModelLanguageDisplayName(LanguageTag(entry.code)),
-            style = MaterialTheme.typography.bodyMedium,
+        LanguageSettingsListContent(
+            enabledLanguages = enabledLanguages,
+            onToggleLanguage = { language ->
+                onEvent(SettingsEvent.ToggleEnabledLanguage(language))
+            },
         )
     }
 }
