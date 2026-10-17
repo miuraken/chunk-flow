@@ -46,9 +46,9 @@ include(":core:data")
 include(":core:designsystem")
 include(":core:testing")
 
-// スパイク（S2: playback、S3: audio-analysis）。build.gradle.kts を lead が置いたときだけ取り込む（ADR 0003）。
+// スパイク（S2: playback、S3: audio-analysis、S4: transcriber）。build.gradle.kts を lead が置いたときだけ取り込む（ADR 0003）。
 // 本体のモジュールからスパイクへ依存してはいけない。
-listOf("playback", "audio").forEach { name ->
+listOf("playback", "audio", "textai").forEach { name ->
     if (file("spikes/$name/build.gradle.kts").exists()) {
         include(":spikes:$name")
     }

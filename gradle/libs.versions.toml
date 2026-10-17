@@ -38,6 +38,10 @@ kotlinxCoroutines = "1.11.0"
 kotlinxSerialization = "1.11.0"
 onnxruntime = "1.31.0"
 mlkitGenaiSpeechRecognition = "1.0.0-alpha1"
+# スパイク S4（spikes/textai だけで使う。本体には入れない）
+mlkitTranslate = "17.0.3"
+mlkitGenaiProofreading = "1.0.0-beta1"
+mlkitGenaiPrompt = "1.0.0-beta4"
 
 # ---- テスト ----
 junit4 = "4.13.2"
@@ -95,6 +99,10 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 onnxruntime-jvm = { group = "com.microsoft.onnxruntime", name = "onnxruntime", version.ref = "onnxruntime" }
 mlkit-genai-speech-recognition = { group = "com.google.mlkit", name = "genai-speech-recognition", version.ref = "mlkitGenaiSpeechRecognition" }
+# スパイク S4（spikes/textai だけで使う。本体には入れない）
+mlkit-translate = { group = "com.google.mlkit", name = "translate", version.ref = "mlkitTranslate" }
+mlkit-genai-proofreading = { group = "com.google.mlkit", name = "genai-proofreading", version.ref = "mlkitGenaiProofreading" }
+mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
 
 # テスト
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }

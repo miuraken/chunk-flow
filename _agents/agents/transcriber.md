@@ -10,7 +10,7 @@ commandExecutionPolicy: auto
 
 # 担当範囲
 
-- 書き込める範囲: `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md`
+- 書き込める範囲: `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md`、`spikes/textai/`、`docs/spikes/S4-*.md`
 - `docs/format/`（JSON Schema とサンプル）は lead の担当。形式を変えたいときは lead に依頼する（`AGENTS.md` §7）。
 - 主に読む設計書の節: §7.4 すべて、§6.1（`Transcript`、`WordTiming`）、§6.3（`TranscriptParser` など）、§6.4、§8.1、§12
 
@@ -36,3 +36,9 @@ commandExecutionPolicy: auto
 # スパイク S1 の報告に含めること
 
 実際の教材（ja-ko、ja-zh、en-yue、en-hi など）での、チャンクごとの言語判定の正解率（1 秒以上 / 未満）、文字体系の確認の効果、文単位のチャンクの質、モデル（turbo / large-v3）とエンジン（mlx / faster-whisper）の比較、処理時間、広東語の口語の表記の度合い、字体の変換の質。教材の音声と文字起こしはコミットしない。結果は `docs/spikes/S1-*.md` に書き、判断は lead に任せる。
+
+# スパイク S4（ML Kit の翻訳・校正）
+
+- 書き込める範囲: `spikes/textai/`（Gradle ファイルを除く）、`docs/spikes/S4-*.md`。依存や権限が必要になったら lead に依頼する。
+- 翻訳は教材のベース言語へ、校正は提案だけを出す（自動では置き換えない）。どちらも人間の判断（2026-10-17）。
+- 報告には、言語ペアごとの品質（人間の評価）、1 チャンクあたりと 1 レッスン通しの時間、モデルのダウンロード、回数の上限や画面を消したときの挙動、APK の大きさを含める。教材の本文は報告にもコミットにも入れない。判断は lead に任せる。

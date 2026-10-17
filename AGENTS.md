@@ -27,7 +27,7 @@
 | `lead` | `build-logic/`、`gradle/`、すべての `*.gradle.kts`、リポジトリ直下の設定ファイル（`settings.gradle.kts`、`gradle.properties`、`.github/`、`.editorconfig`、`.gitignore` など）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`（下の例外を除く）、`AGENTS.md`、`_agents/`、`design_doc.md` |
 | `playback` | `core/playback/`、`core/drive/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` |
 | `audio-analysis` | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md` |
-| `transcriber` | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md` |
+| `transcriber` | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md`、`spikes/textai/`、`docs/spikes/S4-*.md` |
 | `ui` | `feature/`、`core/designsystem/`（スクリーンショットテストの基準画像を含む） |
 | `qa` | 各モジュールのテストディレクトリへの**新しいテストファイルの追加**、`docs/manual-test.md`、`docs/qa/` |
 

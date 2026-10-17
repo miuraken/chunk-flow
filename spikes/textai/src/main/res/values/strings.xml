@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">Spike S4 TextAI</string>
+    <string name="spike_title">S4: ML Kit の翻訳・校正</string>
+    <string name="spike_placeholder">試作の画面はこれから作ります（担当: transcriber）。</string>
+</resources>
