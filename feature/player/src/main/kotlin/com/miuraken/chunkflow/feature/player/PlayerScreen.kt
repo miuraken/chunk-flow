@@ -221,11 +221,11 @@ fun PlayerRoute(
  * 1 ペイン（幅 600dp 未満）では、上から次の順に並べる。
  * 1. チャンクの表示に関する設定（言語・学習言語を隠す・読み）
  * 2. チャンクリスト（残りの高さをすべて使う。文字起こしの進捗はリストの下部に重ねて表示する）
- * 3. 選択範囲に関する操作（全選択解除・連結・分割）
- * 4. 波形（全体波形 + 拡大波形。自動ポーズ中はそのすぐ上にカウントダウンを出す）
+ * 3. 波形（全体波形 + 拡大波形。自動ポーズ中はそのすぐ上にカウントダウンを出す）
+ * 4. 選択範囲に関する操作（全選択解除・連結・再生位置で分割。拡大波形のすぐ下）
  * 5. 再生の操作（速度・リピート・再生設定と、再生ボタン類）
  *
- * 2 ペイン（幅 600dp 以上）では、左に選択範囲の操作・波形・再生の操作を、右にチャンクの表示設定とチャンクリストを置く。
+ * 2 ペイン（幅 600dp 以上）では、左に波形・選択範囲の操作・再生の操作を、右にチャンクの表示設定とチャンクリストを置く。
  * 文字起こしの診断ログ（[TranscriptionDiagnosticsDialog]）は、右上の設定アイコンで開くファイル設定シートから開く。
  *
  * 再生位置は [PlayerUiState] に含めず、[positionProvider] を子 Composable（[WaveformSection]・[TranscriptList]）にのみ渡す。
@@ -328,7 +328,7 @@ fun PlayerScreen(
 
             if (isTwoPane) {
                 Row(modifier = Modifier.fillMaxSize()) {
-                    // 左ペイン: バナー → 選択範囲に関する操作 → 波形 → 再生の操作
+                    // 左ペイン: バナー → 波形 → 選択範囲に関する操作（拡大波形のすぐ下） → 再生の操作
                     Column(
                         modifier = Modifier
                             .weight(0.48f)
@@ -347,15 +347,15 @@ fun PlayerScreen(
                             )
                         }
 
-                        ChunkSelectionActionStrip(
-                            state = state,
-                            onEvent = onEvent,
-                        )
-
                         PlayerWaveform(
                             state = state,
                             positionProvider = positionProvider,
                             seekBackSeconds = seekBackSeconds,
+                            onEvent = onEvent,
+                        )
+
+                        ChunkSelectionActionStrip(
+                            state = state,
                             onEvent = onEvent,
                         )
 
@@ -431,18 +431,13 @@ fun PlayerScreen(
                             .weight(1f),
                     )
 
-                    // 3. 選択範囲に関する操作 → 4. 波形（自動ポーズ中は波形のすぐ上にカウントダウンを出す）
+                    // 3. 波形（自動ポーズ中は波形のすぐ上にカウントダウンを出す）→ 4. 選択範囲に関する操作（拡大波形のすぐ下）
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        ChunkSelectionActionStrip(
-                            state = state,
-                            onEvent = onEvent,
-                        )
-
                         state.autoPauseEndsAtMs?.let { endsAtMs ->
                             AutoPauseCountdownBanner(
                                 autoPauseEndsAtMs = endsAtMs,
@@ -454,6 +449,11 @@ fun PlayerScreen(
                             state = state,
                             positionProvider = positionProvider,
                             seekBackSeconds = seekBackSeconds,
+                            onEvent = onEvent,
+                        )
+
+                        ChunkSelectionActionStrip(
+                            state = state,
                             onEvent = onEvent,
                         )
                     }
@@ -625,7 +625,6 @@ private fun PlayerChunkList(
         transcriptImportBanner = state.transcriptImportBanner,
         positionProvider = positionProvider,
         lookaheadStatus = state.lookaheadStatus,
-        localTranscriptExported = state.localTranscriptExported,
         transcriptExportBanner = state.transcriptExportBanner,
         onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
         onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
@@ -661,9 +660,6 @@ private fun PlayerChunkList(
         },
         onResetTranscription = {
             onEvent(PlayerEvent.ResetTranscription)
-        },
-        onExportLocalTranscriptJson = {
-            onEvent(PlayerEvent.ExportLocalTranscriptJson)
         },
         onRequestRecognitionModelDownload = { language ->
             onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
@@ -779,13 +775,16 @@ private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
 )
 
 /**
- * 選択範囲に関する操作の行（1 ペインではチャンクリストと波形の間、2 ペインでは波形の上に置く）。
+ * 選択範囲に関する操作の行（1 ペイン・2 ペインとも、波形（拡大波形）のすぐ下に置く）。
  *
  * レイアウトが跳ねないよう 3 つのボタンを常に並べ、使えないときは無効（押せない見た目）にする。
+ * 1 行に収まらないとき（文字サイズが大きいときや、2 ペインの左側が狭いとき）は、横にスクロールさせずに次の行へ折り返す。
+ * 「再生位置で分割」が途中で切れて「再生位置」とだけ読めると、押したときの動作がわからなくなるため。
  * - 「全選択解除」: チャンクを 1 つ以上選択しているとき
  * - 「連結」: 選択が連続していて、両端のチャンクの言語が同じとき（[canMergeSelectedChunks]）
- * - 「分割」: チャンクがあり、選択がないとき（現在位置でチャンクを 2 つに分ける）
+ * - 「再生位置で分割」: チャンクがあり、選択がないとき（再生位置（拡大波形の中央のカーソル）でチャンクを 2 つに分ける）
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChunkSelectionActionStrip(
     state: PlayerUiState,
@@ -796,12 +795,9 @@ private fun ChunkSelectionActionStrip(
     val canMergeSelection = remember(state.chunks) { canMergeSelectedChunks(state.chunks) }
     val canSplitAtCursor = state.chunks.isNotEmpty() && !hasSelection
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+    FlowRow(
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         AssistChip(
             onClick = { onEvent(PlayerEvent.ClearChunkSelection) },
@@ -1641,7 +1637,6 @@ internal fun SampleMaterial.toPlayerUiState(
     autoPauseEndsAtMs: Long? = null,
     error: PlaybackError? = null,
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
-    localTranscriptExported: Boolean = false,
 ): PlayerUiState {
     val chunkUis = chunks.map { chunk ->
         val transcript = transcripts[chunk.id]
@@ -1683,7 +1678,6 @@ internal fun SampleMaterial.toPlayerUiState(
         chunkSource = if (transcripts.isNotEmpty()) ChunkOrigin.IMPORTED else ChunkOrigin.AUTO,
         availableChunkOrigins = origins,
         lookaheadStatus = lookaheadStatus,
-        localTranscriptExported = localTranscriptExported,
     )
 }
 

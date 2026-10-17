@@ -74,7 +74,7 @@
     <string name="player_file_settings_cd">ファイルの設定</string>
     <string name="player_selection_clear_all">全選択解除</string>
     <string name="player_selection_merge">連結</string>
-    <string name="player_split_at_cursor">分割</string>
+    <string name="player_split_at_cursor">再生位置で分割</string>
     <string name="player_settings_language_section_title">言語</string>
     <string name="player_settings_target_lang_label">学習言語</string>
     <string name="player_settings_base_lang_label">ベース言語</string>
@@ -104,7 +104,6 @@
     <string name="player_offset_auto_align">音声の立ち上がりに自動補正</string>
     <string name="player_lookahead_chip_off">先読み文字起こし: OFF</string>
     <string name="player_lookahead_export_json">JSON保存</string>
-    <string name="player_lookahead_exported_badge">ローカルJSON保存済み（Drive同期対象）</string>
     <!-- M4: ブックマーク・テキスト手動編集・チャンク分割結合・字幕エクスポート -->
     <string name="player_chip_bookmarks_only">ブックマークのみ</string>
     <string name="player_bookmark_toggle_add">ブックマークに追加</string>

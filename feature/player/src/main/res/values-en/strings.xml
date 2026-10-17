@@ -74,7 +74,7 @@
     <string name="player_file_settings_cd">File settings</string>
     <string name="player_selection_clear_all">Clear selection</string>
     <string name="player_selection_merge">Merge</string>
-    <string name="player_split_at_cursor">Split</string>
+    <string name="player_split_at_cursor">Split at playhead</string>
     <string name="player_settings_language_section_title">Languages</string>
     <string name="player_settings_target_lang_label">Target language</string>
     <string name="player_settings_base_lang_label">Base language</string>
@@ -104,7 +104,6 @@
     <string name="player_offset_auto_align">Auto-align to speech onset</string>
     <string name="player_lookahead_chip_off">Lookahead STT: OFF</string>
     <string name="player_lookahead_export_json">Save JSON</string>
-    <string name="player_lookahead_exported_badge">Saved to local JSON (Drive sync ready)</string>
     <!-- M4: Bookmarks, manual text editing, chunk split/merge, transcript export -->
     <string name="player_chip_bookmarks_only">Bookmarks only</string>
     <string name="player_bookmark_toggle_add">Add bookmark</string>
