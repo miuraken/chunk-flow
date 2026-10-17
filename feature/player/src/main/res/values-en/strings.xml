@@ -65,6 +65,7 @@
 
     <string name="player_chip_transcribe">Transcribe</string>
     <string name="player_chip_reading">Reading</string>
+    <string name="player_chip_translate">Translate</string>
     <string name="player_chip_blind_off">Blind: OFF</string>
     <string name="player_chip_blind_target">Hide target language</string>
     <string name="player_chip_blind_all">Hide All</string>
@@ -180,7 +181,10 @@
     <string name="player_chunk_transcription_active_cd">Transcribing</string>
     <string name="player_open_global_settings">Go to global app settings</string>
     <string name="player_chunk_copy_text">Copy text</string>
-    <string name="player_chunk_open_google_translate">Open text in Google Translate</string>
+    <string name="player_chunk_skip_enable">Skip this chunk</string>
+    <string name="player_chunk_skip_disable">Unskip this chunk</string>
+    <string name="player_chunk_skip_enable_selected">Skip selected chunks (%1$d)</string>
+    <string name="player_chunk_skip_disable_selected">Unskip selected chunks (%1$d)</string>
     <string name="player_chunk_detailed_transcribe">Detailed transcription</string>
     <string name="player_detailed_transcribe_dialog_title">Detailed transcription for Chunk #%1$d</string>
     <string name="player_detailed_transcribe_engine_label">Speech recognition engine</string>

@@ -1190,35 +1190,121 @@ class PlayerViewModelTest {
     }
 
     @Test
-    fun `Google翻訳URL生成_チャンク言語からベース言語への翻訳URLを正しく組み立てる`() {
-        val pair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
-        val url = buildGoogleTranslateUrl(
-            text = "안녕하세요!",
-            chunkLanguage = LanguageTag("ko"),
-            languagePair = pair,
-            fallbackTargetLang = "en",
-        )
-        assertTrue(url.startsWith("https://translate.google.com/?sl=ko&tl=ja&text="))
-        assertTrue(url.endsWith("&op=translate"))
+    fun `チャンクのスキップ設定と解除_単体および複数一括でSetChunksSkippedがChunkUiに反映される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
 
-        // チャンク言語が未設定のときは学習言語を翻訳元にし、ベース言語が未設定のときは fallbackTargetLang を翻訳先にする
-        val urlNoBase = buildGoogleTranslateUrl(
-            text = "Hello world",
-            chunkLanguage = null,
-            languagePair = LanguagePair(target = LanguageTag("zh-Hans"), base = null),
-            fallbackTargetLang = "ja",
-        )
-        assertTrue(urlNoBase.startsWith("https://translate.google.com/?sl=zh-CN&tl=ja&text="))
-        assertTrue(urlNoBase.contains("Hello%20world"))
+        val c0 = sample.chunks[0].id
+        val c1 = sample.chunks[1].id
+        val c3 = sample.chunks[3].id
+        assertTrue(viewModel.uiState.value.chunks.none { it.isSkipped })
 
-        // 翻訳元と翻訳先が同一言語になった場合は sl=auto にして空翻訳を防ぐ
-        val urlSameLang = buildGoogleTranslateUrl(
-            text = "テスト",
-            chunkLanguage = LanguageTag("ja"),
-            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
-            fallbackTargetLang = "ja",
+        // 1. 単体チャンクのスキップ設定・解除
+        viewModel.onEvent(PlayerEvent.SetChunksSkipped(setOf(c1), skipped = true))
+        assertTrue(viewModel.uiState.value.chunks[1].isSkipped)
+        assertFalse(viewModel.uiState.value.chunks[0].isSkipped)
+
+        viewModel.onEvent(PlayerEvent.SetChunksSkipped(setOf(c1), skipped = false))
+        assertFalse(viewModel.uiState.value.chunks[1].isSkipped)
+
+        // 2. 複数チャンクの一括スキップ設定・解除
+        viewModel.onEvent(PlayerEvent.SetChunksSkipped(setOf(c0, c1, c3), skipped = true))
+        assertEquals(
+            listOf(true, true, false, true, false),
+            viewModel.uiState.value.chunks.map { it.isSkipped },
         )
-        assertTrue(urlSameLang.startsWith("https://translate.google.com/?sl=auto&tl=ja&text="))
+
+        viewModel.onEvent(PlayerEvent.SetChunksSkipped(setOf(c0, c3), skipped = false))
+        assertEquals(
+            listOf(false, true, false, false, false),
+            viewModel.uiState.value.chunks.map { it.isSkipped },
+        )
+    }
+
+    @Test
+    fun `順次翻訳_全文字起こし完了後に翻訳バッジが有効になり再生位置や選択範囲から順次translateChunkが呼ばれる`() = runTest {
+        val sample = SampleMaterials.jaKo // chunks: 0(ja), 1(ko), 2(ja), 3(ko), 4(ko)
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            // 先頭チャンクをまだ文字起こし未完了にしておく
+            update(item.id) { entry ->
+                entry.copy(
+                    transcripts = entry.transcripts - sample.chunks[0].id,
+                    lookaheadStatus = LookaheadTranscriptionStatus(
+                        enabled = true,
+                        engineAvailable = true,
+                        inFlightChunkId = sample.chunks[0].id,
+                    ),
+                )
+            }
+        }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. ML Kit 翻訳対応ペア (ko -> ja) なので isTranslationSupported = true だが、文字起こし未完了の間は isAllTranscriptionCompleted = false
+        assertTrue(viewModel.uiState.value.isTranslationSupported)
+        assertFalse(viewModel.uiState.value.isAllTranscriptionCompleted)
+
+        // 2. 全チャンクの文字起こしが完了すると isAllTranscriptionCompleted = true になる（この時点ではまだ翻訳は一切走らない）
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                transcripts = sample.transcripts,
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    enabled = false,
+                    engineAvailable = true,
+                ),
+            )
+        }
+        assertTrue(viewModel.uiState.value.isAllTranscriptionCompleted)
+        assertTrue(analysisRepo.translatedChunkRequests.isEmpty())
+
+        // 3. 再生位置を chunks[3] (ko) に合わせて「翻訳」バッジを ON にすると、現在位置 (chunks[3]) -> 末尾 (chunks[4]) -> 先頭折り返し (chunks[1]) の順で学習対象言語のみ翻訳される
+        viewModel.onEvent(PlayerEvent.SeekToChunk(sample.chunks[3].id))
+        viewModel.onEvent(PlayerEvent.SetShowTargetTranslation(true))
+
+        assertTrue(viewModel.uiState.value.showTargetTranslation)
+        val requestedIds = analysisRepo.translatedChunkRequests.map { it.second }
+        assertEquals(
+            listOf(sample.chunks[3].id, sample.chunks[4].id, sample.chunks[1].id),
+            requestedIds,
+        )
+        assertEquals("[ja] ${sample.transcripts.getValue(sample.chunks[1].id).text}", viewModel.uiState.value.chunks[1].translatedText)
+        assertEquals("[ja] ${sample.transcripts.getValue(sample.chunks[3].id).text}", viewModel.uiState.value.chunks[3].translatedText)
+        assertEquals("[ja] ${sample.transcripts.getValue(sample.chunks[4].id).text}", viewModel.uiState.value.chunks[4].translatedText)
+        assertNull(viewModel.uiState.value.chunks[0].translatedText) // 母語 (ja) チャンクは翻訳しない
+        assertNull(viewModel.uiState.value.translatingChunkId)
+
+        // 4. 複数選択リピート中 (repeatCheckedOnly = true) はチェックされたチャンク群を優先し、スキップ設定されたチャンクは除外する
+        viewModel.onEvent(PlayerEvent.SetShowTargetTranslation(false))
+        assertFalse(viewModel.uiState.value.showTargetTranslation)
+        analysisRepo.translatedChunkRequests.clear()
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(transcripts = sample.transcripts) // 翻訳テキストをリセット
+        }
+        // chunks[1] をスキップ設定にし、chunks[4] をチェック選択リピートにする
+        viewModel.onEvent(PlayerEvent.SetChunksSkipped(setOf(sample.chunks[1].id), skipped = true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(sample.chunks[4].id, selected = true))
+        viewModel.onEvent(PlayerEvent.ToggleRepeat) // repeatCheckedOnly = true
+        viewModel.onEvent(PlayerEvent.SeekToChunk(sample.chunks[0].id))
+
+        viewModel.onEvent(PlayerEvent.SetShowTargetTranslation(true))
+        val checkedOrder = analysisRepo.translatedChunkRequests.map { it.second }
+        // チェックされた chunks[4] が最優先で翻訳され、次に未チェックの chunks[3] が翻訳される（スキップされた chunks[1] は翻訳されない）
+        assertEquals(listOf(sample.chunks[4].id, sample.chunks[3].id), checkedOrder)
     }
 
     @Test

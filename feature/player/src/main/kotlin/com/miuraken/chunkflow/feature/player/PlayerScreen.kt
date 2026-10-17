@@ -630,6 +630,7 @@ private fun PlayerChunkList(
         chineseScript = state.chineseScript,
         cantoneseScript = state.cantoneseScript,
         showTargetRomanization = state.showTargetRomanization,
+        showTargetTranslation = state.showTargetTranslation,
         transcriptImportBanner = state.transcriptImportBanner,
         positionProvider = positionProvider,
         lookaheadStatus = state.lookaheadStatus,
@@ -637,6 +638,9 @@ private fun PlayerChunkList(
         onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
         onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
         onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
+        onSetChunksSkipped = { chunkIds, skipped ->
+            onEvent(PlayerEvent.SetChunksSkipped(chunkIds, skipped))
+        },
         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
@@ -1062,6 +1066,25 @@ private fun ChunkDisplaySettingsStrip(
             },
             colors = toggleColors,
         )
+
+        // 4. 「翻訳」（on, *off）
+        if (state.isTranslationSupported) {
+            FilterChip(
+                selected = state.showTargetTranslation,
+                enabled = state.isAllTranscriptionCompleted || state.showTargetTranslation,
+                onClick = {
+                    onEvent(PlayerEvent.SetShowTargetTranslation(!state.showTargetTranslation))
+                },
+                label = {
+                    Text(
+                        text = stringResource(R.string.player_chip_translate),
+                        fontWeight = if (state.showTargetTranslation) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                    )
+                },
+                colors = toggleColors,
+            )
+        }
     }
 }
 
@@ -1793,6 +1816,9 @@ internal fun SampleMaterial.toPlayerUiState(
             text = transcript?.text,
             language = transcript?.language,
             isRepeatChecked = chunk.id in practice.repeatChunkIds,
+            isSkipped = chunk.isSkipped,
+            translatedText = transcript?.translatedText,
+            translatedLanguage = transcript?.translatedLanguage,
             textVariants = transcript?.textVariants.orEmpty(),
             words = transcript?.words.orEmpty(),
             origin = chunk.origin,
