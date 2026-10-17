@@ -371,6 +371,7 @@ fun PlayerScreen(
 
                         ChunkSelectionActionStrip(
                             state = state,
+                            positionProvider = positionProvider,
                             onEvent = onEvent,
                         )
 
@@ -484,6 +485,7 @@ fun PlayerScreen(
 
                         ChunkSelectionActionStrip(
                             state = state,
+                            positionProvider = positionProvider,
                             onEvent = onEvent,
                         )
                     }
@@ -862,19 +864,36 @@ private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
  * 「再生位置で分割」が途中で切れて「再生位置」とだけ読めると、押したときの動作がわからなくなるため。
  * - 「全選択解除」: チャンクを 1 つ以上選択しているとき
  * - 「連結」: チャンクを 2 つ以上選択しているとき（[canMergeSelectedChunks]）。押すと確認ダイアログを表示する
- * - 「再生位置で分割」: チャンクがあり、選択がないとき（再生位置（拡大波形の中央のカーソル）でチャンクを 2 つに分ける）
+ * - 「再生位置で分割」: チャンク選択がなく、かつ再生位置（拡大波形の中央のカーソル）がいずれかのチャンクの分割可能な範囲内（両端から [MIN_SPLIT_PIECE_MS] 以上内側）にあるとき（[canSplitChunkAtPosition]）
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChunkSelectionActionStrip(
     state: PlayerUiState,
+    positionProvider: PositionProvider,
     onEvent: (PlayerEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val hasSelection = state.chunks.any { it.isRepeatChecked }
     val mergeSummary = remember(state.chunks) { summarizeMergeSelection(state.chunks) }
     val canMergeSelection = mergeSummary != null
-    val canSplitAtCursor = state.chunks.isNotEmpty() && !hasSelection
+    val isInspectionMode = LocalInspectionMode.current
+    var isPositionInsideSplittableChunk by remember(state.chunks, positionProvider) {
+        mutableStateOf(canSplitChunkAtPosition(state.chunks, positionProvider.currentPositionMs()))
+    }
+    if (!isInspectionMode) {
+        LaunchedEffect(state.chunks, state.isPlaying, positionProvider) {
+            while (isActive) {
+                val insideSplitTarget =
+                    canSplitChunkAtPosition(state.chunks, positionProvider.currentPositionMs())
+                if (isPositionInsideSplittableChunk != insideSplitTarget) {
+                    isPositionInsideSplittableChunk = insideSplitTarget
+                }
+                delay(if (state.isPlaying) 50L else 100L)
+            }
+        }
+    }
+    val canSplitAtCursor = !hasSelection && isPositionInsideSplittableChunk
     var showMergeConfirmDialog by remember { mutableStateOf(false) }
 
     FlowRow(

@@ -91,6 +91,39 @@ class ChunkSelectionTest {
     }
 
     @Test
+    fun `canSplitChunkAtPosition_選択がなく再生位置が分割可能なチャンク内にあるときのみtrue`() {
+        val chunks = listOf(
+            chunk(1, 1_000, 3_000, "ja"),
+            chunk(2, 4_000, 6_000, "ko"),
+        )
+        // チャンク内の分割可能な位置では true
+        assertTrue(canSplitChunkAtPosition(chunks, 2_000))
+        assertTrue(canSplitChunkAtPosition(chunks, 1_000 + MIN_SPLIT_PIECE_MS))
+        assertTrue(canSplitChunkAtPosition(chunks, 3_000 - MIN_SPLIT_PIECE_MS))
+
+        // チャンク間のギャップ（無音区間）や先頭チャンクより前・末尾チャンクより後では false
+        assertFalse(canSplitChunkAtPosition(chunks, 0))
+        assertFalse(canSplitChunkAtPosition(chunks, 3_500))
+        assertFalse(canSplitChunkAtPosition(chunks, 6_500))
+
+        // チャンクの端（開始・終了位置そのもの、または端から MIN_SPLIT_PIECE_MS 未満）では false
+        assertFalse(canSplitChunkAtPosition(chunks, 1_000))
+        assertFalse(canSplitChunkAtPosition(chunks, 1_000 + MIN_SPLIT_PIECE_MS - 1))
+        assertFalse(canSplitChunkAtPosition(chunks, 3_000 - MIN_SPLIT_PIECE_MS + 1))
+        assertFalse(canSplitChunkAtPosition(chunks, 3_000))
+
+        // いずれかのチャンクが選択中（isRepeatChecked = true）のときは再生位置がチャンク内でも false
+        val chunksWithSelection = listOf(
+            chunk(1, 1_000, 3_000, "ja"),
+            chunk(2, 4_000, 6_000, "ko", selected = true),
+        )
+        assertFalse(canSplitChunkAtPosition(chunksWithSelection, 2_000))
+
+        // チャンクが空のときは false
+        assertFalse(canSplitChunkAtPosition(emptyList(), 2_000))
+    }
+
+    @Test
     fun `findChunkAt_境界では後ろのチャンクを返しすき間ではnull`() {
         val chunks = listOf(
             chunk(1, 1_000, 2_000, "ja"),
