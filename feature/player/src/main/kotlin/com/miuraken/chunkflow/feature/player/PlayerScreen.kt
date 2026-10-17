@@ -9,6 +9,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -129,9 +130,9 @@ fun PlayerRoute(
     LaunchedEffect(mediaId) {
         viewModel.open(mediaId)
     }
-    DisposableEffect(mediaId) {
+    DisposableEffect(Unit) {
         onDispose {
-            viewModel.close(mediaId)
+            viewModel.close()
         }
     }
     val context = LocalContext.current
@@ -342,11 +343,20 @@ fun PlayerScreen(
                             seekBackMs = state.seekBackMs,
                             seekForwardMs = state.seekForwardMs,
                             hasChunks = state.chunks.isNotEmpty(),
+                            hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
+                            hasNextCheckedChunk = state.hasNextCheckedChunk,
+                            hasNextMediaItem = state.nextMediaId != null,
                             onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
                             onSeekBack = { onEvent(PlayerEvent.SeekBack) },
                             onSeekForward = { onEvent(PlayerEvent.SeekForward) },
                             onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
                             onNextChunk = { onEvent(PlayerEvent.NextChunk) },
+                            onSetSeekBackMs = { ms -> onEvent(PlayerEvent.SetSeekBackMs(ms)) },
+                            onSetSeekForwardMs = { ms -> onEvent(PlayerEvent.SetSeekForwardMs(ms)) },
+                            onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
+                            onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
+                            onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
+                            onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
                         )
                     }
 
@@ -454,11 +464,20 @@ fun PlayerScreen(
                                 seekBackMs = state.seekBackMs,
                                 seekForwardMs = state.seekForwardMs,
                                 hasChunks = state.chunks.isNotEmpty(),
+                                hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
+                                hasNextCheckedChunk = state.hasNextCheckedChunk,
+                                hasNextMediaItem = state.nextMediaId != null,
                                 onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
                                 onSeekBack = { onEvent(PlayerEvent.SeekBack) },
                                 onSeekForward = { onEvent(PlayerEvent.SeekForward) },
                                 onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
                                 onNextChunk = { onEvent(PlayerEvent.NextChunk) },
+                                onSetSeekBackMs = { ms -> onEvent(PlayerEvent.SetSeekBackMs(ms)) },
+                                onSetSeekForwardMs = { ms -> onEvent(PlayerEvent.SetSeekForwardMs(ms)) },
+                                onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
+                                onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
+                                onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
+                                onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
                             )
                         }
                     }
@@ -484,6 +503,7 @@ fun PlayerScreen(
                 initialParams = state.segmentationParams,
                 languagePair = state.languagePair,
                 itemSttOverride = state.itemSttOverride,
+                enabledLanguages = state.enabledLanguages,
                 onChangeLanguages = { pair ->
                     onEvent(PlayerEvent.UpdateItemLanguages(target = pair.target, base = pair.base))
                 },
@@ -705,8 +725,8 @@ private fun PlayerTitleMetaRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         languagePair?.let { pair ->
-            val targetText = pair.target.value.uppercase(Locale.ROOT)
-            val baseText = pair.base?.value?.uppercase(Locale.ROOT)
+            val targetText = pair.target.value.lowercase(Locale.ROOT)
+            val baseText = pair.base?.value?.lowercase(Locale.ROOT)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -821,7 +841,7 @@ private fun ChunkSelectionActionStrip(
     if (showMergeConfirmDialog && currentSummary != null) {
         val rawLangCode = currentSummary.targetLanguage?.value?.trim()?.takeUnless {
             it.isEmpty() || it.equals("und", ignoreCase = true)
-        }?.uppercase(Locale.ROOT)
+        }?.lowercase(Locale.ROOT)
         val langLabel = rawLangCode ?: stringResource(R.string.player_merge_lang_unknown)
         val confirmMessage = if (currentSummary.unselectedGapCount > 0) {
             stringResource(
@@ -888,10 +908,10 @@ private fun ChunkDisplaySettingsStrip(
     val langPalette = chunkFlowLanguagePalette()
     val targetLangCode = state.languagePair?.target?.value?.trim()
         ?.takeIf { it.isNotEmpty() }
-        ?.uppercase(Locale.ROOT)
+        ?.lowercase(Locale.ROOT)
     val baseLangCode = state.languagePair?.base?.value?.trim()
         ?.takeIf { it.isNotEmpty() }
-        ?.uppercase(Locale.ROOT)
+        ?.lowercase(Locale.ROOT)
 
     val languageFilter = state.practice.languageFilter
     val languageFilterLabel = when (languageFilter) {
@@ -1307,19 +1327,79 @@ private fun PlayerErrorBanner(
     }
 }
 
+private enum class TransportOverlayMenu {
+    SEEK_BACK,
+    PREVIOUS,
+    NEXT,
+    SEEK_FORWARD,
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TransportTonalButton(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    contentDescriptionText: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    val containerColor = if (enabled) {
+        MaterialTheme.colorScheme.secondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    }
+    val contentColor = if (enabled) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+    }
+    Surface(
+        shape = ButtonDefaults.filledTonalShape,
+        color = containerColor,
+        contentColor = contentColor,
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .clip(ButtonDefaults.filledTonalShape)
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
+            .semantics { contentDescription = contentDescriptionText },
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            content()
+        }
+    }
+}
+
 @Composable
 private fun PlayerTransportControls(
     isPlaying: Boolean,
     seekBackMs: Long,
     seekForwardMs: Long,
     hasChunks: Boolean,
+    hasPreviousCheckedChunk: Boolean,
+    hasNextCheckedChunk: Boolean,
+    hasNextMediaItem: Boolean,
     onTogglePlayPause: () -> Unit,
     onSeekBack: () -> Unit,
     onSeekForward: () -> Unit,
     onPreviousChunk: () -> Unit,
     onNextChunk: () -> Unit,
+    onSetSeekBackMs: (Long) -> Unit,
+    onSetSeekForwardMs: (Long) -> Unit,
+    onSeekToFileStart: () -> Unit,
+    onSeekToPreviousCheckedChunk: () -> Unit,
+    onSeekToNextCheckedChunk: () -> Unit,
+    onOpenNextMediaItem: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var activeOverlay by remember { mutableStateOf<TransportOverlayMenu?>(null) }
     val seekBackSeconds = (seekBackMs / 1_000L).coerceAtLeast(1L)
     val seekForwardSeconds = (seekForwardMs / 1_000L).coerceAtLeast(1L)
     val seekBackCd = stringResource(R.string.player_seek_back_cd, seekBackSeconds)
@@ -1337,50 +1417,111 @@ private fun PlayerTransportControls(
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FilledTonalButton(
-            onClick = onSeekBack,
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .heightIn(min = 48.dp)
-                .semantics { contentDescription = seekBackCd },
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = ChunkFlowIcons.SeekBack,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = stringResource(R.string.player_seek_back_label, seekBackSeconds),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        Box(modifier = Modifier.weight(1f, fill = false)) {
+            TransportTonalButton(
+                onClick = onSeekBack,
+                onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_BACK },
+                contentDescriptionText = seekBackCd,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.SeekBack,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.player_seek_back_label, seekBackSeconds),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = activeOverlay == TransportOverlayMenu.SEEK_BACK,
+                onDismissRequest = { activeOverlay = null },
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PlayerUiState.SEEK_BACK_PRESETS_MS.forEach { presetMs ->
+                        val seconds = (presetMs / 1_000L).toInt()
+                        val isSelected = seekBackMs == presetMs
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                activeOverlay = null
+                                onSetSeekBackMs(presetMs)
+                            },
+                            label = {
+                                Text(
+                                    text = stringResource(R.string.player_seek_preset_seconds_format, seconds),
+                                    maxLines = 1,
+                                )
+                            },
+                        )
+                    }
+                }
             }
         }
 
-        FilledTonalButton(
-            onClick = onPreviousChunk,
-            enabled = hasChunks,
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .heightIn(min = 48.dp)
-                .semantics { contentDescription = prevChunkCd },
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = ChunkFlowIcons.SkipPrevious,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = stringResource(R.string.player_prev_chunk_label),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        Box(modifier = Modifier.weight(1f, fill = false)) {
+            TransportTonalButton(
+                onClick = onPreviousChunk,
+                onLongClick = { activeOverlay = TransportOverlayMenu.PREVIOUS },
+                enabled = hasChunks,
+                contentDescriptionText = prevChunkCd,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.SkipPrevious,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.player_prev_chunk_label),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = activeOverlay == TransportOverlayMenu.PREVIOUS,
+                onDismissRequest = { activeOverlay = null },
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            activeOverlay = null
+                            onSeekToFileStart()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.player_long_press_file_start),
+                            maxLines = 1,
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            activeOverlay = null
+                            onSeekToPreviousCheckedChunk()
+                        },
+                        enabled = hasPreviousCheckedChunk,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.player_long_press_prev_checked),
+                            maxLines = 1,
+                        )
+                    }
+                }
             }
         }
 
@@ -1395,50 +1536,112 @@ private fun PlayerTransportControls(
             )
         }
 
-        FilledTonalButton(
-            onClick = onNextChunk,
-            enabled = hasChunks,
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .heightIn(min = 48.dp)
-                .semantics { contentDescription = nextChunkCd },
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = ChunkFlowIcons.SkipNext,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = stringResource(R.string.player_next_chunk_label),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        Box(modifier = Modifier.weight(1f, fill = false)) {
+            TransportTonalButton(
+                onClick = { if (hasChunks) onNextChunk() },
+                onLongClick = { activeOverlay = TransportOverlayMenu.NEXT },
+                enabled = hasChunks || hasNextMediaItem,
+                contentDescriptionText = nextChunkCd,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.SkipNext,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.player_next_chunk_label),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = activeOverlay == TransportOverlayMenu.NEXT,
+                onDismissRequest = { activeOverlay = null },
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            activeOverlay = null
+                            onSeekToNextCheckedChunk()
+                        },
+                        enabled = hasNextCheckedChunk,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.player_long_press_next_checked),
+                            maxLines = 1,
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            activeOverlay = null
+                            onOpenNextMediaItem()
+                        },
+                        enabled = hasNextMediaItem,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.player_long_press_next_file),
+                            maxLines = 1,
+                        )
+                    }
+                }
             }
         }
 
-        FilledTonalButton(
-            onClick = onSeekForward,
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .heightIn(min = 48.dp)
-                .semantics { contentDescription = seekForwardCd },
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = ChunkFlowIcons.SeekForward,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    text = stringResource(R.string.player_seek_forward_label, seekForwardSeconds),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        Box(modifier = Modifier.weight(1f, fill = false)) {
+            TransportTonalButton(
+                onClick = onSeekForward,
+                onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_FORWARD },
+                contentDescriptionText = seekForwardCd,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.SeekForward,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.player_seek_forward_label, seekForwardSeconds),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            DropdownMenu(
+                expanded = activeOverlay == TransportOverlayMenu.SEEK_FORWARD,
+                onDismissRequest = { activeOverlay = null },
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PlayerUiState.SEEK_FORWARD_PRESETS_MS.forEach { presetMs ->
+                        val seconds = (presetMs / 1_000L).toInt()
+                        val isSelected = seekForwardMs == presetMs
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                activeOverlay = null
+                                onSetSeekForwardMs(presetMs)
+                            },
+                            label = {
+                                Text(
+                                    text = stringResource(R.string.player_seek_preset_seconds_format, seconds),
+                                    maxLines = 1,
+                                )
+                            },
+                        )
+                    }
+                }
             }
         }
     }
@@ -1558,6 +1761,7 @@ private fun ResegmentSheetContent(
     initialParams: SegmentationParams,
     languagePair: LanguagePair?,
     itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+    enabledLanguages: List<com.miuraken.chunkflow.core.model.LanguageTag>,
     onChangeLanguages: (LanguagePair) -> Unit,
     onChangeTargetEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
     onChangeBaseEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
@@ -1598,6 +1802,7 @@ private fun ResegmentSheetContent(
             onChangeLanguages = onChangeLanguages,
             onChangeTargetEngine = onChangeTargetEngine,
             onChangeBaseEngine = onChangeBaseEngine,
+            enabledLanguages = enabledLanguages,
         )
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))

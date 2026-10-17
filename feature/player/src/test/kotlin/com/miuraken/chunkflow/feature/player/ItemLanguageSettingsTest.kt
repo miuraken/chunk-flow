@@ -50,4 +50,19 @@ class ItemLanguageSettingsTest {
         assertNull(languagePairWithBase(koJa, "ja"))
         assertNull(languagePairWithBase(null, "ja"))
     }
+
+    @Test
+    fun `buildItemLanguageOptions_enabledLanguagesが指定されたら有効な言語に絞り込み現在の言語は維持する`() {
+        val enabled = listOf(LanguageTag("en"), LanguageTag("ja"), LanguageTag("zh"))
+        val filtered = buildItemLanguageOptions(currentCode = "en", enabledLanguages = enabled)
+        assertEquals(listOf("en", "ja", "zh-cn", "zh-tw"), filtered.map { it.code })
+
+        val withUnlistedCurrent = buildItemLanguageOptions(
+            currentCode = "ko",
+            noneLabel = "なし",
+            enabledLanguages = listOf(LanguageTag("en"), LanguageTag("ja")),
+        )
+        assertEquals(listOf("", "en", "ja", "ko"), withUnlistedCurrent.map { it.code })
+        assertEquals("ko - 韓国語", withUnlistedCurrent.first { it.code == "ko" }.label)
+    }
 }

@@ -727,10 +727,7 @@ private fun DetailedChunkTranscriptionDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = stringResource(
-                    R.string.player_detailed_transcribe_dialog_title,
-                    dialogState.chunkIndex + 1,
-                ),
+                text = stringResource(R.string.player_detailed_transcribe_dialog_title),
             )
         },
         text = {
@@ -751,7 +748,7 @@ private fun DetailedChunkTranscriptionDialog(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     if (languagePair != null) {
-                        val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
+                        val targetCode = languagePair.target.value.lowercase(JavaLocale.ROOT)
                         FilterChip(
                             selected = matchesLanguageRole(selectedLanguage, languagePair.target),
                             onClick = {
@@ -771,7 +768,7 @@ private fun DetailedChunkTranscriptionDialog(
                             enabled = !dialogState.isRunning,
                         )
                         languagePair.base?.takeIf { !matchesLanguageRole(it, languagePair.target) }?.let { baseLang ->
-                            val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
+                            val baseCode = baseLang.value.lowercase(JavaLocale.ROOT)
                             FilterChip(
                                 selected = matchesLanguageRole(selectedLanguage, baseLang),
                                 onClick = {
@@ -791,7 +788,7 @@ private fun DetailedChunkTranscriptionDialog(
                             )
                         }
                     } else {
-                        val langCode = selectedLanguage.value.uppercase(JavaLocale.ROOT)
+                        val langCode = selectedLanguage.value.lowercase(JavaLocale.ROOT)
                         FilterChip(
                             selected = true,
                             onClick = {},
@@ -953,7 +950,7 @@ private fun DetailedChunkTranscriptionDialog(
                 // 6. 認識結果テキストボックス（編集可）
                 if (dialogState.recognizedEngineId != null) {
                     val langText = (dialogState.recognizedLanguage ?: selectedLanguage).value
-                        .uppercase(JavaLocale.ROOT)
+                        .lowercase(JavaLocale.ROOT)
                     Text(
                         text = stringResource(
                             R.string.player_detailed_transcribe_result_meta,
@@ -2264,7 +2261,7 @@ private fun UnknownLanguageBanner(
     modifier: Modifier = Modifier,
 ) {
     val langPalette = chunkFlowLanguagePalette()
-    val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
+    val targetCode = languagePair.target.value.lowercase(JavaLocale.ROOT)
     FlowRow(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2294,7 +2291,7 @@ private fun UnknownLanguageBanner(
             ),
         )
         languagePair.base?.let { baseLang ->
-            val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
+            val baseCode = baseLang.value.lowercase(JavaLocale.ROOT)
             AssistChip(
                 onClick = { onBulkSetUnknownLanguage(baseLang) },
                 label = {
@@ -2351,7 +2348,7 @@ internal fun ChunkLanguageBadge(
         normalizedValue != null -> colorScheme.onSecondaryContainer
         else -> colorScheme.onSurfaceVariant
     }
-    val badgeText = normalizedValue?.uppercase(JavaLocale.ROOT)?.ifBlank { "-" } ?: "-"
+    val badgeText = normalizedValue?.lowercase(JavaLocale.ROOT)?.ifBlank { "-" } ?: "-"
 
     Surface(
         modifier = modifier.clip(RoundedCornerShape(4.dp)),

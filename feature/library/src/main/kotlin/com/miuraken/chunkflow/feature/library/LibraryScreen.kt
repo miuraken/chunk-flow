@@ -131,11 +131,34 @@ internal fun normalizeDialogLanguageCode(rawCode: String): String {
 internal fun buildDialogLanguageOptions(
     currentCode: String,
     noneLabel: String? = null,
+    enabledLanguages: List<LanguageTag> = emptyList(),
 ): List<LanguageDropdownOption> {
     val normalizedCurrent = normalizeDialogLanguageCode(currentCode)
-    val baseList = ALPHABETICAL_LANGUAGE_OPTIONS.toMutableList()
+    val allowedCodes: Set<String>? = if (enabledLanguages.isEmpty()) {
+        null
+    } else {
+        buildSet {
+            enabledLanguages.forEach { tag ->
+                val norm = normalizeDialogLanguageCode(tag.value)
+                if (norm.isNotBlank()) {
+                    add(norm)
+                    if (norm == "zh-cn" || norm == "zh-tw") {
+                        add("zh-cn")
+                        add("zh-tw")
+                    }
+                }
+            }
+        }
+    }
+    val baseList = if (allowedCodes == null) {
+        ALPHABETICAL_LANGUAGE_OPTIONS.toMutableList()
+    } else {
+        ALPHABETICAL_LANGUAGE_OPTIONS.filter { it.code in allowedCodes }.toMutableList()
+    }
     if (normalizedCurrent.isNotBlank() && baseList.none { it.code == normalizedCurrent }) {
-        baseList.add(LanguageDropdownOption(normalizedCurrent, normalizedCurrent))
+        val catalogEntry = ALPHABETICAL_LANGUAGE_OPTIONS.firstOrNull { it.code == normalizedCurrent }
+            ?: LanguageDropdownOption(normalizedCurrent, normalizedCurrent)
+        baseList.add(catalogEntry)
         baseList.sortBy { it.code }
     }
     return if (noneLabel != null) {
@@ -1475,6 +1498,7 @@ private fun LanguagePairDropdownSection(
     baseLangCode: String,
     onTargetLangChange: (String) -> Unit,
     onBaseLangChange: (String) -> Unit,
+    enabledLanguages: List<LanguageTag> = emptyList(),
 ) {
     val langPalette = chunkFlowLanguagePalette()
     val noneLabel = stringResource(R.string.library_edit_base_lang_none)
@@ -1482,11 +1506,19 @@ private fun LanguagePairDropdownSection(
     val normalizedTarget = normalizeDialogLanguageCode(targetLangCode)
     val normalizedBase = normalizeDialogLanguageCode(baseLangCode)
 
-    val targetOptions = remember(normalizedTarget) {
-        buildDialogLanguageOptions(currentCode = normalizedTarget, noneLabel = null)
+    val targetOptions = remember(normalizedTarget, enabledLanguages) {
+        buildDialogLanguageOptions(
+            currentCode = normalizedTarget,
+            noneLabel = null,
+            enabledLanguages = enabledLanguages,
+        )
     }
-    val baseOptions = remember(normalizedBase, noneLabel) {
-        buildDialogLanguageOptions(currentCode = normalizedBase, noneLabel = noneLabel)
+    val baseOptions = remember(normalizedBase, noneLabel, enabledLanguages) {
+        buildDialogLanguageOptions(
+            currentCode = normalizedBase,
+            noneLabel = noneLabel,
+            enabledLanguages = enabledLanguages,
+        )
     }
 
     val selectedTargetLabel = targetOptions.firstOrNull { it.code == normalizedTarget }?.label
@@ -1617,7 +1649,7 @@ private fun LanguagePairDropdownSection(
 @Composable
 private fun ImportConfigDialog(
     config: PendingImportConfig,
-    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
+    enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1674,6 +1706,7 @@ private fun ImportConfigDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    enabledLanguages = enabledLanguages,
                 )
             }
         },
@@ -1704,13 +1737,28 @@ private fun ImportConfigDialog(
 
 @Composable
 private fun CreateVirtualFolderDialog(
-    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
+    enabledLanguages: List<LanguageTag>,
     onConfirm: (String, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val defaultTarget = remember(enabledLanguages) {
+        enabledLanguages.firstOrNull { normalizeDialogLanguageCode(it.value) != "ja" }
+            ?.let { normalizeDialogLanguageCode(it.value) }
+            ?: enabledLanguages.firstOrNull()?.let { normalizeDialogLanguageCode(it.value) }
+            ?: "en"
+    }
+    val defaultBase = remember(enabledLanguages, defaultTarget) {
+        enabledLanguages.firstOrNull {
+            val norm = normalizeDialogLanguageCode(it.value)
+            norm == "ja" && norm != defaultTarget
+        }?.let { normalizeDialogLanguageCode(it.value) }
+            ?: enabledLanguages.firstOrNull { normalizeDialogLanguageCode(it.value) != defaultTarget }
+                ?.let { normalizeDialogLanguageCode(it.value) }
+            ?: "ja"
+    }
     var folderNameText by remember { mutableStateOf("") }
-    var targetLangText by remember { mutableStateOf("en") }
-    var baseLangText by remember { mutableStateOf("ja") }
+    var targetLangText by remember(defaultTarget) { mutableStateOf(defaultTarget) }
+    var baseLangText by remember(defaultBase) { mutableStateOf(defaultBase) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1735,6 +1783,7 @@ private fun CreateVirtualFolderDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    enabledLanguages = enabledLanguages,
                 )
             }
         },
@@ -1770,7 +1819,7 @@ private fun CreateVirtualFolderDialog(
 @Composable
 private fun EditItemMetadataDialog(
     item: AudioItem,
-    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
+    enabledLanguages: List<LanguageTag>,
     onImportTranscript: () -> Unit,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
@@ -1806,6 +1855,7 @@ private fun EditItemMetadataDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    enabledLanguages = enabledLanguages,
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
@@ -1873,7 +1923,7 @@ private fun EditItemMetadataDialog(
 @Composable
 private fun EditDirectoryMetadataDialog(
     directoryEdit: PendingDirectoryEdit,
-    @Suppress("UNUSED_PARAMETER") enabledLanguages: List<LanguageTag>,
+    enabledLanguages: List<LanguageTag>,
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1909,6 +1959,7 @@ private fun EditDirectoryMetadataDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    enabledLanguages = enabledLanguages,
                 )
             }
         },
@@ -1943,8 +1994,8 @@ private fun LanguagePairBadge(
     modifier: Modifier = Modifier,
 ) {
     val langPalette = chunkFlowLanguagePalette()
-    val targetUpper = pair.target.value.uppercase(Locale.ROOT)
-    val baseUpper = pair.base?.value?.uppercase(Locale.ROOT)
+    val targetUpper = pair.target.value.lowercase(Locale.ROOT)
+    val baseUpper = pair.base?.value?.lowercase(Locale.ROOT)
 
     if (baseUpper != null) {
         Row(

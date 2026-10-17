@@ -1686,4 +1686,104 @@ class PlayerViewModelTest {
         assertTrue(viewModel.uiState.value.isTranscriptionBadgeVisible)
         assertTrue(viewModel.uiState.value.isTranscriptionProgressVisible)
     }
+
+    @Test
+    fun `詳細文字起こしプレビュー再生_一時停止中に0_5xで再生しても元の速度に巻き戻されず停止時に復元される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+        viewModel.onEvent(PlayerEvent.SetSpeed(1.25f))
+        assertEquals(1.25f, viewModel.uiState.value.speed)
+
+        val targetChunk = sample.chunks[1]
+        viewModel.onEvent(PlayerEvent.OpenDetailedTranscription(targetChunk.id))
+        viewModel.onEvent(PlayerEvent.PlayDetailedTranscriptionChunkPreview(targetChunk.id, 0.5f))
+
+        assertEquals(0.5f, playback.status.value.speed)
+        assertEquals(0.5f, viewModel.uiState.value.speed)
+        assertTrue(viewModel.uiState.value.detailedTranscriptionDialog?.isPreviewPlaying == true)
+        assertEquals(0.5f, viewModel.uiState.value.detailedTranscriptionDialog?.audioSpeed)
+
+        viewModel.onEvent(PlayerEvent.StopDetailedTranscriptionChunkPreview)
+        assertFalse(viewModel.uiState.value.detailedTranscriptionDialog?.isPreviewPlaying == true)
+        assertEquals(1.25f, playback.status.value.speed)
+        assertEquals(1.25f, viewModel.uiState.value.speed)
+    }
+
+    @Test
+    fun `再生ボタン長押しアクション_巻き戻し早送り秒数変更とファイル先頭移動と前後チェック項目移動と次のファイル移動が機能する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item1 = sample.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("track-1"),
+            title = "Lesson 2",
+            course = "韓国語講座",
+        )
+        val item2 = sample.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("track-2"),
+            title = "Lesson 10",
+            course = "韓国語講座",
+        )
+        val itemOtherCourse = sample.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("track-other"),
+            title = "Lesson 3",
+            course = "別講座",
+        )
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item2, item1, itemOtherCourse))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample.copy(item = item1))
+            put(sample.copy(item = item2))
+        }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item1.id)
+        // 自然順ソートで Lesson 2 の次は Lesson 10 (item2)
+        assertEquals(item2.id, viewModel.uiState.value.nextMediaId)
+
+        // 1. 巻き戻し・早送り秒数の変更
+        viewModel.onEvent(PlayerEvent.SetSeekBackMs(2_000L))
+        viewModel.onEvent(PlayerEvent.SetSeekForwardMs(15_000L))
+        assertEquals(2_000L, viewModel.uiState.value.seekBackMs)
+        assertEquals(15_000L, viewModel.uiState.value.seekForwardMs)
+
+        // 2. チェック項目への前後移動（チャンク 1 とチャンク 3 を選択）
+        val c0 = sample.chunks[0]
+        val c1 = sample.chunks[1]
+        val c2 = sample.chunks[2]
+        val c3 = sample.chunks[3]
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c1.id, true))
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(c3.id, true))
+        viewModel.onEvent(PlayerEvent.SeekToChunk(c2.id))
+        assertEquals(2, viewModel.uiState.value.activeChunkIndex)
+        assertTrue(viewModel.uiState.value.hasPreviousCheckedChunk)
+        assertTrue(viewModel.uiState.value.hasNextCheckedChunk)
+
+        viewModel.onEvent(PlayerEvent.SeekToPreviousCheckedChunk)
+        assertEquals(c1.id, playback.status.value.currentChunkId)
+        assertFalse(viewModel.uiState.value.hasPreviousCheckedChunk)
+        assertTrue(viewModel.uiState.value.hasNextCheckedChunk)
+
+        viewModel.onEvent(PlayerEvent.SeekToNextCheckedChunk)
+        assertEquals(c3.id, playback.status.value.currentChunkId)
+        assertTrue(viewModel.uiState.value.hasPreviousCheckedChunk)
+        assertFalse(viewModel.uiState.value.hasNextCheckedChunk)
+
+        // 3. ファイル先頭へ移動
+        viewModel.onEvent(PlayerEvent.SeekToFileStart)
+        assertEquals(c0.id, playback.status.value.currentChunkId)
+
+        // 4. 次のファイルへ移動（Lesson 10 が末尾なのでその次は null）
+        viewModel.onEvent(PlayerEvent.OpenNextMediaItem)
+        assertEquals(item2.id, viewModel.uiState.value.mediaId)
+        assertNull(viewModel.uiState.value.nextMediaId)
+    }
 }

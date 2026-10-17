@@ -186,7 +186,7 @@
     <string name="player_chunk_skip_enable_selected">Skip selected chunks (%1$d)</string>
     <string name="player_chunk_skip_disable_selected">Unskip selected chunks (%1$d)</string>
     <string name="player_chunk_detailed_transcribe">Detailed transcription</string>
-    <string name="player_detailed_transcribe_dialog_title">Detailed transcription for Chunk #%1$d</string>
+    <string name="player_detailed_transcribe_dialog_title">Detailed transcription</string>
     <string name="player_detailed_transcribe_engine_label">Speech recognition engine</string>
     <string name="player_detailed_transcribe_engine_os">SpeechRecognizer</string>
     <string name="player_detailed_transcribe_engine_sherpa">sherpa-onnx</string>
@@ -195,7 +195,7 @@
     <string name="player_detailed_transcribe_lang_target">Target (%1$s)</string>
     <string name="player_detailed_transcribe_lang_base">Base (%1$s)</string>
     <string name="player_detailed_transcribe_speed_label">Audio input speed</string>
-    <string name="player_detailed_transcribe_preview_label">Chunk waveform &amp; preview</string>
+    <string name="player_detailed_transcribe_preview_label">Preview</string>
     <string name="player_detailed_transcribe_preview_play">Play</string>
     <string name="player_detailed_transcribe_preview_stop">Stop</string>
     <string name="player_detailed_transcribe_model_download_confirm_title">Download Model</string>
@@ -208,4 +208,9 @@
     <string name="player_detailed_transcribe_result_empty">Could not recognize speech (try different settings)</string>
     <string name="player_detailed_transcribe_result_meta">Engine: %1$s / Language: %2$s</string>
     <string name="player_detailed_transcribe_apply">Apply result</string>
-<string name="player_settings_target_stt_engine_label">STT Engine (Target)</string><string name="player_settings_base_stt_engine_label">STT Engine (Base)</string><string name="player_settings_stt_engine_default">Follow language setting (Default)</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string></resources>
+<string name="player_settings_target_stt_engine_label">STT Engine (Target)</string><string name="player_settings_base_stt_engine_label">STT Engine (Base)</string><string name="player_settings_stt_engine_default">Follow language setting (Default)</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string>    <string name="player_seek_preset_seconds_format">%1$ds</string>
+    <string name="player_long_press_file_start">Go to start of file</string>
+    <string name="player_long_press_prev_checked">Previous checked chunk</string>
+    <string name="player_long_press_next_checked">Next checked chunk</string>
+    <string name="player_long_press_next_file">Next file</string>
+</resources>

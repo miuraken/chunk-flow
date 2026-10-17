@@ -9,8 +9,8 @@
     <string name="settings_seek_back_label">Seek back duration</string>
     <string name="settings_seek_forward_label">Seek forward duration</string>
     <string name="settings_seconds_format">%1$ds</string>
-    <string name="settings_default_speed_label">Default playback speed</string>
-    <string name="settings_default_auto_pause_label">Default auto-pause</string>
+    <string name="settings_default_speed_label">Secondary playback speed</string>
+    <string name="settings_default_auto_pause_label">Auto-pause</string>
     <string name="settings_auto_pause_off">OFF</string>
     <string name="settings_auto_pause_fixed">Fixed %1$.1fs</string>
     <string name="settings_auto_pause_proportional">Chunk × %1$.1f</string>

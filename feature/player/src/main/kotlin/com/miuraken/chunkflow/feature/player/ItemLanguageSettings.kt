@@ -72,11 +72,34 @@ internal fun normalizeItemLanguageCode(rawCode: String): String {
 internal fun buildItemLanguageOptions(
     currentCode: String,
     noneLabel: String? = null,
+    enabledLanguages: List<LanguageTag> = emptyList(),
 ): List<ItemLanguageOption> {
     val normalizedCurrent = normalizeItemLanguageCode(currentCode)
-    val options = ITEM_LANGUAGE_OPTIONS.toMutableList()
+    val allowedCodes: Set<String>? = if (enabledLanguages.isEmpty()) {
+        null
+    } else {
+        buildSet {
+            enabledLanguages.forEach { tag ->
+                val norm = normalizeItemLanguageCode(tag.value)
+                if (norm.isNotBlank()) {
+                    add(norm)
+                    if (norm == "zh-cn" || norm == "zh-tw") {
+                        add("zh-cn")
+                        add("zh-tw")
+                    }
+                }
+            }
+        }
+    }
+    val options = if (allowedCodes == null) {
+        ITEM_LANGUAGE_OPTIONS.toMutableList()
+    } else {
+        ITEM_LANGUAGE_OPTIONS.filter { it.code in allowedCodes }.toMutableList()
+    }
     if (normalizedCurrent.isNotBlank() && options.none { it.code == normalizedCurrent }) {
-        options.add(ItemLanguageOption(normalizedCurrent, normalizedCurrent))
+        val catalogEntry = ITEM_LANGUAGE_OPTIONS.firstOrNull { it.code == normalizedCurrent }
+            ?: ItemLanguageOption(normalizedCurrent, normalizedCurrent)
+        options.add(catalogEntry)
         options.sortBy { it.code }
     }
     return if (noneLabel != null) listOf(ItemLanguageOption("", noneLabel)) + options else options
@@ -134,14 +157,21 @@ internal fun ItemLanguageSettingsSection(
     onChangeTargetEngine: (SttEngine?) -> Unit,
     onChangeBaseEngine: (SttEngine?) -> Unit,
     modifier: Modifier = Modifier,
+    enabledLanguages: List<LanguageTag> = emptyList(),
 ) {
     val langPalette = chunkFlowLanguagePalette()
     val noneLabel = stringResource(R.string.player_settings_base_lang_none)
     val targetCode = normalizeItemLanguageCode(languagePair?.target?.value.orEmpty())
     val baseCode = normalizeItemLanguageCode(languagePair?.base?.value.orEmpty())
-    val targetOptions = remember(targetCode) { buildItemLanguageOptions(currentCode = targetCode) }
-    val baseOptions = remember(baseCode, noneLabel) {
-        buildItemLanguageOptions(currentCode = baseCode, noneLabel = noneLabel)
+    val targetOptions = remember(targetCode, enabledLanguages) {
+        buildItemLanguageOptions(currentCode = targetCode, enabledLanguages = enabledLanguages)
+    }
+    val baseOptions = remember(baseCode, noneLabel, enabledLanguages) {
+        buildItemLanguageOptions(
+            currentCode = baseCode,
+            noneLabel = noneLabel,
+            enabledLanguages = enabledLanguages,
+        )
     }
 
     Column(

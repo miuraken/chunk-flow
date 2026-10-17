@@ -186,7 +186,7 @@
     <string name="player_chunk_skip_enable_selected">選択したチャンクをまとめてスキップ設定 (%1$d件)</string>
     <string name="player_chunk_skip_disable_selected">選択したチャンクのスキップをまとめて解除 (%1$d件)</string>
     <string name="player_chunk_detailed_transcribe">より詳しく文字起こし</string>
-    <string name="player_detailed_transcribe_dialog_title">チャンク #%1$d の詳細文字起こし</string>
+    <string name="player_detailed_transcribe_dialog_title">詳細文字起こし</string>
     <string name="player_detailed_transcribe_engine_label">文字起こしエンジン</string>
     <string name="player_detailed_transcribe_engine_os">SpeechRecognizer</string>
     <string name="player_detailed_transcribe_engine_sherpa">sherpa-onnx</string>
@@ -195,17 +195,22 @@
     <string name="player_detailed_transcribe_lang_target">学習言語（%1$s）</string>
     <string name="player_detailed_transcribe_lang_base">母語（%1$s）</string>
     <string name="player_detailed_transcribe_speed_label">音声の入力速度</string>
-    <string name="player_detailed_transcribe_preview_label">チャンクの波形と再生</string>
+    <string name="player_detailed_transcribe_preview_label">再生</string>
     <string name="player_detailed_transcribe_preview_play">再生</string>
     <string name="player_detailed_transcribe_preview_stop">停止</string>
     <string name="player_detailed_transcribe_model_download_confirm_title">モデルのダウンロード</string>
     <string name="player_detailed_transcribe_model_download_confirm_message">モデルをダウンロードしてよろしいですか？</string>
     <string name="player_detailed_transcribe_model_download_confirm_ok">OK</string>
     <string name="player_detailed_transcribe_model_downloading">モデルをダウンロード中…</string>
-    <string name="player_detailed_transcribe_run_button">この条件で文字起こしを試す</string>
+    <string name="player_detailed_transcribe_run_button">この条件で文字起こしをしてみる</string>
     <string name="player_detailed_transcribe_running">文字起こしを実行中…</string>
     <string name="player_detailed_transcribe_result_label">認識結果（編集して反映できます）</string>
     <string name="player_detailed_transcribe_result_empty">音声を認識できませんでした（条件を変えて再試行できます）</string>
     <string name="player_detailed_transcribe_result_meta">エンジン: %1$s / 言語: %2$s</string>
     <string name="player_detailed_transcribe_apply">この結果を反映</string>
-<string name="player_settings_target_stt_engine_label">文字起こしエンジン (学習言語)</string><string name="player_settings_base_stt_engine_label">文字起こしエンジン (ベース言語)</string><string name="player_settings_stt_engine_default">言語の設定に従う（既定）</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string></resources>
+<string name="player_settings_target_stt_engine_label">文字起こしエンジン (学習言語)</string><string name="player_settings_base_stt_engine_label">文字起こしエンジン (ベース言語)</string><string name="player_settings_stt_engine_default">言語の設定に従う（既定）</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string>    <string name="player_seek_preset_seconds_format">%1$d秒</string>
+    <string name="player_long_press_file_start">ファイル先頭へ</string>
+    <string name="player_long_press_prev_checked">一つ前のチェック項目へ</string>
+    <string name="player_long_press_next_checked">一つ後のチェック項目へ</string>
+    <string name="player_long_press_next_file">次のファイルへ</string>
+</resources>

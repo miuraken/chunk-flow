@@ -46,6 +46,7 @@ import com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.math.BigInteger
 import java.util.Locale
 import javax.inject.Inject
 import kotlin.math.roundToInt
@@ -598,6 +599,8 @@ data class PlayerUiState(
     val localTranscriptExported: Boolean = false,
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
     val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+    val enabledLanguages: List<LanguageTag> = UserSettings.DEFAULT_ENABLED_LANGUAGES.toList(),
+    val nextMediaId: MediaId? = null,
 ) {
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
@@ -677,6 +680,29 @@ data class PlayerUiState(
                 (chunk.language == null || chunk.language.value.isBlank() || chunk.language.value == "und")
         }
 
+    /** 現在位置より前にチェック済み（またはブックマーク済み）のチャンクがあるかどうか。 */
+    val hasPreviousCheckedChunk: Boolean
+        get() {
+            val idx = activeChunkIndex ?: 0
+            if (idx <= 0 || chunks.isEmpty()) return false
+            val useRepeatChecked = chunks.any { it.isRepeatChecked }
+            return chunks.subList(0, idx.coerceAtMost(chunks.size)).any { chunk ->
+                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+            }
+        }
+
+    /** 現在位置より後ろにチェック済み（またはブックマーク済み）のチャンクがあるかどうか。 */
+    val hasNextCheckedChunk: Boolean
+        get() {
+            if (chunks.isEmpty()) return false
+            val startIdx = (activeChunkIndex ?: -1) + 1
+            if (startIdx !in chunks.indices) return false
+            val useRepeatChecked = chunks.any { it.isRepeatChecked }
+            return chunks.subList(startIdx, chunks.size).any { chunk ->
+                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+            }
+        }
+
     companion object {
         /** 指定速度バッジの初期倍率（1.5 倍）。 */
         const val DEFAULT_CUSTOM_SPEED: Float = 1.5f
@@ -686,6 +712,12 @@ data class PlayerUiState(
 
         /** 再生速度のプリセット一覧（F3.2、1.0x を除く）。 */
         val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f)
+
+        /** 巻き戻し秒数のプリセット一覧（ミリ秒）。 */
+        val SEEK_BACK_PRESETS_MS: List<Long> = listOf(1_000L, 2_000L, 3_000L, 5_000L, 10_000L)
+
+        /** 早送り秒数のプリセット一覧（ミリ秒）。 */
+        val SEEK_FORWARD_PRESETS_MS: List<Long> = listOf(3_000L, 5_000L, 10_000L, 15_000L, 30_000L)
     }
 }
 
@@ -904,6 +936,24 @@ sealed interface PlayerEvent {
 
     /** ファイル設定のベース言語の文字起こしエンジンを上書きする。 */
     data class SetBaseEngineOverride(val engine: com.miuraken.chunkflow.core.model.SttEngine?) : PlayerEvent
+
+    /** 巻き戻し秒数（ミリ秒）を変更する。 */
+    data class SetSeekBackMs(val durationMs: Long) : PlayerEvent
+
+    /** 早送り秒数（ミリ秒）を変更する。 */
+    data class SetSeekForwardMs(val durationMs: Long) : PlayerEvent
+
+    /** ファイルの先頭（最初の有効チャンクまたは 0ms）へ移動する。 */
+    data object SeekToFileStart : PlayerEvent
+
+    /** 現在位置より前のチェック項目（選択チャンクまたはブックマーク）へ移動する。 */
+    data object SeekToPreviousCheckedChunk : PlayerEvent
+
+    /** 現在位置より後ろのチェック項目（選択チャンクまたはブックマーク）へ移動する。 */
+    data object SeekToNextCheckedChunk : PlayerEvent
+
+    /** 同じフォルダ（コース）内の次の教材ファイルを開いて再生する。 */
+    data object OpenNextMediaItem : PlayerEvent
 }
 
 /** 端末内音声認識モデルの問題が残っている間、ダウンロードの完了を OS に問い合わせる間隔。 */
@@ -1038,16 +1088,36 @@ class PlayerViewModel @Inject constructor(
         val itemState: ItemState?,
         val analysis: AnalysisSnapshot,
         val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        val nextMediaId: MediaId? = null,
     )
+
+    private val currentItemAndNextMediaFlow = combine(
+        currentAudioItem,
+        libraryRepository.observeItems(),
+    ) { item, allItems ->
+        val nextId = if (item == null) {
+            null
+        } else {
+            val sameCourse = allItems
+                .filter { it.course == item.course }
+                .sortedWith { a, b ->
+                    val cmp = compareFileNamesNatural(a.title, b.title)
+                    if (cmp != 0) cmp else a.id.value.compareTo(b.id.value)
+                }
+            val idx = sameCourse.indexOfFirst { it.id == item.id }
+            if (idx >= 0) sameCourse.getOrNull(idx + 1)?.id else null
+        }
+        item to nextId
+    }
 
     private val mediaAndAnalysisFlow = combine(
         currentMediaId,
-        currentAudioItem,
+        currentItemAndNextMediaFlow,
         currentItemState,
         currentAnalysisSnapshot,
         currentItemSttOverride,
-    ) { mediaId, item, itemState, analysis, override ->
-        MediaStateInfo(mediaId, item, itemState, analysis, override)
+    ) { mediaId, (item, nextMediaId), itemState, analysis, override ->
+        MediaStateInfo(mediaId, item, itemState, analysis, override, nextMediaId)
     }
 
     /** プレイヤー画面の UI 状態。 */
@@ -1073,6 +1143,7 @@ class PlayerViewModel @Inject constructor(
             settings = settings,
             local = local,
             itemSttOverride = override,
+            nextMediaId = mediaState.nextMediaId,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -2106,6 +2177,29 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            is PlayerEvent.SetSeekBackMs -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setSeekBackMs(event.durationMs)
+                }
+            }
+
+            is PlayerEvent.SetSeekForwardMs -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setSeekForwardMs(event.durationMs)
+                }
+            }
+
+            PlayerEvent.SeekToFileStart -> seekToFileStart()
+
+            PlayerEvent.SeekToPreviousCheckedChunk -> seekToCheckedChunk(direction = -1)
+
+            PlayerEvent.SeekToNextCheckedChunk -> seekToCheckedChunk(direction = 1)
+
+            PlayerEvent.OpenNextMediaItem -> {
+                val nextId = uiState.value.nextMediaId ?: return
+                open(nextId)
+            }
+
             PlayerEvent.Back -> close()
         }
     }
@@ -2151,10 +2245,12 @@ class PlayerViewModel @Inject constructor(
         }
         val clampedSpeed = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
         playbackController.setSpeed(clampedSpeed)
+        playbackController.player.value?.setPlaybackSpeed(clampedSpeed)
         val targetChunk = uiState.value.chunks.firstOrNull { it.id == chunkId }
         playbackController.seekToChunk(chunkId)
         val player = playbackController.player.value
         if (player != null) {
+            player.setPlaybackSpeed(clampedSpeed)
             player.play()
         } else if (playbackController is FakePlaybackController) {
             if (targetChunk != null) {
@@ -2163,6 +2259,7 @@ class PlayerViewModel @Inject constructor(
             playbackController.statusState.update {
                 it.copy(
                     isPlaying = true,
+                    speed = clampedSpeed,
                     currentChunkId = chunkId,
                     autoPauseEndsAtMs = null,
                 )
@@ -2179,8 +2276,12 @@ class PlayerViewModel @Inject constructor(
         }
         detailedPreviewJob = viewModelScope.launch {
             launch {
+                var sawPlaying = false
                 playbackController.status.collect { status ->
-                    if (!status.isPlaying || (status.currentChunkId != null && status.currentChunkId != chunkId)) {
+                    if (status.isPlaying) {
+                        sawPlaying = true
+                    }
+                    if (sawPlaying && (!status.isPlaying || (status.currentChunkId != null && status.currentChunkId != chunkId))) {
                         stopDetailedChunkPreview(pausePlayer = status.isPlaying)
                     }
                 }
@@ -2214,6 +2315,7 @@ class PlayerViewModel @Inject constructor(
         }
         if (savedSpeed != null) {
             playbackController.setSpeed(savedSpeed)
+            playbackController.player.value?.setPlaybackSpeed(savedSpeed)
         }
         localUiState.update { state ->
             val dialog = state.detailedTranscriptionDialog ?: return@update state
@@ -2572,6 +2674,40 @@ class PlayerViewModel @Inject constructor(
         seekToChunk(chunks[targetIdx].id)
     }
 
+    private fun seekToFileStart() {
+        val firstChunk = uiState.value.chunks.firstOrNull { !it.isSkipped }
+            ?: uiState.value.chunks.firstOrNull()
+        if (firstChunk != null) {
+            seekToChunk(firstChunk.id)
+        } else {
+            seekTo(0L)
+        }
+    }
+
+    private fun seekToCheckedChunk(direction: Int) {
+        val chunks = uiState.value.chunks
+        if (chunks.isEmpty()) return
+        val posMs = playbackController.position.currentPositionMs()
+        val currentIdx = uiState.value.activeChunkIndex
+            ?: chunks.indexOfFirst { posMs in it.startMs..it.endMs }.takeIf { it >= 0 }
+            ?: if (direction < 0) chunks.size else -1
+        val useRepeatChecked = chunks.any { it.isRepeatChecked }
+        val target = if (direction < 0) {
+            val endExclusive = currentIdx.coerceIn(0, chunks.size)
+            chunks.subList(0, endExclusive).lastOrNull { chunk ->
+                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+            }
+        } else {
+            val startInclusive = (currentIdx + 1).coerceIn(0, chunks.size)
+            chunks.subList(startInclusive, chunks.size).firstOrNull { chunk ->
+                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+            }
+        }
+        if (target != null) {
+            seekToChunk(target.id)
+        }
+    }
+
     private fun roundSpeed(rawSpeed: Float): Float {
         val clamped = rawSpeed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
         return ((clamped * 20f).roundToInt() / 20f).coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
@@ -2607,6 +2743,7 @@ class PlayerViewModel @Inject constructor(
         settings: UserSettings,
         local: LocalUiSnapshot,
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        nextMediaId: MediaId? = null,
     ): PlayerUiState {
         val resolvedDurationMs = when {
             status.durationMs > 0L -> status.durationMs
@@ -2707,7 +2844,37 @@ class PlayerViewModel @Inject constructor(
             localTranscriptExported = local.localTranscriptExported,
             detailedTranscriptionDialog = local.detailedTranscriptionDialog,
             itemSttOverride = itemSttOverride,
+            enabledLanguages = settings.enabledLanguages.toList(),
+            nextMediaId = nextMediaId,
         )
+    }
+
+    private fun compareFileNamesNatural(a: String, b: String): Int {
+        var ia = 0
+        var ib = 0
+        while (ia < a.length && ib < b.length) {
+            val ca = a[ia]
+            val cb = b[ib]
+            if (ca.isDigit() && cb.isDigit()) {
+                val startA = ia
+                while (ia < a.length && a[ia].isDigit()) ia++
+                val startB = ib
+                while (ib < b.length && b[ib].isDigit()) ib++
+                val numA = BigInteger(a.substring(startA, ia))
+                val numB = BigInteger(b.substring(startB, ib))
+                val numCmp = numA.compareTo(numB)
+                if (numCmp != 0) return numCmp
+                val lenCmp = (ia - startA).compareTo(ib - startB)
+                if (lenCmp != 0) return lenCmp
+            } else {
+                val lowerA = ca.lowercaseChar()
+                val lowerB = cb.lowercaseChar()
+                if (lowerA != lowerB) return lowerA.compareTo(lowerB)
+                ia++
+                ib++
+            }
+        }
+        return (a.length - ia).compareTo(b.length - ib)
     }
 
     private data class Quad<A, B, C, D>(
