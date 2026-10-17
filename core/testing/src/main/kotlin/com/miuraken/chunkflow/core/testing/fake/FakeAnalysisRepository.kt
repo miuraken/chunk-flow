@@ -543,7 +543,6 @@ class FakeAnalysisRepository : AnalysisRepository {
             if (indices.any { it < 0 } || indices.distinct().size != indices.size) return@update entry
             val firstIndex = indices.first()
             val lastIndex = indices.last()
-            if (lastIndex - firstIndex + 1 != indices.size) return@update entry
             success = true
 
             val first = entry.chunks[firstIndex]
@@ -555,7 +554,8 @@ class FakeAnalysisRepository : AnalysisRepository {
                     else -> chunk.copy(origin = ChunkOrigin.MANUAL)
                 }
             }
-            // 文字起こしは半角スペース 1 文字を挟んで連結し、言語は先頭のチャンクに合わせる
+            // 文字起こしは半角スペース 1 文字を挟んで連結し、言語は先頭のチャンクの設定に合わせる
+            val firstLanguage = entry.transcripts[first.id]?.language
             val sources = (firstIndex..lastIndex).mapNotNull { entry.transcripts[entry.chunks[it].id] }
             val updatedTranscripts = entry.transcripts.toMutableMap().apply {
                 (firstIndex..lastIndex).forEach { remove(entry.chunks[it].id) }
@@ -566,7 +566,7 @@ class FakeAnalysisRepository : AnalysisRepository {
                         base.copy(
                             chunkId = first.id,
                             text = sources.map { it.text }.filter { it.isNotBlank() }.joinToString(" "),
-                            language = entry.transcripts[first.id]?.language ?: base.language,
+                            language = firstLanguage,
                             textVariants = emptyMap(),
                             words = emptyList(),
                             userEdited = true,
