@@ -25,7 +25,6 @@ import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -95,6 +94,13 @@ interface OnDeviceChunkTranscriber {
      */
     val recognitionModelIssues: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>>
         get() = NO_RECOGNITION_MODEL_ISSUES
+
+    /**
+     * チャンクの切り出し用に開いたままにしている音声ファイルなどの資源を解放する（プレイヤー画面を閉じたときなど）。
+     *
+     * 実行中の文字起こしは止めない（切り出しの途中なら、その切り出しの終わりに解放する）。次の切り出しでは開き直す。
+     */
+    fun releaseIdleResources() = Unit
 
     /**
      * [language] の端末内音声認識モデルのダウンロードを要求する。
@@ -331,7 +337,8 @@ internal data class SpeechProbeSlice(
  * 音声ファイルから指定したチャンク区間 `[startMs, endMs]` の 16kHz モノラル 16-bit PCM を取り出すヘルパー（F6.2）。
  *
  * - `endSample` に到達した時点で即座にデコードを打ち切り、30 分等の長時間ファイル全体をデコードしない。
- * - [MediaCodecAudioStreamDecoder] 使用時は `startMs` 直前へシークしてデコードを開始し、抽出済みチャンクを LRU キャッシュする。
+ * - [MediaCodecAudioStreamDecoder] 使用時は、`startMs` の 500ms 手前まで圧縮データのまま読み飛ばしてからデコードし、
+ *   同じファイルの抽出器を使い回す（[MediaCodecAudioStreamDecoder.decodeFromPosition]）。抽出済みチャンクは LRU キャッシュする。
  */
 object ChunkPcmExtractor {
 
@@ -537,8 +544,10 @@ object ChunkPcmExtractor {
             }
         }
 
+        // 出力の大きさは最初から決まるので、1 バイトずつ書く ByteArrayOutputStream（write は同期化されている）を使わず配列に直接書く
         val expectedBytes = ((endSample - startSample) * 2L).coerceAtMost(MAX_CHUNK_PCM_BYTES.toLong()).toInt()
-        val out = ByteArrayOutputStream(max(expectedBytes, 1024))
+        val out = ByteArray(expectedBytes)
+        var writtenBytes = 0
         var currentSampleIndex = 0L
 
         val sink = SampleSink { samples, count ->
@@ -548,20 +557,21 @@ object ChunkPcmExtractor {
 
             val sliceStart = max(startSample, blockStart)
             val sliceEnd = min(endSample, blockEnd)
-            if (sliceStart < sliceEnd && out.size() < MAX_CHUNK_PCM_BYTES) {
-                val localFrom = (sliceStart - blockStart).toInt()
+            if (sliceStart < sliceEnd) {
+                var idx = (sliceStart - blockStart).toInt()
                 val localTo = (sliceEnd - blockStart).toInt()
-                for (idx in localFrom until localTo) {
-                    if (out.size() + 2 > MAX_CHUNK_PCM_BYTES) break
+                while (idx < localTo && writtenBytes + 2 <= out.size) {
                     val clamped = samples[idx].coerceIn(-1.0f, 1.0f)
                     val sampleInt = (clamped * Short.MAX_VALUE.toFloat())
                         .roundToInt()
                         .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                    out.write(sampleInt and 0xFF)
-                    out.write((sampleInt ushr 8) and 0xFF)
+                    out[writtenBytes] = (sampleInt and 0xFF).toByte()
+                    out[writtenBytes + 1] = ((sampleInt ushr 8) and 0xFF).toByte()
+                    writtenBytes += 2
+                    idx++
                 }
             }
-            if (currentSampleIndex >= endSample || out.size() >= MAX_CHUNK_PCM_BYTES) {
+            if (currentSampleIndex >= endSample || writtenBytes + 2 > out.size) {
                 throw ChunkExtractionCompletedException()
             }
         }
@@ -574,8 +584,9 @@ object ChunkPcmExtractor {
                     startPositionMs = startMs,
                     sink = sink,
                     outputSampleRate = sampleRateHz,
-                    onSeekLandingMs = { landedMs ->
-                        currentSampleIndex = (landedMs * sampleRateHz) / 1_000L
+                    onSeekLandingUs = { landedUs ->
+                        // 最初にデコーダへ渡すサンプルの時刻を、出力（sampleRateHz）のサンプル位置に直す
+                        currentSampleIndex = Math.floorDiv(landedUs * sampleRateHz, 1_000_000L)
                     },
                 )
             } else {
@@ -590,10 +601,10 @@ object ChunkPcmExtractor {
             null
         }
 
-        val extracted = when {
-            stoppedEarly -> out.toByteArray().takeIf { it.isNotEmpty() }
-            result is AudioDecodeResult.Success -> out.toByteArray().takeIf { it.isNotEmpty() }
-            else -> null
+        val extracted = if ((stoppedEarly || result is AudioDecodeResult.Success) && writtenBytes > 0) {
+            if (writtenBytes == out.size) out else out.copyOf(writtenBytes)
+        } else {
+            null
         }
 
         if (extracted != null && extracted.size <= MAX_CACHED_ENTRY_BYTES) {
@@ -1255,6 +1266,15 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
     override val recognitionModelIssues: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>> =
         modelIssuesState.asStateFlow()
+
+    /** チャンク切り出し用に開いたままにしている抽出器を解放する（次の切り出しで開き直す）。 */
+    private fun releaseChunkDecodeSession() {
+        (audioStreamDecoder as? MediaCodecAudioStreamDecoder)?.releaseRangeSession()
+    }
+
+    override fun releaseIdleResources() {
+        releaseChunkDecodeSession()
+    }
 
     override fun isAvailable(): Boolean = onDeviceAvailabilityChecker() ||
         standardAvailabilityChecker() ||

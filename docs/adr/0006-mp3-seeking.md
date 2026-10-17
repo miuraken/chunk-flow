@@ -55,6 +55,13 @@ S2 の結果（Media3 1.11.1）:
   解析も同じ DataSource で読めば解析と再生は一致する（D6 で確認。`MediaExtractorCompat(ExtractorsFactory, DataSource.Factory)` は Media3 1.11.1 にある。`@UnstableApi`）が、
   **PC ツール（ffmpeg）の時間軸との差が変わる**（ADR 0008）。
 - 先頭の無音（ヘッダのフレーム）は 26ms（44.1kHz）〜 26ms（22.05kHz、576 サンプル）程度で、聞いてわかる影響はない見込み。
+- **追記（2026-10-17、端末内文字起こしのチャンク切り出し）**: `MediaExtractorCompat.seekTo()` は、要求した時刻ではなく
+  `SeekMap.getSeekPoints()` が返したシーク点の時刻で抽出器をシークする（Media3 1.11.1 のソースで確認）。`IndexSeeker` は読んだ範囲しか索引を持たないため、
+  **開いた直後の抽出器ではどこへシークしても先頭に着地する**（合成した 20 分の MP3 で確認。再生側の ExoPlayer は要求時刻を渡すので影響なし）。
+  このままではチャンクごとに先頭からデコードすることになるため、`core:media` の `MediaCodecAudioStreamDecoder.decodeFromPosition` は、
+  開始位置の 500ms 手前まで**圧縮データのまま `advance()` で読み飛ばし**、同じファイルの抽出器を使い回す（読んだ範囲の索引が残る）。
+  時刻は抽出器が返すフレームの時刻なので、時間軸は全体をデコードしたときと同じ。Media3 を上げるときは `MediaCodecAudioStreamDecoderTest` の
+  実際の抽出器を使うテスト（`positionExtractorForRange_…`）で挙動を確かめる。
 
 ## 実機待ち・未確認
 

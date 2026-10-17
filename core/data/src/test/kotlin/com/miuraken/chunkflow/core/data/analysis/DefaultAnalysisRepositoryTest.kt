@@ -2059,4 +2059,35 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(StageStatus.Done, repository.observeStatus(epIds[1]).first()[AnalysisStage.SEGMENTATION])
         assertNull(repository.observeStatus(epIds[3]).first()[AnalysisStage.SEGMENTATION])
     }
+
+    @Test
+    fun `setMediaTranscriptionSessionOpen_開いている教材がなくなったときだけ切り出し用の資源を解放する`() = runTest {
+        var releaseCalls = 0
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult? = null
+
+            override fun releaseIdleResources() {
+                releaseCalls += 1
+            }
+        }
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val first = MediaId("media_release_01")
+        val second = MediaId("media_release_02")
+
+        // 別の教材に切り替えても、開いている教材がある間は解放しない
+        repository.setMediaTranscriptionSessionOpen(first, true)
+        repository.setMediaTranscriptionSessionOpen(second, true)
+        assertEquals(0, releaseCalls)
+
+        // プレイヤー画面を閉じて開いている教材がなくなったら解放する
+        repository.setMediaTranscriptionSessionOpen(second, false)
+        assertEquals(1, releaseCalls)
+    }
 }

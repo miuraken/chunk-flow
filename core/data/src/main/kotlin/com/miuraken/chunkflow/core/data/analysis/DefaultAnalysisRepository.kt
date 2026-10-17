@@ -1042,6 +1042,10 @@ class DefaultAnalysisRepository(
             lookaheadStateFor(id).update { current ->
                 current.copy(queuedChunkIds = emptySet())
             }
+            if (activeOpenMediaIds.isEmpty()) {
+                // プレイヤー画面を閉じたら、チャンク切り出し用に開いたままの音声ファイルを閉じる（削除された教材の容量も解放される）
+                runCatching { onDeviceChunkTranscriber.releaseIdleResources() }
+            }
         }
     }
 

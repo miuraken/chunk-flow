@@ -22,12 +22,15 @@ import java.io.FileNotFoundException
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.min
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * [MediaCodecAudioStreamDecoder] が内部で扱う抽出器のセッション抽象（テスト差し替え用）。
@@ -66,6 +69,8 @@ internal interface CodecSession : AutoCloseable {
  *   時刻は出力サンプル数の累計から求める（`presentationTimeUs` は時間軸に使わない。ADR 0005）。
  * - FLAC で終端の同じ `sampleTime` が繰り返されて EOS にならない問題に備え、時刻が進まない読み出しが
  *   [REPEATED_PTS_LIMIT] 回続いたら入力終端とみなし、抽出器が示す長さで出力を打ち切る（ADR 0005 決定 4）。
+ * - チャンクの切り出し（[decodeFromPosition]）では、開始位置の手前まで圧縮データのまま読み飛ばし、
+ *   同じファイルの抽出器を使い回す（F6.2。MP3 の `IndexSeeker` では、開いた直後のシークが先頭に着地するため）。
  */
 @Singleton
 @OptIn(UnstableApi::class)
@@ -83,6 +88,28 @@ class MediaCodecAudioStreamDecoder internal constructor(
         extractorOpener = { file -> openCompatExtractorSession(context, file) },
         codecCreator = { mime, format -> openMediaCodecSession(mime, format) },
     )
+
+    /** チャンク切り出し用に開いたままにする抽出器を特定するキー（パス・更新時刻・長さが同じなら同じファイルとみなす）。 */
+    private data class RangeSessionKey(
+        val absolutePath: String,
+        val lastModified: Long,
+        val length: Long,
+    )
+
+    /** チャンク切り出し用に開いたままにしている抽出器。 */
+    private class RangeExtractorSession(
+        val key: RangeSessionKey,
+        val extractor: ExtractorSession,
+    )
+
+    /** [rangeSession] を触るときに持つロック（抽出器はスレッドセーフではないため、切り出しを直列にする）。 */
+    private val rangeSessionMutex = Mutex()
+
+    /** [rangeSessionMutex] の中でだけ読み書きする。 */
+    private var rangeSession: RangeExtractorSession? = null
+
+    /** 切り出しの途中で解放を求められたとき、その切り出しの終わりに解放するための印。 */
+    private val rangeSessionReleaseRequested = AtomicBoolean(false)
 
     override suspend fun decode(
         file: File,
@@ -135,14 +162,26 @@ class MediaCodecAudioStreamDecoder internal constructor(
     }
 
     /**
-     * 指定した開始時刻 [startPositionMs] 付近へシークしてからストリーミングデコードを開始する（F6.2 チャンク切り出し高速化用）。
+     * チャンク切り出し（F6.2）用に、[startPositionMs] の [SEEK_PRE_ROLL_MS] 手前からデコードして [sink] に渡す。
+     * 打ち切りは [sink] 側で行う（チャンクの末尾に達したら例外を投げて止める）。
+     *
+     * - 開始位置の手前までは**圧縮データのまま読み飛ばし**、デコーダには渡さない（[positionExtractorForRange]）。
+     *   MP3 は ADR 0006 により `IndexSeeker` を使うため、開いた直後の抽出器の `seekTo` はファイルの先頭に着地する。
+     *   読み飛ばさないと、チャンクごとに先頭からデコードすることになる。
+     * - 同じファイルが続く間は抽出器を開いたまま使い回す（読んだ範囲の索引が残るので、2 回目以降のシークは速い）。
+     *   別のファイル・内容が変わったファイル・失敗・[releaseRangeSession] のときに閉じる。
+     * - [MediaCodec] は呼び出しごとに作り直す（Codec2 がセッションの先頭で行うエンコーダ遅延の削り方を、
+     *   全体をデコードするときと同じに保つため。ADR 0005 決定 2）。
+     *
+     * @param onSeekLandingUs 最初にデコーダへ渡すサンプルの時刻（µs）を受け取る。
+     *   出力サンプル数の累計にこの時刻を足したものが、全体をデコードしたときと同じ時間軸になる（ADR 0005）。
      */
     internal suspend fun decodeFromPosition(
         file: File,
         startPositionMs: Long,
         sink: SampleSink,
         outputSampleRate: Int = StreamingResampler.DEFAULT_OUTPUT_RATE,
-        onSeekLandingMs: (Long) -> Unit = {},
+        onSeekLandingUs: (Long) -> Unit = {},
     ): AudioDecodeResult {
         require(outputSampleRate > 0) { "outputSampleRate must be > 0: $outputSampleRate" }
         if (!file.exists() || !file.isFile || !file.canRead()) {
@@ -152,41 +191,91 @@ class MediaCodecAudioStreamDecoder internal constructor(
             return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
         }
 
-        val extractor = try {
-            extractorOpener(file)
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (_: FileNotFoundException) {
-            return AudioDecodeResult.Failure(AnalysisError.IO)
-        } catch (_: SecurityException) {
-            return AudioDecodeResult.Failure(AnalysisError.IO)
-        } catch (_: IOException) {
-            return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
-        } catch (_: Exception) {
-            return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
-        }
+        return rangeSessionMutex.withLock {
+            val extractor = try {
+                obtainRangeExtractorLocked(file)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: FileNotFoundException) {
+                return@withLock AudioDecodeResult.Failure(AnalysisError.IO)
+            } catch (_: SecurityException) {
+                return@withLock AudioDecodeResult.Failure(AnalysisError.IO)
+            } catch (_: Exception) {
+                return@withLock AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
+            }
 
-        return try {
-            extractor.use { ex ->
-                decodeWithExtractor(
-                    extractor = ex,
+            var keepSession = false
+            try {
+                val result = decodeWithExtractor(
+                    extractor = extractor,
                     sink = sink,
                     outputSampleRate = outputSampleRate,
                     expectedDurationMs = null,
                     onProgress = {},
-                    startPositionMs = startPositionMs,
-                    onSeekLandingMs = onSeekLandingMs,
+                    startPositionUs = startPositionMs.coerceAtLeast(0L) * 1_000L,
+                    onSeekLandingUs = onSeekLandingUs,
                 )
+                keepSession = result is AudioDecodeResult.Success
+                result
+            } catch (ce: CancellationException) {
+                // sink による打ち切り（チャンクの末尾に到達）とジョブのキャンセル。
+                // どちらも抽出器の呼び出しの合間に起きるので、抽出器はそのまま使い回せる
+                keepSession = true
+                throw ce
+            } catch (_: MediaCodec.CodecException) {
+                AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
+            } catch (_: IOException) {
+                AudioDecodeResult.Failure(AnalysisError.IO)
+            } catch (_: Exception) {
+                AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
+            } finally {
+                if (!keepSession || rangeSessionReleaseRequested.getAndSet(false)) {
+                    closeRangeSessionLocked()
+                }
             }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (_: MediaCodec.CodecException) {
-            AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
-        } catch (_: IOException) {
-            AudioDecodeResult.Failure(AnalysisError.IO)
-        } catch (_: Exception) {
-            AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
         }
+    }
+
+    /**
+     * チャンク切り出し用に開いたままにしている抽出器を解放する（文字起こしをオフにしたとき・リセットしたときなど）。
+     * 切り出しの途中なら、その切り出しが終わったときに解放する。次の切り出しでは開き直す。
+     */
+    internal fun releaseRangeSession() {
+        rangeSessionReleaseRequested.set(true)
+        if (rangeSessionMutex.tryLock()) {
+            try {
+                rangeSessionReleaseRequested.set(false)
+                closeRangeSessionLocked()
+            } finally {
+                rangeSessionMutex.unlock()
+            }
+        }
+    }
+
+    /** [rangeSessionMutex] の中で呼ぶ。同じファイルなら開いている抽出器を返し、違えば閉じて開き直す。 */
+    private fun obtainRangeExtractorLocked(file: File): ExtractorSession {
+        if (rangeSessionReleaseRequested.getAndSet(false)) {
+            closeRangeSessionLocked()
+        }
+        val key = RangeSessionKey(
+            absolutePath = file.absolutePath,
+            lastModified = file.lastModified(),
+            length = file.length(),
+        )
+        rangeSession?.let { current ->
+            if (current.key == key) return current.extractor
+        }
+        closeRangeSessionLocked()
+        val extractor = extractorOpener(file)
+        rangeSession = RangeExtractorSession(key = key, extractor = extractor)
+        return extractor
+    }
+
+    /** [rangeSessionMutex] の中で呼ぶ。開いたままの抽出器があれば閉じる。 */
+    private fun closeRangeSessionLocked() {
+        val current = rangeSession ?: return
+        rangeSession = null
+        runCatching { current.extractor.close() }
     }
 
     @Suppress("CyclomaticComplexMethod", "LongMethod")
@@ -196,8 +285,8 @@ class MediaCodecAudioStreamDecoder internal constructor(
         outputSampleRate: Int,
         expectedDurationMs: Long?,
         onProgress: suspend (DecodeProgress) -> Unit,
-        startPositionMs: Long = 0L,
-        onSeekLandingMs: (Long) -> Unit = {},
+        startPositionUs: Long? = null,
+        onSeekLandingUs: (Long) -> Unit = {},
     ): AudioDecodeResult {
         val trackIndex = (0 until extractor.trackCount).firstOrNull { idx ->
             val mime = extractor.getTrackFormat(idx).getString(MediaFormat.KEY_MIME)
@@ -210,23 +299,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
             ?: return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
 
         extractor.selectTrack(trackIndex)
-        if (startPositionMs > SEEK_PRE_ROLL_MS) {
-            val beforeSeekUs = extractor.sampleTime
-            val targetSeekUs = (startPositionMs - SEEK_PRE_ROLL_MS).coerceAtLeast(0L) * 1_000L
-            runCatching { extractor.seekTo(targetSeekUs) }
-            val afterSeekUs = extractor.sampleTime
-            val landedMs = if (
-                afterSeekUs > 0L &&
-                afterSeekUs != beforeSeekUs &&
-                afterSeekUs <= startPositionMs * 1_000L
-            ) {
-                afterSeekUs / 1_000L
-            } else {
-                0L
-            }
-            onSeekLandingMs(landedMs)
-        } else {
-            onSeekLandingMs(0L)
+        if (startPositionUs != null) {
+            val landedUs = positionExtractorForRange(extractor, startPositionUs)
+            onSeekLandingUs(if (landedUs == END_OF_INPUT_US) startPositionUs else landedUs)
         }
 
         val encoderDelay = trackFormat.intOrZero(MediaFormat.KEY_ENCODER_DELAY)
@@ -472,7 +547,64 @@ class MediaCodecAudioStreamDecoder internal constructor(
         private const val STALL_TIMEOUT_MS: Long = 5_000L
         internal const val REPEATED_PTS_LIMIT: Int = 8
         private const val DEFAULT_PROGRESS_INTERVAL_MS: Long = 250L
-        private const val SEEK_PRE_ROLL_MS: Long = 500L
+
+        /** 範囲デコードで、開始位置より前からデコードして捨てる長さ（デコーダとリサンプラの立ち上がり分）。 */
+        internal const val SEEK_PRE_ROLL_MS: Long = 500L
+
+        /** 今の読み出し位置からこの長さまでの前方なら、シークせずに読み飛ばす。 */
+        private const val MAX_FORWARD_SKIP_WITHOUT_SEEK_US: Long = 30_000_000L
+
+        /** 読み飛ばし中にキャンセルを確かめる間隔（サンプル数）。 */
+        private const val SKIP_CANCELLATION_CHECK_INTERVAL: Int = 512
+
+        /** 抽出器の `sampleTime` が入力の終わりを示す値。 */
+        internal const val END_OF_INPUT_US: Long = -1L
+
+        /**
+         * 範囲デコードの開始位置へ [extractor] を進め、最初にデコーダへ渡すサンプルの時刻（µs）を返す。
+         * 入力の終わりに達したら [END_OF_INPUT_US] を返す。
+         *
+         * - 目標は [startPositionUs] の [SEEK_PRE_ROLL_MS] 手前。今の読み出し位置が目標の手前で近ければそのまま、
+         *   そうでなければ `seekTo` してから、目標に達するまで**圧縮データのまま** `advance()` で読み飛ばす（デコーダには渡さない）。
+         * - 返す時刻は抽出器が返すフレームの時刻なので、全体をデコードしたときの時間軸と同じ（ADR 0005、ADR 0006）。
+         * - シークの着地が [startPositionUs] より後ろ（シーク表の誤差）か入力の終わりなら、先頭から読み飛ばし直す（遅いが正確）。
+         * - 時刻が進まない読み出しが [REPEATED_PTS_LIMIT] 回続いたら入力の終わりとみなす（ADR 0005 決定 4 の FLAC 対策）。
+         */
+        internal suspend fun positionExtractorForRange(extractor: ExtractorSession, startPositionUs: Long): Long {
+            val targetUs = (startPositionUs - SEEK_PRE_ROLL_MS * 1_000L).coerceAtLeast(0L)
+            var currentUs = extractor.sampleTime
+            val canSkipFromCurrent = currentUs != END_OF_INPUT_US &&
+                currentUs <= targetUs &&
+                targetUs - currentUs <= MAX_FORWARD_SKIP_WITHOUT_SEEK_US
+            if (!canSkipFromCurrent) {
+                runCatching { extractor.seekTo(targetUs) }
+                currentUs = extractor.sampleTime
+                if (currentUs == END_OF_INPUT_US || currentUs > startPositionUs) {
+                    runCatching { extractor.seekTo(0L) }
+                    currentUs = extractor.sampleTime
+                }
+            }
+
+            var skippedSamples = 0
+            var repeatedTimeCount = 0
+            var lastTimeUs = currentUs
+            while (currentUs != END_OF_INPUT_US && currentUs < targetUs) {
+                if (!extractor.advance()) return END_OF_INPUT_US
+                currentUs = extractor.sampleTime
+                if (currentUs <= lastTimeUs) {
+                    repeatedTimeCount++
+                    if (repeatedTimeCount >= REPEATED_PTS_LIMIT) return END_OF_INPUT_US
+                } else {
+                    repeatedTimeCount = 0
+                    lastTimeUs = currentUs
+                }
+                skippedSamples++
+                if (skippedSamples % SKIP_CANCELLATION_CHECK_INTERVAL == 0) {
+                    currentCoroutineContext().ensureActive()
+                }
+            }
+            return currentUs
+        }
 
         @OptIn(UnstableApi::class)
         internal fun createExtractorCompat(context: Context): MediaExtractorCompat {
@@ -482,8 +614,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
             return MediaExtractorCompat(extractorsFactory, dataSourceFactory)
         }
 
+        /** 本番の抽出器（[createExtractorCompat]）で [file] を開き、[ExtractorSession] として返す。 */
         @OptIn(UnstableApi::class)
-        private fun openCompatExtractorSession(context: Context, file: File): ExtractorSession {
+        internal fun openCompatExtractorSession(context: Context, file: File): ExtractorSession {
             val extractor = createExtractorCompat(context)
             try {
                 extractor.setDataSource(Uri.fromFile(file), 0L)
