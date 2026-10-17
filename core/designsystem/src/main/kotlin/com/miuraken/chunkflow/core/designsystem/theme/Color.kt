@@ -34,6 +34,8 @@ private val Amber90 = Color(0xFFFFDEA0)
  * ベース言語（ブルー系）と対象言語（ピンク系）の役割別カラーパレット。
  *
  * チャンク一覧の控えめな行背景色と、チャンク行・ライブラリ画面の言語タグバッジ色を共通化する。
+ * あわせて、ライブラリ画面で 95% を超えて聴いた教材（既習）を示す緑系の色（再生状況の文字
+ * [completedProgressText] と進捗バー [completedProgressIndicator]）も持つ。
  */
 @Immutable
 data class ChunkFlowLanguagePalette(
@@ -54,6 +56,7 @@ data class ChunkFlowLanguagePalette(
     val targetWaveformPeak: Color,
     val targetWaveformRms: Color,
     val completedProgressText: Color,
+    val completedProgressIndicator: Color,
 )
 
 /** ライトテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク/レッド系）。 */
@@ -75,6 +78,7 @@ val LightChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
     targetWaveformPeak = Color(0xFFEF5350).copy(alpha = 0.65f),
     targetWaveformRms = Color(0xFFD32F2F),
     completedProgressText = Color(0xFF2E7D32),
+    completedProgressIndicator = Color(0xFF2E7D32),
 )
 
 /** ダークテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク/レッド系）。 */
@@ -96,6 +100,7 @@ val DarkChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
     targetWaveformPeak = Color(0xFFE57373).copy(alpha = 0.65f),
     targetWaveformRms = Color(0xFFEF5350),
     completedProgressText = Color(0xFF81C784),
+    completedProgressIndicator = Color(0xFF81C784),
 )
 
 internal val LocalChunkFlowLanguagePalette = staticCompositionLocalOf {

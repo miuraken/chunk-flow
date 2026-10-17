@@ -47,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -65,9 +66,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -94,6 +98,9 @@ import kotlin.math.roundToInt
 
 private val LAST_ACCESSED_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm", Locale.ROOT)
+
+/** この割合（%）を超えて聴いた教材を既習として、進捗バーと再生状況を緑系で表示する。 */
+private const val COMPLETED_PROGRESS_PERCENT_THRESHOLD = 95
 
 private fun formatEpochMsLocal(epochMs: Long): String = runCatching {
     Instant.ofEpochMilli(epochMs)
@@ -1251,12 +1258,9 @@ private fun LibraryItemRow(
             verticalArrangement = Arrangement.spacedBy(4.dp),
             itemVerticalAlignment = Alignment.CenterVertically,
         ) {
-            LanguagePairBadge(
-                pair = item.languagePair,
-                modifier = Modifier
-                    .clickable(onClick = onEditMetadataClick)
-                    .semantics { contentDescription = editCd },
-            )
+            // 言語タグのタップは行のタップと同じ扱いにする（プレイヤーを開く / 選択を切り替える）。
+            // 言語の編集は鉛筆アイコンから行う。
+            LanguagePairBadge(pair = item.languagePair)
             if (itemModel.isAnalyzing) {
                 Text(
                     text = stringResource(R.string.library_item_analyzing),
@@ -1304,12 +1308,20 @@ private fun LibraryItemRow(
             }
         }
         Spacer(modifier = Modifier.height(6.dp))
+        val langPalette = chunkFlowLanguagePalette()
+        val maxPercent = itemModel.maxProgressPercent
+        // 既習（95% 超）の教材は、進捗バーを緑系にして一目でわかるようにする。
+        val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
         LinearProgressIndicator(
             progress = { itemModel.maxProgressFraction },
             modifier = Modifier.fillMaxWidth(),
+            color = if (isCompleted) {
+                langPalette.completedProgressIndicator
+            } else {
+                ProgressIndicatorDefaults.linearColor
+            },
         )
         Spacer(modifier = Modifier.height(2.dp))
-        val maxPercent = itemModel.maxProgressPercent
         val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
         val durationProgressText = if (hasProgress) {
             val baseResume = stringResource(
@@ -1339,17 +1351,27 @@ private fun LibraryItemRow(
                 null
             }
         }
-        val combinedStatus = listOfNotNull(durationProgressText, lastAccessedText)
-            .joinToString(separator = "  •  ")
-        val langPalette = chunkFlowLanguagePalette()
+        val progressStatusColor = when {
+            isCompleted -> langPalette.completedProgressText
+            hasProgress || itemModel.lastAccessedAtEpochMs != null -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        // 「• 最終アクセス: …」の部分は既習でも緑にせず、いつも同じ色にする。
+        val lastAccessedColor = MaterialTheme.colorScheme.primary
+        val statusText = buildAnnotatedString {
+            withStyle(SpanStyle(color = progressStatusColor)) {
+                append(durationProgressText)
+            }
+            if (lastAccessedText != null) {
+                withStyle(SpanStyle(color = lastAccessedColor)) {
+                    append("  •  ")
+                    append(lastAccessedText)
+                }
+            }
+        }
         Text(
-            text = combinedStatus,
+            text = statusText,
             style = MaterialTheme.typography.labelSmall,
-            color = when {
-                maxPercent > 95 -> langPalette.completedProgressText
-                hasProgress || itemModel.lastAccessedAtEpochMs != null -> MaterialTheme.colorScheme.primary
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            },
         )
     }
 }
@@ -1896,6 +1918,34 @@ private fun LibraryScreenPreview(
                 items = uiItems,
                 miniPlayer = miniPlayer,
             ),
+            onEvent = {},
+        )
+    }
+}
+
+/** フォルダを開いた状態。95% を超えて聴いた既習の教材は、進捗バーと再生状況が緑系になる。 */
+@ChunkFlowPreviews
+@Composable
+private fun LibraryScreenFolderPreview() {
+    val course = "korean-course"
+    val materials = listOf(SampleMaterials.jaKo, SampleMaterials.longSentence, SampleMaterials.noTranscript)
+    val uiItems = materials.mapIndexed { index, material ->
+        val audioItem = material.item.copy(course = course)
+        LibraryItemUiModel(
+            item = audioItem,
+            positionMs = when (index) {
+                0 -> audioItem.durationMs * 97 / 100
+                1 -> audioItem.durationMs * 40 / 100
+                else -> 0L
+            },
+            speed = if (index == 1) 1.25f else 1.0f,
+            isListened = index == 0,
+            lastAccessedAtEpochMs = if (index <= 1) 1_760_000_000_000L else null,
+        )
+    }
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(items = uiItems, currentDirectoryPath = course),
             onEvent = {},
         )
     }
