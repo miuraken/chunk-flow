@@ -104,6 +104,7 @@ internal class TextAiViewModel(
             is com.miuraken.chunkflow.core.transcript.TranscriptParseResult.Error -> {
                 mutableState.update { it.copy(loadError = LoadError.INVALID) }
             }
+
             is com.miuraken.chunkflow.core.transcript.TranscriptParseResult.Ok -> {
                 handleLoadedTranscript(parsed.document, "sample-id")
             }
@@ -132,7 +133,7 @@ internal class TextAiViewModel(
             fileTarget = languages?.target?.value?.let(::primaryLanguage),
             fileBase = languages?.base?.value?.let(::primaryLanguage),
         )
-        
+
         mutableState.update { current ->
             val target = transcript.fileTarget ?: current.target
             val base = (transcript.fileBase ?: current.base)?.takeIf { it != target }
