@@ -99,6 +99,17 @@ internal class FakeTranscriptDao : TranscriptDao {
         }
     }
 
+    override suspend fun updateTranslation(
+        chunkId: Long,
+        translatedText: String?,
+        translatedLang: String?,
+    ) {
+        store.update { current ->
+            val existing = current[chunkId] ?: return@update current
+            current + (chunkId to existing.copy(translatedText = translatedText, translatedLang = translatedLang))
+        }
+    }
+
     override suspend fun bulkSetUnknownLanguageForMedia(mediaId: String, language: String) {
         val mediaChunkIds = chunksProvider().filter { it.mediaId == mediaId }.map { it.id }.toSet()
         store.update { current ->
@@ -189,6 +200,19 @@ internal class FakeChunkDao(
             .filter { it.mediaId == mediaId && it.origin == origin }
             .map { it.id }
         deleteByIds(targetIds)
+    }
+
+    override suspend fun updateSkippedByIds(mediaId: String, chunkIds: List<Long>, skipped: Boolean) {
+        val targetSet = chunkIds.toSet()
+        store.update { current ->
+            current.mapValues { (id, chunk) ->
+                if (chunk.mediaId == mediaId && id in targetSet) {
+                    chunk.copy(isSkipped = skipped)
+                } else {
+                    chunk
+                }
+            }
+        }
     }
 }
 

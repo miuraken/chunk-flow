@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.core.media
 
+import android.net.Uri
 import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.audio.StreamingResampler
 import com.miuraken.chunkflow.core.model.AnalysisError
@@ -80,6 +81,30 @@ interface AudioStreamDecoder {
     ): AudioDecodeResult
 
     /**
+     * [uri] をデコードし、[outputSampleRate]（既定 16kHz）のモノラル Float サンプルを [sink] に順次渡す。
+     *
+     * 既定実装は `file` スキームの URI を [File] に変換して [decode] に委譲し、それ以外は [AnalysisError.IO] を返す。
+     */
+    suspend fun decode(
+        uri: Uri,
+        sink: SampleSink,
+        outputSampleRate: Int = StreamingResampler.DEFAULT_OUTPUT_RATE,
+        expectedDurationMs: Long? = null,
+        onProgress: suspend (DecodeProgress) -> Unit = {},
+    ): AudioDecodeResult {
+        val scheme = uri.scheme
+        val path = uri.path?.takeIf { it.isNotBlank() && (scheme == null || scheme.equals("file", ignoreCase = true)) }
+        val file = path?.let(::File) ?: return AudioDecodeResult.Failure(AnalysisError.IO)
+        return decode(
+            file = file,
+            sink = sink,
+            outputSampleRate = outputSampleRate,
+            expectedDurationMs = expectedDurationMs,
+            onProgress = onProgress,
+        )
+    }
+
+    /**
      * 音声ファイルの秒数（全体長）と全体波形の横幅（カラム数 [targetColumns]）から必要なミリ秒間隔を割り出し、
      * シークによる間引きサンプリングで低解像度の全体波形（[Waveform]）を即座に生成する。
      *
@@ -92,6 +117,26 @@ interface AudioStreamDecoder {
         targetColumns: Int = DEFAULT_OVERVIEW_COLUMNS,
         fineBinMs: Int = DEFAULT_FINE_BIN_MS,
     ): Waveform? = null
+
+    /**
+     * [uri] からシークによる間引きサンプリングで低解像度の全体波形（[Waveform]）を即座に生成する。
+     */
+    suspend fun decodeCoarseOverviewWaveform(
+        uri: Uri,
+        expectedDurationMs: Long? = null,
+        targetColumns: Int = DEFAULT_OVERVIEW_COLUMNS,
+        fineBinMs: Int = DEFAULT_FINE_BIN_MS,
+    ): Waveform? {
+        val scheme = uri.scheme
+        val path = uri.path?.takeIf { it.isNotBlank() && (scheme == null || scheme.equals("file", ignoreCase = true)) }
+        val file = path?.let(::File) ?: return null
+        return decodeCoarseOverviewWaveform(
+            file = file,
+            expectedDurationMs = expectedDurationMs,
+            targetColumns = targetColumns,
+            fineBinMs = fineBinMs,
+        )
+    }
 
     companion object {
         /** 全体波形の既定の横幅カラム数（画面幅約 360〜720dp ÷ 3dp/本 ≒ 240 本）。 */

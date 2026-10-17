@@ -1,6 +1,7 @@
 package com.miuraken.chunkflow.core.data.analysis
 
 import android.content.Context
+import android.net.Uri
 import androidx.work.Data
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
@@ -426,5 +427,103 @@ class AnalysisWorkerTest {
         // 2 本目（DefaultAnalysisRepository の直接の実行が先に済ませた場合と同じ）は、デコードせずに成功する
         assertEquals(ListenableWorker.Result.success(), newWorker().doWork())
         assertEquals(1, decodeCalls)
+    }
+
+    @Test
+    fun `doWork_filesDir配下に音声が無くてもlocalFilePathやsourceUriからデコードできる`() = runTest {
+        val externalDir = File(context.cacheDir, "worker_external_audio").apply { mkdirs() }
+        val localFile = File(externalDir, "worker_local.mp3").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val uriFile = File(externalDir, "worker_uri.mp3").apply { writeBytes(byteArrayOf(5, 6, 7, 8)) }
+
+        val mediaIdLocal = MediaId("worker_local_ref_01")
+        val mediaIdUri = MediaId("worker_uri_ref_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaIdLocal.value,
+                title = "Worker Local Path",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+                storageState = "LOCAL_REFERENCE",
+                sourceUri = null,
+                localFilePath = localFile.absolutePath,
+            ),
+        )
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaIdUri.value,
+                title = "Worker Source Uri",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+                storageState = "LOCAL_REFERENCE",
+                sourceUri = Uri.fromFile(uriFile).toString(),
+                localFilePath = null,
+            ),
+        )
+
+        val decodedPaths = mutableListOf<String>()
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                decodedPaths += file.absolutePath
+                val totalSamples = outputSampleRate * 2
+                val samples = FloatArray(totalSamples) { i -> if (i < totalSamples / 2) 0.5f else 0f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = totalSamples.toLong(),
+                    resampledSamples = totalSamples.toLong(),
+                    durationMs = 2_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+
+        for (id in listOf(mediaIdLocal, mediaIdUri)) {
+            val inputData = Data.Builder()
+                .putString(AnalysisWorker.KEY_MEDIA_ID, id.value)
+                .putStringArray(
+                    AnalysisWorker.KEY_STAGES,
+                    arrayOf(AnalysisStage.FEATURES.name, AnalysisStage.SEGMENTATION.name),
+                )
+                .build()
+            val worker = AnalysisWorker(
+                appContext = context,
+                workerParams = createWorkerParameters(inputData),
+                audioStreamDecoder = fakeDecoder,
+                analysisStateDao = analysisStateDao,
+                chunkDao = chunkDao,
+                mediaItemDao = mediaItemDao,
+                mediaFileResolver = mediaFileLocator,
+                userSettingsRepository = userSettingsRepository,
+                clock = { currentEpochMs },
+            )
+            assertEquals(ListenableWorker.Result.success(), worker.doWork())
+            val analysisDir = File(File(context.filesDir, "analysis"), id.value)
+            assertTrue(File(analysisDir, "waveform.bin").isFile)
+            assertTrue(File(analysisDir, "features.bin").isFile)
+        }
+        assertEquals(listOf(localFile.absolutePath, uriFile.absolutePath), decodedPaths)
     }
 }

@@ -90,6 +90,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
     private val codecCreator: (String, MediaFormat) -> CodecSession,
     private val elapsedRealtimeMs: () -> Long = SystemClock::elapsedRealtime,
     private val progressIntervalMs: Long = DEFAULT_PROGRESS_INTERVAL_MS,
+    private val uriExtractorOpener: ((Uri) -> ExtractorSession)? = null,
 ) : AudioStreamDecoder {
 
     @Inject
@@ -98,6 +99,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
     ) : this(
         extractorOpener = { file -> openCompatExtractorSession(context, file) },
         codecCreator = { mime, format -> openMediaCodecSession(mime, format) },
+        uriExtractorOpener = { uri -> openCompatExtractorSession(context, uri) },
     )
 
     /** チャンク切り出し用に開いたままにする抽出器を特定するキー（パス・更新時刻・長さが同じなら同じファイルとみなす）。 */
@@ -145,6 +147,62 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
         val extractor = try {
             extractorOpener(file)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: FileNotFoundException) {
+            return AudioDecodeResult.Failure(AnalysisError.IO)
+        } catch (_: SecurityException) {
+            return AudioDecodeResult.Failure(AnalysisError.IO)
+        } catch (_: IOException) {
+            return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
+        } catch (_: Exception) {
+            return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
+        }
+
+        return try {
+            extractor.use { ex ->
+                decodeWithExtractor(
+                    extractor = ex,
+                    sink = sink,
+                    outputSampleRate = outputSampleRate,
+                    expectedDurationMs = expectedDurationMs,
+                    onProgress = onProgress,
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: MediaCodec.CodecException) {
+            AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
+        } catch (_: IOException) {
+            AudioDecodeResult.Failure(AnalysisError.IO)
+        } catch (_: Exception) {
+            AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
+        }
+    }
+
+    override suspend fun decode(
+        uri: Uri,
+        sink: SampleSink,
+        outputSampleRate: Int,
+        expectedDurationMs: Long?,
+        onProgress: suspend (DecodeProgress) -> Unit,
+    ): AudioDecodeResult {
+        require(outputSampleRate > 0) { "outputSampleRate must be > 0: $outputSampleRate" }
+        val scheme = uri.scheme
+        if (scheme == null || scheme.equals("file", ignoreCase = true)) {
+            val file = uri.path?.takeIf { it.isNotBlank() }?.let(::File)
+                ?: return AudioDecodeResult.Failure(AnalysisError.IO)
+            return decode(
+                file = file,
+                sink = sink,
+                outputSampleRate = outputSampleRate,
+                expectedDurationMs = expectedDurationMs,
+                onProgress = onProgress,
+            )
+        }
+        val opener = uriExtractorOpener ?: return AudioDecodeResult.Failure(AnalysisError.IO)
+        val extractor = try {
+            opener(uri)
         } catch (ce: CancellationException) {
             throw ce
         } catch (_: FileNotFoundException) {
@@ -305,6 +363,48 @@ class MediaCodecAudioStreamDecoder internal constructor(
         if (!file.exists() || !file.isFile || !file.canRead() || file.length() <= 0L) return null
         val extractor = try {
             extractorOpener(file)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            return null
+        }
+
+        return try {
+            extractor.use { ex ->
+                decodeCoarseOverviewWithExtractor(
+                    extractor = ex,
+                    expectedDurationMs = expectedDurationMs,
+                    targetColumns = targetColumns,
+                    fineBinMs = fineBinMs,
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun decodeCoarseOverviewWaveform(
+        uri: Uri,
+        expectedDurationMs: Long?,
+        targetColumns: Int,
+        fineBinMs: Int,
+    ): Waveform? {
+        if (targetColumns <= 0 || fineBinMs <= 0) return null
+        val scheme = uri.scheme
+        if (scheme == null || scheme.equals("file", ignoreCase = true)) {
+            val file = uri.path?.takeIf { it.isNotBlank() }?.let(::File) ?: return null
+            return decodeCoarseOverviewWaveform(
+                file = file,
+                expectedDurationMs = expectedDurationMs,
+                targetColumns = targetColumns,
+                fineBinMs = fineBinMs,
+            )
+        }
+        val opener = uriExtractorOpener ?: return null
+        val extractor = try {
+            opener(uri)
         } catch (ce: CancellationException) {
             throw ce
         } catch (_: Exception) {
@@ -954,10 +1054,14 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
         /** 本番の抽出器（[createExtractorCompat]）で [file] を開き、[ExtractorSession] として返す。 */
         @OptIn(UnstableApi::class)
-        internal fun openCompatExtractorSession(context: Context, file: File): ExtractorSession {
+        internal fun openCompatExtractorSession(context: Context, file: File): ExtractorSession = openCompatExtractorSession(context, Uri.fromFile(file))
+
+        /** 本番の抽出器（[createExtractorCompat]）で [uri] を開き、[ExtractorSession] として返す。 */
+        @OptIn(UnstableApi::class)
+        internal fun openCompatExtractorSession(context: Context, uri: Uri): ExtractorSession {
             val extractor = createExtractorCompat(context)
             try {
-                extractor.setDataSource(Uri.fromFile(file), 0L)
+                extractor.setDataSource(uri, 0L)
             } catch (e: Exception) {
                 runCatching { extractor.release() }
                 throw e

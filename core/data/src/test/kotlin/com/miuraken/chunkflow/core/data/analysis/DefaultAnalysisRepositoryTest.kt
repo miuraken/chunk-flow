@@ -1,6 +1,7 @@
 package com.miuraken.chunkflow.core.data.analysis
 
 import android.content.Context
+import android.net.Uri
 import com.miuraken.chunkflow.core.audio.AnalysisBinaryFormat
 import com.miuraken.chunkflow.core.audio.CURRENT_ALGORITHM_VERSION
 import com.miuraken.chunkflow.core.audio.SampleSink
@@ -9,12 +10,14 @@ import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
+import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
 import com.miuraken.chunkflow.core.media.AudioDecodeResult
 import com.miuraken.chunkflow.core.media.AudioStreamDecoder
 import com.miuraken.chunkflow.core.media.DecodeProgress
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
+import com.miuraken.chunkflow.core.media.OnDeviceTextTranslator
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -2446,5 +2449,316 @@ class DefaultAnalysisRepositoryTest {
         } finally {
             repository.setMediaTranscriptionSessionOpen(mediaId, false)
         }
+    }
+
+    @Test
+    fun `translateChunk_翻訳結果をDBへ保存し同一言語での再呼び出し時はキャッシュを返しテキスト編集でリセットされる`() = runTest {
+        var translateCallCount = 0
+        val fakeTranslator = object : OnDeviceTextTranslator {
+            override fun isSupported(sourceLanguage: LanguageTag?, targetLanguage: LanguageTag?): Boolean = sourceLanguage?.value == "en" && targetLanguage?.value == "ja"
+
+            override suspend fun translate(
+                text: String,
+                sourceLanguage: LanguageTag,
+                targetLanguage: LanguageTag,
+            ): String? {
+                if (!isSupported(sourceLanguage, targetLanguage)) return null
+                translateCallCount += 1
+                return "訳:$text"
+            }
+        }
+        val repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            textTranslator = fakeTranslator,
+        )
+
+        assertTrue(repository.isTranslationSupported(LanguageTag("en"), LanguageTag("ja")))
+        assertFalse(repository.isTranslationSupported(LanguageTag("yue"), LanguageTag("ja")))
+
+        val mediaId = MediaId("media_translate_01")
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(
+                    id = 10L,
+                    mediaId = mediaId.value,
+                    startMs = 0L,
+                    endMs = 1_000L,
+                    origin = ChunkOrigin.AUTO.name,
+                ),
+            ),
+        )
+        transcriptDao.upsert(
+            TranscriptEntity(
+                chunkId = 10L,
+                text = "Hello world",
+                language = "en",
+                languageConfidence = 0.95f,
+                engine = "whisper",
+                createdAt = currentEpochMs,
+            ),
+        )
+
+        val firstTranslated = repository.translateChunk(
+            id = mediaId,
+            chunkId = ChunkId(10L),
+            sourceLanguage = LanguageTag("en"),
+            targetLanguage = LanguageTag("ja"),
+        )
+        assertEquals("訳:Hello world", firstTranslated)
+        assertEquals(1, translateCallCount)
+
+        val stored = repository.observeTranscripts(mediaId).first()[ChunkId(10L)]
+        assertNotNull(stored)
+        assertEquals("訳:Hello world", stored.translatedText)
+        assertEquals(LanguageTag("ja"), stored.translatedLanguage)
+
+        // 同じ targetLanguage なら再翻訳せずキャッシュを返す
+        val cachedTranslated = repository.translateChunk(
+            id = mediaId,
+            chunkId = ChunkId(10L),
+            sourceLanguage = LanguageTag("en"),
+            targetLanguage = LanguageTag("JA"),
+        )
+        assertEquals("訳:Hello world", cachedTranslated)
+        assertEquals(1, translateCallCount)
+
+        // 手動編集でテキストが上書きされたら翻訳がリセットされる
+        repository.updateChunkText(mediaId, ChunkId(10L), "Updated text")
+        val afterEdit = repository.observeTranscripts(mediaId).first()[ChunkId(10L)]
+        assertNotNull(afterEdit)
+        assertNull(afterEdit.translatedText)
+        assertNull(afterEdit.translatedLanguage)
+
+        // 再翻訳後に applyChunkTranscriptionTrial でもリセットされることを確認
+        val retranslated = repository.translateChunk(
+            id = mediaId,
+            chunkId = ChunkId(10L),
+            sourceLanguage = LanguageTag("en"),
+            targetLanguage = LanguageTag("ja"),
+        )
+        assertEquals("訳:Updated text", retranslated)
+        assertEquals(2, translateCallCount)
+
+        repository.applyChunkTranscriptionTrial(
+            id = mediaId,
+            chunkId = ChunkId(10L),
+            text = "Trial text",
+            language = LanguageTag("en"),
+        )
+        val afterTrial = repository.observeTranscripts(mediaId).first()[ChunkId(10L)]
+        assertNotNull(afterTrial)
+        assertNull(afterTrial.translatedText)
+        assertNull(afterTrial.translatedLanguage)
+    }
+
+    @Test
+    fun `mergeWithNextChunk_mergeChunks_翻訳テキストが非空なら空白で連結し片方のみなら引き継ぐ`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_merge_translation_01")
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 1L, mediaId = mediaId.value, startMs = 0L, endMs = 1_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2L, mediaId = mediaId.value, startMs = 1_000L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 3L, mediaId = mediaId.value, startMs = 2_000L, endMs = 3_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+        transcriptDao.upsertAll(
+            listOf(
+                TranscriptEntity(
+                    chunkId = 1L,
+                    text = "Good morning",
+                    language = "en",
+                    engine = "whisper",
+                    createdAt = currentEpochMs,
+                    translatedText = "おはよう",
+                    translatedLang = "ja",
+                ),
+                TranscriptEntity(
+                    chunkId = 2L,
+                    text = "everyone",
+                    language = "en",
+                    engine = "whisper",
+                    createdAt = currentEpochMs,
+                    translatedText = "みなさん",
+                    translatedLang = "ja",
+                ),
+                TranscriptEntity(
+                    chunkId = 3L,
+                    text = "let us start",
+                    language = "en",
+                    engine = "whisper",
+                    createdAt = currentEpochMs,
+                    translatedText = null,
+                    translatedLang = null,
+                ),
+            ),
+        )
+
+        assertTrue(repository.mergeWithNextChunk(mediaId, ChunkId(1L)))
+        val afterFirstMergeChunks = repository.observeChunks(mediaId).first()
+        assertEquals(2, afterFirstMergeChunks.size)
+        val firstMergedTranscript = repository.observeTranscripts(mediaId).first()[afterFirstMergeChunks[0].id]
+        assertNotNull(firstMergedTranscript)
+        assertEquals("おはよう みなさん", firstMergedTranscript.translatedText)
+        assertEquals(LanguageTag("ja"), firstMergedTranscript.translatedLanguage)
+
+        // 片方のみ翻訳がある 2 チャンクを mergeChunks で結合するとそのまま引き継がれる
+        assertTrue(repository.mergeChunks(mediaId, afterFirstMergeChunks.map { it.id }))
+        val afterSecondMergeChunks = repository.observeChunks(mediaId).first()
+        assertEquals(1, afterSecondMergeChunks.size)
+        val secondMergedTranscript = repository.observeTranscripts(mediaId).first()[afterSecondMergeChunks[0].id]
+        assertNotNull(secondMergedTranscript)
+        assertEquals("おはよう みなさん", secondMergedTranscript.translatedText)
+        assertEquals(LanguageTag("ja"), secondMergedTranscript.translatedLanguage)
+    }
+
+    @Test
+    fun `setChunksSkipped_スキップ状態の切り替えとチャンク分割結合境界移動での引き継ぎ`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_skip_01")
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 1L, mediaId = mediaId.value, startMs = 0L, endMs = 1_000L, origin = ChunkOrigin.AUTO.name, isSkipped = false),
+                ChunkEntity(id = 2L, mediaId = mediaId.value, startMs = 1_000L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name, isSkipped = false),
+                ChunkEntity(id = 3L, mediaId = mediaId.value, startMs = 2_000L, endMs = 3_000L, origin = ChunkOrigin.AUTO.name, isSkipped = false),
+            ),
+        )
+
+        repository.setChunksSkipped(mediaId, setOf(ChunkId(1L), ChunkId(2L)), true)
+        val afterSkip = repository.observeChunks(mediaId).first()
+        assertEquals(listOf(true, true, false), afterSkip.map { it.isSkipped })
+
+        // splitChunk: 分割後の前後 2 チャンクとも target.isSkipped (true) を引き継ぐ
+        assertTrue(repository.splitChunk(mediaId, ChunkId(1L), 500L))
+        val afterSplit = repository.observeChunks(mediaId).first()
+        assertEquals(4, afterSplit.size)
+        assertEquals(listOf(true, true, true, false), afterSplit.map { it.isSkipped })
+
+        // mergeWithNextChunk: 両方 true (index 0, 1) の結合では true
+        assertTrue(repository.mergeWithNextChunk(mediaId, afterSplit[0].id))
+        val afterMergeBothSkipped = repository.observeChunks(mediaId).first()
+        assertEquals(3, afterMergeBothSkipped.size)
+        assertEquals(listOf(true, true, false), afterMergeBothSkipped.map { it.isSkipped })
+
+        // mergeWithNextChunk: 片方 true・片方 false (index 1, 2) の結合では false
+        assertTrue(repository.mergeWithNextChunk(mediaId, afterMergeBothSkipped[1].id))
+        val afterMergeMixed = repository.observeChunks(mediaId).first()
+        assertEquals(2, afterMergeMixed.size)
+        assertEquals(listOf(true, false), afterMergeMixed.map { it.isSkipped })
+
+        // moveChunkBoundary: 元の isSkipped を維持する
+        assertTrue(repository.moveChunkBoundary(mediaId, afterMergeMixed[0].id, 0L, 1_200L))
+        val afterMove = repository.observeChunks(mediaId).first()
+        assertEquals(listOf(true, false), afterMove.map { it.isSkipped })
+
+        // mergeChunks: すべて true でない場合は false
+        assertTrue(repository.mergeChunks(mediaId, afterMove.map { it.id }))
+        val afterMergeAll = repository.observeChunks(mediaId).first()
+        assertEquals(1, afterMergeAll.size)
+        assertEquals(false, afterMergeAll[0].isSkipped)
+    }
+
+    @Test
+    fun `requestAnalysis_filesDir配下に音声が無くてもlocalFilePathやsourceUriからデコードできる`() = runTest {
+        val externalDir = File(context.cacheDir, "external_audio").apply { mkdirs() }
+        val localFile = File(externalDir, "local_ref_1.mp3").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val uriFile = File(externalDir, "local_ref_2.mp3").apply { writeBytes(byteArrayOf(5, 6, 7, 8)) }
+
+        val mediaIdLocal = MediaId("media_local_ref_path")
+        val mediaIdUri = MediaId("media_local_ref_uri")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaIdLocal.value,
+                title = "Local Path Audio",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+                storageState = "LOCAL_REFERENCE",
+                sourceUri = null,
+                localFilePath = localFile.absolutePath,
+            ),
+        )
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaIdUri.value,
+                title = "Source Uri Audio",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+                storageState = "LOCAL_REFERENCE",
+                sourceUri = Uri.fromFile(uriFile).toString(),
+                localFilePath = null,
+            ),
+        )
+
+        val decodedPaths = mutableListOf<String>()
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                decodedPaths += file.absolutePath
+                val samples = FloatArray(outputSampleRate * 2) { idx -> if (idx < outputSampleRate) 0.5f else 0f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = 2_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+        val repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            audioStreamDecoder = fakeDecoder,
+        )
+        val stages = setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION)
+
+        repository.requestAnalysis(mediaIdLocal, stages)
+        assertEquals(StageStatus.Done, repository.observeStatus(mediaIdLocal).first()[AnalysisStage.SEGMENTATION])
+        assertNotNull(repository.observeWaveform(mediaIdLocal).first())
+
+        repository.requestAnalysis(mediaIdUri, stages)
+        assertEquals(StageStatus.Done, repository.observeStatus(mediaIdUri).first()[AnalysisStage.SEGMENTATION])
+        assertNotNull(repository.observeWaveform(mediaIdUri).first())
+
+        assertEquals(listOf(localFile.absolutePath, uriFile.absolutePath), decodedPaths)
     }
 }
