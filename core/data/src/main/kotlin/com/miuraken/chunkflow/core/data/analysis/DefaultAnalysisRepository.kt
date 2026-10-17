@@ -2615,12 +2615,16 @@ class DefaultAnalysisRepository(
         if (indices.any { it < 0 } || indices.distinct().size != indices.size) return@withContext false
         val firstIndex = indices.first()
         val lastIndex = indices.last()
-        // 途中に選ばれていないチャンクを挟む（連続していない）場合は連結しない
-        if (lastIndex - firstIndex + 1 != indices.size) return@withContext false
 
         val now = clock()
         val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
         val first = activeChunks[firstIndex]
+        val firstLanguage = effectiveTranscripts[first.id]?.language?.takeIf { it.isNotBlank() }
+        val firstLanguageConfidence = if (firstLanguage != null) {
+            effectiveTranscripts[first.id]?.languageConfidence ?: 1.0f
+        } else {
+            null
+        }
         val mergedStartMs = first.startMs
         val mergedEndMs = maxOf(activeChunks[lastIndex].endMs, mergedStartMs + 1L)
 
@@ -2635,6 +2639,12 @@ class DefaultAnalysisRepository(
                 createdAtEpochMs = now,
             )
         }
+        mergedTranscript = mergedTranscript?.copy(
+            language = firstLanguage,
+            languageConfidence = firstLanguageConfidence,
+            userEdited = true,
+            createdAt = now,
+        )
 
         val newChunks = ArrayList<ChunkEntity>(activeChunks.size - (lastIndex - firstIndex))
         val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
@@ -2650,7 +2660,7 @@ class DefaultAnalysisRepository(
                             origin = ChunkOrigin.MANUAL.name,
                         ),
                     )
-                    mergedTranscript?.let { newTranscriptsByIndex[mergedIndex] = it.copy(userEdited = true, createdAt = now) }
+                    mergedTranscript?.let { newTranscriptsByIndex[mergedIndex] = it }
                 }
 
                 index in (firstIndex + 1)..lastIndex -> Unit

@@ -945,7 +945,7 @@ class DefaultAnalysisRepositoryTest {
     }
 
     @Test
-    fun `mergeChunks_連続する複数チャンクを1つに連結し連続していない場合や1件だけの場合は何もしない`() = runTest {
+    fun `mergeChunks_非連続チャンクも含めて先頭から末尾までを1つに連結し先頭チャンクの言語設定に合わせる`() = runTest {
         val repository = createRepository(testScheduler)
         val mediaId = MediaId("media_merge_many_01")
         mediaItemDao.upsert(
@@ -975,7 +975,7 @@ class DefaultAnalysisRepositoryTest {
             },
         )
         val texts = listOf("하나", "둘", "셋", "넷")
-        val languages = listOf("ko", "ja", "ko", "ko")
+        val languages = listOf("ko", "ja", "ko", "ja")
         transcriptDao.upsertAll(
             texts.indices.map { idx ->
                 Transcript(
@@ -989,13 +989,14 @@ class DefaultAnalysisRepositoryTest {
             },
         )
 
-        // 1 件だけ・連続していない（1401 と 1403）場合は連結しない
+        // 1 件だけの場合は連結しない
         assertFalse(repository.mergeChunks(mediaId, listOf(ChunkId(1_401L))))
-        assertFalse(repository.mergeChunks(mediaId, listOf(ChunkId(1_401L), ChunkId(1_403L))))
         assertEquals(4, repository.observeChunks(mediaId).first().size)
 
-        // 1401..1403 を連結 -> [0..3400ms] と [3600..4600ms] の 2 チャンク（MANUAL）になる
-        assertTrue(repository.mergeChunks(mediaId, listOf(ChunkId(1_401L), ChunkId(1_402L), ChunkId(1_403L))))
+        // 非連続のチャンク（0番目の 1401 と 2番目の 1403）を指定して連結 ->
+        // 間の 1402 も含めて 0..2 が [0..3400ms] に連結され、残りの [3600..4600ms] と合わせて 2 チャンク（MANUAL）になる
+        // 言語は先頭チャンク (1401: ko) に合わせられる
+        assertTrue(repository.mergeChunks(mediaId, listOf(ChunkId(1_401L), ChunkId(1_403L))))
         val merged = repository.observeChunks(mediaId).first()
         assertEquals(2, merged.size)
         assertEquals(ChunkOrigin.MANUAL, merged[0].origin)
@@ -1009,6 +1010,26 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(LanguageTag("ko"), mergedTranscript.language)
         assertTrue(mergedTranscript.userEdited)
         assertEquals("넷", transcripts[merged[1].id]?.text)
+
+        // 先頭チャンクの言語が null で後続チャンクが ja の場合、連結後の言語も先頭に合わせて null になる
+        transcriptDao.upsert(
+            Transcript(
+                chunkId = merged[0].id,
+                text = "하나 둘 셋",
+                language = null,
+                languageConfidence = null,
+                engine = EngineId("user"),
+                userEdited = true,
+            ).toEntity(),
+        )
+        assertTrue(repository.mergeChunks(mediaId, listOf(merged[0].id, merged[1].id)))
+        val mergedAll = repository.observeChunks(mediaId).first()
+        assertEquals(1, mergedAll.size)
+        val mergedAllTranscript = repository.observeTranscripts(mediaId).first()[mergedAll[0].id]
+        assertNotNull(mergedAllTranscript)
+        assertEquals("하나 둘 셋 넷", mergedAllTranscript.text)
+        assertNull(mergedAllTranscript.language)
+        assertNull(mergedAllTranscript.languageConfidence)
     }
 
     @Test
