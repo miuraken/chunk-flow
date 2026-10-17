@@ -137,6 +137,7 @@ class MediaControllerPlaybackController(
                     it.copy(
                         autoPause = settings.defaultAutoPause,
                         autoPauseScope = settings.defaultAutoPauseScope,
+                        skipOriginalSilence = settings.skipOriginalSilence,
                     )
                 }
             }
@@ -255,6 +256,7 @@ class MediaControllerPlaybackController(
                 it.copy(
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
+                    skipOriginalSilence = userSettings.skipOriginalSilence,
                 )
             }
             notifyLookaheadIfChanged(mediaId, _status.value.currentChunkId, force = true)
@@ -292,6 +294,7 @@ class MediaControllerPlaybackController(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
+                    skipOriginalSilence = userSettings.skipOriginalSilence,
                     languageFilter = savedState.languageFilter,
                 ),
             )
@@ -302,6 +305,7 @@ class MediaControllerPlaybackController(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
+                    skipOriginalSilence = userSettings.skipOriginalSilence,
                 ),
             )
         }
@@ -470,6 +474,7 @@ class MediaControllerPlaybackController(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
+                    skipOriginalSilence = userSettings.skipOriginalSilence,
                     languageFilter = savedState.languageFilter,
                 ),
             )
@@ -480,6 +485,7 @@ class MediaControllerPlaybackController(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
+                    skipOriginalSilence = userSettings.skipOriginalSilence,
                 ),
             )
         }

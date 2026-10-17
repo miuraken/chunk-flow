@@ -646,6 +646,41 @@ class PlaybackControllerTest {
         controller.release()
     }
 
+    @Test
+    fun `userSettings_skipOriginalSilenceの変更がPracticeSettingsに反映される`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val item = sampleAudioItem(mediaId1, durationMs = 60_000L)
+        libraryRepository.items.value = listOf(item)
+        mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+
+        advanceUntilIdle()
+        assertFalse(controller.practice.value.skipOriginalSilence)
+
+        settingsRepository.state.value = settingsRepository.state.value.copy(skipOriginalSilence = true)
+        advanceUntilIdle()
+        assertTrue(controller.practice.value.skipOriginalSilence)
+
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+        assertTrue(controller.practice.value.skipOriginalSilence)
+
+        controller.release()
+    }
+
     private fun sampleAudioItem(
         id: MediaId,
         durationMs: Long,

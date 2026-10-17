@@ -498,6 +498,13 @@ class ChunkScheduler(
                     payload = BoundaryPayload.ChunkEnd(nextChunk),
                     persistent = false,
                 )
+            } else if (practiceSettings.skipOriginalSilence && exoPlayer.playWhenReady) {
+                seekInternal(nextChunk.startMs)
+                updateState(chunkId = nextChunk.id, autoPauseEndsAt = null)
+                scheduleBoundaryMessage(
+                    payload = BoundaryPayload.ChunkEnd(nextChunk),
+                    persistent = false,
+                )
             } else {
                 scheduleBoundaryMessage(
                     payload = BoundaryPayload.ChunkStart(nextChunk),
@@ -515,11 +522,20 @@ class ChunkScheduler(
                 persistent = false,
             )
         } else {
+            val nextChunk = chunks.firstOrNull { it.startMs > nowMs }
+            if (nextChunk != null && practiceSettings.skipOriginalSilence && exoPlayer.playWhenReady) {
+                seekInternal(nextChunk.startMs)
+                updateState(chunkId = nextChunk.id, autoPauseEndsAt = null)
+                scheduleBoundaryMessage(
+                    payload = BoundaryPayload.ChunkEnd(nextChunk),
+                    persistent = false,
+                )
+                return
+            }
             updateState(
                 chunkId = chunks.lastOrNull { it.startMs <= nowMs }?.id,
                 autoPauseEndsAt = _autoPauseEndsAtMs.value,
             )
-            val nextChunk = chunks.firstOrNull { it.startMs > nowMs }
             if (nextChunk != null) {
                 scheduleBoundaryMessage(
                     payload = BoundaryPayload.ChunkStart(nextChunk),
@@ -588,6 +604,40 @@ class ChunkScheduler(
                 return
             }
 
+            if (practiceSettings.skipOriginalSilence && exoPlayer.playWhenReady) {
+                val nextMatching = chunks.drop(ownerIndex + 1).firstOrNull { candidate ->
+                    matchesPlaybackFilter(
+                        chunk = candidate,
+                        languageFilter = filter,
+                        useLanguageFilter = useLanguageFilter,
+                        useBookmarkFilter = useBookmarkFilter,
+                    )
+                }
+                val firstMatching = chunks.firstOrNull { candidate ->
+                    matchesPlaybackFilter(
+                        chunk = candidate,
+                        languageFilter = filter,
+                        useLanguageFilter = useLanguageFilter,
+                        useBookmarkFilter = useBookmarkFilter,
+                    )
+                }
+                val targetMatching = nextMatching
+                    ?: if (wrapToFirstMatchingIfNoNext || useBookmarkFilter) firstMatching else null
+                if (targetMatching != null) {
+                    seekInternal(targetMatching.startMs)
+                    updateState(chunkId = targetMatching.id, autoPauseEndsAt = null)
+                    scheduleBoundaryMessage(
+                        payload = BoundaryPayload.ChunkEnd(targetMatching),
+                        persistent = false,
+                    )
+                } else {
+                    cancelPendingMessage()
+                    pausedAtChunkEndPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+                    exoPlayer.pause()
+                }
+                return
+            }
+
             val nextChunkMatches = matchesPlaybackFilter(
                 chunk = nextChunk,
                 languageFilter = filter,
@@ -621,7 +671,7 @@ class ChunkScheduler(
             return
         }
 
-        // owner == null で先頭チャンクがフィルタ条件を満たす場合は、先頭チャンクの開始を待つ
+        // owner == null で先頭チャンクがフィルタ条件を満たす場合は、先頭チャンクの開始を待つ（無音スキップ時は即シーク）
         val firstChunk = chunks.first()
         if (owner == null &&
             matchesPlaybackFilter(
@@ -631,6 +681,15 @@ class ChunkScheduler(
                 useBookmarkFilter = useBookmarkFilter,
             )
         ) {
+            if (practiceSettings.skipOriginalSilence && exoPlayer.playWhenReady && firstChunk.startMs > nowMs) {
+                seekInternal(firstChunk.startMs)
+                updateState(chunkId = firstChunk.id, autoPauseEndsAt = null)
+                scheduleBoundaryMessage(
+                    payload = BoundaryPayload.ChunkEnd(firstChunk),
+                    persistent = false,
+                )
+                return
+            }
             updateState(chunkId = null, autoPauseEndsAt = _autoPauseEndsAtMs.value)
             scheduleBoundaryMessage(
                 payload = BoundaryPayload.ChunkStart(firstChunk),
@@ -868,7 +927,12 @@ class ChunkScheduler(
             val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
             if (firstIndex >= 0 && lastIndex >= firstIndex && currentIndex in firstIndex..lastIndex) {
                 if (currentIndex < lastIndex) {
-                    return PostChunkAction.AdvanceAfter(chunk.endMs)
+                    val nextInRange = chunks[currentIndex + 1]
+                    return if (practiceSettings.skipOriginalSilence && nextInRange.startMs > chunk.endMs) {
+                        PostChunkAction.SeekToChunk(nextInRange)
+                    } else {
+                        PostChunkAction.AdvanceAfter(chunk.endMs)
+                    }
                 } else {
                     // lastChunkId の終端に到達
                     completedLoopCount += 1
@@ -949,10 +1013,14 @@ class ChunkScheduler(
                 useBookmarkFilter = useBookmarkFilter,
             )
             if (nextChunkMatches) {
-                return PostChunkAction.AdvanceAfter(chunk.endMs)
+                return if (practiceSettings.skipOriginalSilence && nextChunk.startMs > chunk.endMs) {
+                    PostChunkAction.SeekToChunk(nextChunk)
+                } else {
+                    PostChunkAction.AdvanceAfter(chunk.endMs)
+                }
             }
 
-            if (nextChunk.startMs > chunk.endMs) {
+            if (!practiceSettings.skipOriginalSilence && nextChunk.startMs > chunk.endMs) {
                 return PostChunkAction.PlayTrailingSilenceUntil(
                     chunk = chunk,
                     silenceEndMs = nextChunk.startMs,
@@ -976,6 +1044,18 @@ class ChunkScheduler(
                 nextMatching != null -> PostChunkAction.SeekToChunk(nextMatching)
                 useBookmarkFilter && firstMatching != null -> PostChunkAction.SeekToChunk(firstMatching)
                 else -> PostChunkAction.PauseAtChunkEnd(allowsAutoPause = true)
+            }
+        }
+
+        if (practiceSettings.skipOriginalSilence) {
+            val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
+            val nextChunk = if (currentIndex >= 0) {
+                chunks.getOrNull(currentIndex + 1)
+            } else {
+                chunks.firstOrNull { it.startMs >= chunk.endMs }
+            }
+            if (nextChunk != null && nextChunk.startMs > chunk.endMs) {
+                return PostChunkAction.SeekToChunk(nextChunk)
             }
         }
 
