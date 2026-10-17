@@ -781,7 +781,12 @@ class MediaCodecAudioStreamDecoder internal constructor(
             }
 
             if (batchedInputQueued && expectedMp3SamplesKnown && !stuckAtEndWorkaround &&
-                abs(decodedFrames - expectedMp3Samples) > MP3_BATCH_TOLERANCE_SAMPLES
+                isMp3BatchOutputLengthMismatched(
+                    decodedFrames = decodedFrames,
+                    expectedFrames = expectedMp3Samples,
+                    encoderDelay = encoderDelay,
+                    encoderPadding = encoderPadding,
+                )
             ) {
                 // まとめて渡したフレームの一部がデコードされなかった（時間軸がずれる）。
                 // 結果は使わず失敗にし、以後このデコーダでは 1 フレームずつ渡す（次の解析では正しく読める）
@@ -863,6 +868,35 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
         /** まとめて渡したとき、入力したフレームから見込まれる出力の長さとのずれの許容（1 チャンネルあたり 2 フレームぶん）。 */
         private const val MP3_BATCH_TOLERANCE_SAMPLES: Long = 2_304L
+
+        /**
+         * MediaCodec がギャップレス情報に従って削る長さとして認める上限（1 チャンネルあたり 4 フレームぶん。
+         * iTunes で作った MP3 では 528 + 2,110 だった）。
+         * 上限 + [MP3_BATCH_TOLERANCE_SAMPLES]（6,912）が、まとめた入力 1 つ分の欠落の最小
+         * （チャンクの切り出しで MPEG-2 の 16 フレーム = 9,216）より小さいので、欠落は許容の中に隠れない。
+         */
+        private const val MAX_GAPLESS_TRIM_SAMPLES: Long = 4_608L
+
+        /**
+         * まとめて渡した MP3 の出力の長さ [decodedFrames] が、入力したフレームから見込まれる長さ [expectedFrames] とずれているか
+         * （どちらも 1 チャンネルあたりのサンプル数）。
+         *
+         * MediaCodec は、トラックの形式にエンコーダの遅延とパディング（ID3 の iTunSMPB や LAME タグから読んだ
+         * [MediaFormat.KEY_ENCODER_DELAY]・[MediaFormat.KEY_ENCODER_PADDING]）があると、出力の先頭と末尾からその分を削る。
+         * 1 フレームずつ渡しても同じだけ削られる（Pixel 実機で、iTunes で作った 30 分の MP3 は 528 + 2,110 サンプル短くなった）ので、
+         * 見込みより最大でその分（上限 [MAX_GAPLESS_TRIM_SAMPLES]）だけ短いのは正常とする。
+         */
+        internal fun isMp3BatchOutputLengthMismatched(
+            decodedFrames: Long,
+            expectedFrames: Long,
+            encoderDelay: Int,
+            encoderPadding: Int,
+        ): Boolean {
+            val gaplessTrim = (encoderDelay.coerceAtLeast(0).toLong() + encoderPadding.coerceAtLeast(0).toLong())
+                .coerceAtMost(MAX_GAPLESS_TRIM_SAMPLES)
+            val shortfall = expectedFrames - decodedFrames
+            return shortfall < -MP3_BATCH_TOLERANCE_SAMPLES || shortfall > gaplessTrim + MP3_BATCH_TOLERANCE_SAMPLES
+        }
 
         /**
          * 範囲デコードの開始位置へ [extractor] を進め、最初にデコーダへ渡すサンプルの時刻（µs）を返す。

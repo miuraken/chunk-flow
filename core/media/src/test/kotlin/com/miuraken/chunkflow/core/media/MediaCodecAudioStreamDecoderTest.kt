@@ -578,6 +578,60 @@ class MediaCodecAudioStreamDecoderTest {
     }
 
     @Test
+    fun `decode_ギャップレス情報のあるMP3でデコーダが先頭と末尾を削っても失敗にせず以後もまとめて渡す`() = runTest {
+        val tempDir = Files.createTempDirectory("cf_mp3_gapless").toFile()
+        try {
+            val file = File(tempDir, "gapless.mp3").apply { writeBytes(ByteArray(64) { 1 }) }
+            val packets = mp3FramePackets(count = 300)
+            // iTunes で作った MP3（ID3 の iTunSMPB）と同じ値。MediaCodec は出力の先頭と末尾からこの分を削る
+            val format = mp3Format().apply {
+                setInteger(MediaFormat.KEY_ENCODER_DELAY, 528)
+                setInteger(MediaFormat.KEY_ENCODER_PADDING, 2_110)
+            }
+            val codecs = mutableListOf<FakeMp3Codec>()
+            val decoder = MediaCodecAudioStreamDecoder(
+                extractorOpener = { FakeExtractorSession(format, packets) },
+                codecCreator = { _, _ ->
+                    FakeMp3Codec("c2.android.mp3.decoder", trimStartSamples = 528, trimEndSamples = 2_110).also { codecs += it }
+                },
+            )
+
+            repeat(2) { attempt ->
+                val result = decoder.decode(file = file, sink = SampleSink { _, _ -> }, outputSampleRate = 16_000)
+
+                val success = assertIs<AudioDecodeResult.Success>(result)
+                assertEquals(300L * 1_152L - 528L - 2_110L, success.decodedFrames)
+                // 削られた分を「ずれ」とみなさないので、2 回目も 1 フレームずつに落とさずまとめて渡す
+                assertEquals(listOf(128, 128, 44), codecs[attempt].framesPerInput)
+            }
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `isMp3BatchOutputLengthMismatched_ギャップレスで削られる分は許し欠落とはみ出しは見逃さない`() {
+        fun mismatched(decoded: Long, delay: Int, padding: Int): Boolean = MediaCodecAudioStreamDecoder.isMp3BatchOutputLengthMismatched(
+            decodedFrames = decoded,
+            expectedFrames = EXPECTED_300_FRAMES,
+            encoderDelay = delay,
+            encoderPadding = padding,
+        )
+
+        // ずれがない・削られる分ちょうど・削られる分 + 許容（2 フレーム）まで
+        assertFalse(mismatched(EXPECTED_300_FRAMES, delay = 0, padding = 0))
+        assertFalse(mismatched(EXPECTED_300_FRAMES - 2_638L, delay = 528, padding = 2_110))
+        assertFalse(mismatched(EXPECTED_300_FRAMES - 2_638L - 2_304L, delay = 528, padding = 2_110))
+        // それより短い・許容より長い
+        assertTrue(mismatched(EXPECTED_300_FRAMES - 2_638L - 2_305L, delay = 528, padding = 2_110))
+        assertTrue(mismatched(EXPECTED_300_FRAMES + 2_305L, delay = 528, padding = 2_110))
+        // ギャップレス情報がなければ、2 フレームを超える欠落は失敗
+        assertTrue(mismatched(EXPECTED_300_FRAMES - 3L * 1_152L, delay = 0, padding = 0))
+        // 申告された遅延とパディングが大きすぎても、まとめた入力 1 つ分（MPEG-2 の 16 フレーム）の欠落は見逃さない
+        assertTrue(mismatched(EXPECTED_300_FRAMES - 16L * 576L, delay = 0, padding = 100_000))
+    }
+
+    @Test
     fun `decodeFromPosition_チャンクの切り出しではMP3のフレームを16個までにまとめる`() = runTest {
         val tempDir = Files.createTempDirectory("cf_mp3_range").toFile()
         try {
@@ -811,15 +865,24 @@ class MediaCodecAudioStreamDecoderTest {
      * ヘッダの読めない入力は、無音 1 フレームぶんを出す（テスト用の簡略化）。
      *
      * @param dropAllButFirstFrame true なら、まとめて渡されても先頭のフレームしか出さない（まとめ入れに対応しないデコーダ）。
+     * @param trimStartSamples 出力の先頭から削るサンプル数（MediaCodec がエンコーダの遅延に従って削るのをまねる）。
+     * @param trimEndSamples 出力の末尾から削るサンプル数（同じくパディング。EOS まで出さずに持っておき、EOS で捨てる）。
      */
     private class FakeMp3Codec(
         override val codecName: String,
         private val dropAllButFirstFrame: Boolean = false,
+        private val trimStartSamples: Int = 0,
+        private val trimEndSamples: Int = 0,
     ) : CodecSession {
         private val inputBuf = ByteBuffer.allocate(256 * 1024)
         private val pendingOutputs = ArrayDeque<Pair<ByteArray, Int>>()
         private var currentOutput: ByteArray? = null
         private var emittedFormatChange = false
+
+        /** まだ出していない PCM（値とサンプル数の並び）。 */
+        private val heldRuns = ArrayDeque<Pair<Short, Int>>()
+        private var heldSampleCount = 0
+        private var remainingStartTrim = trimStartSamples
 
         /** 入力ごとに入っていた、ヘッダの読めるフレームの数（EOS を除く、渡された順）。 */
         val framesPerInput = mutableListOf<Int>()
@@ -837,6 +900,9 @@ class MediaCodecAudioStreamDecoderTest {
 
         override fun queueInputBuffer(index: Int, offset: Int, size: Int, presentationTimeUs: Long, flags: Int) {
             if ((flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                // 末尾に持っておいた分（パディング）は出さずに捨てる
+                heldRuns.clear()
+                heldSampleCount = 0
                 pendingOutputs.addLast(ByteArray(0) to flags)
                 return
             }
@@ -858,8 +924,29 @@ class MediaCodecAudioStreamDecoderTest {
             }
             if (frames == 0) frameValues += 0
             framesPerInput += frames
-            val pcm = ByteBuffer.allocate(frameValues.size * MP3_FRAME_SAMPLES * 2).order(ByteOrder.nativeOrder())
-            for (value in frameValues) repeat(MP3_FRAME_SAMPLES) { pcm.putShort(value) }
+            for (value in frameValues) {
+                heldRuns.addLast(value to MP3_FRAME_SAMPLES)
+                heldSampleCount += MP3_FRAME_SAMPLES
+            }
+            // 先頭（遅延）を削る
+            while (remainingStartTrim > 0 && heldRuns.isNotEmpty()) {
+                val (value, count) = heldRuns.removeFirst()
+                val dropped = minOf(count, remainingStartTrim)
+                if (count > dropped) heldRuns.addFirst(value to count - dropped)
+                remainingStartTrim -= dropped
+                heldSampleCount -= dropped
+            }
+            // 末尾（パディング）になり得る分を残して出す
+            var emitCount = (heldSampleCount - trimEndSamples).coerceAtLeast(0)
+            val pcm = ByteBuffer.allocate(emitCount * 2).order(ByteOrder.nativeOrder())
+            heldSampleCount -= emitCount
+            while (emitCount > 0) {
+                val (value, count) = heldRuns.removeFirst()
+                val taken = minOf(count, emitCount)
+                repeat(taken) { pcm.putShort(value) }
+                if (count > taken) heldRuns.addFirst(value to count - taken)
+                emitCount -= taken
+            }
             pendingOutputs.addLast(pcm.array() to 0)
         }
 
@@ -893,5 +980,8 @@ class MediaCodecAudioStreamDecoderTest {
 
         /** テスト用 MP3 のサンプルレート（Hz）。 */
         const val MP3_SAMPLE_RATE = 44_100.0
+
+        /** MPEG-1 Layer III の 300 フレームから見込まれる出力の長さ（1 チャンネルあたりのサンプル数）。 */
+        const val EXPECTED_300_FRAMES = 300L * 1_152L
     }
 }
