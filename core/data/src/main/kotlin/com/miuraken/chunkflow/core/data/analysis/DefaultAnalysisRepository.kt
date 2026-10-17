@@ -356,7 +356,6 @@ class DefaultAnalysisRepository(
 
             val decoder = audioStreamDecoder
             if (decoder != null) {
-                var hadToWaitOrPreempt = pipelineGate.isCurrentlyLocked()
                 while (true) {
                     val effectiveHigh = explicitHighPriority || pipelineGate.isMediaOpen(id)
                     val completed = pipelineGate.withLock(highPriority = effectiveHigh) {
@@ -365,7 +364,9 @@ class DefaultAnalysisRepository(
                                 mediaId = id,
                                 requestedStages = stages,
                                 decoder = decoder,
-                                skipIfAlreadyDone = hadToWaitOrPreempt && !explicitHighPriority,
+                                // 同じ要求でワーカー（AnalysisWorker）も登録しているので、どちらが後になっても、
+                                // 済んでいれば飛ばす（優先度にかかわらず。以前は開いているファイルで同じ解析が 2 回走っていた）
+                                skipIfAlreadyDone = true,
                             )
                             true
                         } catch (_: AnalysisPreemptedException) {
@@ -374,7 +375,6 @@ class DefaultAnalysisRepository(
                         }
                     }
                     if (completed) break
-                    hadToWaitOrPreempt = true
                 }
             }
         }
@@ -461,8 +461,14 @@ class DefaultAnalysisRepository(
                             throw AnalysisPreemptedException()
                         }
                         val currentMs = clock()
+                        // 30 秒区間ごとの保存は、最初の区間はすぐ公開し、2 回目以降は前の保存から一定時間あける
+                        // （デコードが速いと 30 秒区間が数百 ms ごとにそろい、そのたびに波形全体を書き直すことになるため）
                         val hasNew30sSegment =
-                            accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS
+                            accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
+                                (
+                                    lastSavedDecodedBins == 0 ||
+                                        currentMs - lastCheckpointMs >= AnalysisWorker.MIN_SEGMENT_SAVE_INTERVAL_MS
+                                    )
                         val shouldSaveWaveform =
                             currentMs - lastCheckpointMs >= AnalysisWorker.PROGRESS_SAVE_INTERVAL_MS ||
                                 hasNew30sSegment

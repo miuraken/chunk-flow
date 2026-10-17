@@ -66,8 +66,6 @@ internal class PriorityAnalysisPipelineGate {
 
     fun hasHighPriorityWaiters(): Boolean = waitingHighPriorityCount.get() > 0
 
-    fun isCurrentlyLocked(): Boolean = isLocked
-
     suspend fun acquire(highPriority: Boolean) {
         val waiter = CompletableDeferred<Unit>()
         val acquiredImmediately = stateMutex.withLock {
@@ -171,7 +169,6 @@ class AnalysisWorker(
         val mediaId = MediaId(rawMediaId)
         val requestedStages = parseRequestedStages(inputData.getStringArray(KEY_STAGES))
         val explicitHighPriority = inputData.getBoolean(KEY_HIGH_PRIORITY, false)
-        var hadToWaitOrPreempt = pipelineGate.isCurrentlyLocked()
 
         while (true) {
             val highPriority = explicitHighPriority || pipelineGate.isMediaOpen(mediaId)
@@ -180,7 +177,9 @@ class AnalysisWorker(
                     runPipeline(
                         mediaId = mediaId,
                         requestedStages = requestedStages,
-                        skipIfAlreadyDone = hadToWaitOrPreempt && !explicitHighPriority,
+                        // 同じ要求で DefaultAnalysisRepository も直接解析するので、どちらが後になっても、
+                        // 済んでいれば飛ばす（優先度にかかわらず。以前は開いているファイルで同じ解析が 2 回走っていた）
+                        skipIfAlreadyDone = true,
                     )
                 } catch (_: AnalysisPreemptedException) {
                     resetStagesToNotStarted(mediaId, requestedStages)
@@ -190,7 +189,6 @@ class AnalysisWorker(
             if (outcome != null) {
                 return outcome
             }
-            hadToWaitOrPreempt = true
         }
     }
 
@@ -276,8 +274,10 @@ class AnalysisWorker(
                             throw AnalysisPreemptedException()
                         }
                         val currentMs = clock()
+                        // 30 秒区間ごとの保存は、最初の区間はすぐ、2 回目以降は前の保存から一定時間あける（DefaultAnalysisRepository と同じ）
                         val hasNew30sSegment =
-                            accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS
+                            accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
+                                (lastSavedDecodedBins == 0 || currentMs - lastCheckpointMs >= MIN_SEGMENT_SAVE_INTERVAL_MS)
                         val shouldSaveWaveform =
                             currentMs - lastCheckpointMs >= PROGRESS_SAVE_INTERVAL_MS || hasNew30sSegment
                         val shouldUpdateProgress = currentMs - lastProgressUpdateMs >= PROGRESS_DB_INTERVAL_MS
@@ -499,6 +499,12 @@ class AnalysisWorker(
         internal const val TARGET_SAMPLE_RATE_HZ: Int = 16_000
         internal const val PROGRESS_SAVE_INTERVAL_MS: Long = 2_000L
         internal const val PROGRESS_DB_INTERVAL_MS: Long = 500L
+
+        /**
+         * 30 秒区間がそろったときの `waveform.bin` の保存の最短間隔（2 回目以降）。
+         * MP3 をまとめてデコードすると 30 秒区間が数百 ms ごとにそろうため、波形全体の書き直しと画面の再読み込みを 1 秒に 1 回までにする。
+         */
+        internal const val MIN_SEGMENT_SAVE_INTERVAL_MS: Long = 1_000L
 
         /** 複数ファイルの解析パイプラインを直列化しつつ、開いているファイルを優先させるゲート。 */
         internal val pipelineGate: PriorityAnalysisPipelineGate = PriorityAnalysisPipelineGate()

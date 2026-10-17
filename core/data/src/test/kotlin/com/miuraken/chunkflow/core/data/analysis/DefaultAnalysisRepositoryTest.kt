@@ -2321,4 +2321,79 @@ class DefaultAnalysisRepositoryTest {
         repository.setMediaTranscriptionSessionOpen(second, false)
         assertEquals(1, releaseCalls)
     }
+
+    @Test
+    fun `requestAnalysis_開いているファイルでも解析が済んでいれば同じ解析をもう一度行わない`() = runTest {
+        val mediaId = MediaId("double_run_01")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Double Run Test",
+                durationMs = 5_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        var decodeCalls = 0
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                decodeCalls++
+                val samples = FloatArray(outputSampleRate * 5) { idx -> if ((idx / outputSampleRate) % 2 == 0) 0.5f else 0f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = 5_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+        val repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = UnconfinedTestDispatcher(testScheduler),
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            audioStreamDecoder = fakeDecoder,
+        )
+        val stages = setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION)
+
+        // プレイヤーで開いている（高優先度）
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        try {
+            repository.requestAnalysis(mediaId, stages)
+            assertEquals(1, decodeCalls)
+            assertEquals(StageStatus.Done, repository.observeStatus(mediaId).first()[AnalysisStage.SEGMENTATION])
+
+            // 同じ要求の 2 本目（WorkManager のワーカーと直接の実行のうち後のほう）は、済んでいるのでデコードしない
+            repository.requestAnalysis(mediaId, stages)
+            assertEquals(1, decodeCalls)
+            assertEquals(StageStatus.Done, repository.observeStatus(mediaId).first()[AnalysisStage.FEATURES])
+        } finally {
+            repository.setMediaTranscriptionSessionOpen(mediaId, false)
+        }
+    }
 }

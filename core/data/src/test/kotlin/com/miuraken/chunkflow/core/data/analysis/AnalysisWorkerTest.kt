@@ -352,4 +352,79 @@ class AnalysisWorkerTest {
             executionLog,
         )
     }
+
+    @Test
+    fun `doWork_高優先度でも解析が済んでいればデコードせずに成功する`() = runTest {
+        val mediaId = MediaId("media_worker_skip")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Worker Skip Test",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        var decodeCalls = 0
+        val countingDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                decodeCalls++
+                val totalSamples = outputSampleRate * 2
+                val samples = FloatArray(totalSamples) { i -> if (i < totalSamples / 2) 0.5f else 0f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = totalSamples.toLong(),
+                    resampledSamples = totalSamples.toLong(),
+                    durationMs = 2_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+        // 開いているファイルの要求と同じく、高優先度のワーカー
+        val inputData = Data.Builder()
+            .putString(AnalysisWorker.KEY_MEDIA_ID, mediaId.value)
+            .putStringArray(
+                AnalysisWorker.KEY_STAGES,
+                arrayOf(AnalysisStage.FEATURES.name, AnalysisStage.SEGMENTATION.name),
+            )
+            .putBoolean(AnalysisWorker.KEY_HIGH_PRIORITY, true)
+            .build()
+
+        fun newWorker() = AnalysisWorker(
+            appContext = context,
+            workerParams = createWorkerParameters(inputData),
+            audioStreamDecoder = countingDecoder,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            userSettingsRepository = userSettingsRepository,
+            clock = { currentEpochMs },
+        )
+
+        assertEquals(ListenableWorker.Result.success(), newWorker().doWork())
+        assertEquals(1, decodeCalls)
+
+        // 2 本目（DefaultAnalysisRepository の直接の実行が先に済ませた場合と同じ）は、デコードせずに成功する
+        assertEquals(ListenableWorker.Result.success(), newWorker().doWork())
+        assertEquals(1, decodeCalls)
+    }
 }

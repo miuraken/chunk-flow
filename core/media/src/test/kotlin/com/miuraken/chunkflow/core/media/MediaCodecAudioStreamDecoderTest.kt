@@ -13,11 +13,13 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
 import kotlin.math.roundToLong
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
@@ -480,6 +482,171 @@ class MediaCodecAudioStreamDecoderTest {
         }
     }
 
+    @Test
+    fun `decode_標準のMP3デコーダではフレームをまとめて渡し出力は1フレームずつのときと同じになる`() = runTest {
+        val tempDir = Files.createTempDirectory("cf_mp3_batch").toFile()
+        try {
+            val file = File(tempDir, "batch.mp3").apply { writeBytes(ByteArray(64) { 1 }) }
+            val packets = mp3FramePackets(count = 300)
+
+            suspend fun decodeWith(codecName: String): Triple<AudioDecodeResult, FakeMp3Codec, FloatArray> {
+                val codec = FakeMp3Codec(codecName)
+                val decoder = MediaCodecAudioStreamDecoder(
+                    extractorOpener = { FakeExtractorSession(mp3Format(), packets) },
+                    codecCreator = { _, _ -> codec },
+                )
+                val pcm = ArrayList<Float>()
+                val result = decoder.decode(
+                    file = file,
+                    sink = SampleSink { samples, count -> for (i in 0 until count) pcm += samples[i] },
+                    outputSampleRate = 16_000,
+                )
+                return Triple(result, codec, pcm.toFloatArray())
+            }
+
+            val (batched, batchedCodec, batchedPcm) = decodeWith("c2.android.mp3.decoder")
+            val (single, singleCodec, singlePcm) = decodeWith("c2.vendor.mp3.decoder")
+
+            val batchedSuccess = assertIs<AudioDecodeResult.Success>(batched)
+            val singleSuccess = assertIs<AudioDecodeResult.Success>(single)
+            assertEquals(300L * 1_152L, batchedSuccess.decodedFrames)
+            assertEquals(singleSuccess.decodedFrames, batchedSuccess.decodedFrames)
+            // 標準のデコーダには 128 個ずつまとめ、それ以外のデコーダには 1 個ずつ渡す
+            assertEquals(listOf(128, 128, 44), batchedCodec.framesPerInput)
+            assertEquals(List(300) { 1 }, singleCodec.framesPerInput)
+            // 入力の時刻は、その入力の先頭のフレームの時刻
+            assertEquals(listOf(packets[0].ptsUs, packets[128].ptsUs, packets[256].ptsUs), batchedCodec.inputPtsUs)
+            // 解析に渡る PCM（16kHz）は 1 サンプルも違わない
+            assertContentEquals(singlePcm, batchedPcm)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `decode_ヘッダの読めないフレームはまとめずに単独で渡し前後のフレームの順番を保つ`() = runTest {
+        val tempDir = Files.createTempDirectory("cf_mp3_badframe").toFile()
+        try {
+            val file = File(tempDir, "bad.mp3").apply { writeBytes(ByteArray(64) { 1 }) }
+            val packets = mp3FramePackets(count = 20).mapIndexed { idx, packet ->
+                if (idx == 7) packet.copy(pcmBytes = packet.pcmBytes.copyOf().also { it[0] = 0 }) else packet
+            }
+            val codec = FakeMp3Codec("c2.android.mp3.decoder")
+            val decoder = MediaCodecAudioStreamDecoder(
+                extractorOpener = { FakeExtractorSession(mp3Format(), packets) },
+                codecCreator = { _, _ -> codec },
+            )
+
+            val result = decoder.decode(file = file, sink = SampleSink { _, _ -> }, outputSampleRate = 16_000)
+
+            val success = assertIs<AudioDecodeResult.Success>(result)
+            // 0〜6 をまとめ、7 は単独（偽物は読めない入力を無音 1 フレームとして出す）、8〜19 をまとめる
+            assertEquals(listOf(7, 0, 12), codec.framesPerInput)
+            assertEquals(listOf(packets[0].ptsUs, packets[7].ptsUs, packets[8].ptsUs), codec.inputPtsUs)
+            assertEquals(20L * 1_152L, success.decodedFrames)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `decode_まとめて渡したのに出力が足りなければ失敗にして以後は1フレームずつ渡す`() = runTest {
+        val tempDir = Files.createTempDirectory("cf_mp3_drop").toFile()
+        try {
+            val file = File(tempDir, "drop.mp3").apply { writeBytes(ByteArray(64) { 1 }) }
+            val packets = mp3FramePackets(count = 300)
+            val codecs = mutableListOf<FakeMp3Codec>()
+            val decoder = MediaCodecAudioStreamDecoder(
+                extractorOpener = { FakeExtractorSession(mp3Format(), packets) },
+                // 標準のデコーダの名前だが、まとめて渡すと先頭のフレームしか出さない
+                codecCreator = { _, _ -> FakeMp3Codec("c2.android.mp3.decoder", dropAllButFirstFrame = true).also { codecs += it } },
+            )
+
+            // 1 回目: まとめて渡したが出力が足りない（時間軸がずれる）ので、結果を使わず失敗にする
+            val first = decoder.decode(file = file, sink = SampleSink { _, _ -> }, outputSampleRate = 16_000)
+            assertEquals(AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED), first)
+            assertEquals(listOf(128, 128, 44), codecs[0].framesPerInput)
+
+            // 2 回目: 1 フレームずつ渡すので、正しい長さで読める
+            val second = decoder.decode(file = file, sink = SampleSink { _, _ -> }, outputSampleRate = 16_000)
+            val success = assertIs<AudioDecodeResult.Success>(second)
+            assertEquals(300L * 1_152L, success.decodedFrames)
+            assertEquals(List(300) { 1 }, codecs[1].framesPerInput)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `decodeFromPosition_チャンクの切り出しではMP3のフレームを16個までにまとめる`() = runTest {
+        val tempDir = Files.createTempDirectory("cf_mp3_range").toFile()
+        try {
+            val file = File(tempDir, "range.mp3").apply { writeBytes(ByteArray(64) { 1 }) }
+            val packets = mp3FramePackets(count = 300)
+            val codec = FakeMp3Codec("c2.android.mp3.decoder")
+            val decoder = MediaCodecAudioStreamDecoder(
+                extractorOpener = { FakeExtractorSession(mp3Format(), packets) },
+                codecCreator = { _, _ -> codec },
+            )
+
+            var landedUs = -1L
+            val result = decoder.decodeFromPosition(
+                file = file,
+                startPositionMs = 2_000L,
+                sink = SampleSink { _, _ -> },
+                outputSampleRate = 16_000,
+                onSeekLandingUs = { landedUs = it },
+            )
+
+            val success = assertIs<AudioDecodeResult.Success>(result)
+            // 1.5 秒（開始位置の 500ms 手前）以降の最初のフレーム 58 から読む
+            assertEquals(packets[58].ptsUs, landedUs)
+            assertEquals(List(15) { 16 } + 2, codec.framesPerInput)
+            assertEquals(242L * 1_152L, success.decodedFrames)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `decodeCoarseOverviewWaveform_シークが目標より手前に着地する形式では誤った全体波形を出さずnullを返す`() = runTest {
+        val tempDir = Files.createTempDirectory("cf_coarse_inaccurate").toFile()
+        try {
+            val file = File(tempDir, "overview.mp3").apply { writeBytes(ByteArray(64) { 1 }) }
+            // 100ms ずつ 100 パケット（10 秒）。開いた直後の IndexSeeker の MP3 と同じく、seekTo は先頭に着地する
+            val extractorSession = FakeExtractorSession(monoFormat(), monoPackets(count = 100), seekLandsAtStart = true)
+            val decoder = MediaCodecAudioStreamDecoder(
+                extractorOpener = { extractorSession },
+                codecCreator = { _, _ -> FakeCodecSession(rawFormat()) },
+            )
+
+            val waveform = decoder.decodeCoarseOverviewWaveform(file = file, expectedDurationMs = 10_000L, targetColumns = 4)
+
+            assertNull(waveform)
+            // 2 列目（2.5 秒）へのシークが先頭に着地した時点で諦める
+            assertEquals(listOf(2_500_000L), extractorSession.seekHistoryUs)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    /** MPEG-1 Layer III・44.1kHz・モノラルの MP3 トラックの形式。 */
+    private fun mp3Format(): MediaFormat = MediaFormat.createAudioFormat("audio/mpeg", 44_100, 1)
+
+    /**
+     * MPEG-1 Layer III・128kbps・44.1kHz・パディングありの 418 バイトのフレームを [count] 個作る（中身は 5 バイト目の番号以外 0）。
+     * 時刻は 1 フレーム 1,152 サンプル（約 26.1ms）ずつ進める。
+     */
+    private fun mp3FramePackets(count: Int): List<FakePacket> = List(count) { idx ->
+        val frame = ByteArray(418)
+        frame[0] = 0xFF.toByte()
+        frame[1] = 0xFB.toByte()
+        frame[2] = 0x92.toByte()
+        frame[3] = 0xC0.toByte()
+        frame[4] = (idx % 200 + 1).toByte()
+        FakePacket(ptsUs = (idx * MP3_SAMPLES_PER_FRAME * 1_000_000.0 / MP3_SAMPLE_RATE).roundToLong(), pcmBytes = frame)
+    }
+
     private fun monoFormat(): MediaFormat = MediaFormat.createAudioFormat("audio/mpeg", 16_000, 1)
 
     private fun rawFormat(): MediaFormat = MediaFormat.createAudioFormat("audio/raw", 16_000, 1).apply {
@@ -635,6 +802,88 @@ class MediaCodecAudioStreamDecoderTest {
 
         override fun close() {
             closed = true
+        }
+    }
+
+    /**
+     * Android 標準の MP3 デコーダ（`C2SoftMp3Dec`）の振る舞いをまねた偽物。
+     * 入力に入ったフレームをヘッダの長さで区切り、1 フレームにつき 1,152 サンプル（値はフレームの 5 バイト目 × 100）を出す。
+     * ヘッダの読めない入力は、無音 1 フレームぶんを出す（テスト用の簡略化）。
+     *
+     * @param dropAllButFirstFrame true なら、まとめて渡されても先頭のフレームしか出さない（まとめ入れに対応しないデコーダ）。
+     */
+    private class FakeMp3Codec(
+        override val codecName: String,
+        private val dropAllButFirstFrame: Boolean = false,
+    ) : CodecSession {
+        private val inputBuf = ByteBuffer.allocate(256 * 1024)
+        private val pendingOutputs = ArrayDeque<Pair<ByteArray, Int>>()
+        private var currentOutput: ByteArray? = null
+        private var emittedFormatChange = false
+
+        /** 入力ごとに入っていた、ヘッダの読めるフレームの数（EOS を除く、渡された順）。 */
+        val framesPerInput = mutableListOf<Int>()
+
+        /** 入力ごとの PTS（EOS を除く、渡された順）。 */
+        val inputPtsUs = mutableListOf<Long>()
+
+        override val outputFormat: MediaFormat = MediaFormat.createAudioFormat("audio/raw", 44_100, 1).apply {
+            setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+        }
+
+        override fun dequeueInputBuffer(timeoutUs: Long): Int = if (pendingOutputs.size < 4) 0 else -1
+
+        override fun getInputBuffer(index: Int): ByteBuffer = inputBuf
+
+        override fun queueInputBuffer(index: Int, offset: Int, size: Int, presentationTimeUs: Long, flags: Int) {
+            if ((flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                pendingOutputs.addLast(ByteArray(0) to flags)
+                return
+            }
+            inputPtsUs += presentationTimeUs
+            val view = inputBuf.duplicate().apply {
+                position(0)
+                limit(offset + size)
+            }
+            val frameValues = mutableListOf<Short>()
+            var position = offset
+            var frames = 0
+            while (position + Mp3FrameHeader.HEADER_SIZE_BYTES <= offset + size) {
+                val frame = Mp3FrameHeader.parse(view, position) ?: break
+                if (!dropAllButFirstFrame || frames == 0) {
+                    frameValues += ((view.get(position + 4).toInt() and 0xFF) * 100).toShort()
+                }
+                frames++
+                position += frame.frameSizeBytes
+            }
+            if (frames == 0) frameValues += 0
+            framesPerInput += frames
+            val pcm = ByteBuffer.allocate(frameValues.size * MP3_FRAME_SAMPLES * 2).order(ByteOrder.nativeOrder())
+            for (value in frameValues) repeat(MP3_FRAME_SAMPLES) { pcm.putShort(value) }
+            pendingOutputs.addLast(pcm.array() to 0)
+        }
+
+        override fun dequeueOutputBuffer(info: MediaCodec.BufferInfo, timeoutUs: Long): Int {
+            if (!emittedFormatChange) {
+                emittedFormatChange = true
+                return MediaCodec.INFO_OUTPUT_FORMAT_CHANGED
+            }
+            val (bytes, flags) = pendingOutputs.removeFirstOrNull() ?: return MediaCodec.INFO_TRY_AGAIN_LATER
+            currentOutput = bytes
+            info.set(0, bytes.size, 0L, flags)
+            return 0
+        }
+
+        override fun getOutputBuffer(index: Int): ByteBuffer? = currentOutput?.let { ByteBuffer.wrap(it).order(ByteOrder.nativeOrder()) }
+
+        override fun releaseOutputBuffer(index: Int, render: Boolean) {
+            currentOutput = null
+        }
+
+        override fun close() = Unit
+
+        private companion object {
+            const val MP3_FRAME_SAMPLES = 1_152
         }
     }
 

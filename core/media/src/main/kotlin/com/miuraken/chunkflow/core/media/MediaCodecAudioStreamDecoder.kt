@@ -54,6 +54,8 @@ internal interface ExtractorSession : AutoCloseable {
  * [MediaCodecAudioStreamDecoder] が内部で扱うデコーダのセッション抽象（テスト差し替え用）。
  */
 internal interface CodecSession : AutoCloseable {
+    /** デコーダの名前（`MediaCodec.getName()`。MP3 のフレームをまとめて渡せるかの判定に使う）。不明なら空文字。 */
+    val codecName: String get() = ""
     val outputFormat: MediaFormat
     fun dequeueInputBuffer(timeoutUs: Long): Int
     fun getInputBuffer(index: Int): ByteBuffer?
@@ -77,6 +79,9 @@ internal interface CodecSession : AutoCloseable {
  *   [REPEATED_PTS_LIMIT] 回続いたら入力終端とみなし、抽出器が示す長さで出力を打ち切る（ADR 0005 決定 4）。
  * - チャンクの切り出し（[decodeFromPosition]）では、開始位置の手前まで圧縮データのまま読み飛ばし、
  *   同じファイルの抽出器を使い回す（F6.2。MP3 の `IndexSeeker` では、開いた直後のシークが先頭に着地するため）。
+ * - MP3 を [MP3_BATCH_CAPABLE_DECODERS] のデコーダで読むときは、ヘッダと長さを確かめたフレームを 1 つの入力にまとめて渡す
+ *   （1 フレームずつだとデコーダのプロセスとのやり取りで頭打ちになる）。入力から見込まれる出力の長さと実際の長さがずれたら、
+ *   その結果は失敗とし、以後は 1 フレームずつ渡す（時間軸を守る。ADR 0005）。
  */
 @Singleton
 @OptIn(UnstableApi::class)
@@ -116,6 +121,12 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
     /** 切り出しの途中で解放を求められたとき、その切り出しの終わりに解放するための印。 */
     private val rangeSessionReleaseRequested = AtomicBoolean(false)
+
+    /** まとめて渡した MP3 の出力の長さがずれたことがあれば true（以後は 1 フレームずつ渡す）。 */
+    private val mp3BatchingDisabled = AtomicBoolean(false)
+
+    /** [codecName] のデコーダに MP3 のフレームをまとめて渡してよいか（[MP3_BATCH_CAPABLE_DECODERS] にあり、ずれたことがない）。 */
+    private fun isMp3BatchingSupported(codecName: String): Boolean = !mp3BatchingDisabled.get() && codecName in MP3_BATCH_CAPABLE_DECODERS
 
     override suspend fun decode(
         file: File,
@@ -376,6 +387,10 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 if (col > 0 && (currentPtsUs < 0L || targetTimeUs - currentPtsUs >= stepUs / 2L)) {
                     runCatching { extractor.seekTo(targetTimeUs) }
                     runCatching { decoder.flush() }
+                    // シークが目標より半列ぶん以上手前に着地する形式（MP3 の IndexSeeker は読んだ範囲にしか着地しない。ADR 0006）では、
+                    // 列ごとに同じ先頭付近を読むことになり、全体の波形にならない。誤った波形を出さないよう、ここで諦める
+                    val landedUs = extractor.sampleTime
+                    if (landedUs >= 0L && targetTimeUs - landedUs > stepUs / 2L) return null
                 }
 
                 var colPeak = 0f
@@ -547,6 +562,19 @@ class MediaCodecAudioStreamDecoder internal constructor(
             var repeatedPtsCount = 0
             var stuckAtEndWorkaround = false
 
+            // MP3 を標準のデコーダで読むときは、1 つの入力に複数のフレームをまとめて渡す
+            // （1 フレームずつだと、デコーダのプロセスとのやり取りの往復で頭打ちになる。Pixel 実機で 30 分の解析が十数倍速くなる）
+            val isMp3 = mime == MIME_TYPE_MP3
+            val mp3BatchLimit = when {
+                !isMp3 || !isMp3BatchingSupported(decoder.codecName) -> 1
+                startPositionUs == null -> MP3_BATCH_FRAMES_FULL_DECODE
+                else -> MP3_BATCH_FRAMES_RANGE_DECODE
+            }
+            var batchedInputQueued = false
+            // 入力したフレームのヘッダから見込まれる出力のサンプル数（1 チャンネルあたり）。読めないヘッダがあれば確かめない
+            var expectedMp3Samples = 0L
+            var expectedMp3SamplesKnown = isMp3
+
             var sampleRate = trackFormat.intOrZero(MediaFormat.KEY_SAMPLE_RATE)
             var channels = trackFormat.intOrZero(MediaFormat.KEY_CHANNEL_COUNT)
             var floatPcm = trackFormat.intOr(
@@ -587,19 +615,32 @@ class MediaCodecAudioStreamDecoder internal constructor(
                     val inBuf = decoder.getInputBuffer(inIdx)
                         ?: return AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
                     inBuf.clear()
-                    val sampleSize = if (extractorDone) -1 else extractor.readSampleData(inBuf, 0)
-                    if (sampleSize < 0) {
-                        decoder.queueInputBuffer(
-                            inIdx,
-                            0,
-                            0,
-                            0L,
-                            MediaCodec.BUFFER_FLAG_END_OF_STREAM,
-                        )
-                        inputEos = true
-                    } else {
+                    var queuedBytes = 0
+                    var queuedSamples = 0
+                    var firstPts = 0L
+                    while (!extractorDone && queuedSamples < mp3BatchLimit) {
+                        // 2 つ目以降は、最大長のフレームが入る空きがあるときだけ続けて詰める
+                        if (queuedSamples > 0 && inBuf.capacity() - queuedBytes < MAX_MP3_FRAME_BYTES) break
+                        val sampleSize = extractor.readSampleData(inBuf, queuedBytes)
+                        if (sampleSize < 0) {
+                            extractorDone = true
+                            break
+                        }
+                        val mp3Frame = if (isMp3) Mp3FrameHeader.parse(inBuf, queuedBytes) else null
+                        val batchable = mp3BatchLimit > 1 && mp3Frame != null && mp3Frame.frameSizeBytes == sampleSize
+                        if (queuedSamples > 0 && !batchable) {
+                            // ヘッダの読めないフレームはまとめない。advance していないので、次の入力で同じフレームを単独で読み直す
+                            break
+                        }
                         val pts = extractor.sampleTime
-                        decoder.queueInputBuffer(inIdx, 0, sampleSize, pts, 0)
+                        if (queuedSamples == 0) firstPts = pts
+                        queuedBytes += sampleSize
+                        queuedSamples++
+                        if (mp3Frame != null) {
+                            expectedMp3Samples += mp3Frame.samplesPerFrame
+                        } else {
+                            expectedMp3SamplesKnown = false
+                        }
                         if (pts != Long.MIN_VALUE && pts <= lastInputPts) {
                             repeatedPtsCount++
                         } else {
@@ -615,6 +656,20 @@ class MediaCodecAudioStreamDecoder internal constructor(
                             extractorDone = true
                             stuckAtEndWorkaround = true
                         }
+                        if (!batchable) break
+                    }
+                    if (queuedSamples == 0) {
+                        decoder.queueInputBuffer(
+                            inIdx,
+                            0,
+                            0,
+                            0L,
+                            MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                        )
+                        inputEos = true
+                    } else {
+                        decoder.queueInputBuffer(inIdx, 0, queuedBytes, firstPts, 0)
+                        if (queuedSamples > 1) batchedInputQueued = true
                     }
                 }
 
@@ -725,6 +780,15 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 }
             }
 
+            if (batchedInputQueued && expectedMp3SamplesKnown && !stuckAtEndWorkaround &&
+                abs(decodedFrames - expectedMp3Samples) > MP3_BATCH_TOLERANCE_SAMPLES
+            ) {
+                // まとめて渡したフレームの一部がデコードされなかった（時間軸がずれる）。
+                // 結果は使わず失敗にし、以後このデコーダでは 1 フレームずつ渡す（次の解析では正しく読める）
+                mp3BatchingDisabled.set(true)
+                return AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
+            }
+
             if (sampleRate <= 0 || channels <= 0 || decodedFrames <= 0L) {
                 return AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
             }
@@ -775,6 +839,30 @@ class MediaCodecAudioStreamDecoder internal constructor(
         internal const val END_OF_INPUT_US: Long = -1L
         private const val MAX_OVERVIEW_COLUMNS: Int = 600
         private const val MAX_COARSE_SAMPLE_ATTEMPTS: Int = 6
+
+        /** MP3 の MIME タイプ。 */
+        internal const val MIME_TYPE_MP3: String = "audio/mpeg"
+
+        /**
+         * 1 つの入力に複数のフレームをまとめて渡せると確かめた MP3 デコーダ（AOSP の `C2SoftMp3Dec`。ソースと Pixel 実機で確認）。
+         * ほかのデコーダは 1 フレームずつ渡す。
+         */
+        internal val MP3_BATCH_CAPABLE_DECODERS: Set<String> = setOf("c2.android.mp3.decoder")
+
+        /** 全体をデコードするとき、1 つの入力にまとめる MP3 のフレーム数の上限（44.1kHz で約 3.3 秒ぶん）。 */
+        internal const val MP3_BATCH_FRAMES_FULL_DECODE: Int = 128
+
+        /** チャンクを切り出すとき、1 つの入力にまとめる MP3 のフレーム数の上限（末尾で打ち切ったときの無駄を小さくする）。 */
+        internal const val MP3_BATCH_FRAMES_RANGE_DECODE: Int = 16
+
+        /** まとめて渡すための入力バッファの大きさ（最大長のフレーム 1,441 バイト × 128 個が入る）。 */
+        private const val MP3_BATCH_INPUT_BUFFER_BYTES: Int = 256 * 1024
+
+        /** MP3 の 1 フレームの最大バイト数の見込み（Media3 の Mp3Extractor の上限と同じ）。次のフレームを詰める前の空きの確認に使う。 */
+        private const val MAX_MP3_FRAME_BYTES: Int = 4_096
+
+        /** まとめて渡したとき、入力したフレームから見込まれる出力の長さとのずれの許容（1 チャンネルあたり 2 フレームぶん）。 */
+        private const val MP3_BATCH_TOLERANCE_SAMPLES: Long = 2_304L
 
         /**
          * 範囲デコードの開始位置へ [extractor] を進め、最初にデコーダへ渡すサンプルの時刻（µs）を返す。
@@ -860,6 +948,10 @@ class MediaCodecAudioStreamDecoder internal constructor(
             val codec = MediaCodec.createDecoderByType(mime)
             var started = false
             try {
+                if (mime == MIME_TYPE_MP3 && format.intOrZero(MediaFormat.KEY_MAX_INPUT_SIZE) < MP3_BATCH_INPUT_BUFFER_BYTES) {
+                    // 複数のフレームをまとめて渡せるように、入力バッファを広げる（まとめるかどうかは decodeWithExtractor で決める）
+                    format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MP3_BATCH_INPUT_BUFFER_BYTES)
+                }
                 codec.configure(format, null, null, 0)
                 codec.start()
                 started = true
@@ -868,7 +960,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 runCatching { codec.release() }
                 throw e
             }
+            val name = runCatching { codec.name }.getOrDefault("")
             return object : CodecSession {
+                override val codecName: String = name
                 override val outputFormat: MediaFormat get() = codec.outputFormat
                 override fun dequeueInputBuffer(timeoutUs: Long): Int = codec.dequeueInputBuffer(timeoutUs)
                 override fun getInputBuffer(index: Int): ByteBuffer? = codec.getInputBuffer(index)
