@@ -19,15 +19,20 @@ import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.UserSettings
@@ -406,12 +411,40 @@ private fun fallbackDevanagariToIast(text: String): String {
 }
 
 /**
+ * 詳細文字起こしダイアログで初期選択する認識言語を決定する。
+ *
+ * チャンクに自動認識（または既存設定）された言語があればその言語（[languagePair] の target / base にマッチする側、
+ * またはその言語タグ）、なければ学習対象言語（[LanguagePair.target]）を返す。
+ */
+internal fun resolveInitialDetailedLanguage(
+    chunkLanguage: LanguageTag?,
+    languagePair: LanguagePair?,
+): LanguageTag {
+    val validChunkLang = chunkLanguage?.takeIf {
+        it.value.isNotBlank() && !it.value.equals("und", ignoreCase = true)
+    }
+    if (validChunkLang != null) {
+        if (languagePair != null) {
+            if (matchesLanguageRole(validChunkLang, languagePair.target)) {
+                return languagePair.target
+            }
+            val base = languagePair.base
+            if (base != null && matchesLanguageRole(validChunkLang, base)) {
+                return base
+            }
+        }
+        return validChunkLang
+    }
+    return languagePair?.target ?: LanguageTag("en")
+}
+
+/**
  * チャンクの「より詳しく文字起こし」ダイアログの UI 状態。
  */
 data class DetailedTranscriptionDialogState(
     val chunkId: ChunkId,
     val chunkIndex: Int,
-    val engine: OnDeviceTranscriptionEngine = OnDeviceTranscriptionEngine.AUTO,
+    val engine: OnDeviceTranscriptionEngine = OnDeviceTranscriptionEngine.ML_KIT,
     val languageOverride: LanguageTag? = null,
     val audioSpeed: Float = 1.0f,
     val isRunning: Boolean = false,
@@ -419,10 +452,105 @@ data class DetailedTranscriptionDialogState(
     val resultText: String = "",
     val recognizedLanguage: LanguageTag? = null,
     val recognizedEngineId: String? = null,
+    val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
+    val isPreviewPlaying: Boolean = false,
 ) {
+    /**
+     * 指定した言語 [language] に対する [OnDeviceLanguageModelInfo] を返す。
+     * [SupportedLanguageCatalog] の対応フラグも反映する。
+     */
+    fun modelInfoFor(language: LanguageTag?): OnDeviceLanguageModelInfo {
+        val targetLang = language ?: languageOverride ?: LanguageTag("en")
+        val normalized = LanguageSettings.normalize(targetLang)
+        val mgmtTag = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(targetLang.value))
+        val raw = languageModelInfos[targetLang]
+            ?: languageModelInfos[normalized]
+            ?: languageModelInfos[mgmtTag]
+            ?: languageModelInfos.entries.firstOrNull { (k, _) -> matchesLanguageRole(k, targetLang) }?.value
+            ?: OnDeviceLanguageModelInfo(language = targetLang)
+        return enrichWithCatalog(raw, targetLang)
+    }
+
+    /**
+     * 言語 [language] におけるエンジン [targetEngine] のモデル利用可能状態を返す。
+     */
+    fun engineStatus(
+        language: LanguageTag?,
+        targetEngine: OnDeviceTranscriptionEngine,
+    ): OnDeviceLanguageModelStatus {
+        val info = modelInfoFor(language)
+        return when (targetEngine) {
+            OnDeviceTranscriptionEngine.ML_KIT,
+            OnDeviceTranscriptionEngine.AUTO,
+            -> info.mlKitStatus
+
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> info.status
+
+            OnDeviceTranscriptionEngine.SHERPA_ONNX -> info.sherpaModelStatus
+        }
+    }
+
+    /**
+     * 言語 [language] でモデルがダウンロード済みですぐに使えるもの（[OnDeviceLanguageModelStatus.INSTALLED]）の
+     * うち最上位（`ML Kit` → `SpeechRecognizer` → `sherpa-onnx` の順）のエンジンを返す。
+     * `INSTALLED` が 1 つもなければ、非 `UNSUPPORTED` の最上位を返す。
+     */
+    fun selectDefaultEngineForLanguage(language: LanguageTag?): OnDeviceTranscriptionEngine {
+        val installed = ENGINE_OPTIONS.firstOrNull { candidate ->
+            engineStatus(language, candidate) == OnDeviceLanguageModelStatus.INSTALLED
+        }
+        if (installed != null) return installed
+        val supported = ENGINE_OPTIONS.firstOrNull { candidate ->
+            engineStatus(language, candidate) != OnDeviceLanguageModelStatus.UNSUPPORTED
+        }
+        return supported ?: OnDeviceTranscriptionEngine.ML_KIT
+    }
+
     companion object {
-        /** STT へ入力する音声の速度倍率の選択肢。 */
-        val AUDIO_SPEED_OPTIONS: List<Float> = listOf(0.75f, 1.0f, 1.25f, 1.5f)
+        /** 詳細文字起こしで選択可能なエンジンの並び順（ML Kit → SpeechRecognizer → sherpa-onnx）。 */
+        val ENGINE_OPTIONS: List<OnDeviceTranscriptionEngine> = listOf(
+            OnDeviceTranscriptionEngine.ML_KIT,
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            OnDeviceTranscriptionEngine.SHERPA_ONNX,
+        )
+
+        /** STT へ入力およびチャンク試聴する音声の速度倍率の選択肢。 */
+        val AUDIO_SPEED_OPTIONS: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.5f)
+
+        /** [OnDeviceTranscriptionEngine] を対応する [SttEngine] に変換する。 */
+        fun toSttEngine(engine: OnDeviceTranscriptionEngine): SttEngine = when (engine) {
+            OnDeviceTranscriptionEngine.ML_KIT,
+            OnDeviceTranscriptionEngine.AUTO,
+            -> SttEngine.ML_KIT
+
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> SttEngine.SPEECH_RECOGNIZER
+
+            OnDeviceTranscriptionEngine.SHERPA_ONNX -> SttEngine.SHERPA_ONNX
+        }
+
+        internal fun enrichWithCatalog(
+            info: OnDeviceLanguageModelInfo,
+            language: LanguageTag,
+        ): OnDeviceLanguageModelInfo {
+            val entry = SupportedLanguageCatalog.findByCode(language.value) ?: return info
+            return info.copy(
+                mlKitStatus = if (!entry.mlKitSupported) {
+                    OnDeviceLanguageModelStatus.UNSUPPORTED
+                } else {
+                    info.mlKitStatus
+                },
+                status = if (!entry.speechRecognizerSupported) {
+                    OnDeviceLanguageModelStatus.UNSUPPORTED
+                } else {
+                    info.status
+                },
+                sherpaModelStatus = if (entry.whisperCode == null) {
+                    OnDeviceLanguageModelStatus.UNSUPPORTED
+                } else {
+                    info.sherpaModelStatus
+                },
+            )
+        }
     }
 }
 
@@ -740,6 +868,27 @@ sealed interface PlayerEvent {
         val language: LanguageTag?,
     ) : PlayerEvent
 
+    /** 「より詳しく文字起こし」ダイアログで認識言語を切り替える（対応する既定エンジンも自動選択する）。 */
+    data class SelectDetailedTranscriptionLanguage(val language: LanguageTag) : PlayerEvent
+
+    /** 「より詳しく文字起こし」ダイアログで文字起こしエンジンを切り替える。 */
+    data class SelectDetailedTranscriptionEngine(val engine: OnDeviceTranscriptionEngine) : PlayerEvent
+
+    /** 「より詳しく文字起こし」ダイアログから指定言語・エンジンのモデルダウンロードを要求する。 */
+    data class RequestDetailedTranscriptionModelDownload(
+        val language: LanguageTag,
+        val engine: OnDeviceTranscriptionEngine,
+    ) : PlayerEvent
+
+    /** 「より詳しく文字起こし」ダイアログで対象チャンクを指定速度でプレビュー再生する。 */
+    data class PlayDetailedTranscriptionChunkPreview(
+        val chunkId: ChunkId,
+        val speed: Float,
+    ) : PlayerEvent
+
+    /** 「より詳しく文字起こし」ダイアログのチャンクプレビュー再生を停止し、元の再生速度へ戻す。 */
+    data object StopDetailedTranscriptionChunkPreview : PlayerEvent
+
     /** ファイル設定の対象言語の文字起こしエンジンを上書きする。 */
     data class SetTargetEngineOverride(val engine: com.miuraken.chunkflow.core.model.SttEngine?) : PlayerEvent
 
@@ -821,6 +970,8 @@ class PlayerViewModel @Inject constructor(
     private var translationLoopJob: Job? = null
     private val failedTranslationChunkIds = mutableSetOf<ChunkId>()
     private var detailedTrialJob: Job? = null
+    private var detailedPreviewJob: Job? = null
+    private var savedSpeedBeforeDetailedPreview: Float? = null
     private var retranscribeJob: Job? = null
     private var chunkSeekPrioritizeJob: Job? = null
 
@@ -1075,6 +1226,7 @@ class PlayerViewModel @Inject constructor(
         failedTranslationChunkIds.clear()
         detailedTrialJob?.cancel()
         detailedTrialJob = null
+        stopDetailedChunkPreview(pausePlayer = false)
         retranscribeJob?.cancel()
         retranscribeJob = null
         chunkSeekPrioritizeJob?.cancel()
@@ -1102,6 +1254,7 @@ class PlayerViewModel @Inject constructor(
         lookaheadLoopJob?.cancel()
         lookaheadLoopJob = null
         stopTranslationLoop()
+        stopDetailedChunkPreview(pausePlayer = false)
         chunkSeekPrioritizeJob?.cancel()
         chunkSeekPrioritizeJob = null
         if (targetId != null) {
@@ -1701,6 +1854,7 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.OpenDetailedTranscription -> {
                 detailedTrialJob?.cancel()
                 detailedTrialJob = null
+                stopDetailedChunkPreview(pausePlayer = true)
                 val chunks = uiState.value.chunks
                 val idx = chunks.indexOfFirst { it.id == event.chunkId }.coerceAtLeast(0)
                 val targetChunk = chunks.getOrNull(idx)
@@ -1708,21 +1862,134 @@ class PlayerViewModel @Inject constructor(
                     uiState.value.chineseScript,
                     uiState.value.cantoneseScript,
                 ) ?: targetChunk?.text.orEmpty()
+                val pair = uiState.value.languagePair
+                val initialLanguage = resolveInitialDetailedLanguage(targetChunk?.language, pair)
+                val fallbackDialog = DetailedTranscriptionDialogState(
+                    chunkId = event.chunkId,
+                    chunkIndex = idx,
+                    languageOverride = initialLanguage,
+                    audioSpeed = 1.0f,
+                    isRunning = false,
+                    hasAttempted = false,
+                    resultText = initialText,
+                    recognizedLanguage = initialLanguage,
+                ).let { d ->
+                    d.copy(engine = d.selectDefaultEngineForLanguage(initialLanguage))
+                }
                 localUiState.update { state ->
+                    state.copy(detailedTranscriptionDialog = fallbackDialog)
+                }
+                val queryLanguages = buildDetailedQueryLanguages(pair, initialLanguage)
+                viewModelScope.launch {
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val infoMap = queried.associateBy { it.language }
+                    localUiState.update { state ->
+                        val current = state.detailedTranscriptionDialog
+                        if (current == null || current.chunkId != event.chunkId) {
+                            state
+                        } else {
+                            val withInfos = current.copy(languageModelInfos = infoMap)
+                            val lang = withInfos.languageOverride ?: initialLanguage
+                            state.copy(
+                                detailedTranscriptionDialog = withInfos.copy(
+                                    engine = withInfos.selectDefaultEngineForLanguage(lang),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+
+            is PlayerEvent.SelectDetailedTranscriptionLanguage -> {
+                localUiState.update { state ->
+                    val current = state.detailedTranscriptionDialog ?: return@update state
+                    val nextEngine = current.selectDefaultEngineForLanguage(event.language)
                     state.copy(
-                        detailedTranscriptionDialog = DetailedTranscriptionDialogState(
-                            chunkId = event.chunkId,
-                            chunkIndex = idx,
-                            engine = OnDeviceTranscriptionEngine.AUTO,
-                            languageOverride = targetChunk?.language,
-                            audioSpeed = 1.0f,
-                            isRunning = false,
-                            hasAttempted = false,
-                            resultText = initialText,
-                            recognizedLanguage = targetChunk?.language,
+                        detailedTranscriptionDialog = current.copy(
+                            languageOverride = event.language,
+                            recognizedLanguage = event.language,
+                            engine = nextEngine,
                         ),
                     )
                 }
+            }
+
+            is PlayerEvent.SelectDetailedTranscriptionEngine -> {
+                localUiState.update { state ->
+                    val current = state.detailedTranscriptionDialog ?: return@update state
+                    if (current.engineStatus(current.languageOverride, event.engine) == OnDeviceLanguageModelStatus.UNSUPPORTED) {
+                        return@update state
+                    }
+                    state.copy(
+                        detailedTranscriptionDialog = current.copy(engine = event.engine),
+                    )
+                }
+            }
+
+            is PlayerEvent.RequestDetailedTranscriptionModelDownload -> {
+                val sttEngine = DetailedTranscriptionDialogState.toSttEngine(event.engine)
+                localUiState.update { state ->
+                    val current = state.detailedTranscriptionDialog ?: return@update state
+                    val existingInfo = current.modelInfoFor(event.language)
+                    val downloadingInfo = updateModelInfoStatus(
+                        info = existingInfo,
+                        engine = sttEngine,
+                        status = OnDeviceLanguageModelStatus.DOWNLOADING,
+                    )
+                    val normLang = LanguageSettings.normalize(event.language)
+                    val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                    val nextMap = current.languageModelInfos +
+                        (event.language to downloadingInfo) +
+                        (normLang to downloadingInfo.copy(language = normLang)) +
+                        (mgmtLang to downloadingInfo.copy(language = mgmtLang))
+                    state.copy(
+                        detailedTranscriptionDialog = current.copy(
+                            languageOverride = event.language,
+                            engine = event.engine,
+                            languageModelInfos = nextMap,
+                        ),
+                    )
+                }
+                viewModelScope.launch {
+                    val ok = analysisRepository.requestSttModelDownload(event.language, sttEngine)
+                    val currentDialog = localUiState.value.detailedTranscriptionDialog ?: return@launch
+                    val queryLanguages = buildDetailedQueryLanguages(uiState.value.languagePair, event.language)
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    if (!ok) {
+                        val existing = queriedMap[event.language] ?: OnDeviceLanguageModelInfo(language = event.language)
+                        val failedInfo = updateModelInfoStatus(
+                            info = existing,
+                            engine = sttEngine,
+                            status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED,
+                        )
+                        val normLang = LanguageSettings.normalize(event.language)
+                        val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                        queriedMap[event.language] = failedInfo
+                        queriedMap[normLang] = failedInfo.copy(language = normLang)
+                        queriedMap[mgmtLang] = failedInfo.copy(language = mgmtLang)
+                    }
+                    localUiState.update { state ->
+                        val dialog = state.detailedTranscriptionDialog
+                        if (dialog == null || dialog.chunkId != currentDialog.chunkId) {
+                            state
+                        } else {
+                            state.copy(
+                                detailedTranscriptionDialog = dialog.copy(
+                                    languageModelInfos = dialog.languageModelInfos + queriedMap,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+
+            is PlayerEvent.PlayDetailedTranscriptionChunkPreview -> {
+                startDetailedChunkPreview(event.chunkId, event.speed)
+            }
+
+            PlayerEvent.StopDetailedTranscriptionChunkPreview -> {
+                stopDetailedChunkPreview(pausePlayer = true)
             }
 
             is PlayerEvent.SetTargetEngineOverride -> {
@@ -1744,18 +2011,22 @@ class PlayerViewModel @Inject constructor(
             PlayerEvent.DismissDetailedTranscription -> {
                 detailedTrialJob?.cancel()
                 detailedTrialJob = null
+                stopDetailedChunkPreview(pausePlayer = true)
                 localUiState.update { it.copy(detailedTranscriptionDialog = null) }
             }
 
             is PlayerEvent.RunDetailedTranscriptionTrial -> {
                 val id = resolveActiveMediaId() ?: return
                 detailedTrialJob?.cancel()
+                val resolvedLanguage = event.languageOverride
+                    ?: localUiState.value.detailedTranscriptionDialog?.languageOverride
+                    ?: resolveInitialDetailedLanguage(null, uiState.value.languagePair)
                 localUiState.update { state ->
                     val currentDialog = state.detailedTranscriptionDialog ?: return@update state
                     state.copy(
                         detailedTranscriptionDialog = currentDialog.copy(
                             engine = event.engine,
-                            languageOverride = event.languageOverride,
+                            languageOverride = resolvedLanguage,
                             audioSpeed = event.audioSpeed,
                             isRunning = true,
                         ),
@@ -1766,7 +2037,7 @@ class PlayerViewModel @Inject constructor(
                         id = id,
                         chunkId = event.chunkId,
                         engine = event.engine,
-                        languageOverride = event.languageOverride,
+                        languageOverride = resolvedLanguage,
                         audioSpeed = event.audioSpeed,
                     )
                     localUiState.update { state ->
@@ -1779,7 +2050,7 @@ class PlayerViewModel @Inject constructor(
                                     isRunning = false,
                                     hasAttempted = true,
                                     resultText = trialResult?.text.orEmpty(),
-                                    recognizedLanguage = trialResult?.language ?: event.languageOverride,
+                                    recognizedLanguage = trialResult?.language ?: resolvedLanguage,
                                     recognizedEngineId = trialResult?.engineId?.value,
                                 ),
                             )
@@ -1792,6 +2063,7 @@ class PlayerViewModel @Inject constructor(
                 val id = resolveActiveMediaId() ?: return
                 detailedTrialJob?.cancel()
                 detailedTrialJob = null
+                stopDetailedChunkPreview(pausePlayer = true)
                 localUiState.update { state ->
                     val nextOverrides = if (event.language != null) {
                         state.languageOverrides + (event.chunkId to event.language)
@@ -1825,6 +2097,119 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         close()
+    }
+
+    private fun buildDetailedQueryLanguages(
+        languagePair: LanguagePair?,
+        extraLanguage: LanguageTag?,
+    ): List<LanguageTag> {
+        val raw = listOfNotNull(
+            languagePair?.target,
+            languagePair?.base,
+            extraLanguage,
+        )
+        val normalized = raw.flatMap { tag ->
+            listOf(
+                tag,
+                LanguageSettings.normalize(tag),
+                LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(tag.value)),
+            )
+        }
+        return normalized.distinct()
+    }
+
+    private fun updateModelInfoStatus(
+        info: OnDeviceLanguageModelInfo,
+        engine: SttEngine,
+        status: OnDeviceLanguageModelStatus,
+    ): OnDeviceLanguageModelInfo = when (engine) {
+        SttEngine.ML_KIT -> info.copy(mlKitStatus = status)
+        SttEngine.SPEECH_RECOGNIZER -> info.copy(status = status)
+        SttEngine.SHERPA_ONNX -> info.copy(sherpaModelStatus = status)
+    }
+
+    private fun startDetailedChunkPreview(chunkId: ChunkId, speed: Float) {
+        detailedPreviewJob?.cancel()
+        detailedPreviewJob = null
+        if (savedSpeedBeforeDetailedPreview == null) {
+            savedSpeedBeforeDetailedPreview = playbackController.status.value.speed
+        }
+        val clampedSpeed = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+        playbackController.setSpeed(clampedSpeed)
+        val targetChunk = uiState.value.chunks.firstOrNull { it.id == chunkId }
+        playbackController.seekToChunk(chunkId)
+        val player = playbackController.player.value
+        if (player != null) {
+            player.play()
+        } else if (playbackController is FakePlaybackController) {
+            if (targetChunk != null) {
+                playbackController.position.positionMs = targetChunk.startMs
+            }
+            playbackController.statusState.update {
+                it.copy(
+                    isPlaying = true,
+                    currentChunkId = chunkId,
+                    autoPauseEndsAtMs = null,
+                )
+            }
+        }
+        localUiState.update { state ->
+            val dialog = state.detailedTranscriptionDialog ?: return@update state
+            state.copy(
+                detailedTranscriptionDialog = dialog.copy(
+                    audioSpeed = clampedSpeed,
+                    isPreviewPlaying = true,
+                ),
+            )
+        }
+        detailedPreviewJob = viewModelScope.launch {
+            launch {
+                playbackController.status.collect { status ->
+                    if (!status.isPlaying || (status.currentChunkId != null && status.currentChunkId != chunkId)) {
+                        stopDetailedChunkPreview(pausePlayer = status.isPlaying)
+                    }
+                }
+            }
+            while (isActive) {
+                delay(50L)
+                val pos = playbackController.position.currentPositionMs()
+                if (targetChunk != null && pos >= targetChunk.endMs) {
+                    stopDetailedChunkPreview(pausePlayer = true)
+                    break
+                }
+            }
+        }
+    }
+
+    private fun stopDetailedChunkPreview(pausePlayer: Boolean = true) {
+        val hadActivePreview = detailedPreviewJob != null ||
+            savedSpeedBeforeDetailedPreview != null ||
+            localUiState.value.detailedTranscriptionDialog?.isPreviewPlaying == true
+        detailedPreviewJob?.cancel()
+        detailedPreviewJob = null
+        val savedSpeed = savedSpeedBeforeDetailedPreview
+        savedSpeedBeforeDetailedPreview = null
+        if (hadActivePreview && pausePlayer) {
+            val player = playbackController.player.value
+            if (player != null) {
+                player.pause()
+            } else if (playbackController is FakePlaybackController) {
+                playbackController.statusState.update { it.copy(isPlaying = false) }
+            }
+        }
+        if (savedSpeed != null) {
+            playbackController.setSpeed(savedSpeed)
+        }
+        localUiState.update { state ->
+            val dialog = state.detailedTranscriptionDialog ?: return@update state
+            if (!dialog.isPreviewPlaying) {
+                state
+            } else {
+                state.copy(
+                    detailedTranscriptionDialog = dialog.copy(isPreviewPlaying = false),
+                )
+            }
+        }
     }
 
     private fun stopTranslationLoop() {

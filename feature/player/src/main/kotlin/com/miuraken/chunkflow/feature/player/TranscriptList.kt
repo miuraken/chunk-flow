@@ -72,6 +72,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -104,10 +105,12 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.TranscriptionDiagnosticEntry
 import com.miuraken.chunkflow.core.model.TranscriptionStep
+import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
@@ -330,9 +333,15 @@ fun TranscriptList(
     @Suppress("UNUSED_PARAMETER") onSetLookaheadEnabled: (Boolean) -> Unit = {},
     onResetTranscription: () -> Unit = {},
     onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
+    waveform: Waveform? = null,
     detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
     onOpenDetailedTranscription: (ChunkId) -> Unit = {},
     onDismissDetailedTranscription: () -> Unit = {},
+    onSelectDetailedTranscriptionLanguage: (LanguageTag) -> Unit = {},
+    onSelectDetailedTranscriptionEngine: (OnDeviceTranscriptionEngine) -> Unit = {},
+    onRequestDetailedTranscriptionModelDownload: (LanguageTag, OnDeviceTranscriptionEngine) -> Unit = { _, _ -> },
+    onPlayDetailedTranscriptionPreview: (ChunkId, Float) -> Unit = { _, _ -> },
+    onStopDetailedTranscriptionPreview: () -> Unit = {},
     onRunDetailedTranscriptionTrial: (ChunkId, OnDeviceTranscriptionEngine, LanguageTag?, Float) -> Unit =
         { _, _, _, _ -> },
     onApplyDetailedTranscriptionResult: (ChunkId, String, LanguageTag?) -> Unit = { _, _, _ -> },
@@ -610,9 +619,21 @@ fun TranscriptList(
     }
 
     detailedTranscriptionDialog?.let { dialogState ->
+        val targetChunk = chunks.firstOrNull { it.id == dialogState.chunkId }
+            ?: chunks.getOrNull(dialogState.chunkIndex)
         DetailedChunkTranscriptionDialog(
             dialogState = dialogState,
+            targetChunk = targetChunk,
+            waveform = waveform,
             languagePair = languagePair,
+            positionProvider = positionProvider,
+            onSelectLanguage = onSelectDetailedTranscriptionLanguage,
+            onSelectEngine = onSelectDetailedTranscriptionEngine,
+            onRequestModelDownload = onRequestDetailedTranscriptionModelDownload,
+            onPlayPreview = { speed ->
+                onPlayDetailedTranscriptionPreview(dialogState.chunkId, speed)
+            },
+            onStopPreview = onStopDetailedTranscriptionPreview,
             onRunTrial = { engine, langOverride, speed ->
                 onRunDetailedTranscriptionTrial(dialogState.chunkId, engine, langOverride, speed)
             },
@@ -663,17 +684,44 @@ private fun EditChunkTextDialog(
 @Composable
 private fun DetailedChunkTranscriptionDialog(
     dialogState: DetailedTranscriptionDialogState,
+    targetChunk: ChunkUi?,
+    waveform: Waveform?,
     languagePair: LanguagePair?,
+    positionProvider: PositionProvider,
+    onSelectLanguage: (LanguageTag) -> Unit,
+    onSelectEngine: (OnDeviceTranscriptionEngine) -> Unit,
+    onRequestModelDownload: (LanguageTag, OnDeviceTranscriptionEngine) -> Unit,
+    onPlayPreview: (Float) -> Unit,
+    onStopPreview: () -> Unit,
     onRunTrial: (OnDeviceTranscriptionEngine, LanguageTag?, Float) -> Unit,
     onApply: (String, LanguageTag?) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var selectedEngine by remember(dialogState.chunkId) { mutableStateOf(dialogState.engine) }
-    var selectedLanguage by remember(dialogState.chunkId) { mutableStateOf(dialogState.languageOverride) }
-    var selectedSpeed by remember(dialogState.chunkId) { mutableFloatStateOf(dialogState.audioSpeed) }
+    val defaultLang = dialogState.languageOverride
+        ?: resolveInitialDetailedLanguage(targetChunk?.language, languagePair)
+    var selectedLanguage by remember(dialogState.chunkId, dialogState.languageOverride) {
+        mutableStateOf(defaultLang)
+    }
+    var selectedEngine by remember(dialogState.chunkId, dialogState.engine) {
+        mutableStateOf(dialogState.engine)
+    }
+    var selectedSpeed by remember(dialogState.chunkId) {
+        mutableFloatStateOf(dialogState.audioSpeed)
+    }
     var editableText by remember(dialogState.chunkId, dialogState.resultText, dialogState.hasAttempted) {
         mutableStateOf(dialogState.resultText)
     }
+    var pendingDownloadEngine by remember(dialogState.chunkId) {
+        mutableStateOf<OnDeviceTranscriptionEngine?>(null)
+    }
+
+    val selectedEngineStatus = dialogState.engineStatus(selectedLanguage, selectedEngine)
+    val isAnyEngineDownloading = DetailedTranscriptionDialogState.ENGINE_OPTIONS.any { engine ->
+        dialogState.engineStatus(selectedLanguage, engine) == OnDeviceLanguageModelStatus.DOWNLOADING
+    }
+    val canRunTrial = !dialogState.isRunning &&
+        selectedEngineStatus != OnDeviceLanguageModelStatus.DOWNLOADING &&
+        selectedEngineStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -692,8 +740,9 @@ private fun DetailedChunkTranscriptionDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // 1. 認識言語（自動判定なし、チャンク言語または学習対象言語が初期選択）
                 Text(
-                    text = stringResource(R.string.player_detailed_transcribe_engine_label),
+                    text = stringResource(R.string.player_detailed_transcribe_lang_label),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -701,46 +750,16 @@ private fun DetailedChunkTranscriptionDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    for (engine in OnDeviceTranscriptionEngine.entries) {
-                        val labelRes = when (engine) {
-                            OnDeviceTranscriptionEngine.AUTO -> R.string.player_detailed_transcribe_engine_auto
-
-                            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER ->
-                                R.string.player_detailed_transcribe_engine_os
-
-                            OnDeviceTranscriptionEngine.SHERPA_ONNX -> R.string.player_detailed_transcribe_engine_sherpa
-
-                            OnDeviceTranscriptionEngine.ML_KIT -> R.string.player_detailed_transcribe_engine_mlkit
-                        }
-                        FilterChip(
-                            selected = selectedEngine == engine,
-                            onClick = { selectedEngine = engine },
-                            label = { Text(text = stringResource(labelRes)) },
-                            enabled = !dialogState.isRunning,
-                        )
-                    }
-                }
-
-                if (languagePair != null) {
-                    Text(
-                        text = stringResource(R.string.player_detailed_transcribe_lang_label),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        FilterChip(
-                            selected = selectedLanguage == null,
-                            onClick = { selectedLanguage = null },
-                            label = { Text(text = stringResource(R.string.player_detailed_transcribe_lang_auto)) },
-                            enabled = !dialogState.isRunning,
-                        )
+                    if (languagePair != null) {
                         val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
                         FilterChip(
                             selected = matchesLanguageRole(selectedLanguage, languagePair.target),
-                            onClick = { selectedLanguage = languagePair.target },
+                            onClick = {
+                                val nextLang = languagePair.target
+                                selectedLanguage = nextLang
+                                selectedEngine = dialogState.selectDefaultEngineForLanguage(nextLang)
+                                onSelectLanguage(nextLang)
+                            },
                             label = {
                                 Text(
                                     text = stringResource(
@@ -751,11 +770,15 @@ private fun DetailedChunkTranscriptionDialog(
                             },
                             enabled = !dialogState.isRunning,
                         )
-                        languagePair.base?.let { baseLang ->
+                        languagePair.base?.takeIf { !matchesLanguageRole(it, languagePair.target) }?.let { baseLang ->
                             val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
                             FilterChip(
                                 selected = matchesLanguageRole(selectedLanguage, baseLang),
-                                onClick = { selectedLanguage = baseLang },
+                                onClick = {
+                                    selectedLanguage = baseLang
+                                    selectedEngine = dialogState.selectDefaultEngineForLanguage(baseLang)
+                                    onSelectLanguage(baseLang)
+                                },
                                 label = {
                                     Text(
                                         text = stringResource(
@@ -767,9 +790,94 @@ private fun DetailedChunkTranscriptionDialog(
                                 enabled = !dialogState.isRunning,
                             )
                         }
+                    } else {
+                        val langCode = selectedLanguage.value.uppercase(JavaLocale.ROOT)
+                        FilterChip(
+                            selected = true,
+                            onClick = {},
+                            label = {
+                                Text(
+                                    text = stringResource(
+                                        R.string.player_detailed_transcribe_lang_target,
+                                        langCode,
+                                    ),
+                                )
+                            },
+                            enabled = !dialogState.isRunning,
+                        )
                     }
                 }
 
+                // 2. 文字起こしエンジン（ML Kit, SpeechRecognizer, sherpa-onnx の順、自動なし）
+                Text(
+                    text = stringResource(R.string.player_detailed_transcribe_engine_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    for (engine in DetailedTranscriptionDialogState.ENGINE_OPTIONS) {
+                        val labelRes = when (engine) {
+                            OnDeviceTranscriptionEngine.ML_KIT,
+                            OnDeviceTranscriptionEngine.AUTO,
+                            -> R.string.player_detailed_transcribe_engine_mlkit
+
+                            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER ->
+                                R.string.player_detailed_transcribe_engine_os
+
+                            OnDeviceTranscriptionEngine.SHERPA_ONNX ->
+                                R.string.player_detailed_transcribe_engine_sherpa
+                        }
+                        val status = dialogState.engineStatus(selectedLanguage, engine)
+                        val isUnsupported = status == OnDeviceLanguageModelStatus.UNSUPPORTED
+                        val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
+                        val needsDownload = status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                            status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                        FilterChip(
+                            selected = selectedEngine == engine,
+                            onClick = {
+                                if (needsDownload) {
+                                    pendingDownloadEngine = engine
+                                } else {
+                                    selectedEngine = engine
+                                    onSelectEngine(engine)
+                                }
+                            },
+                            leadingIcon = if (isDownloading) {
+                                {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(14.dp),
+                                        strokeWidth = 2.dp,
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                            label = { Text(text = stringResource(labelRes)) },
+                            enabled = !dialogState.isRunning && !isUnsupported,
+                        )
+                    }
+                }
+                if (isAnyEngineDownloading) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            text = stringResource(R.string.player_detailed_transcribe_model_downloading),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+
+                // 3. 音声の入力速度（0.5x, 0.75x, 1.0x, 1.5x、デフォルト 1.0x）
                 Text(
                     text = stringResource(R.string.player_detailed_transcribe_speed_label),
                     style = MaterialTheme.typography.labelLarge,
@@ -780,27 +888,54 @@ private fun DetailedChunkTranscriptionDialog(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     for (speedOption in DetailedTranscriptionDialogState.AUDIO_SPEED_OPTIONS) {
-                        val speedLabel = if (abs(speedOption - 1.0f) < 0.01f) {
-                            "1.0x"
-                        } else if (abs(speedOption - 1.5f) < 0.01f) {
-                            "1.5x"
-                        } else {
-                            String.format(JavaLocale.ROOT, "%.2fx", speedOption)
+                        val speedLabel = when {
+                            abs(speedOption - 0.5f) < 0.01f -> "0.5x"
+                            abs(speedOption - 0.75f) < 0.01f -> "0.75x"
+                            abs(speedOption - 1.0f) < 0.01f -> "1.0x"
+                            abs(speedOption - 1.5f) < 0.01f -> "1.5x"
+                            else -> String.format(JavaLocale.ROOT, "%.2fx", speedOption)
                         }
                         FilterChip(
                             selected = abs(selectedSpeed - speedOption) < 0.01f,
-                            onClick = { selectedSpeed = speedOption },
+                            onClick = {
+                                selectedSpeed = speedOption
+                                if (dialogState.isPreviewPlaying) {
+                                    onPlayPreview(speedOption)
+                                }
+                            },
                             label = { Text(text = speedLabel) },
                             enabled = !dialogState.isRunning,
                         )
                     }
                 }
 
+                // 4. チャンクの波形と再生/停止ボタン（3の再生速度で再生）
+                Text(
+                    text = stringResource(R.string.player_detailed_transcribe_preview_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                DetailedChunkWaveformPreviewRow(
+                    chunk = targetChunk,
+                    waveform = waveform,
+                    isPreviewPlaying = dialogState.isPreviewPlaying,
+                    positionProvider = positionProvider,
+                    enabled = !dialogState.isRunning,
+                    onTogglePlayStop = {
+                        if (dialogState.isPreviewPlaying) {
+                            onStopPreview()
+                        } else {
+                            onPlayPreview(selectedSpeed)
+                        }
+                    },
+                )
+
+                // 5. 「この条件で文字起こしを試す」ボタン
                 FilledTonalButton(
                     onClick = {
                         onRunTrial(selectedEngine, selectedLanguage, selectedSpeed)
                     },
-                    enabled = !dialogState.isRunning,
+                    enabled = canRunTrial,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     if (dialogState.isRunning) {
@@ -815,10 +950,10 @@ private fun DetailedChunkTranscriptionDialog(
                     }
                 }
 
+                // 6. 認識結果テキストボックス（編集可）
                 if (dialogState.recognizedEngineId != null) {
-                    val langText = (dialogState.recognizedLanguage ?: selectedLanguage)?.value
-                        ?.uppercase(JavaLocale.ROOT)
-                        ?: "-"
+                    val langText = (dialogState.recognizedLanguage ?: selectedLanguage).value
+                        .uppercase(JavaLocale.ROOT)
                     Text(
                         text = stringResource(
                             R.string.player_detailed_transcribe_result_meta,
@@ -850,8 +985,7 @@ private fun DetailedChunkTranscriptionDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    val resolvedLang = dialogState.recognizedLanguage ?: selectedLanguage
-                    onApply(editableText, resolvedLang)
+                    onApply(editableText, selectedLanguage)
                 },
                 enabled = !dialogState.isRunning,
             ) {
@@ -864,6 +998,146 @@ private fun DetailedChunkTranscriptionDialog(
             }
         },
     )
+
+    pendingDownloadEngine?.let { engineToDownload ->
+        AlertDialog(
+            onDismissRequest = { pendingDownloadEngine = null },
+            title = {
+                Text(text = stringResource(R.string.player_detailed_transcribe_model_download_confirm_title))
+            },
+            text = {
+                Text(text = stringResource(R.string.player_detailed_transcribe_model_download_confirm_message))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        selectedEngine = engineToDownload
+                        pendingDownloadEngine = null
+                        onRequestModelDownload(selectedLanguage, engineToDownload)
+                    },
+                ) {
+                    Text(text = stringResource(R.string.player_detailed_transcribe_model_download_confirm_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDownloadEngine = null }) {
+                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun DetailedChunkWaveformPreviewRow(
+    chunk: ChunkUi?,
+    waveform: Waveform?,
+    isPreviewPlaying: Boolean,
+    positionProvider: PositionProvider,
+    enabled: Boolean,
+    onTogglePlayStop: () -> Unit,
+) {
+    val downsampler = remember { WaveformDownsampler(maxCacheEntries = 4) }
+    val barColor = MaterialTheme.colorScheme.primary
+    val playheadColor = MaterialTheme.colorScheme.tertiary
+    val baselineColor = MaterialTheme.colorScheme.outlineVariant
+    val isInspectionMode = LocalInspectionMode.current
+    var currentPosMs by remember(chunk?.id, isPreviewPlaying) {
+        mutableLongStateOf(positionProvider.currentPositionMs())
+    }
+    if (isPreviewPlaying && !isInspectionMode) {
+        LaunchedEffect(chunk?.id, isPreviewPlaying) {
+            while (isActive) {
+                withFrameNanos {
+                    currentPosMs = positionProvider.currentPositionMs()
+                }
+            }
+        }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+                .weight(1f)
+                .height(48.dp),
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+            ) {
+                val centerY = size.height / 2f
+                drawLine(
+                    color = baselineColor,
+                    start = Offset(0f, centerY),
+                    end = Offset(size.width, centerY),
+                    strokeWidth = 1.dp.toPx(),
+                )
+                if (waveform != null && chunk != null && chunk.endMs > chunk.startMs && size.width > 0f) {
+                    val colWidthPx = 3.dp.toPx().coerceAtLeast(1f)
+                    val columnCount = (size.width / colWidthPx).toInt().coerceIn(8, 120)
+                    val sampled = downsampler.downsample(
+                        waveform = waveform,
+                        startMs = chunk.startMs,
+                        endMs = chunk.endMs,
+                        columnCount = columnCount,
+                    )
+                    val stepX = size.width / columnCount
+                    val strokeW = (stepX * 0.65f).coerceAtLeast(1.5f)
+                    for (i in 0 until sampled.size) {
+                        val amp = sampled.peak[i].coerceIn(0.05f, 1f)
+                        val halfH = (size.height * 0.46f) * amp
+                        val x = (i + 0.5f) * stepX
+                        drawLine(
+                            color = barColor,
+                            start = Offset(x, centerY - halfH),
+                            end = Offset(x, centerY + halfH),
+                            strokeWidth = strokeW,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                    if (isPreviewPlaying && currentPosMs in chunk.startMs..chunk.endMs) {
+                        val fraction = ((currentPosMs - chunk.startMs).toFloat() / (chunk.endMs - chunk.startMs).toFloat())
+                            .coerceIn(0f, 1f)
+                        val playheadX = size.width * fraction
+                        drawLine(
+                            color = playheadColor,
+                            start = Offset(playheadX, 0f),
+                            end = Offset(playheadX, size.height),
+                            strokeWidth = 2.dp.toPx(),
+                        )
+                    }
+                }
+            }
+        }
+
+        FilledTonalButton(
+            onClick = onTogglePlayStop,
+            enabled = enabled && chunk != null,
+        ) {
+            Icon(
+                imageVector = if (isPreviewPlaying) ChunkFlowIcons.Pause else ChunkFlowIcons.Play,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(
+                    if (isPreviewPlaying) {
+                        R.string.player_detailed_transcribe_preview_stop
+                    } else {
+                        R.string.player_detailed_transcribe_preview_play
+                    },
+                ),
+            )
+        }
+    }
 }
 
 @Composable
