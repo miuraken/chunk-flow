@@ -2761,4 +2761,146 @@ class DefaultAnalysisRepositoryTest {
 
         assertEquals(listOf(localFile.absolutePath, uriFile.absolutePath), decodedPaths)
     }
+
+    @Test
+    fun `sourceUriのみのLOCAL_REFERENCE教材に対して詳細文字起こしと先読み文字起こしと再文字起こしが正常に動作する`() = runTest {
+        val externalDir = File(context.cacheDir, "content_provider_audio").apply { mkdirs() }
+        val backingAudioFile = File(externalDir, "uri_only_sample.m4a").apply {
+            writeBytes(byteArrayOf(10, 20, 30, 40, 50, 60))
+        }
+        // content:// スキームかつ path に実ファイルのパスを持たせることで ContentResolver フォールバックまたは inputStream 経由で読めるようにする
+        val contentUri = Uri.parse("content://com.miuraken.chunkflow.testprovider${backingAudioFile.absolutePath}")
+        org.robolectric.Shadows.shadowOf(context.contentResolver).registerInputStream(
+            contentUri,
+            java.io.ByteArrayInputStream(backingAudioFile.readBytes()),
+        )
+
+        val mediaId = MediaId("media_source_uri_stt")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Content Uri Audio",
+                durationMs = 4_000L,
+                mimeType = "audio/mp4",
+                sizeBytes = 6L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+                storageState = "LOCAL_REFERENCE",
+                sourceUri = contentUri.toString(),
+                localFilePath = null,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 101L, mediaId = mediaId.value, startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 102L, mediaId = mediaId.value, startMs = 2_000L, endMs = 4_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        val transcribedFiles = mutableListOf<File>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult = transcribeChunk(
+                audioFile = audioFile,
+                startMs = startMs,
+                endMs = endMs,
+                languagePair = languagePair,
+                forceRefresh = false,
+                highPriority = false,
+                itemSttOverride = itemSttOverride,
+                engineByLanguage = engineByLanguage,
+            )
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                forceRefresh: Boolean,
+                highPriority: Boolean,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult {
+                transcribedFiles += audioFile
+                val isFirst = startMs == 0L
+                return OnDeviceChunkTranscriptionResult(
+                    text = if (forceRefresh) "再認識($startMs..$endMs)" else "先読み認識($startMs..$endMs)",
+                    language = if (isFirst) LanguageTag("en") else LanguageTag("ja"),
+                    confidence = 0.92f,
+                    engineId = EngineId("on-device-speech"),
+                )
+            }
+
+            override suspend fun transcribeChunkTrial(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                engineOverride: com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine?,
+                audioSpeed: Float,
+            ): OnDeviceChunkTranscriptionResult {
+                transcribedFiles += audioFile
+                return OnDeviceChunkTranscriptionResult(
+                    text = "詳細試行認識($startMs..$endMs)",
+                    language = languagePair?.target ?: LanguageTag("en"),
+                    confidence = 0.96f,
+                    engineId = EngineId("mlkit-genai-speech"),
+                )
+            }
+        }
+
+        val repository = createRepository(
+            testScheduler = testScheduler,
+            onDeviceChunkTranscriber = fakeTranscriber,
+        )
+
+        // filesDir/media 配下にはファイルが作られていないことを確認
+        assertNull(mediaFileLocator.resolveAudioFile(mediaId))
+
+        // 1. tryTranscribeChunkCustom（詳細文字起こし）
+        val trialResult = repository.tryTranscribeChunkCustom(
+            id = mediaId,
+            chunkId = ChunkId(101L),
+            engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+            languageOverride = LanguageTag("en"),
+            audioSpeed = 1.0f,
+        )
+        assertNotNull(trialResult)
+        assertEquals("詳細試行認識(0..2000)", trialResult.text)
+        assertEquals(LanguageTag("en"), trialResult.language)
+
+        // 2. triggerLookaheadAt（先読み文字起こし・言語判定）
+        repository.triggerLookaheadAt(mediaId, currentChunkIndex = 0)
+        testScheduler.advanceUntilIdle()
+        val afterLookahead = repository.observeTranscripts(mediaId).first()
+        assertEquals("先読み認識(0..2000)", afterLookahead[ChunkId(101L)]?.text)
+        assertEquals(LanguageTag("en"), afterLookahead[ChunkId(101L)]?.language)
+        assertEquals("先読み認識(2000..4000)", afterLookahead[ChunkId(102L)]?.text)
+        assertEquals(LanguageTag("ja"), afterLookahead[ChunkId(102L)]?.language)
+
+        // 3. retranscribeChunk（再文字起こし）
+        repository.retranscribeChunk(mediaId, ChunkId(101L))
+        testScheduler.advanceUntilIdle()
+        val afterRetranscribe = repository.observeTranscripts(mediaId).first()
+        assertEquals("再認識(0..2000)", afterRetranscribe[ChunkId(101L)]?.text)
+
+        // filesDir/media 配下には作られず、filesDir/analysis/<mediaId>/source_audio.m4a が再利用されていることを確認
+        assertNull(mediaFileLocator.resolveAudioFile(mediaId))
+        val cachedSourceAudio = File(File(File(context.filesDir, "analysis"), mediaId.value), "source_audio.m4a")
+        assertTrue(cachedSourceAudio.isFile)
+        assertTrue(transcribedFiles.isNotEmpty())
+        assertTrue(transcribedFiles.all { it.absolutePath == cachedSourceAudio.absolutePath })
+    }
 }

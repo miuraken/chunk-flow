@@ -1916,6 +1916,101 @@ class OnDeviceSpeechTranscriberTest {
         assertTrue(capturedPcmLengths[1] < capturedPcmLengths[0])
     }
 
+    @Test
+    fun `transcribeChunk_itemSttOverrideとengineByLanguageが内部のエンジン選択に反映される`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        var mlKitCallCount = 0
+        var sherpaCallCount = 0
+        var osCallCount = 0
+
+        val fakeMlKit = object : MlKitSpeechRecognitionGateway {
+            override fun isDevicePotentiallySupported(): Boolean = true
+
+            override suspend fun checkMlKitSupport(
+                bcp47LocaleTags: List<String>,
+            ): Map<String, Pair<RecognitionModelSupport, MlKitRecognitionMode?>> = bcp47LocaleTags.associateWith {
+                RecognitionModelSupport.INSTALLED to null
+            }
+
+            override suspend fun downloadModel(
+                bcp47LocaleTag: String,
+                onEvent: (RecognitionModelDownloadEvent) -> Unit,
+            ): Boolean = true
+
+            override suspend fun recognizePcm16Le(
+                pcm16LeBytes: ByteArray,
+                sampleRateHz: Int,
+                bcp47LocaleTag: String,
+                isProbe: Boolean,
+            ): SpeechRecognitionAttemptResult {
+                mlKitCallCount += 1
+                return SpeechRecognitionAttemptResult(
+                    text = "MLKit認識($bcp47LocaleTag)",
+                    confidence = 0.90f,
+                    engineId = MlKitGenAiSpeechTranscriber.ML_KIT_GENAI_ENGINE_ID,
+                )
+            }
+        }
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                osCallCount += 1
+                SpeechRecognitionAttemptResult(text = "OS認識($bcp47Tag)", confidence = 0.85f)
+            },
+            mlKitGateway = fakeMlKit,
+            sherpaTranscriber = { _, _, lang ->
+                sherpaCallCount += 1
+                OnDeviceChunkTranscriptionResult(
+                    text = "Sherpa認識(${lang.value})",
+                    language = lang,
+                    confidence = 0.95f,
+                    engineId = SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID,
+                )
+            },
+            engineProvider = { com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.AUTO },
+        )
+
+        val audioFile1 = tempFolder.newFile("override_engine_by_lang.wav").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        // 1. engineByLanguage で en -> SHERPA_ONNX を指定した場合、既定の ML_KIT ではなく Sherpa が選ばれる
+        val byLangResult = transcriber.transcribeChunk(
+            audioFile = audioFile1,
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("en"), base = null),
+            forceRefresh = true,
+            highPriority = true,
+            itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+            engineByLanguage = mapOf(LanguageTag("en") to com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX),
+        )
+        assertNotNull(byLangResult)
+        assertEquals("Sherpa認識(en)", byLangResult.text)
+        assertEquals(1, sherpaCallCount)
+        assertEquals(0, mlKitCallCount)
+        assertEquals(0, osCallCount)
+
+        val audioFile2 = tempFolder.newFile("override_item_stt.wav").apply { writeBytes(byteArrayOf(4, 5, 6)) }
+        // 2. itemSttOverride で targetEngine = SPEECH_RECOGNIZER を指定した場合、engineByLanguage より優先して OS 認識器が選ばれる
+        val byItemOverrideResult = transcriber.transcribeChunk(
+            audioFile = audioFile2,
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+            forceRefresh = true,
+            highPriority = true,
+            itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride(
+                targetEngine = com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER,
+                baseEngine = com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
+            ),
+            engineByLanguage = mapOf(LanguageTag("en") to com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX),
+        )
+        assertNotNull(byItemOverrideResult)
+        assertTrue(osCallCount >= 1)
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

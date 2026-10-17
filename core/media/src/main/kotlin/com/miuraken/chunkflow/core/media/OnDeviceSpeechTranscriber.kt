@@ -2159,6 +2159,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 forceRefresh = forceRefresh,
                 highPriority = highPriority,
                 startedAtEpochMs = startedAtEpochMs,
+                itemSttOverride = itemSttOverride,
+                engineByLanguage = engineByLanguage,
             )
         } finally {
             if (jobHandle != null) {
@@ -2656,7 +2658,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 preferOnDevice = preferOnDevice,
                 isProbe = true,
                 language = targetLang,
-                tryOrder = com.miuraken.chunkflow.core.model.SttEngineSelection.tryOrder(targetLang, com.miuraken.chunkflow.core.model.LanguagePair(targetLang, baseLang), itemSttOverride, engineByLanguage),
+                tryOrder = resolveTryOrder(targetLang, com.miuraken.chunkflow.core.model.LanguagePair(targetLang, baseLang), selectedEngine, itemSttOverride, engineByLanguage),
             )?.takeIf { it.text.isNotBlank() }?.also { probe ->
                 putCachedSttResult(
                     cacheScope = cacheScope,
@@ -2677,7 +2679,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 preferOnDevice = preferOnDevice,
                 isProbe = true,
                 language = targetLang,
-                tryOrder = com.miuraken.chunkflow.core.model.SttEngineSelection.tryOrder(targetLang, com.miuraken.chunkflow.core.model.LanguagePair(targetLang, baseLang), itemSttOverride, engineByLanguage),
+                tryOrder = resolveTryOrder(targetLang, com.miuraken.chunkflow.core.model.LanguagePair(targetLang, baseLang), selectedEngine, itemSttOverride, engineByLanguage),
             )?.takeIf { it.text.isNotBlank() }
         }
 

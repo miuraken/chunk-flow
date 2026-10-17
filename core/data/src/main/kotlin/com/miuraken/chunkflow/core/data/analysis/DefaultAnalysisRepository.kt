@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.core.data.analysis
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import androidx.work.Data
@@ -63,6 +64,7 @@ import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.model.WordTiming
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.text.Normalizer
 import java.time.Instant
@@ -854,7 +856,7 @@ class DefaultAnalysisRepository(
                 transcriptDao.upsert(clearedEntity)
 
                 val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
+                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
                 if (available && audioFile != null && audioFile.isFile && targetChunk != null && targetChunk.endMs > targetChunk.startMs) {
                     val stateFlow = lookaheadStateFor(id)
                     val highPrioritySet = pendingHighPriorityChunkIds.computeIfAbsent(id) {
@@ -1437,7 +1439,7 @@ class DefaultAnalysisRepository(
                 val baseExisting = existing ?: overlappingImported
                 if (needsLookaheadTranscription(baseExisting) && isMediaOpenForTranscription(id) && stateFlow.value.enabled) {
                     val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-                    val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
+                    val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
                     if (available && audioFile != null && audioFile.isFile) {
                         val highPrioritySet = pendingHighPriorityChunkIds.computeIfAbsent(id) {
                             ConcurrentHashMap.newKeySet()
@@ -1656,7 +1658,7 @@ class DefaultAnalysisRepository(
                 )
 
                 val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
+                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
                 if (!available || audioFile == null || !audioFile.isFile) {
                     withContext(NonCancellable) {
                         persistTranscriptBackupFile(id)
@@ -2005,7 +2007,7 @@ class DefaultAnalysisRepository(
                     val initialIndex = latestLookaheadChunkIndex[id] ?: currentChunkIndex
                     if (initialIndex !in activeChunks.indices) return@withLock
 
-                    val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao)
+                    val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, context = context)
                     if (audioFile == null || !audioFile.isFile) return@withLock
 
                     val skippedEmptyIds = attemptedEmptyChunkIds.computeIfAbsent(id) {
@@ -2388,7 +2390,7 @@ class DefaultAnalysisRepository(
         audioSpeed: Float,
     ): ChunkTranscriptionTrialResult? = withContext(ioDispatcher) {
         val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-        val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao)
+        val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, context = context)
         if (!available || audioFile == null || !audioFile.isFile) {
             return@withContext null
         }
@@ -3236,7 +3238,7 @@ class DefaultAnalysisRepository(
 
         val mediaItem = mediaItemDao.getById(id.value)
         val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
-        val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem)
+        val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
         val audioFileName = audioFile?.name ?: "${id.value}.mp3"
         val sha256 = mediaItem?.sha256?.takeIf { it.length == 64 && it.all { ch -> ch in '0'..'9' || ch in 'a'..'f' } }
             ?: "0".repeat(64)
@@ -3605,6 +3607,7 @@ internal sealed interface ResolvedAudioSource {
     data class SourceUri(val uri: Uri) : ResolvedAudioSource
 }
 
+@SuppressLint("UseKtx")
 internal suspend fun resolveAudioSource(
     mediaId: MediaId,
     mediaFileResolver: LibraryMediaFileResolver,
@@ -3638,9 +3641,106 @@ internal suspend fun resolveAudioSource(
     return ResolvedAudioSource.SourceUri(parsedUri)
 }
 
+private val sourceAudioCacheMutexes = ConcurrentHashMap<MediaId, Mutex>()
+
 internal suspend fun resolveReadableAudioFile(
     mediaId: MediaId,
     mediaFileResolver: LibraryMediaFileResolver,
     mediaItemDao: MediaItemDao,
     cachedMediaItem: MediaItemEntity? = null,
-): File? = (resolveAudioSource(mediaId, mediaFileResolver, mediaItemDao, cachedMediaItem) as? ResolvedAudioSource.LocalFile)?.file
+    context: Context? = null,
+): File? {
+    val source = resolveAudioSource(mediaId, mediaFileResolver, mediaItemDao, cachedMediaItem) ?: return null
+    return when (source) {
+        is ResolvedAudioSource.LocalFile -> source.file
+
+        is ResolvedAudioSource.SourceUri -> {
+            if (!MediaFileLocator.isSafeIdentifier(mediaId.value)) return null
+            val uri = source.uri
+            if (uri.scheme?.lowercase(Locale.ROOT) == "file") {
+                val directFile = uri.path
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(::File)
+                    ?.takeIf { it.isFile && it.canRead() }
+                if (directFile != null) return directFile
+            }
+            val ctx = context ?: return null
+            val item = cachedMediaItem ?: mediaItemDao.getById(mediaId.value)
+            val ext = inferAudioExtension(item?.mimeType, uri)
+            val analysisDir = File(
+                File(ctx.filesDir, DefaultAnalysisRepository.ANALYSIS_DIR_NAME),
+                mediaId.value,
+            ).apply { mkdirs() }
+            if (!analysisDir.exists() || !analysisDir.isDirectory) return null
+            val cachedFile = File(analysisDir, "source_audio.$ext")
+            if (cachedFile.isFile && cachedFile.length() > 0L) {
+                return cachedFile
+            }
+
+            val mutex = sourceAudioCacheMutexes.computeIfAbsent(mediaId) { Mutex() }
+            mutex.withLock {
+                if (cachedFile.isFile && cachedFile.length() > 0L) {
+                    return@withLock cachedFile
+                }
+                val tempFile = File(analysisDir, "source_audio.$ext.tmp")
+                try {
+                    val inputStream = runCatching {
+                        ctx.contentResolver.openInputStream(uri)
+                    }.getOrNull() ?: uri.path
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let(::File)
+                        ?.takeIf { it.isFile && it.canRead() }
+                        ?.let { runCatching { FileInputStream(it) }.getOrNull() }
+                        ?: return@withLock null
+
+                    inputStream.use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            input.copyTo(output)
+                            output.fd.sync()
+                        }
+                    }
+                    if (!tempFile.isFile || tempFile.length() <= 0L) {
+                        tempFile.delete()
+                        return@withLock null
+                    }
+                    if (!tempFile.renameTo(cachedFile)) {
+                        tempFile.copyTo(cachedFile, overwrite = true)
+                        tempFile.delete()
+                    }
+                    cachedFile.takeIf { it.isFile && it.length() > 0L }
+                } catch (ce: CancellationException) {
+                    tempFile.delete()
+                    throw ce
+                } catch (_: Exception) {
+                    tempFile.delete()
+                    null
+                }
+            }
+        }
+    }
+}
+
+private fun inferAudioExtension(mimeType: String?, uri: Uri): String {
+    val fromMime = when (mimeType?.trim()?.lowercase(Locale.ROOT)) {
+        "audio/mpeg", "audio/mp3" -> "mp3"
+        "audio/mp4", "audio/mp4a-latm", "audio/x-m4a" -> "m4a"
+        "audio/wav", "audio/x-wav", "audio/vnd.wave", "audio/raw" -> "wav"
+        "audio/ogg", "audio/vorbis", "application/ogg" -> "ogg"
+        "audio/flac", "audio/x-flac" -> "flac"
+        "audio/aac" -> "aac"
+        "audio/opus" -> "opus"
+        else -> null
+    }
+    if (fromMime != null) return fromMime
+
+    val candidatePath = uri.lastPathSegment ?: uri.path ?: uri.toString()
+    val rawExt = candidatePath
+        .substringAfterLast('.', "")
+        .substringBefore('?')
+        .substringBefore('#')
+        .lowercase(Locale.ROOT)
+    return when (rawExt) {
+        "mp3", "m4a", "wav", "ogg", "flac", "aac", "opus" -> rawExt
+        else -> "mp3"
+    }
+}
