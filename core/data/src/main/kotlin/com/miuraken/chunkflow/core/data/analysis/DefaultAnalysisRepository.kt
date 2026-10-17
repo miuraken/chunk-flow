@@ -79,9 +79,12 @@ import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -94,9 +97,11 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -176,7 +181,11 @@ class DefaultAnalysisRepository(
 
     private val chunkSegmenter: ChunkSegmenter = ChunkSegmenter()
     private val pipelineGate: PriorityAnalysisPipelineGate = AnalysisWorker.pipelineGate
-    private val lookaheadMutex: Mutex = Mutex()
+    private val backgroundScope = CoroutineScope(SupervisorJob() + ioDispatcher)
+    private val backgroundJobs = ConcurrentHashMap<MediaId, Job>()
+    private val backgroundTranscriptionMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
+    private val backgroundDeferredEmptyChunkIds = ConcurrentHashMap<MediaId, MutableSet<Long>>()
+    private val lookaheadMediaMutexes = ConcurrentHashMap<MediaId, Mutex>()
     private val pendingHighPriorityCount = AtomicInteger(0)
     private val recognitionSlotGate = PriorityRecognitionSlotGate(pendingHighPriorityCount)
     private val waveformRefreshEvents = MutableSharedFlow<MediaId>(extraBufferCapacity = 16)
@@ -191,6 +200,10 @@ class DefaultAnalysisRepository(
     private val activeTranscriptionJobs = ConcurrentHashMap<MediaId, MutableSet<Job>>()
 
     private fun isMediaOpenForTranscription(id: MediaId): Boolean = !hasExplicitSessionTracking.get() || activeOpenMediaIds.contains(id)
+
+    private fun canContinueTranscriptionForMedia(id: MediaId): Boolean = isMediaOpenForTranscription(id) || backgroundTranscriptionMediaIds.contains(id)
+
+    private fun lookaheadMutexFor(id: MediaId): Mutex = lookaheadMediaMutexes.computeIfAbsent(id) { Mutex() }
 
     private fun currentSkippedChunkIds(id: MediaId): Set<ChunkId> = attemptedEmptyChunkIds[id]
         ?.map { ChunkId(it) }
@@ -1175,7 +1188,11 @@ class DefaultAnalysisRepository(
         explicitlyConfiguredLookaheadMediaIds.add(id)
         if (enabled) {
             attemptedEmptyChunkIds.remove(id)
+            backgroundDeferredEmptyChunkIds.remove(id)
         } else {
+            backgroundTranscriptionMediaIds.remove(id)
+            backgroundDeferredEmptyChunkIds.remove(id)
+            backgroundJobs.remove(id)?.cancel()
             pendingHighPriorityChunkIds[id]?.clear()
             cancelActiveTranscriptionJobs(
                 id = id,
@@ -1196,20 +1213,74 @@ class DefaultAnalysisRepository(
         lookaheadStateFor(id).update { current ->
             current.copy(
                 enabled = enabled,
+                backgroundEnabled = if (enabled) current.backgroundEnabled else false,
                 engineAvailable = available,
                 inFlightChunkId = if (enabled) current.inFlightChunkId else null,
                 inFlightStep = if (enabled) current.inFlightStep else null,
                 inFlightDetail = if (enabled) current.inFlightDetail else null,
                 inFlightStartedAtEpochMs = if (enabled) current.inFlightStartedAtEpochMs else null,
                 isForcedChunkInFlight = if (enabled) current.isForcedChunkInFlight else false,
-                queuedChunkIds = if (enabled && isMediaOpenForTranscription(id)) current.queuedChunkIds else emptySet(),
+                queuedChunkIds = if (enabled && canContinueTranscriptionForMedia(id)) current.queuedChunkIds else emptySet(),
                 skippedEmptyChunkIds = currentSkippedChunkIds(id),
             )
+        }
+        if (enabled && id in backgroundTranscriptionMediaIds && !isMediaOpenForTranscription(id)) {
+            startBackgroundTranscriptionLoop(id)
+        }
+    }
+
+    override suspend fun setBackgroundTranscriptionEnabled(id: MediaId, enabled: Boolean) {
+        if (enabled) {
+            backgroundTranscriptionMediaIds.add(id)
+        } else {
+            backgroundTranscriptionMediaIds.remove(id)
+            backgroundDeferredEmptyChunkIds.remove(id)
+        }
+        lookaheadStateFor(id).update { it.copy(backgroundEnabled = enabled) }
+        if (!enabled && !isMediaOpenForTranscription(id)) {
+            backgroundJobs.remove(id)?.cancel()
+            cancelActiveTranscriptionJobs(id, CancellationException("Background transcription disabled"))
+            lookaheadStateFor(id).update {
+                it.copy(
+                    inFlightChunkId = null,
+                    inFlightStep = null,
+                    inFlightDetail = null,
+                    inFlightStartedAtEpochMs = null,
+                    isForcedChunkInFlight = false,
+                    queuedChunkIds = emptySet(),
+                )
+            }
+            if (activeOpenMediaIds.isEmpty() && backgroundTranscriptionMediaIds.isEmpty()) {
+                runCatching { onDeviceChunkTranscriber.releaseIdleResources() }
+            }
+        } else if (enabled && lookaheadStateFor(id).value.enabled && !isMediaOpenForTranscription(id)) {
+            startBackgroundTranscriptionLoop(id)
+        }
+    }
+
+    private fun startBackgroundTranscriptionLoop(id: MediaId) {
+        if (id !in backgroundTranscriptionMediaIds || !lookaheadStateFor(id).value.enabled) return
+        val existingJob = backgroundJobs[id]
+        if (existingJob != null && existingJob.isActive) return
+        val job = backgroundScope.launch {
+            delay(BACKGROUND_YIELD_POLL_MS)
+            if (!canContinueTranscriptionForMedia(id) || !lookaheadStateFor(id).value.enabled) {
+                return@launch
+            }
+            val startIndex = (latestLookaheadChunkIndex[id] ?: 0).coerceAtLeast(0)
+            triggerLookaheadAt(id, startIndex)
+        }
+        backgroundJobs[id] = job
+        job.invokeOnCompletion {
+            backgroundJobs.remove(id, job)
         }
     }
 
     override suspend fun resetTranscription(id: MediaId) {
         withContext(ioDispatcher) {
+            backgroundTranscriptionMediaIds.remove(id)
+            backgroundDeferredEmptyChunkIds.remove(id)
+            backgroundJobs.remove(id)?.cancel()
             pendingHighPriorityChunkIds[id]?.clear()
             attemptedEmptyChunkIds.remove(id)
             cancelActiveTranscriptionJobs(
@@ -1224,6 +1295,7 @@ class DefaultAnalysisRepository(
             lookaheadStateFor(id).update { current ->
                 current.copy(
                     enabled = false,
+                    backgroundEnabled = false,
                     engineAvailable = available,
                     inFlightChunkId = null,
                     inFlightStep = null,
@@ -1240,6 +1312,8 @@ class DefaultAnalysisRepository(
     override fun setMediaTranscriptionSessionOpen(id: MediaId, open: Boolean) {
         hasExplicitSessionTracking.set(true)
         if (open) {
+            backgroundJobs.remove(id)?.cancel()
+            backgroundDeferredEmptyChunkIds.remove(id)
             val previouslyOpen = activeOpenMediaIds.toList()
             activeOpenMediaIds.clear()
             activeOpenMediaIds.add(id)
@@ -1248,8 +1322,12 @@ class DefaultAnalysisRepository(
                 if (otherId != id) {
                     pipelineGate.setMediaOpen(otherId, false)
                     pendingHighPriorityChunkIds[otherId]?.clear()
-                    lookaheadStateFor(otherId).update { current ->
-                        current.copy(queuedChunkIds = emptySet())
+                    if (otherId in backgroundTranscriptionMediaIds && lookaheadStateFor(otherId).value.enabled) {
+                        startBackgroundTranscriptionLoop(otherId)
+                    } else {
+                        lookaheadStateFor(otherId).update { current ->
+                            current.copy(queuedChunkIds = emptySet())
+                        }
                     }
                 }
             }
@@ -1257,10 +1335,14 @@ class DefaultAnalysisRepository(
             activeOpenMediaIds.remove(id)
             pipelineGate.setMediaOpen(id, false)
             pendingHighPriorityChunkIds[id]?.clear()
-            lookaheadStateFor(id).update { current ->
-                current.copy(queuedChunkIds = emptySet())
+            if (id in backgroundTranscriptionMediaIds && lookaheadStateFor(id).value.enabled) {
+                startBackgroundTranscriptionLoop(id)
+            } else {
+                lookaheadStateFor(id).update { current ->
+                    current.copy(queuedChunkIds = emptySet())
+                }
             }
-            if (activeOpenMediaIds.isEmpty()) {
+            if (activeOpenMediaIds.isEmpty() && backgroundTranscriptionMediaIds.isEmpty()) {
                 // プレイヤー画面を閉じたら、チャンク切り出し用に開いたままの音声ファイルを閉じる（削除された教材の容量も解放される）
                 runCatching { onDeviceChunkTranscriber.releaseIdleResources() }
             }
@@ -1367,7 +1449,7 @@ class DefaultAnalysisRepository(
     }
 
     override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
-        if (!isMediaOpenForTranscription(id)) {
+        if (!canContinueTranscriptionForMedia(id)) {
             lookaheadStateFor(id).update { it.copy(queuedChunkIds = emptySet()) }
             return
         }
@@ -1890,15 +1972,56 @@ class DefaultAnalysisRepository(
         val skippedEmptyIds = attemptedEmptyChunkIds.computeIfAbsent(id) {
             ConcurrentHashMap.newKeySet()
         }
+        val deferredBgEmptyIds = if (!isMediaOpenForTranscription(id)) {
+            backgroundDeferredEmptyChunkIds[id].orEmpty()
+        } else {
+            emptySet()
+        }
         val orderedCandidates = activeChunks.subList(startIndex, activeChunks.size) +
             activeChunks.subList(0, startIndex)
         val existingTranscripts = transcriptDao.getByChunkIds(orderedCandidates.map { it.id })
             .associateBy { it.chunkId }
-        // プレイヤー画面で開いている間は、現在位置から後ろ、続けて先頭からの順で、残りのすべてのチャンクを対象にする
+        // プレイヤー画面で開いている間（またはバックグラウンド文字起こしが有効な間）は、現在位置から後ろ、続けて先頭からの順で、残りのすべてのチャンクを対象にする
         return orderedCandidates.filter { chunk ->
             needsLookaheadTranscription(existingTranscripts[chunk.id]) &&
-                !skippedEmptyIds.contains(chunk.id)
+                !skippedEmptyIds.contains(chunk.id) &&
+                !deferredBgEmptyIds.contains(chunk.id)
         }
+    }
+
+    private suspend fun isOpenMediaAnalysisRunning(openId: MediaId): Boolean {
+        val stages = analysisStateDao.getByMediaId(openId.value)
+            .mapNotNull { it.toStageAndStatus() }
+            .toMap()
+        return stages[AnalysisStage.FEATURES] is StageStatus.Running ||
+            stages[AnalysisStage.SEGMENTATION] is StageStatus.Running
+    }
+
+    private suspend fun isOpenMediaTranscriptionBusy(openId: MediaId): Boolean {
+        val status = lookaheadStateFor(openId).value
+        if (!status.enabled) return false
+        if (status.inFlightChunkId != null || status.queuedChunkIds.isNotEmpty()) return true
+        if (!pendingHighPriorityChunkIds[openId].isNullOrEmpty()) return true
+        val allChunks = chunkDao.observeByMediaId(openId.value).first()
+        if (allChunks.isEmpty()) return false
+        val itemState = itemStateDao.getByMediaId(openId.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        if (activeChunks.isEmpty()) return false
+        val startIndex = (latestLookaheadChunkIndex[openId] ?: 0).coerceIn(0, activeChunks.lastIndex)
+        return computeLookaheadTargetChunks(openId, activeChunks, startIndex).isNotEmpty()
+    }
+
+    private suspend fun shouldYieldBackgroundTranscription(id: MediaId): Boolean {
+        if (isMediaOpenForTranscription(id)) return false
+        if (pendingHighPriorityCount.get() > 0) return true
+        if (pipelineGate.hasHighPriorityWaiters()) return true
+        val openMediaSnapshot = activeOpenMediaIds.toList()
+        for (openId in openMediaSnapshot) {
+            if (openId == id) continue
+            if (isOpenMediaAnalysisRunning(openId)) return true
+            if (isOpenMediaTranscriptionBusy(openId)) return true
+        }
+        return false
     }
 
     private suspend fun updateQueuedChunkIdsState(
@@ -1907,7 +2030,7 @@ class DefaultAnalysisRepository(
     ) {
         val stateFlow = lookaheadStateFor(id)
         val skippedIds = currentSkippedChunkIds(id)
-        if (!isMediaOpenForTranscription(id)) {
+        if (!canContinueTranscriptionForMedia(id)) {
             stateFlow.update { current ->
                 current.copy(
                     queuedChunkIds = emptySet(),
@@ -1948,14 +2071,14 @@ class DefaultAnalysisRepository(
 
     /**
      * アクティブチャンクのインデックス [currentChunkIndex] 以降から、未文字起こし・または言語未確定（かつ空結果として試行済みでない）チャンクを
-     * プレイヤー画面で開いている間、残りのすべてのチャンクを順番に先読み認識する（F6.2、§7.4.5）。
+     * プレイヤー画面で開いている間、またはバックグラウンド文字起こしが有効な間、残りのすべてのチャンクを順番に認識する（F6.2、§7.4.5）。
      *
      * 各チャンクの認識前に高優先度の手動リクエスト（[retranscribeChunk] / [updateChunkLanguage] / [prioritizeChunkTranscription]）が
      * 待機している場合は認識スロットを譲り、また先読み中に起点インデックスが更新された場合は次のチャンクから即座に新しい起点へ切り替える。
      */
     suspend fun triggerLookaheadAt(id: MediaId, currentChunkIndex: Int) {
         if (currentChunkIndex < 0) return
-        if (!isMediaOpenForTranscription(id)) {
+        if (!canContinueTranscriptionForMedia(id)) {
             lookaheadStateFor(id).update { it.copy(queuedChunkIds = emptySet()) }
             return
         }
@@ -1964,7 +2087,7 @@ class DefaultAnalysisRepository(
                 latestLookaheadChunkIndex[id] = currentChunkIndex
                 updateQueuedChunkIdsState(id)
 
-                lookaheadMutex.withLock {
+                lookaheadMutexFor(id).withLock {
                     val stateFlow = lookaheadStateFor(id)
                     if (id !in explicitlyConfiguredLookaheadMediaIds && userSettingsRepository != null) {
                         val defaultEnabled = runCatching {
@@ -1976,7 +2099,7 @@ class DefaultAnalysisRepository(
                     }
                     val currentStatus = stateFlow.value
                     val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
-                    if (!currentStatus.enabled || !isMediaOpenForTranscription(id)) {
+                    if (!currentStatus.enabled || !canContinueTranscriptionForMedia(id)) {
                         stateFlow.update {
                             it.copy(
                                 queuedChunkIds = emptySet(),
@@ -2026,7 +2149,7 @@ class DefaultAnalysisRepository(
                                 inFlightDetail = if (keepInFlight) current.inFlightDetail else null,
                                 inFlightStartedAtEpochMs = if (keepInFlight) current.inFlightStartedAtEpochMs else null,
                                 isForcedChunkInFlight = if (keepInFlight) current.isForcedChunkInFlight else false,
-                                queuedChunkIds = if (isMediaOpenForTranscription(id)) {
+                                queuedChunkIds = if (canContinueTranscriptionForMedia(id)) {
                                     highIds - setOfNotNull(current.inFlightChunkId)
                                 } else {
                                     emptySet()
@@ -2048,15 +2171,19 @@ class DefaultAnalysisRepository(
 
                     var completed = 0
                     val totalTargets = initialTargets.size
-                    if (pendingHighPriorityCount.get() == 0 && isMediaOpenForTranscription(id)) {
+                    if (pendingHighPriorityCount.get() == 0 &&
+                        canContinueTranscriptionForMedia(id) &&
+                        !shouldYieldBackgroundTranscription(id)
+                    ) {
                         val firstId = ChunkId(initialTargets.first().id)
                         val queuedIds = initialTargets.drop(1).map { ChunkId(it.id) }.toSet()
+                        val isBackground = !isMediaOpenForTranscription(id)
                         stateFlow.update {
                             it.copy(
                                 engineAvailable = true,
                                 inFlightChunkId = firstId,
                                 inFlightStep = TranscriptionStep.EXTRACTING_PCM,
-                                inFlightDetail = "先読み文字起こし中",
+                                inFlightDetail = if (isBackground) "バックグラウンド文字起こし中" else "先読み文字起こし中",
                                 inFlightStartedAtEpochMs = clock(),
                                 isForcedChunkInFlight = false,
                                 queuedChunkIds = queuedIds,
@@ -2069,10 +2196,32 @@ class DefaultAnalysisRepository(
                         updateQueuedChunkIdsState(id, activeChunks)
                     }
 
-                    // プレイヤー画面が開いている間は、残りのチャンクがなくなるまで順に処理する。
+                    // プレイヤー画面が開いている間（またはバックグラウンド文字起こしが有効な間）は、残りのチャンクがなくなるまで順に処理する。
                     // 同じバッチ内で同じチャンクを繰り返さないよう、試したチャンクを覚えておく
                     val attemptedInBatch = HashSet<Long>()
-                    while (stateFlow.value.enabled && isMediaOpenForTranscription(id)) {
+                    while (stateFlow.value.enabled && canContinueTranscriptionForMedia(id)) {
+                        if (!isMediaOpenForTranscription(id)) {
+                            while (stateFlow.value.enabled &&
+                                canContinueTranscriptionForMedia(id) &&
+                                !isMediaOpenForTranscription(id) &&
+                                shouldYieldBackgroundTranscription(id)
+                            ) {
+                                stateFlow.update { current ->
+                                    current.copy(
+                                        inFlightChunkId = null,
+                                        inFlightStep = null,
+                                        inFlightDetail = null,
+                                        inFlightStartedAtEpochMs = null,
+                                        isForcedChunkInFlight = false,
+                                    )
+                                }
+                                delay(BACKGROUND_YIELD_POLL_MS)
+                            }
+                            if (!stateFlow.value.enabled || !canContinueTranscriptionForMedia(id)) {
+                                break
+                            }
+                        }
+
                         // 分割・連結でチャンクが作り直されることがあるため、毎回最新のチャンク一覧を読む
                         activeChunks = selectActiveChunkEntities(
                             itemStateDao.getByMediaId(id.value),
@@ -2092,8 +2241,9 @@ class DefaultAnalysisRepository(
                             continue
                         }
 
+                        var yieldedInSlot = false
                         recognitionSlotGate.withNormalSlot {
-                            if (!stateFlow.value.enabled || !isMediaOpenForTranscription(id)) {
+                            if (!stateFlow.value.enabled || !canContinueTranscriptionForMedia(id)) {
                                 stateFlow.update { current ->
                                     current.copy(
                                         inFlightChunkId = null,
@@ -2103,6 +2253,20 @@ class DefaultAnalysisRepository(
                                         isForcedChunkInFlight = false,
                                         queuedChunkIds = emptySet(),
                                         skippedEmptyChunkIds = currentSkippedChunkIds(id),
+                                    )
+                                }
+                                return@withNormalSlot
+                            }
+
+                            if (!isMediaOpenForTranscription(id) && shouldYieldBackgroundTranscription(id)) {
+                                yieldedInSlot = true
+                                stateFlow.update { current ->
+                                    current.copy(
+                                        inFlightChunkId = null,
+                                        inFlightStep = null,
+                                        inFlightDetail = null,
+                                        inFlightStartedAtEpochMs = null,
+                                        isForcedChunkInFlight = false,
                                     )
                                 }
                                 return@withNormalSlot
@@ -2125,7 +2289,7 @@ class DefaultAnalysisRepository(
                                         inFlightDetail = null,
                                         inFlightStartedAtEpochMs = null,
                                         isForcedChunkInFlight = false,
-                                        queuedChunkIds = if (isMediaOpenForTranscription(id)) highIds else emptySet(),
+                                        queuedChunkIds = if (canContinueTranscriptionForMedia(id)) highIds else emptySet(),
                                         skippedEmptyChunkIds = currentSkippedChunkIds(id),
                                         completedCount = completed.coerceAtMost(totalTargets),
                                         totalTargetCount = totalTargets,
@@ -2135,19 +2299,20 @@ class DefaultAnalysisRepository(
                             }
 
                             val targetChunkId = ChunkId(targetChunk.id)
-                            val queuedRest = if (isMediaOpenForTranscription(id)) {
+                            val queuedRest = if (canContinueTranscriptionForMedia(id)) {
                                 refreshedTargets.drop(1).map { ChunkId(it.id) }.toSet() +
                                     pendingHighPriorityChunkIds[id]?.map { ChunkId(it) }?.toSet().orEmpty() -
                                     targetChunkId
                             } else {
                                 emptySet()
                             }
+                            val isBackground = !isMediaOpenForTranscription(id)
                             stateFlow.update {
                                 it.copy(
                                     engineAvailable = true,
                                     inFlightChunkId = targetChunkId,
                                     inFlightStep = TranscriptionStep.EXTRACTING_PCM,
-                                    inFlightDetail = "先読み文字起こし中",
+                                    inFlightDetail = if (isBackground) "バックグラウンド文字起こし中" else "先読み文字起こし中",
                                     inFlightStartedAtEpochMs = clock(),
                                     isForcedChunkInFlight = false,
                                     queuedChunkIds = queuedRest,
@@ -2173,6 +2338,12 @@ class DefaultAnalysisRepository(
                             }
 
                             try {
+                                if (!isMediaOpenForTranscription(id)) {
+                                    try {
+                                        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                                    } catch (_: Throwable) {
+                                    }
+                                }
                                 // チャンク区間 [startMs, endMs] のみを切り出して認識し、チャンク間の無音はスキップする（F6.2）
                                 val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
                                 val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
@@ -2196,6 +2367,7 @@ class DefaultAnalysisRepository(
                                 withContext(NonCancellable) {
                                     if (result != null && result.text.isNotBlank()) {
                                         skippedEmptyIds.remove(targetChunk.id)
+                                        backgroundDeferredEmptyChunkIds[id]?.remove(targetChunk.id)
                                         val existing = transcriptDao.getByChunkId(targetChunk.id)
                                         val resolvedLanguage = existing?.language?.takeIf { it.isNotBlank() && it != "und" }
                                             ?: result.language?.value
@@ -2240,13 +2412,19 @@ class DefaultAnalysisRepository(
                                             skippedEmptyIds.add(targetChunk.id)
                                         }
                                     } else if (stateFlow.value.enabled) {
-                                        skippedEmptyIds.add(targetChunk.id)
+                                        if (isMediaOpenForTranscription(id)) {
+                                            skippedEmptyIds.add(targetChunk.id)
+                                        } else {
+                                            backgroundDeferredEmptyChunkIds.computeIfAbsent(id) {
+                                                ConcurrentHashMap.newKeySet()
+                                            }.add(targetChunk.id)
+                                        }
                                     }
                                 }
                             } finally {
                                 withContext(NonCancellable) {
                                     completed += 1
-                                    val nextQueued = if (stateFlow.value.enabled && isMediaOpenForTranscription(id)) {
+                                    val nextQueued = if (stateFlow.value.enabled && canContinueTranscriptionForMedia(id)) {
                                         computeLookaheadTargetChunks(
                                             id = id,
                                             activeChunks = activeChunks,
@@ -2273,6 +2451,13 @@ class DefaultAnalysisRepository(
                                     }
                                 }
                             }
+                        }
+
+                        if (yieldedInSlot) {
+                            continue
+                        }
+                        if (!isMediaOpenForTranscription(id)) {
+                            yield()
                         }
                     }
                 }
@@ -3405,6 +3590,7 @@ class DefaultAnalysisRepository(
         /** 同一フォルダ内で事前に波形・チャンク解析を行っておく未アクセス教材の上限数。 */
         const val MAX_UNACCESSED_ANALYZED_PER_FOLDER: Int = 2
 
+        private const val BACKGROUND_YIELD_POLL_MS: Long = 20L
         private const val MANUAL_LANGUAGE_ENGINE_ID: String = "manual-language"
         private const val USER_EDIT_ENGINE_ID: String = "user"
         private const val MAX_TRANSCRIPT_TEXT_CODE_POINTS: Int = 2_000

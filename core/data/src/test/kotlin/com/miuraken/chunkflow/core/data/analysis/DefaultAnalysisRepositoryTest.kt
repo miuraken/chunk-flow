@@ -2995,4 +2995,235 @@ class DefaultAnalysisRepositoryTest {
         assertTrue(transcribedFiles.isNotEmpty())
         assertTrue(transcribedFiles.all { it.absolutePath == cachedSourceAudio.absolutePath })
     }
+
+    @Test
+    fun `setBackgroundTranscriptionEnabled_有効にしてファイルを閉じた場合でも残りのチャンクの文字起こしが完了する`() = runTest {
+        val transcribedChunks = mutableListOf<Long>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
+                transcribedChunks += startMs
+                return OnDeviceChunkTranscriptionResult(
+                    text = "BG($startMs..$endMs)",
+                    language = LanguageTag("en"),
+                    confidence = 0.91f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_bg_complete_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Background Complete Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 2001L, mediaId = mediaId.value, startMs = 0L, endMs = 800L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2002L, mediaId = mediaId.value, startMs = 1_000L, endMs = 1_800L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2003L, mediaId = mediaId.value, startMs = 2_000L, endMs = 2_800L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        repository.setLookaheadEnabled(mediaId, true)
+        repository.setBackgroundTranscriptionEnabled(mediaId, true)
+        assertTrue(repository.observeLookaheadStatus(mediaId).first().backgroundEnabled)
+
+        // ファイルを閉じてもバックグラウンドループが起動して全チャンクの文字起こしが完了する
+        repository.setMediaTranscriptionSessionOpen(mediaId, false)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(listOf(0L, 1_000L, 2_000L), transcribedChunks)
+        val transcripts = repository.observeTranscripts(mediaId).first()
+        assertEquals("BG(0..800)", transcripts[ChunkId(2001L)]?.text)
+        assertEquals("BG(1000..1800)", transcripts[ChunkId(2002L)]?.text)
+        assertEquals("BG(2000..2800)", transcripts[ChunkId(2003L)]?.text)
+    }
+
+    @Test
+    fun `setBackgroundTranscriptionEnabled_ファイルAをバックグラウンド有効で閉じファイルBを開くとファイルBが先に完了しその後にファイルAが完了する`() = runTest {
+        val transcribedOrder = mutableListOf<Pair<String, Long>>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
+                val idName = audioFile.nameWithoutExtension
+                delay(10L)
+                transcribedOrder += idName to startMs
+                return OnDeviceChunkTranscriptionResult(
+                    text = "Text($idName:$startMs)",
+                    language = LanguageTag("en"),
+                    confidence = 0.9f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val fileA = MediaId("media_bg_file_a")
+        val fileB = MediaId("media_fg_file_b")
+        for (id in listOf(fileA, fileB)) {
+            mediaItemDao.upsert(
+                MediaItemEntity(
+                    id = id.value,
+                    title = id.value,
+                    durationMs = 3_000L,
+                    mimeType = "audio/mpeg",
+                    sizeBytes = 1024L,
+                    sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    course = null,
+                    targetLang = "en",
+                    baseLang = "ja",
+                    transcriptOffsetMs = 0,
+                    importedAt = currentEpochMs,
+                ),
+            )
+            mediaFileLocator.audioFileFor(id, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+        }
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 2101L, mediaId = fileA.value, startMs = 0L, endMs = 800L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2102L, mediaId = fileA.value, startMs = 1_000L, endMs = 1_800L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2201L, mediaId = fileB.value, startMs = 0L, endMs = 800L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2202L, mediaId = fileB.value, startMs = 1_000L, endMs = 1_800L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        // ファイル A を開いてバックグラウンド文字起こしを有効にしてから閉じ、直後にファイル B を開いて文字起こしを実行する
+        repository.setMediaTranscriptionSessionOpen(fileA, true)
+        repository.setLookaheadEnabled(fileA, true)
+        repository.setBackgroundTranscriptionEnabled(fileA, true)
+        repository.setMediaTranscriptionSessionOpen(fileA, false)
+
+        repository.setMediaTranscriptionSessionOpen(fileB, true)
+        repository.setLookaheadEnabled(fileB, true)
+        repository.triggerLookaheadAt(fileB, currentChunkId = ChunkId(2201L))
+        testScheduler.advanceUntilIdle()
+
+        // ファイル B の全チャンクが先に完了し、その後にファイル A のチャンクがバックグラウンドで完了する
+        assertEquals(
+            listOf(
+                fileB.value to 0L,
+                fileB.value to 1_000L,
+                fileA.value to 0L,
+                fileA.value to 1_000L,
+            ),
+            transcribedOrder,
+        )
+        assertEquals("Text(${fileB.value}:0)", transcriptDao.getByChunkId(2201L)?.text)
+        assertEquals("Text(${fileB.value}:1000)", transcriptDao.getByChunkId(2202L)?.text)
+        assertEquals("Text(${fileA.value}:0)", transcriptDao.getByChunkId(2101L)?.text)
+        assertEquals("Text(${fileA.value}:1000)", transcriptDao.getByChunkId(2102L)?.text)
+    }
+
+    @Test
+    fun `setLookaheadEnabledFalse_中断するとbackgroundEnabledもfalseになりバックグラウンド処理が止まる`() = runTest {
+        val firstChunkStarted = CompletableDeferred<Unit>()
+        val releaseFirstChunk = CompletableDeferred<Unit>()
+        val transcribedChunks = mutableListOf<Long>()
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override fun cancelActiveTranscription(onlyLowPriority: Boolean) {
+                if (!onlyLowPriority) {
+                    releaseFirstChunk.complete(Unit)
+                }
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? {
+                transcribedChunks += startMs
+                if (startMs == 0L) {
+                    firstChunkStarted.complete(Unit)
+                    releaseFirstChunk.await()
+                    return null
+                }
+                return OnDeviceChunkTranscriptionResult(
+                    text = "BG($startMs)",
+                    language = LanguageTag("en"),
+                    confidence = 0.9f,
+                )
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_bg_stop_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Background Stop Test",
+                durationMs = 3_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 2301L, mediaId = mediaId.value, startMs = 0L, endMs = 800L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2302L, mediaId = mediaId.value, startMs = 1_000L, endMs = 1_800L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        repository.setLookaheadEnabled(mediaId, true)
+        repository.setBackgroundTranscriptionEnabled(mediaId, true)
+        repository.setMediaTranscriptionSessionOpen(mediaId, false)
+
+        testScheduler.advanceTimeBy(25L)
+        testScheduler.runCurrent()
+        firstChunkStarted.await()
+
+        // setLookaheadEnabled(false) で中断すると backgroundEnabled も false になり、後続チャンクは実行されない
+        repository.setLookaheadEnabled(mediaId, false)
+        testScheduler.advanceUntilIdle()
+
+        val status = repository.observeLookaheadStatus(mediaId).first()
+        assertFalse(status.enabled)
+        assertFalse(status.backgroundEnabled)
+        assertNull(status.inFlightChunkId)
+        assertTrue(status.queuedChunkIds.isEmpty())
+        assertEquals(listOf(0L), transcribedChunks)
+        assertNull(transcriptDao.getByChunkId(2302L))
+    }
 }
