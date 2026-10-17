@@ -230,4 +230,16 @@ class DataStoreUserSettingsRepositoryTest {
             repository.settings.first().sttEngineByLanguage,
         )
     }
+
+    @Test
+    fun `チャンク間の無音スキップ設定を更新できる`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, _) = createRepository(this)
+        assertEquals(false, repository.settings.first().skipOriginalSilence)
+
+        repository.setSkipOriginalSilence(true)
+        assertEquals(true, repository.settings.first().skipOriginalSilence)
+
+        repository.setSkipOriginalSilence(false)
+        assertEquals(false, repository.settings.first().skipOriginalSilence)
+    }
 }

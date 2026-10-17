@@ -64,6 +64,10 @@ class FakeUserSettingsRepository(
         state.update { it.copy(defaultAutoPauseScope = scope) }
     }
 
+    override suspend fun setSkipOriginalSilence(enabled: Boolean) {
+        state.update { it.copy(skipOriginalSilence = enabled) }
+    }
+
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
         state.update { it.copy(defaultSegmentationParams = params) }
     }

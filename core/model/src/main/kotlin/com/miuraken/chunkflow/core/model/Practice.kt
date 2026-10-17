@@ -90,6 +90,7 @@ enum class LanguageFilter {
  * @property bookmarksOnly ブックマークしたチャンクだけを再生するフィルタ（F8.1）。
  * @property repeatChunkIds 選択したチャンク（チャンクリストのチェックボックス、拡大波形の長押し）の ID の集合。空でない場合、選択したチャンクだけを時系列の順に再生する。
  * @property repeatCheckedOnly 下部再生コントロールの「リピート」トグルが ON かどうか（デフォルトは `false`）。`true` かつ [repeatChunkIds] が空でない場合は選択したチャンクを繰り返し、`false` の場合は最後の選択チャンクのあとで一時停止する。
+ * @property skipOriginalSilence 元音声のチャンク間の無音区間（`[chunk.endMs, nextChunk.startMs)`）をスキップして次のチャンクへ進むかどうか。
  */
 data class PracticeSettings(
     val loop: LoopMode = LoopMode.Off,
@@ -99,4 +100,5 @@ data class PracticeSettings(
     val bookmarksOnly: Boolean = false,
     val repeatChunkIds: Set<ChunkId> = emptySet(),
     val repeatCheckedOnly: Boolean = false,
+    val skipOriginalSilence: Boolean = false,
 )

@@ -124,6 +124,12 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setSkipOriginalSilence(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[KEY_SKIP_ORIGINAL_SILENCE] = enabled
+        }
+    }
+
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
         require(params.minSilenceMs > 0) { "minSilenceMs must be > 0: ${params.minSilenceMs}" }
         require(params.minSpeechMs > 0) { "minSpeechMs must be > 0: ${params.minSpeechMs}" }
@@ -234,6 +240,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val defaultAutoPauseScope = this[KEY_DEFAULT_AUTO_PAUSE_SCOPE]
             ?.let { name -> AutoPauseScope.entries.firstOrNull { it.name == name } }
             ?: defaults.defaultAutoPauseScope
+        val skipOriginalSilence = this[KEY_SKIP_ORIGINAL_SILENCE]
+            ?: defaults.skipOriginalSilence
 
         val minSilenceMs = this[KEY_SEG_MIN_SILENCE_MS]
             ?.takeIf { it > 0 }
@@ -278,6 +286,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
             seekForwardMs = seekForwardMs,
             defaultAutoPause = defaultAutoPause,
             defaultAutoPauseScope = defaultAutoPauseScope,
+            skipOriginalSilence = skipOriginalSilence,
             defaultSegmentationParams = SegmentationParams(
                 minSilenceMs = minSilenceMs,
                 minSpeechMs = minSpeechMs,
@@ -310,6 +319,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_SEEK_FORWARD_MS = longPreferencesKey("seek_forward_ms")
         val KEY_DEFAULT_AUTO_PAUSE = stringPreferencesKey("default_auto_pause")
         val KEY_DEFAULT_AUTO_PAUSE_SCOPE = stringPreferencesKey("default_auto_pause_scope")
+        val KEY_SKIP_ORIGINAL_SILENCE = booleanPreferencesKey("skip_original_silence")
         val KEY_SEG_MIN_SILENCE_MS = intPreferencesKey("seg_min_silence_ms")
         val KEY_SEG_MIN_SPEECH_MS = intPreferencesKey("seg_min_speech_ms")
         val KEY_SEG_MERGE_GAP_MS = intPreferencesKey("seg_merge_gap_ms")

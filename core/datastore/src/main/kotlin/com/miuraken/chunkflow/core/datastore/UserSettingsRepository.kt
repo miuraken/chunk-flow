@@ -44,6 +44,9 @@ interface UserSettingsRepository {
     /** 既定の自動ポーズ対象言語範囲を更新する（F6.3、F6.5、F9.1）。 */
     suspend fun setDefaultAutoPauseScope(scope: AutoPauseScope) {}
 
+    /** チャンク間の無音（元音声の空白区間）をスキップするかどうかを更新する。 */
+    suspend fun setSkipOriginalSilence(enabled: Boolean) {}
+
     /** 端末内の自動チャンク分割の既定パラメータを更新する（§7.3.3、F5.2、F9.1）。 */
     suspend fun setDefaultSegmentationParams(params: SegmentationParams) {}
 
