@@ -139,10 +139,23 @@ fun PlayerRoute(
     }
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var hasRecordAudioPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    LaunchedEffect(hasRecordAudioPermission) {
+        viewModel.onEvent(PlayerEvent.SetRecordAudioPermissionGranted(hasRecordAudioPermission))
+    }
     var showRecordAudioRationaleDialog by rememberSaveable { mutableStateOf(false) }
     val recordAudioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { isGranted ->
+        hasRecordAudioPermission = isGranted
+        viewModel.onEvent(PlayerEvent.SetRecordAudioPermissionGranted(isGranted))
         viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
         if (isGranted) {
             val activeChunkId = state.activeChunkIndex
@@ -150,6 +163,12 @@ fun PlayerRoute(
                 ?: state.chunks.firstOrNull()?.id
             viewModel.onEvent(PlayerEvent.TriggerLookahead(activeChunkId))
         }
+    }
+    val detailedRecordAudioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { isGranted ->
+        hasRecordAudioPermission = isGranted
+        viewModel.onEvent(PlayerEvent.SetRecordAudioPermissionGranted(isGranted))
     }
     val transcriptPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -205,6 +224,10 @@ fun PlayerRoute(
             pendingExportFormat = format
             val baseName = state.title.ifBlank { "transcript" }
             exportDocumentLauncher.launch("$baseName.${format.name.lowercase(Locale.ROOT)}")
+        },
+        hasRecordAudioPermission = hasRecordAudioPermission,
+        onRequestRecordAudioPermission = {
+            detailedRecordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         },
         modifier = modifier,
     )
@@ -264,6 +287,8 @@ fun PlayerScreen(
     onOpenPlaybackSettings: () -> Unit = {},
     onPickTranscriptJson: () -> Unit = {},
     onRequestExportTranscript: (TranscriptExportFormat) -> Unit = {},
+    hasRecordAudioPermission: Boolean = true,
+    onRequestRecordAudioPermission: () -> Unit = {},
 ) {
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showResegmentSheet by remember { mutableStateOf(false) }
@@ -397,6 +422,9 @@ fun PlayerScreen(
                             positionProvider = positionProvider,
                             onEvent = onEvent,
                             onPickTranscriptJson = onPickTranscriptJson,
+                            hasRecordAudioPermission = hasRecordAudioPermission,
+                            onRequestRecordAudioPermission = onRequestRecordAudioPermission,
+                            onOpenFileSettings = { showResegmentSheet = true },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
@@ -425,6 +453,9 @@ fun PlayerScreen(
                         positionProvider = positionProvider,
                         onEvent = onEvent,
                         onPickTranscriptJson = onPickTranscriptJson,
+                        hasRecordAudioPermission = hasRecordAudioPermission,
+                        onRequestRecordAudioPermission = onRequestRecordAudioPermission,
+                        onOpenFileSettings = { showResegmentSheet = true },
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
@@ -630,11 +661,19 @@ private fun PlayerChunkList(
     onEvent: (PlayerEvent) -> Unit,
     onPickTranscriptJson: () -> Unit,
     modifier: Modifier = Modifier,
+    hasRecordAudioPermission: Boolean = true,
+    onRequestRecordAudioPermission: () -> Unit = {},
+    onOpenFileSettings: () -> Unit = {},
 ) {
     TranscriptList(
         chunks = state.chunks,
         activeChunkIndex = state.activeChunkIndex,
         languagePair = state.languagePair,
+        hasSameTargetAndBaseLanguage = state.hasSameTargetAndBaseLanguage,
+        isAllTranscriptionEmptyAfterCompletion = state.isAllTranscriptionEmptyAfterCompletion,
+        onOpenFileSettings = onOpenFileSettings,
+        hasRecordAudioPermission = hasRecordAudioPermission,
+        onRequestRecordAudioPermission = onRequestRecordAudioPermission,
         loopMode = state.practice.loop,
         blindMode = state.blindMode,
         revealedChunkIds = state.revealedChunkIds,
@@ -718,6 +757,7 @@ private fun PlayerChunkList(
                     engine = engine,
                     languageOverride = languageOverride,
                     audioSpeed = audioSpeed,
+                    hasRecordAudioPermission = hasRecordAudioPermission,
                 ),
             )
         },

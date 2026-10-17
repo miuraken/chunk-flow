@@ -1855,4 +1855,156 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.ToggleEnabledLanguage(LanguageTag("ko")))
         assertEquals(listOf(LanguageTag("ko")), viewModel.uiState.value.enabledLanguages)
     }
+
+    @Test
+    fun `より詳しく文字起こし_試行結果が空のときモデル未導入や非対応エンジンやマイク権限不足や一般空結果の具体的メッセージを設定する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            customTrialResultStub = null
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val targetChunk = sample.chunks[1]
+
+        // 1. モデル未導入 (NOT_INSTALLED) のとき
+        analysisRepo.languageModelInfos[LanguageTag("ko")] =
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                language = LanguageTag("ko"),
+                mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            )
+        viewModel.onEvent(PlayerEvent.OpenDetailedTranscription(targetChunk.id))
+        viewModel.onEvent(
+            PlayerEvent.RunDetailedTranscriptionTrial(
+                chunkId = targetChunk.id,
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.SHERPA_ONNX,
+                languageOverride = LanguageTag("ko"),
+                audioSpeed = 1.0f,
+            ),
+        )
+        assertEquals(
+            "選択した言語（ko）の音声認識モデルがダウンロードされていません。モデルをダウンロードしてから再試行してください。",
+            viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
+        )
+
+        // 2. 非対応エンジン (UNSUPPORTED) のとき
+        viewModel.onEvent(
+            PlayerEvent.RunDetailedTranscriptionTrial(
+                chunkId = targetChunk.id,
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+                languageOverride = LanguageTag("ko"),
+                audioSpeed = 1.0f,
+            ),
+        )
+        assertEquals(
+            "選択した文字起こしエンジンは言語（ko）に対応していません。別のエンジンを選択してください。",
+            viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
+        )
+
+        // 3. SpeechRecognizer でマイク権限がないとき (モデル自体は INSTALLED)
+        analysisRepo.languageModelInfos[LanguageTag("ko")] =
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                language = LanguageTag("ko"),
+                mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            )
+        viewModel.onEvent(PlayerEvent.OpenDetailedTranscription(targetChunk.id))
+        viewModel.onEvent(
+            PlayerEvent.RunDetailedTranscriptionTrial(
+                chunkId = targetChunk.id,
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+                languageOverride = LanguageTag("ko"),
+                audioSpeed = 1.0f,
+                hasRecordAudioPermission = false,
+            ),
+        )
+        assertEquals(
+            "SpeechRecognizer で認識できませんでした。マイク権限が許可されているか確認するか、ML Kit / sherpa-onnx をお試しください。",
+            viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
+        )
+
+        // 4. モデル導入済みかつ権限ありでも空結果のとき（無音・BGM や言語不一致の案内）
+        viewModel.onEvent(
+            PlayerEvent.RunDetailedTranscriptionTrial(
+                chunkId = targetChunk.id,
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.SHERPA_ONNX,
+                languageOverride = LanguageTag("ko"),
+                audioSpeed = 1.0f,
+                hasRecordAudioPermission = true,
+            ),
+        )
+        assertEquals(
+            "音声を認識できませんでした。このチャンクが無音・BGM のみであるか、認識言語（現在: ko）が実際の音声の言語と異なっている可能性があります。認識言語やエンジン・入力速度を変えて再試行してください。",
+            viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
+        )
+    }
+
+    @Test
+    fun `文字起こし設定診断状態_同一言語設定と全チャンク空結果完了とrecognitionModelIssuesをUiStateに反映する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val sameLangItem = sample.item.copy(
+            languagePair = LanguagePair(target = LanguageTag("ja"), base = LanguageTag("ja-JP")),
+        )
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(sameLangItem))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample.copy(item = sameLangItem))
+            update(sameLangItem.id) { entry ->
+                entry.copy(
+                    transcripts = emptyMap(),
+                    lookaheadStatus = LookaheadTranscriptionStatus(
+                        enabled = true,
+                        engineAvailable = true,
+                        completedCount = sample.chunks.size,
+                        totalTargetCount = sample.chunks.size,
+                        skippedEmptyChunkIds = sample.chunks.map { it.id }.toSet(),
+                        recognitionModelIssues = mapOf(
+                            LanguageTag("ja") to com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState.NOT_INSTALLED,
+                        ),
+                    ),
+                )
+            }
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(sameLangItem.id)
+
+        val state = viewModel.uiState.value
+        assertTrue(state.hasSameTargetAndBaseLanguage)
+        assertTrue(state.isAllTranscriptionEmptyAfterCompletion)
+        assertFalse(state.isTranscriptionRunning)
+        assertEquals(
+            mapOf(LanguageTag("ja") to com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState.NOT_INSTALLED),
+            state.recognitionModelIssues,
+        )
+
+        // 定期ポーリングコルーチンを終了させるためテスト末尾でモデル問題をクリアする
+        analysisRepo.update(sameLangItem.id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(recognitionModelIssues = emptyMap()),
+            )
+        }
+    }
 }

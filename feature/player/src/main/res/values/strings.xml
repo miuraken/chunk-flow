@@ -213,4 +213,19 @@
     <string name="player_long_press_prev_checked">一つ前のチェック項目へ</string>
     <string name="player_long_press_next_checked">一つ後のチェック項目へ</string>
     <string name="player_long_press_next_file">次のファイルへ</string>
+    <string name="player_detailed_transcribe_warning_mic_permission">SpeechRecognizer の使用にはマイク権限（RECORD_AUDIO）が必要です</string>
+    <string name="player_detailed_transcribe_action_grant_mic_permission">マイク権限を許可する</string>
+    <string name="player_detailed_transcribe_warning_model_download_required">選択中の言語（%1$s）とエンジンの音声認識モデルがダウンロードされていません。このままでは文字起こしに失敗します。</string>
+    <string name="player_detailed_transcribe_action_download_model">モデルをダウンロード</string>
+    <string name="player_detailed_transcribe_warning_model_downloading">現在モデルをダウンロード中です。完了するまでお待ちいただくか、別のエンジンを選択してください。</string>
+    <string name="player_detailed_transcribe_warning_engine_unsupported">このエンジンは選択した言語に対応していません。別のエンジンを選択してください。</string>
+    <string name="player_detailed_transcribe_empty_model_not_installed">選択した言語（%1$s）の音声認識モデルがダウンロードされていません。モデルをダウンロードしてから再試行してください。</string>
+    <string name="player_detailed_transcribe_empty_engine_unsupported">選択した文字起こしエンジンは言語（%1$s）に対応していません。別のエンジンを選択してください。</string>
+    <string name="player_detailed_transcribe_empty_mic_permission">SpeechRecognizer で認識できませんでした。マイク権限が許可されているか確認するか、ML Kit / sherpa-onnx をお試しください。</string>
+    <string name="player_detailed_transcribe_empty_general">音声を認識できませんでした。このチャンクが無音・BGM のみであるか、認識言語（現在: %1$s）が実際の音声の言語と異なっている可能性があります。認識言語やエンジン・入力速度を変えて再試行してください。</string>
+    <string name="player_transcription_progress_model_issue">設定の確認: %1$s の音声認識モデルが未準備です（設定からダウンロードまたはエンジン変更が必要です）</string>
+    <string name="player_transcription_progress_model_issue_action">モデルを準備 / 設定を確認</string>
+    <string name="player_same_target_base_language_warning">学習言語とベース言語に同じ言語（%1$s）が設定されています。2言語の教材では片方の言語が認識されないことがあります。ファイル設定から言語を確認してください。</string>
+    <string name="player_all_transcription_empty_warning">すべてのチャンクの文字起こしを試行しましたが、音声を認識できませんでした。設定されている言語（%1$s）が実際の音声と合っているか、または音声認識モデルが準備されているかファイル設定から確認してください。</string>
+    <string name="player_open_file_settings_action">ファイル設定を確認</string>
 </resources>
