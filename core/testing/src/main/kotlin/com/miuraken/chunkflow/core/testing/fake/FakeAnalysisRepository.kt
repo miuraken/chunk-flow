@@ -6,12 +6,14 @@ import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.ChunkTranscriptionTrialResult
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
@@ -79,6 +81,20 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     /** [retranscribeChunk] の呼び出し履歴（呼ばれた順）。 */
     val retranscribeChunkRequests: MutableList<Pair<MediaId, ChunkId>> = mutableListOf()
+
+    /** [tryTranscribeChunkCustom] の呼び出し履歴（呼ばれた順）。 */
+    data class CustomTrialRequest(
+        val mediaId: MediaId,
+        val chunkId: ChunkId,
+        val engine: OnDeviceTranscriptionEngine,
+        val languageOverride: LanguageTag?,
+        val audioSpeed: Float,
+    )
+
+    val customTrialRequests: MutableList<CustomTrialRequest> = mutableListOf()
+
+    /** [tryTranscribeChunkCustom] が返すスタブ結果。 */
+    var customTrialResultStub: ChunkTranscriptionTrialResult? = null
 
     /** [mergeChunks] の呼び出し履歴（呼ばれた順）。 */
     val mergeChunksRequests: MutableList<Pair<MediaId, List<ChunkId>>> = mutableListOf()
@@ -195,9 +211,43 @@ class FakeAnalysisRepository : AnalysisRepository {
         return aligned
     }
 
+    /** [resetTranscription] の呼び出し履歴（呼ばれた順）。 */
+    val resetTranscriptionRequests: MutableList<MediaId> = mutableListOf()
+
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
         update(id) { entry ->
-            entry.copy(lookaheadStatus = entry.lookaheadStatus.copy(enabled = enabled))
+            val nextStatus = if (enabled) {
+                entry.lookaheadStatus.copy(enabled = true)
+            } else {
+                entry.lookaheadStatus.copy(
+                    enabled = false,
+                    inFlightChunkId = null,
+                    inFlightStep = null,
+                    inFlightDetail = null,
+                    inFlightStartedAtEpochMs = null,
+                    isForcedChunkInFlight = false,
+                    queuedChunkIds = emptySet(),
+                )
+            }
+            entry.copy(lookaheadStatus = nextStatus)
+        }
+    }
+
+    override suspend fun resetTranscription(id: MediaId) {
+        resetTranscriptionRequests += id
+        update(id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(
+                    enabled = false,
+                    inFlightChunkId = null,
+                    inFlightStep = null,
+                    inFlightDetail = null,
+                    inFlightStartedAtEpochMs = null,
+                    isForcedChunkInFlight = false,
+                    queuedChunkIds = emptySet(),
+                    skippedEmptyChunkIds = emptySet(),
+                ),
+            )
         }
     }
 
@@ -232,8 +282,12 @@ class FakeAnalysisRepository : AnalysisRepository {
         return true
     }
 
-    override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = languages.map { lang ->
-        languageModelInfos[lang] ?: OnDeviceLanguageModelInfo(language = lang)
+    override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> {
+        val requestedSet = languages.toSet()
+        val extraLanguages = languageModelInfos.keys.filter { it !in requestedSet }
+        return (languages + extraLanguages).map { lang ->
+            languageModelInfos[lang] ?: OnDeviceLanguageModelInfo(language = lang)
+        }
     }
 
     override fun setMediaTranscriptionSessionOpen(id: MediaId, open: Boolean) {
@@ -318,6 +372,53 @@ class FakeAnalysisRepository : AnalysisRepository {
                     chunkId = chunkId,
                     text = text,
                     language = null,
+                    languageConfidence = null,
+                    engine = EngineId("manual"),
+                    userEdited = true,
+                )
+            }
+            entry.copy(transcripts = entry.transcripts + (chunkId to updated))
+        }
+    }
+
+    override suspend fun tryTranscribeChunkCustom(
+        id: MediaId,
+        chunkId: ChunkId,
+        engine: OnDeviceTranscriptionEngine,
+        languageOverride: LanguageTag?,
+        audioSpeed: Float,
+    ): ChunkTranscriptionTrialResult? {
+        customTrialRequests += CustomTrialRequest(
+            mediaId = id,
+            chunkId = chunkId,
+            engine = engine,
+            languageOverride = languageOverride,
+            audioSpeed = audioSpeed,
+        )
+        return customTrialResultStub
+    }
+
+    override suspend fun applyChunkTranscriptionTrial(
+        id: MediaId,
+        chunkId: ChunkId,
+        text: String,
+        language: LanguageTag?,
+    ) {
+        update(id) { entry ->
+            val existing = entry.transcripts[chunkId]
+            val updated = if (existing != null) {
+                existing.copy(
+                    text = text,
+                    language = language ?: existing.language,
+                    textVariants = emptyMap(),
+                    words = emptyList(),
+                    userEdited = true,
+                )
+            } else {
+                Transcript(
+                    chunkId = chunkId,
+                    text = text,
+                    language = language,
                     languageConfidence = null,
                     engine = EngineId("manual"),
                     userEdited = true,

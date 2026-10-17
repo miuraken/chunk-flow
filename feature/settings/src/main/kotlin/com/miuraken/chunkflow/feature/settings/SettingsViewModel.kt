@@ -168,33 +168,31 @@ data class SettingsUiState(
             OnDeviceTranscriptionEngine.ML_KIT,
         )
 
-        /** 主な対象言語の一覧（§1.2、F9.1）。 */
-        val SUPPORTED_LANGUAGES: List<LanguageTag> = listOf(
-            LanguageTag("en"),
-            LanguageTag("ja"),
-            LanguageTag("ko"),
-            LanguageTag("zh"),
-            LanguageTag("yue"),
-            LanguageTag("hi"),
-            LanguageTag("vi"),
-            LanguageTag("ru"),
-            LanguageTag("es"),
-            LanguageTag("de"),
-            LanguageTag("el"),
-            LanguageTag("id"),
-        )
+        /** 全対応言語の一覧（`SpeechRecognizer` / `sherpa-onnx` Whisper / `ML Kit`）。 */
+        val SUPPORTED_LANGUAGES: List<LanguageTag> =
+            com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.MODEL_MANAGEMENT_LANGUAGE_TAGS
 
         /** 音声認識モデル管理一覧の初期値。 */
         fun defaultLanguageModelInfos(): List<OnDeviceLanguageModelInfo> = SUPPORTED_LANGUAGES.map { OnDeviceLanguageModelInfo(language = it) }
 
         /**
-         * 端末（[Locale.getAvailableLocales]）で認識可能な言語一覧を返す。
+         * 端末（[Locale.getAvailableLocales] および [com.miuraken.chunkflow.core.model.SupportedLanguageCatalog]）で
+         * 認識可能な言語一覧を返す。
          *
          * 日本語（`ja`）と英語（`en`）を先頭に配置し、残りは表示名・コード順でソートする。
          */
-        fun availableDeviceLanguages(displayLocale: Locale = Locale.getDefault()): List<DeviceLanguageOption> {
+        fun availableDeviceLanguages(
+            languageModels: List<OnDeviceLanguageModelInfo> = emptyList(),
+            displayLocale: Locale = Locale.getDefault(),
+        ): List<DeviceLanguageOption> {
             val rawCodes = buildSet {
                 addAll(SUPPORTED_LANGUAGES.map { it.value })
+                for (model in languageModels) {
+                    val code = model.language.value.trim()
+                    if (code.isNotEmpty() && code != "und") {
+                        add(code)
+                    }
+                }
                 for (locale in Locale.getAvailableLocales()) {
                     val normalized = when (val lang = locale.language.lowercase(Locale.ROOT)) {
                         "in" -> "id"
@@ -210,11 +208,14 @@ data class SettingsUiState(
                     }
                 }
             }
+            val isJapaneseLocale = displayLocale.language.equals("ja", ignoreCase = true)
             val optionsByCode = rawCodes.associateWith { code ->
+                val catalogEntry = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(code)
                 val tagLocale = Locale.forLanguageTag(code)
-                val name = tagLocale.getDisplayLanguage(displayLocale)
+                val localeName = tagLocale.getDisplayLanguage(displayLocale)
                     .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
-                    ?: code.uppercase(Locale.ROOT)
+                val catalogName = if (isJapaneseLocale) catalogEntry?.japaneseName else catalogEntry?.englishName
+                val name = catalogName ?: localeName ?: code.uppercase(Locale.ROOT)
                 val upper = code.uppercase(Locale.ROOT)
                 DeviceLanguageOption(
                     tag = LanguageTag(code),

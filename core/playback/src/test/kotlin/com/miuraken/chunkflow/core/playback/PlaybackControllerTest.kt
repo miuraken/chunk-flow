@@ -397,6 +397,55 @@ class PlaybackControllerTest {
         controller.release()
     }
 
+    @Test
+    fun `open_すでに読み込み済みの同じ教材を再度openしてもチェック済みチャンクとリピート設定が維持される`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val item = sampleAudioItem(mediaId1, durationMs = 60_000L)
+        libraryRepository.items.value = listOf(item)
+        mediaFileLocator.audioFileFor(mediaId1, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+
+        val chunk1 = Chunk(ChunkId(10L), 0L, 4_000L, ChunkOrigin.AUTO)
+        val chunk2 = Chunk(ChunkId(20L), 4_000L, 9_500L, ChunkOrigin.AUTO)
+        analysisRepository.chunksByMedia.value = mapOf(mediaId1 to listOf(chunk1, chunk2))
+
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        controller.updatePractice { current ->
+            current.copy(
+                repeatChunkIds = setOf(chunk1.id, chunk2.id),
+                repeatCheckedOnly = true,
+            )
+        }
+        assertEquals(setOf(chunk1.id, chunk2.id), controller.practice.value.repeatChunkIds)
+        assertTrue(controller.practice.value.repeatCheckedOnly)
+
+        // 同じ mediaId1 で再度 open が呼ばれてもチェックとリピートが解除されないこと
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        assertEquals(setOf(chunk1.id, chunk2.id), controller.practice.value.repeatChunkIds)
+        assertTrue(controller.practice.value.repeatCheckedOnly)
+
+        controller.release()
+    }
+
     private fun sampleAudioItem(
         id: MediaId,
         durationMs: Long,

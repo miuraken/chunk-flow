@@ -60,9 +60,10 @@ enum class OnDeviceTranscriptionEngine {
     SHERPA_ONNX,
 
     /**
-     * ML Kit GenAI Speech Recognition（Pixel 上位機種向け・将来拡張用）。
+     * ML Kit GenAI Speech Recognition（AICore 対応機種向け）。
      *
-     * 端末が ML Kit GenAI に対応していない場合は [AUTO] と同様にフォールバックする。
+     * 端末・言語が ML Kit GenAI Speech Recognition に対応している場合は優先使用し、
+     * 非対応の場合は [AUTO] と同様に OS 標準または `sherpa-onnx` へフォールバックする。
      */
     ML_KIT,
 }
@@ -86,4 +87,19 @@ data class OnDeviceLanguageModelInfo(
     val sherpaModelId: String? = null,
     val sherpaModelSizeBytes: Long = 0L,
     val canDeleteSherpaModel: Boolean = false,
+)
+
+/**
+ * 「より詳しく文字起こし」ダイアログでの試行結果（F6.2）。
+ *
+ * @property text 認識されたテキスト（認識できなかった場合は空文字）。
+ * @property language 判定または使用された言語タグ（不明時は `null`）。
+ * @property confidence 認識信頼度（0.0..1.0、不明時は `null`）。
+ * @property engineId 実際に認識を行ったエンジン識別子。
+ */
+data class ChunkTranscriptionTrialResult(
+    val text: String,
+    val language: LanguageTag? = null,
+    val confidence: Float? = null,
+    val engineId: EngineId = EngineId("unknown"),
 )

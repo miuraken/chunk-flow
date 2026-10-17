@@ -1758,6 +1758,163 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals(0, osAttemptCount)
     }
 
+    @Test
+    fun `transcribeChunk_ML_KIT選択時かつ端末対応時はML_Kitが優先使用され非対応言語ではOSへフォールバックする`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val mlKitCalls = mutableListOf<String>()
+        var osAttemptCount = 0
+        val fakeMlKit = object : MlKitSpeechRecognitionGateway {
+            override fun isDevicePotentiallySupported(): Boolean = true
+
+            override suspend fun checkSupport(
+                bcp47LocaleTags: List<String>,
+            ): Map<String, RecognitionModelSupport> = bcp47LocaleTags.associateWith { tag ->
+                if (tag.startsWith("ja")) {
+                    RecognitionModelSupport.INSTALLED
+                } else {
+                    RecognitionModelSupport.UNSUPPORTED
+                }
+            }
+
+            override suspend fun downloadModel(
+                bcp47LocaleTag: String,
+                onEvent: (RecognitionModelDownloadEvent) -> Unit,
+            ): Boolean = true
+
+            override suspend fun recognizePcm16Le(
+                pcm16LeBytes: ByteArray,
+                sampleRateHz: Int,
+                bcp47LocaleTag: String,
+                isProbe: Boolean,
+            ): SpeechRecognitionAttemptResult {
+                mlKitCalls += bcp47LocaleTag
+                return if (bcp47LocaleTag.startsWith("ja")) {
+                    SpeechRecognitionAttemptResult(
+                        text = "ML Kitでの認識結果です",
+                        confidence = 0.96f,
+                        engineId = MlKitGenAiSpeechTranscriber.ML_KIT_GENAI_ENGINE_ID,
+                    )
+                } else {
+                    SpeechRecognitionAttemptResult(
+                        text = "",
+                        confidence = null,
+                        errorCode = android.speech.SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                        engineId = MlKitGenAiSpeechTranscriber.ML_KIT_GENAI_ENGINE_ID,
+                    )
+                }
+            }
+        }
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                osAttemptCount += 1
+                SpeechRecognitionAttemptResult(text = "OSフォールバック($bcp47Tag)", confidence = 0.91f)
+            },
+            mlKitGateway = fakeMlKit,
+            engineProvider = { com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT },
+        )
+
+        // 1. ML Kit が対応している ja では ML Kit が使われ、OS SpeechRecognizer は呼ばれない
+        val jaResult = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("ja_mlkit.wav").apply { writeBytes(byteArrayOf(1, 2)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("ja"), base = null),
+        )
+        assertNotNull(jaResult)
+        assertEquals("ML Kitでの認識結果です", jaResult.text)
+        assertEquals(LanguageTag("ja"), jaResult.language)
+        assertEquals(MlKitGenAiSpeechTranscriber.ML_KIT_GENAI_ENGINE_ID, jaResult.engineId)
+        assertEquals(1, mlKitCalls.size)
+        assertEquals(0, osAttemptCount)
+
+        // 2. ML Kit が非対応の el では OS SpeechRecognizer へ自動フォールバックする
+        val elResult = transcriber.transcribeChunk(
+            audioFile = tempFolder.newFile("el_mlkit_fallback.wav").apply { writeBytes(byteArrayOf(3, 4)) },
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("el"), base = null),
+        )
+        assertNotNull(elResult)
+        assertEquals("OSフォールバック(el-GR)", elResult.text)
+        assertEquals(LanguageTag("el"), elResult.language)
+        assertTrue(osAttemptCount >= 1)
+    }
+
+    @Test
+    fun `transcribeChunkTrial_エンジンオーバーライドと速度倍率1_5xでWSOLA時間伸縮したPCMを認識器に渡す`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val capturedPcmLengths = mutableListOf<Int>()
+        val fakeMlKit = object : MlKitSpeechRecognitionGateway {
+            override fun isDevicePotentiallySupported(): Boolean = true
+
+            override suspend fun checkSupport(
+                bcp47LocaleTags: List<String>,
+            ): Map<String, RecognitionModelSupport> = bcp47LocaleTags.associateWith {
+                RecognitionModelSupport.INSTALLED
+            }
+
+            override suspend fun downloadModel(
+                bcp47LocaleTag: String,
+                onEvent: (RecognitionModelDownloadEvent) -> Unit,
+            ): Boolean = true
+
+            override suspend fun recognizePcm16Le(
+                pcm16LeBytes: ByteArray,
+                sampleRateHz: Int,
+                bcp47LocaleTag: String,
+                isProbe: Boolean,
+            ): SpeechRecognitionAttemptResult {
+                capturedPcmLengths += pcm16LeBytes.size
+                return SpeechRecognitionAttemptResult(
+                    text = "1.5倍速MLKit認識",
+                    confidence = 0.92f,
+                    engineId = MlKitGenAiSpeechTranscriber.ML_KIT_GENAI_ENGINE_ID,
+                )
+            }
+        }
+
+        // 既定設定は ANDROID_SPEECH_RECOGNIZER だが、transcribeChunkTrial で ML_KIT と 1.5x を指定
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 3),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            mlKitGateway = fakeMlKit,
+            engineProvider = { com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER },
+        )
+
+        val audioFile = tempFolder.newFile("trial_speed.wav").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val result1x = transcriber.transcribeChunkTrial(
+            audioFile = audioFile,
+            startMs = 0L,
+            endMs = 3_000L,
+            languagePair = LanguagePair(target = LanguageTag("ja"), base = null),
+            engineOverride = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+            audioSpeed = 1.0f,
+        )
+        val result15x = transcriber.transcribeChunkTrial(
+            audioFile = audioFile,
+            startMs = 0L,
+            endMs = 3_000L,
+            languagePair = LanguagePair(target = LanguageTag("ja"), base = null),
+            engineOverride = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+            audioSpeed = 1.5f,
+        )
+
+        assertNotNull(result1x)
+        assertNotNull(result15x)
+        assertEquals("1.5倍速MLKit認識", result15x.text)
+        assertEquals(MlKitGenAiSpeechTranscriber.ML_KIT_GENAI_ENGINE_ID, result15x.engineId)
+        assertEquals(2, capturedPcmLengths.size)
+        // 1.5倍速時は 1.0倍速時よりも PCM バイト長が短くなっていることを確認
+        assertTrue(capturedPcmLengths[1] < capturedPcmLengths[0])
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

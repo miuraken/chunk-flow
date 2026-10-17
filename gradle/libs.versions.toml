@@ -37,6 +37,7 @@ hilt = "2.60.1"
 kotlinxCoroutines = "1.11.0"
 kotlinxSerialization = "1.11.0"
 onnxruntime = "1.31.0"
+mlkitGenaiSpeechRecognition = "1.0.0-alpha1"
 
 # ---- テスト ----
 junit4 = "4.13.2"
@@ -93,6 +94,7 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 onnxruntime-jvm = { group = "com.microsoft.onnxruntime", name = "onnxruntime", version.ref = "onnxruntime" }
+mlkit-genai-speech-recognition = { group = "com.google.mlkit", name = "genai-speech-recognition", version.ref = "mlkitGenaiSpeechRecognition" }
 
 # テスト
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }

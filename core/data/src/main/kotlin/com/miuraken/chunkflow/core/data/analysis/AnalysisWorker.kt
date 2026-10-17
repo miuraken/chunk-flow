@@ -240,6 +240,17 @@ class AnalysisWorker(
                 val mediaItem = mediaItemDao.getById(mediaId.value)
                 val expectedDurationMs = mediaItem?.durationMs?.takeIf { it > 0L }
 
+                val coarseWaveform = audioStreamDecoder.decodeCoarseOverviewWaveform(
+                    file = audioFile,
+                    expectedDurationMs = expectedDurationMs,
+                )?.takeIf { it.peak.isNotEmpty() }
+                if (coarseWaveform != null) {
+                    AnalysisBinaryFormat.writeWaveformAtomic(
+                        file = waveformFile,
+                        waveform = coarseWaveform,
+                    )
+                }
+
                 val accumulator = FeatureAccumulator(binMs = ChunkSegmenter.DEFAULT_BIN_MS)
                 val extractor = FrameFeatureExtractor(
                     sampleRate = TARGET_SAMPLE_RATE_HZ,
@@ -248,6 +259,7 @@ class AnalysisWorker(
 
                 var lastCheckpointMs = now
                 var lastProgressUpdateMs = now
+                var lastSavedDecodedBins = 0
 
                 val decodeResult = audioStreamDecoder.decode(
                     file = audioFile,
@@ -264,15 +276,19 @@ class AnalysisWorker(
                             throw AnalysisPreemptedException()
                         }
                         val currentMs = clock()
-                        val shouldSaveWaveform = currentMs - lastCheckpointMs >= PROGRESS_SAVE_INTERVAL_MS
+                        val hasNew30sSegment =
+                            accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS
+                        val shouldSaveWaveform =
+                            currentMs - lastCheckpointMs >= PROGRESS_SAVE_INTERVAL_MS || hasNew30sSegment
                         val shouldUpdateProgress = currentMs - lastProgressUpdateMs >= PROGRESS_DB_INTERVAL_MS
 
                         if (shouldSaveWaveform && accumulator.size > 0) {
                             AnalysisBinaryFormat.writeWaveformAtomic(
                                 file = waveformFile,
-                                waveform = accumulator.toWaveform(),
+                                waveform = accumulator.toProgressiveWaveform(coarseWaveform),
                             )
                             lastCheckpointMs = currentMs
+                            lastSavedDecodedBins = accumulator.size
                         }
 
                         if (shouldUpdateProgress || shouldSaveWaveform) {

@@ -2061,6 +2061,237 @@ class DefaultAnalysisRepositoryTest {
     }
 
     @Test
+    fun `requestAnalysis_解析開始直後に低解像度全体波形を即座に公開し30秒区間ごとに高解像度波形へ順次置き換える`() = runTest {
+        val mediaId = MediaId("coarse_progressive_01")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Progressive Waveform Test",
+                durationMs = 60_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        val observedSnapshots = mutableListOf<com.miuraken.chunkflow.core.model.Waveform>()
+        lateinit var repository: DefaultAnalysisRepository
+
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decodeCoarseOverviewWaveform(
+                file: File,
+                expectedDurationMs: Long?,
+                targetColumns: Int,
+                fineBinMs: Int,
+            ): com.miuraken.chunkflow.core.model.Waveform = com.miuraken.chunkflow.core.audio.FeatureAccumulator.expandCoarseToFineWaveform(
+                coarsePeak = byteArrayOf(40, 80),
+                coarseRms = byteArrayOf(20, 40),
+                totalDurationMs = 60_000L,
+                fineBinMs = fineBinMs,
+            )
+
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                // 1. 本デコード開始時点ですでに粗い全体波形 (60秒 = 6,000ビン) が保存・公開されていること
+                repository.observeWaveform(mediaId).first()?.let { observedSnapshots += it }
+
+                // 2. 前半 30.1秒分 (3,010 ビン > BINS_PER_30_SECONDS) の PCM サンプルを流す
+                //    clock (currentEpochMs) は進めない（PROGRESS_SAVE_INTERVAL_MS 未経過でも 30秒条件で保存されることを検証）
+                val samples30s = FloatArray(outputSampleRate * 30 + (outputSampleRate / 10)) { 0.75f }
+                sink.onSamples(samples30s, samples30s.size)
+                onProgress(
+                    DecodeProgress(
+                        decodedDurationMs = 30_100L,
+                        totalDurationMs = 60_000L,
+                        fraction = 0.5f,
+                    ),
+                )
+                repository.observeWaveform(mediaId).first()?.let { observedSnapshots += it }
+
+                // 3. 残り 29.9秒分の PCM サンプルを流して完了させる
+                val remainingSamples = FloatArray(outputSampleRate * 60 - samples30s.size) { 0.75f }
+                sink.onSamples(remainingSamples, remainingSamples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = (outputSampleRate * 60).toLong(),
+                    resampledSamples = (outputSampleRate * 60).toLong(),
+                    durationMs = 60_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = dispatcher,
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            audioStreamDecoder = fakeDecoder,
+        )
+
+        repository.requestAnalysis(mediaId, setOf(AnalysisStage.FEATURES))
+        repository.observeWaveform(mediaId).first()?.let { observedSnapshots += it }
+
+        assertEquals(3, observedSnapshots.size)
+
+        // スナップショット 0: 粗い全体波形（全体長 60秒 = 6,000ビン、前半 40 / 後半 80）
+        val initialCoarse = observedSnapshots[0]
+        assertEquals(60_000L, initialCoarse.durationMs)
+        assertEquals(40, initialCoarse.peak[0].toInt() and 0xFF)
+        assertEquals(80, initialCoarse.peak[5_000].toInt() and 0xFF)
+
+        // スナップショット 1: 30秒区間完了時（全体長 60秒を維持しつつ、前半 3,000 ビンが高解像度データ > 180 に置換され、後半は粗い 80 を維持）
+        val midProgressive = observedSnapshots[1]
+        assertEquals(60_000L, midProgressive.durationMs)
+        assertTrue((midProgressive.peak[100].toInt() and 0xFF) > 180)
+        assertEquals(80, midProgressive.peak[5_000].toInt() and 0xFF)
+
+        // スナップショット 2: 全区間デコード完了時（後半も含め全区間が高解像度データ > 180 に置換される）
+        val finalFull = observedSnapshots[2]
+        assertEquals(60_000L, finalFull.durationMs)
+        assertTrue((finalFull.peak[100].toInt() and 0xFF) > 180)
+        assertTrue((finalFull.peak[5_000].toInt() and 0xFF) > 180)
+    }
+
+    @Test
+    fun `setLookaheadEnabledFalseとretranscribeChunk_文字起こしOFFで進行中ジョブを中断し強制文字起こしは先読みOFFでも最優先で実行する`() = runTest {
+        var cancelCalls = 0
+        var lastOnlyLowPriority: Boolean? = null
+        var resetCalls = 0
+        val chunk1Started = CompletableDeferred<Unit>()
+        val releaseChunk1 = CompletableDeferred<Unit>()
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override fun cancelActiveTranscription(onlyLowPriority: Boolean) {
+                cancelCalls += 1
+                lastOnlyLowPriority = onlyLowPriority
+                if (!onlyLowPriority) {
+                    releaseChunk1.complete(Unit)
+                }
+            }
+
+            override fun resetTranscriberState() {
+                resetCalls += 1
+                releaseChunk1.complete(Unit)
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+            ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+                audioFile = audioFile,
+                startMs = startMs,
+                endMs = endMs,
+                languagePair = languagePair,
+                forceRefresh = false,
+                highPriority = false,
+            )
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                forceRefresh: Boolean,
+                highPriority: Boolean,
+            ): OnDeviceChunkTranscriptionResult? {
+                if (!highPriority && startMs == 0L) {
+                    chunk1Started.complete(Unit)
+                    releaseChunk1.await()
+                    return null
+                }
+                return if (highPriority) {
+                    OnDeviceChunkTranscriptionResult(
+                        text = "強制文字起こし結果",
+                        language = LanguageTag("ko"),
+                        confidence = 0.95f,
+                    )
+                } else {
+                    null
+                }
+            }
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_abort_force_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Abort and Force Test",
+                durationMs = 3_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 701L, mediaId = mediaId.value, startMs = 0L, endMs = 1_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 702L, mediaId = mediaId.value, startMs = 1_000L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        repository.setLookaheadEnabled(mediaId, true)
+        val lookaheadJob = launch(UnconfinedTestDispatcher(testScheduler)) {
+            repository.triggerLookaheadAt(mediaId, ChunkId(701L))
+        }
+        chunk1Started.await()
+
+        // 1. 先読み中に setLookaheadEnabled(false) を呼ぶと、cancelActiveTranscription(onlyLowPriority = false) が呼ばれ即時中断される
+        repository.setLookaheadEnabled(mediaId, false)
+        lookaheadJob.join()
+        assertTrue(cancelCalls >= 1)
+        assertEquals(false, lastOnlyLowPriority)
+        val statusAfterDisable = repository.observeLookaheadStatus(mediaId).first()
+        assertFalse(statusAfterDisable.enabled)
+        assertNull(statusAfterDisable.inFlightChunkId)
+        assertTrue(statusAfterDisable.queuedChunkIds.isEmpty())
+
+        // 2. 先読み OFF の状態でも retranscribeChunk を呼ぶと、cancelActiveTranscription(onlyLowPriority = true) で低優先度を退かしつつ即座に実行される
+        val prevCancelCalls = cancelCalls
+        repository.retranscribeChunk(mediaId, ChunkId(702L))
+        assertTrue(cancelCalls > prevCancelCalls)
+        assertEquals(true, lastOnlyLowPriority)
+        assertEquals("強制文字起こし結果", transcriptDao.getByChunkId(702L)?.text)
+
+        // 3. resetTranscription を呼ぶと resetTranscriberState が呼ばれ状態が初期化される
+        repository.resetTranscription(mediaId)
+        assertEquals(1, resetCalls)
+    }
+
+    @Test
     fun `setMediaTranscriptionSessionOpen_開いている教材がなくなったときだけ切り出し用の資源を解放する`() = runTest {
         var releaseCalls = 0
         val fakeTranscriber = object : OnDeviceChunkTranscriber {

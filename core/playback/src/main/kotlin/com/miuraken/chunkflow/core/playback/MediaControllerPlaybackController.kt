@@ -189,12 +189,18 @@ class MediaControllerPlaybackController(
     private suspend fun openInternal(mediaId: MediaId) {
         // 別の教材を開く前に、現在再生中の教材があればレジューム位置を保存する
         val previousMediaId = _status.value.mediaId
+        val isSameMediaAlreadyLoaded =
+            previousMediaId == mediaId &&
+                learningPlayerInstance != null &&
+                _status.value.error == null
         if (previousMediaId != null && previousMediaId != mediaId) {
             persistCurrentPositionNow(previousMediaId)
         }
 
-        // 別教材への切り替え時は A-B ループ・チャンクループを解除する（§7.2.5）
-        practiceController.resetLoop()
+        // 別教材への切り替え時（または初回ロード時）は A-B ループ・チャンクループを解除する（§7.2.5）
+        if (!isSameMediaAlreadyLoaded) {
+            practiceController.resetLoop()
+        }
 
         val item = libraryRepository.observeItem(mediaId).first()
         if (item == null) {
@@ -229,6 +235,16 @@ class MediaControllerPlaybackController(
                     error = PlaybackError.SOURCE_MISSING,
                 )
             }
+            return
+        }
+
+        if (isSameMediaAlreadyLoaded) {
+            val userSettings = userSettingsRepository.settings.first()
+            learningPlayerInstance?.apply {
+                seekBackIncrementMs = userSettings.seekBackMs.coerceAtLeast(1_000L)
+                seekForwardIncrementMs = userSettings.seekForwardMs.coerceAtLeast(1_000L)
+            }
+            notifyLookaheadIfChanged(mediaId, _status.value.currentChunkId, force = true)
             return
         }
 

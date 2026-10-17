@@ -24,6 +24,8 @@ import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
+import com.miuraken.chunkflow.core.model.TranscriptionDiagnosticEntry
+import com.miuraken.chunkflow.core.model.TranscriptionStep
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.nio.ByteBuffer
@@ -34,13 +36,19 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -84,6 +92,21 @@ data class OnDeviceChunkTranscriptionResult(
  * 端末内音声認識を行うインターフェース（F6.2）。
  */
 interface OnDeviceChunkTranscriber {
+    /**
+     * 現在実行中のチャンク認識の内部ステップ情報（F6.2）。
+     *
+     * @property step 現在の処理ステップ。
+     * @property detail 使用中のエンジンや言語タグなどの補足ラベル。
+     * @property startedAtEpochMs このチャンクの認識を開始した時刻（エポックミリ秒）。
+     * @property highPriority 手動の強制文字起こし等の優先実行かどうか。
+     */
+    data class ActiveTranscriptionStepInfo(
+        val step: TranscriptionStep,
+        val detail: String? = null,
+        val startedAtEpochMs: Long = 0L,
+        val highPriority: Boolean = false,
+    )
+
     /** 端末内音声認識が利用可能かどうかを返す。 */
     fun isAvailable(): Boolean
 
@@ -94,6 +117,36 @@ interface OnDeviceChunkTranscriber {
      */
     val recognitionModelIssues: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>>
         get() = NO_RECOGNITION_MODEL_ISSUES
+
+    /** 現在実行中の認識ステップ情報。待機中は `null`。 */
+    val activeStepState: StateFlow<ActiveTranscriptionStepInfo?>
+        get() = NO_ACTIVE_STEP_STATE
+
+    /** 直近の文字起こし診断・デバッグログ一覧。 */
+    val recentDiagnostics: StateFlow<List<TranscriptionDiagnosticEntry>>
+        get() = NO_RECENT_DIAGNOSTICS
+
+    /**
+     * 現在実行中の文字起こし処理を中断する。
+     *
+     * @param onlyLowPriority `true` の場合はバックグラウンドの先読み認識のみを中断し、
+     *   優先度の高い手動の強制文字起こしへ即座にスロットを譲る。`false` の場合はすべての認識処理を中断する。
+     */
+    fun cancelActiveTranscription(onlyLowPriority: Boolean = false) = Unit
+
+    /**
+     * 認識サービスやロックが応答しなくなった場合などに、すべての実行中ジョブと待機ロックを強制リセットする。
+     */
+    fun resetTranscriberState() = Unit
+
+    /**
+     * リポジトリ層など外部からの制御イベントを診断ログに記録する。
+     */
+    fun recordExternalDiagnostic(
+        stage: String,
+        message: String,
+        isWarningOrError: Boolean = false,
+    ) = Unit
 
     /**
      * チャンクの切り出し用に開いたままにしている音声ファイルなどの資源を解放する（プレイヤー画面を閉じたときなど）。
@@ -174,11 +227,37 @@ interface OnDeviceChunkTranscriber {
         languagePair: LanguagePair? = null,
     ): OnDeviceChunkTranscriptionResult? = null
 
+    /**
+     * 「より詳しく文字起こし」ダイアログからの試行用として、認識エンジン・言語・音声速度倍率（[audioSpeed]）を指定して
+     * 1 チャンクの端末内音声認識を実行する（キャッシュは使用せず更新もしない）。
+     */
+    suspend fun transcribeChunkTrial(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        engineOverride: OnDeviceTranscriptionEngine? = null,
+        audioSpeed: Float = 1.0f,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = true,
+        highPriority = true,
+    )
+
     companion object {
         const val DEFAULT_SAMPLE_RATE_HZ: Int = 16_000
 
         private val NO_RECOGNITION_MODEL_ISSUES: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>> =
             MutableStateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>>(emptyMap()).asStateFlow()
+
+        private val NO_ACTIVE_STEP_STATE: StateFlow<ActiveTranscriptionStepInfo?> =
+            MutableStateFlow<ActiveTranscriptionStepInfo?>(null).asStateFlow()
+
+        private val NO_RECENT_DIAGNOSTICS: StateFlow<List<TranscriptionDiagnosticEntry>> =
+            MutableStateFlow<List<TranscriptionDiagnosticEntry>>(emptyList()).asStateFlow()
     }
 }
 
@@ -189,50 +268,21 @@ interface OnDeviceChunkTranscriber {
 internal fun toBcp47LocaleTag(lang: String): String {
     val normalized = lang.trim().replace('_', '-')
     if (normalized.isEmpty()) return "en-US"
+    val lower = normalized.lowercase(Locale.ROOT)
+    when (lower) {
+        "zh", "zh-cn", "zh-hans" -> return "zh-CN"
+        "zh-tw", "zh-hant" -> return "zh-TW"
+        "yue" -> return "yue-HK"
+    }
     if ('-' in normalized) {
         val localeTag = Locale.forLanguageTag(normalized).toLanguageTag()
         return if (localeTag.isNotBlank() && localeTag != "und") localeTag else normalized
     }
-    return when (normalized.lowercase(Locale.ROOT)) {
-        "ja" -> "ja-JP"
-
-        "en" -> "en-US"
-
-        "ko" -> "ko-KR"
-
-        "zh" -> "zh-CN"
-
-        "yue" -> "yue-HK"
-
-        "hi" -> "hi-IN"
-
-        "es" -> "es-ES"
-
-        "fr" -> "fr-FR"
-
-        "de" -> "de-DE"
-
-        "it" -> "it-IT"
-
-        "pt" -> "pt-BR"
-
-        "ru" -> "ru-RU"
-
-        "ar" -> "ar-SA"
-
-        "th" -> "th-TH"
-
-        "vi" -> "vi-VN"
-
-        "id" -> "id-ID"
-
-        "el" -> "el-GR"
-
-        else -> {
-            val localeTag = Locale.forLanguageTag(normalized).toLanguageTag()
-            if (localeTag.isNotBlank() && localeTag != "und") localeTag else normalized
-        }
+    com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(lower)?.let { entry ->
+        return entry.defaultBcp47Tag
     }
+    val localeTag = Locale.forLanguageTag(normalized).toLanguageTag()
+    return if (localeTag.isNotBlank() && localeTag != "und") localeTag else normalized
 }
 
 /**
@@ -245,6 +295,7 @@ internal fun toBcp47LocaleTag(lang: String): String {
 internal fun toBcp47CandidateLocaleTags(lang: String): List<String> {
     val primary = toBcp47LocaleTag(lang)
     val normalized = lang.trim().replace('_', '-').lowercase(Locale.ROOT)
+    val catalogCandidates = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.toBcp47CandidateTags(normalized)
     val aliases = when (normalized) {
         "zh",
         "zh-cn",
@@ -277,36 +328,6 @@ internal fun toBcp47CandidateLocaleTags(lang: String): List<String> {
         "zh-hant-hk",
         -> listOf("yue-HK", "yue-Hant-HK", "zh-HK", "zh-Hant-HK", "cmn-Hant-HK", "yue")
 
-        "ja", "ja-jp" -> listOf("ja-JP", "ja")
-
-        "en", "en-us" -> listOf("en-US", "en-GB", "en")
-
-        "ko", "ko-kr" -> listOf("ko-KR", "ko")
-
-        "es", "es-es" -> listOf("es-ES", "es-US", "es-MX", "es")
-
-        "fr", "fr-fr" -> listOf("fr-FR", "fr-CA", "fr")
-
-        "de", "de-de" -> listOf("de-DE", "de")
-
-        "it", "it-it" -> listOf("it-IT", "it")
-
-        "pt", "pt-br" -> listOf("pt-BR", "pt-PT", "pt")
-
-        "ru", "ru-ru" -> listOf("ru-RU", "ru")
-
-        "hi", "hi-in" -> listOf("hi-IN", "hi")
-
-        "ar", "ar-sa" -> listOf("ar-SA", "ar-EG", "ar-AE", "ar")
-
-        "th", "th-th" -> listOf("th-TH", "th")
-
-        "vi", "vi-vn" -> listOf("vi-VN", "vi")
-
-        "id", "id-id" -> listOf("id-ID", "id")
-
-        "el", "el-gr" -> listOf("el-GR", "el")
-
         else -> {
             val baseLang = normalized.substringBefore('-')
             val defaultForBase = if (baseLang.isNotEmpty() && baseLang != normalized) {
@@ -314,10 +335,10 @@ internal fun toBcp47CandidateLocaleTags(lang: String): List<String> {
             } else {
                 null
             }
-            listOfNotNull(primary, defaultForBase, baseLang.takeIf { it.isNotEmpty() })
+            catalogCandidates + listOfNotNull(primary, defaultForBase, baseLang.takeIf { it.isNotEmpty() })
         }
     }
-    return (listOf(primary) + aliases).distinct()
+    return (listOf(primary) + aliases + catalogCandidates).distinct()
 }
 
 /**
@@ -549,8 +570,10 @@ object ChunkPcmExtractor {
         val out = ByteArray(expectedBytes)
         var writtenBytes = 0
         var currentSampleIndex = 0L
+        val job = currentCoroutineContext()[Job]
 
         val sink = SampleSink { samples, count ->
+            job?.ensureActive()
             val blockStart = currentSampleIndex
             val blockEnd = currentSampleIndex + count
             currentSampleIndex = blockEnd
@@ -765,14 +788,28 @@ internal class AndroidRecognitionModelGateway(
         if (bcp47LocaleTags.isEmpty()) return emptyMap()
         val support = withTimeoutOrNull(SUPPORT_CHECK_TIMEOUT_MS) { querySupportOnMainLooper() }
             ?: return emptyMap()
-        return bcp47LocaleTags.associateWith { tag ->
-            when {
+        val result = LinkedHashMap<String, RecognitionModelSupport>()
+        for (tag in bcp47LocaleTags) {
+            result[tag] = when {
                 support.installedOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.INSTALLED
                 support.pendingOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.PENDING
                 support.supportedOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
                 else -> RecognitionModelSupport.UNSUPPORTED
             }
         }
+        // 端末側が追加で報告するオンデバイス対応言語も結果に含め、モデル管理一覧の動的更新に使えるようにする
+        for (tag in support.supportedOnDeviceLanguages) {
+            if (!result.containsKey(tag)) {
+                result[tag] = RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
+            }
+        }
+        for (tag in support.pendingOnDeviceLanguages) {
+            result[tag] = RecognitionModelSupport.PENDING
+        }
+        for (tag in support.installedOnDeviceLanguages) {
+            result[tag] = RecognitionModelSupport.INSTALLED
+        }
+        return result
     }
 
     private suspend fun querySupportOnMainLooper(): RecognitionSupport? = suspendCancellableCoroutine { continuation ->
@@ -1128,14 +1165,16 @@ private val ZH_COMMON_CHARS: List<String> = listOf(
 )
 
 /**
- * Android 標準の [SpeechRecognizer.createOnDeviceSpeechRecognizer]（Stage 1）と
+ * Android 標準の [SpeechRecognizer.createOnDeviceSpeechRecognizer]（Stage 1）、
+ * `ML Kit GenAI Speech Recognition`（AICore 対応端末）、および
  * `sherpa-onnx` ローカル Whisper モデル（Stage 2）を組み合わせた [OnDeviceChunkTranscriber] 実装（F6.2）。
  *
  * - 利用者が選択した [OnDeviceTranscriptionEngine]（`AUTO` / `ANDROID_SPEECH_RECOGNIZER` / `SHERPA_ONNX` / `ML_KIT`）に従って
  *   文字起こし処理を進める。
- * - `AUTO`（または将来拡張用の `ML_KIT`）では Android 標準 `SpeechRecognizer` を優先し、OS が非対応（`UNSUPPORTED`）の言語については
- *   `sherpa-onnx` ローカルモデルがチェックアウト済みであればそちらで推論し、未チェックアウトであれば `NOT_INSTALLED` として
- *   プレイヤーバナーや設定画面からワンタップで `sherpa-onnx` モデルを入手できるようにする。
+ * - `ML_KIT` が選択されている場合は、AICore / ML Kit GenAI 音声認識対応端末では ML Kit を最優先で使用し、
+ *   非対応端末・非対応言語・バックグラウンド制約時は `AUTO`（Android 標準 `SpeechRecognizer` → `sherpa-onnx`）へ自動フォールバックする。
+ * - `AUTO` では Android 標準 `SpeechRecognizer` を優先し、OS が非対応（`UNSUPPORTED`）の言語については
+ *   ML Kit（対応時）または `sherpa-onnx` ローカルモデルへフォールバックする。
  * - `SHERPA_ONNX` が選択されている場合は、チェックアウト済みの `sherpa-onnx` ローカルモデルを優先して使用する。
  */
 @Singleton
@@ -1168,16 +1207,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             language: LanguageTag,
         ) -> OnDeviceChunkTranscriptionResult?
     )? = null,
+    private val mlKitGateway: MlKitSpeechRecognitionGateway? = null,
     private val engineProvider: suspend () -> OnDeviceTranscriptionEngine = { OnDeviceTranscriptionEngine.AUTO },
 ) : OnDeviceChunkTranscriber {
 
     @Inject
-    constructor(
+    internal constructor(
         @ApplicationContext context: Context,
         audioStreamDecoder: AudioStreamDecoder,
         whisperTinyLanguageDetector: WhisperTinyLanguageDetector,
         sherpaOnnxModelManager: SherpaOnnxModelManager,
         sherpaOnnxWhisperTranscriber: SherpaOnnxWhisperTranscriber,
+        mlKitGenAiSpeechTranscriber: MlKitGenAiSpeechTranscriber,
         userSettingsRepository: UserSettingsRepository,
     ) : this(
         context = context,
@@ -1199,6 +1240,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 language = lang,
             )
         },
+        mlKitGateway = mlKitGenAiSpeechTranscriber,
         engineProvider = {
             runCatching { userSettingsRepository.settings.first().transcriptionEngine }
                 .getOrDefault(OnDeviceTranscriptionEngine.AUTO)
@@ -1258,14 +1300,65 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     /** 自動でダウンロードを要求済みの言語（BCP-47、小文字）。同じ言語の要求はプロセスごとに 1 回だけ。 */
     private val autoDownloadRequestedTags: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    /** ML Kit GenAI 向けに自動でダウンロードを要求済みの言語（BCP-47、小文字）。 */
+    private val autoDownloadMlKitRequestedTags: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     /** 言語タグ（小文字）ごとに端末で動作または対応が確認された BCP-47 ロケールタグのキャッシュ。 */
     private val resolvedBcp47TagByLangKey: ConcurrentHashMap<String, String> = ConcurrentHashMap()
 
     @Volatile
     private var lastModelIssueRefreshRealtimeMs: Long = 0L
 
+    @Volatile
+    private var activeTrialEngineOverride: OnDeviceTranscriptionEngine? = null
+
+    private data class ActiveJobHandle(
+        val job: Job,
+        val highPriority: Boolean,
+        val startedAtEpochMs: Long,
+    )
+
+    private val activeJobsLock = Any()
+    private val activeJobHandles = LinkedHashSet<ActiveJobHandle>()
+
+    private val activeStepMutableState =
+        MutableStateFlow<OnDeviceChunkTranscriber.ActiveTranscriptionStepInfo?>(null)
+
+    private val recentDiagnosticsMutableState =
+        MutableStateFlow<List<TranscriptionDiagnosticEntry>>(emptyList())
+
     override val recognitionModelIssues: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>> =
         modelIssuesState.asStateFlow()
+
+    override val activeStepState: StateFlow<OnDeviceChunkTranscriber.ActiveTranscriptionStepInfo?> =
+        activeStepMutableState.asStateFlow()
+
+    override val recentDiagnostics: StateFlow<List<TranscriptionDiagnosticEntry>> =
+        recentDiagnosticsMutableState.asStateFlow()
+
+    override fun cancelActiveTranscription(onlyLowPriority: Boolean) {
+        val toCancel = synchronized(activeJobsLock) {
+            activeJobHandles.filter { handle ->
+                !onlyLowPriority || !handle.highPriority
+            }
+        }
+        recognitionLock.cancelWaiters(onlyLowPriority = onlyLowPriority)
+        for (handle in toCancel) {
+            handle.job.cancel(
+                CancellationException(
+                    if (onlyLowPriority) {
+                        "Preempted by high-priority forced transcription"
+                    } else {
+                        "Cancelled by user turning off transcription"
+                    },
+                ),
+            )
+        }
+        if (!onlyLowPriority) {
+            activeStepMutableState.value = null
+            releaseChunkDecodeSession()
+        }
+    }
 
     /** チャンク切り出し用に開いたままにしている抽出器を解放する（次の切り出しで開き直す）。 */
     private fun releaseChunkDecodeSession() {
@@ -1276,10 +1369,72 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         releaseChunkDecodeSession()
     }
 
+    override fun resetTranscriberState() {
+        cancelActiveTranscription(onlyLowPriority = false)
+        recognitionLock.forceResetLock()
+        activeStepMutableState.value = null
+        appendDiagnostic(
+            stage = "RESET",
+            message = "文字起こしエンジンと認識待機ロックをリセットしました",
+            isWarningOrError = false,
+        )
+    }
+
+    override fun recordExternalDiagnostic(
+        stage: String,
+        message: String,
+        isWarningOrError: Boolean,
+    ) {
+        appendDiagnostic(
+            stage = stage,
+            message = message,
+            isWarningOrError = isWarningOrError,
+        )
+    }
+
+    private fun updateActiveStep(
+        step: TranscriptionStep,
+        detail: String?,
+        startedAtEpochMs: Long,
+        highPriority: Boolean,
+    ) {
+        activeStepMutableState.value = OnDeviceChunkTranscriber.ActiveTranscriptionStepInfo(
+            step = step,
+            detail = detail,
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = highPriority,
+        )
+    }
+
+    private fun clearActiveStepIfMatches(startedAtEpochMs: Long) {
+        activeStepMutableState.update { current ->
+            if (current == null || current.startedAtEpochMs == startedAtEpochMs) null else current
+        }
+    }
+
+    private fun appendDiagnostic(
+        stage: String,
+        message: String,
+        isWarningOrError: Boolean = false,
+    ) {
+        val entry = TranscriptionDiagnosticEntry(
+            timestampEpochMs = System.currentTimeMillis(),
+            stage = stage,
+            message = message,
+            isWarningOrError = isWarningOrError,
+        )
+        recentDiagnosticsMutableState.update { current ->
+            (current + entry).takeLast(MAX_DIAGNOSTIC_ENTRIES)
+        }
+    }
+
     override fun isAvailable(): Boolean = onDeviceAvailabilityChecker() ||
         standardAvailabilityChecker() ||
         sherpaModelManager?.areCoreModelFilesPresent() == true ||
-        sherpaTranscriber != null
+        sherpaTranscriber != null ||
+        mlKitGateway?.isDevicePotentiallySupported() == true
+
+    private fun isMlKitPotentiallyAvailable(): Boolean = mlKitGateway?.isDevicePotentiallySupported() == true
 
     private fun isSherpaInstalledFor(language: LanguageTag?): Boolean {
         if (language == null) return false
@@ -1324,14 +1479,48 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         if (selectedEngine == OnDeviceTranscriptionEngine.SHERPA_ONNX && isSherpaSupportedFor(language)) {
             return downloadSherpaModel(language)
         }
+        val candidates = candidateBcp47TagsFor(language.value)
+        if (selectedEngine == OnDeviceTranscriptionEngine.ML_KIT && isMlKitPotentiallyAvailable()) {
+            val mlKitSupport = recognitionLock.withLock(highPriority = false) {
+                runCatching { mlKitGateway?.checkSupport(candidates).orEmpty() }.getOrDefault(emptyMap())
+            }
+            val mlKitInstalled = candidates.firstOrNull { mlKitSupport[it] == RecognitionModelSupport.INSTALLED }
+            if (mlKitInstalled != null) {
+                rememberResolvedBcp47Tag(language.value, mlKitInstalled)
+                clearModelIssue(language)
+                return true
+            }
+            val mlKitDownloadable = candidates.firstOrNull {
+                mlKitSupport[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED ||
+                    mlKitSupport[it] == RecognitionModelSupport.PENDING
+            }
+            if (mlKitDownloadable != null) {
+                rememberResolvedBcp47Tag(language.value, mlKitDownloadable)
+                autoDownloadMlKitRequestedTags.add(mlKitDownloadable.lowercase(Locale.ROOT))
+                return downloadMlKitModel(language, mlKitDownloadable)
+            }
+        }
         if (!onDeviceAvailabilityChecker()) {
+            if (selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER && isMlKitPotentiallyAvailable()) {
+                val mlKitSupport = recognitionLock.withLock(highPriority = false) {
+                    runCatching { mlKitGateway?.checkSupport(candidates).orEmpty() }.getOrDefault(emptyMap())
+                }
+                val mlKitDownloadable = candidates.firstOrNull {
+                    mlKitSupport[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED ||
+                        mlKitSupport[it] == RecognitionModelSupport.PENDING ||
+                        mlKitSupport[it] == RecognitionModelSupport.INSTALLED
+                }
+                if (mlKitDownloadable != null) {
+                    rememberResolvedBcp47Tag(language.value, mlKitDownloadable)
+                    return downloadMlKitModel(language, mlKitDownloadable)
+                }
+            }
             return if (selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER && isSherpaSupportedFor(language)) {
                 downloadSherpaModel(language)
             } else {
                 false
             }
         }
-        val candidates = candidateBcp47TagsFor(language.value)
         val support = recognitionLock.withLock(highPriority = false) {
             try {
                 recognitionModelGateway.checkSupport(candidates)
@@ -1365,6 +1554,57 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         return startRecognitionModelDownload(language, bcp47Tag)
     }
 
+    private suspend fun checkCombinedSupportUnderLock(
+        bcp47Tags: List<String>,
+        selectedEngine: OnDeviceTranscriptionEngine,
+    ): Map<String, RecognitionModelSupport> {
+        val osSupport = if (onDeviceAvailabilityChecker()) {
+            try {
+                recognitionModelGateway.checkSupport(bcp47Tags)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        } else {
+            emptyMap()
+        }
+        val mlKitSupport = if (isMlKitPotentiallyAvailable() &&
+            selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER &&
+            selectedEngine != OnDeviceTranscriptionEngine.SHERPA_ONNX
+        ) {
+            try {
+                mlKitGateway?.checkSupport(bcp47Tags).orEmpty()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                emptyMap()
+            }
+        } else {
+            emptyMap()
+        }
+        if (mlKitSupport.isEmpty()) return osSupport
+        if (osSupport.isEmpty()) return mlKitSupport
+
+        val merged = LinkedHashMap<String, RecognitionModelSupport>()
+        for (tag in (osSupport.keys + mlKitSupport.keys)) {
+            val osVal = osSupport[tag]
+            val mlVal = mlKitSupport[tag]
+            merged[tag] = when {
+                selectedEngine == OnDeviceTranscriptionEngine.ML_KIT &&
+                    mlVal != null &&
+                    mlVal != RecognitionModelSupport.UNSUPPORTED -> mlVal
+
+                osVal != null && osVal != RecognitionModelSupport.UNSUPPORTED -> osVal
+
+                mlVal != null && mlVal != RecognitionModelSupport.UNSUPPORTED -> mlVal
+
+                else -> osVal ?: mlVal ?: RecognitionModelSupport.UNSUPPORTED
+            }
+        }
+        return merged
+    }
+
     override suspend fun refreshRecognitionModelIssues() {
         val issues = modelIssuesState.value
         if (issues.isEmpty()) return
@@ -1374,7 +1614,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             }
         }
         val remainingIssues = modelIssuesState.value
-        if (remainingIssues.isEmpty() || !onDeviceAvailabilityChecker()) return
+        if (remainingIssues.isEmpty() || (!onDeviceAvailabilityChecker() && !isMlKitPotentiallyAvailable())) return
         val now = SystemClock.elapsedRealtime()
         if (lastModelIssueRefreshRealtimeMs > 0L &&
             now - lastModelIssueRefreshRealtimeMs in 0L until MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS
@@ -1382,16 +1622,14 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             return
         }
         lastModelIssueRefreshRealtimeMs = now
+        val selectedEngine = runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
         val candidatesByLanguage = remainingIssues.keys.associateWith { candidateBcp47TagsFor(it.value) }
         // 認識中の SpeechRecognizer と同時にサービスへ接続しないよう、認識ロックを取ってから問い合わせる
         val support = recognitionLock.withLock(highPriority = false) {
-            try {
-                recognitionModelGateway.checkSupport(candidatesByLanguage.values.flatten().distinct())
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Exception) {
-                emptyMap()
-            }
+            checkCombinedSupportUnderLock(
+                bcp47Tags = candidatesByLanguage.values.flatten().distinct(),
+                selectedEngine = selectedEngine,
+            )
         }
         for ((language, candidates) in candidatesByLanguage) {
             val installedTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.INSTALLED }
@@ -1425,7 +1663,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
     override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> {
         if (languages.isEmpty()) return emptyList()
-        if (!onDeviceAvailabilityChecker()) {
+        if (!onDeviceAvailabilityChecker() && !isMlKitPotentiallyAvailable()) {
             return languages.map { lang ->
                 withSherpaModelFields(
                     language = lang,
@@ -1434,18 +1672,39 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 )
             }
         }
-        val candidatesByLanguage = languages.associateWith { candidateBcp47TagsFor(it.value) }
+        val selectedEngine = runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
+        val requestedCandidatesByLanguage = languages.associateWith { candidateBcp47TagsFor(it.value) }
         val support = recognitionLock.withLock(highPriority = false) {
-            try {
-                recognitionModelGateway.checkSupport(candidatesByLanguage.values.flatten().distinct())
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Exception) {
-                emptyMap()
+            checkCombinedSupportUnderLock(
+                bcp47Tags = requestedCandidatesByLanguage.values.flatten().distinct(),
+                selectedEngine = selectedEngine,
+            )
+        }
+        val existingSet = languages.mapTo(mutableSetOf()) {
+            com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(it.value)
+        }
+        val discoveredLanguages = mutableListOf<LanguageTag>()
+        val discoveredBcp47ByLanguage = LinkedHashMap<LanguageTag, MutableList<String>>()
+        for ((bcp47Tag, modelSupport) in support) {
+            if (modelSupport == RecognitionModelSupport.UNSUPPORTED) continue
+            val normalizedCode =
+                com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(bcp47Tag)
+            if (normalizedCode.isBlank() || normalizedCode == "und") continue
+            val langTag = LanguageTag(normalizedCode)
+            if (normalizedCode !in existingSet) {
+                existingSet.add(normalizedCode)
+                discoveredLanguages.add(langTag)
             }
+            discoveredBcp47ByLanguage.getOrPut(langTag) { mutableListOf() }.add(bcp47Tag)
+        }
+        val allLanguages = languages + discoveredLanguages
+        val candidatesByLanguage = allLanguages.associateWith { lang ->
+            val baseCandidates = requestedCandidatesByLanguage[lang] ?: candidateBcp47TagsFor(lang.value)
+            val extra = discoveredBcp47ByLanguage[lang].orEmpty()
+            (baseCandidates + extra).distinct()
         }
         val currentIssues = modelIssuesState.value
-        return languages.map { language ->
+        return allLanguages.map { language ->
             val candidates = candidatesByLanguage[language].orEmpty()
             val installedTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.INSTALLED }
             val pendingTag = candidates.firstOrNull { support[it] == RecognitionModelSupport.PENDING }
@@ -1569,6 +1828,28 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         resolvedBcp47TagByLangKey[langKey] = resolvedTag
     }
 
+    private suspend fun downloadMlKitModel(language: LanguageTag, bcp47Tag: String): Boolean {
+        val gateway = mlKitGateway ?: return false
+        logInfo("mlKitModelDownload request lang=$bcp47Tag")
+        setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
+        val ok = try {
+            gateway.downloadModel(bcp47Tag) { event ->
+                onRecognitionModelDownloadEvent(language, bcp47Tag, event)
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
+        if (ok) {
+            clearModelIssue(language)
+            clearAllSttCache()
+        } else {
+            setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOAD_FAILED)
+        }
+        return ok
+    }
+
     private fun startRecognitionModelDownload(language: LanguageTag, bcp47Tag: String): Boolean {
         logInfo("modelDownload request lang=$bcp47Tag")
         setModelIssue(language, OnDeviceRecognitionModelState.DOWNLOADING)
@@ -1688,6 +1969,21 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             return null
         }
 
+        val startedAtEpochMs = System.currentTimeMillis()
+        val currentJob = currentCoroutineContext()[Job]
+        val jobHandle = currentJob?.let {
+            ActiveJobHandle(
+                job = it,
+                highPriority = highPriority,
+                startedAtEpochMs = startedAtEpochMs,
+            )
+        }
+        if (jobHandle != null) {
+            synchronized(activeJobsLock) {
+                activeJobHandles.add(jobHandle)
+            }
+        }
+
         val cacheScope = ChunkAudioCacheScope(
             audioPath = audioFile.absolutePath,
             lastModified = audioFile.lastModified(),
@@ -1698,23 +1994,101 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val baseLang = languagePair?.base?.takeIf {
             targetLang == null || !it.value.equals(targetLang.value, ignoreCase = true)
         }
-        if (forceRefresh) {
-            evictCachedSttResults(cacheScope)
-        } else if (targetLang == null || baseLang == null) {
-            val singleLang = targetLang ?: baseLang
-            val cached = getCachedSttResult(cacheScope, singleLang)
-            if (cached != null) {
-                logInfo("singleLang cacheHit startMs=$startMs endMs=$endMs lang=${singleLang?.value ?: "default"}")
-                return cached
+        try {
+            if (forceRefresh) {
+                evictCachedSttResults(cacheScope)
+            } else if (targetLang == null || baseLang == null) {
+                val singleLang = targetLang ?: baseLang
+                val cached = getCachedSttResult(cacheScope, singleLang)
+                if (cached != null) {
+                    logInfo("singleLang cacheHit startMs=$startMs endMs=$endMs lang=${singleLang?.value ?: "default"}")
+                    return cached
+                }
+            } else {
+                getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
+                    logInfo("bilingual bothCacheHit startMs=$startMs endMs=$endMs winner=${cachedBoth.language?.value}")
+                    return cachedBoth
+                }
             }
-        } else {
-            getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
-                logInfo("bilingual bothCacheHit startMs=$startMs endMs=$endMs winner=${cachedBoth.language?.value}")
-                return cachedBoth
-            }
-        }
 
-        val pcmBytes = try {
+            updateActiveStep(
+                step = TranscriptionStep.EXTRACTING_PCM,
+                detail = "${startMs}ms..${endMs}ms",
+                startedAtEpochMs = startedAtEpochMs,
+                highPriority = highPriority,
+            )
+            val extractStartRealtimeMs = SystemClock.elapsedRealtime()
+            val pcmBytes = try {
+                ChunkPcmExtractor.extractChunkPcm16LeBytes(
+                    decoder = audioStreamDecoder,
+                    audioFile = audioFile,
+                    startMs = startMs,
+                    endMs = endMs,
+                    sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+                )
+            } catch (ce: CancellationException) {
+                appendDiagnostic(
+                    stage = "EXTRACT_PCM",
+                    message = "音声切り出しを中断 ($startMs..${endMs}ms)",
+                    isWarningOrError = false,
+                )
+                throw ce
+            } catch (e: Exception) {
+                appendDiagnostic(
+                    stage = "EXTRACT_PCM",
+                    message = "音声切り出しエラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
+                    isWarningOrError = true,
+                )
+                null
+            }
+            if (pcmBytes == null) {
+                appendDiagnostic(
+                    stage = "EXTRACT_PCM",
+                    message = "音声切り出し結果が空でした ($startMs..${endMs}ms)",
+                    isWarningOrError = true,
+                )
+                return null
+            }
+            val extractElapsedMs = SystemClock.elapsedRealtime() - extractStartRealtimeMs
+            if (extractElapsedMs >= 1_500L) {
+                appendDiagnostic(
+                    stage = "EXTRACT_PCM",
+                    message = "音声切り出し完了 ($startMs..${endMs}ms, ${extractElapsedMs}ms)",
+                    isWarningOrError = false,
+                )
+            }
+
+            return transcribePcm16LeInternal(
+                pcm16LeBytes = pcmBytes,
+                sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+                languagePair = languagePair,
+                cacheScope = cacheScope,
+                forceRefresh = forceRefresh,
+                highPriority = highPriority,
+                startedAtEpochMs = startedAtEpochMs,
+            )
+        } finally {
+            if (jobHandle != null) {
+                synchronized(activeJobsLock) {
+                    activeJobHandles.remove(jobHandle)
+                }
+            }
+            clearActiveStepIfMatches(startedAtEpochMs)
+        }
+    }
+
+    override suspend fun transcribeChunkTrial(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        engineOverride: OnDeviceTranscriptionEngine?,
+        audioSpeed: Float,
+    ): OnDeviceChunkTranscriptionResult? {
+        if (!isAvailable() || startMs < 0L || endMs <= startMs || !audioFile.isFile) {
+            return null
+        }
+        val rawPcmBytes = try {
             ChunkPcmExtractor.extractChunkPcm16LeBytes(
                 decoder = audioStreamDecoder,
                 audioFile = audioFile,
@@ -1728,13 +2102,25 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             null
         } ?: return null
 
+        val scaledPcmBytes = timeStretchPcm16LeBytes(
+            pcm16LeBytes = rawPcmBytes,
+            sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+            speed = audioSpeed,
+        )
+        val trialScope = ChunkAudioCacheScope(
+            audioPath = "trial:${SystemClock.elapsedRealtimeNanos()}:${audioFile.absolutePath}",
+            lastModified = audioFile.lastModified(),
+            startMs = startMs,
+            endMs = endMs,
+        )
         return transcribePcm16LeInternal(
-            pcm16LeBytes = pcmBytes,
+            pcm16LeBytes = scaledPcmBytes,
             sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
             languagePair = languagePair,
-            cacheScope = cacheScope,
-            forceRefresh = forceRefresh,
-            highPriority = highPriority,
+            cacheScope = trialScope,
+            forceRefresh = true,
+            highPriority = true,
+            engineOverride = engineOverride,
         )
     }
 
@@ -1770,6 +2156,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         cacheScope: ChunkAudioCacheScope,
         forceRefresh: Boolean,
         highPriority: Boolean,
+        engineOverride: OnDeviceTranscriptionEngine? = null,
+        startedAtEpochMs: Long = System.currentTimeMillis(),
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || pcm16LeBytes.isEmpty() || sampleRateHz <= 0) {
             return null
@@ -1778,7 +2166,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val onDeviceAvailable = onDeviceAvailabilityChecker()
         val standardAvailable = standardAvailabilityChecker()
         val sherpaAvailable = sherpaModelManager?.areCoreModelFilesPresent() == true || sherpaTranscriber != null
-        if (!onDeviceAvailable && !standardAvailable && !sherpaAvailable) return null
+        val mlKitAvailable = isMlKitPotentiallyAvailable()
+        if (!onDeviceAvailable && !standardAvailable && !sherpaAvailable && !mlKitAvailable) return null
 
         // isOnDeviceRecognitionAvailable == true の端末では物理マイクが開くのを防ぐため preferOnDevice = true のみを使用する
         val preferOnDevice = onDeviceAvailable
@@ -1805,82 +2194,138 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             }
         }
 
-        return recognitionLock.withLock(highPriority = highPriority) {
-            if (forceRefresh) {
-                evictCachedSttResults(cacheScope)
-            } else if (targetLang == null || baseLang == null) {
-                val singleLang = targetLang ?: baseLang
-                getCachedSttResult(cacheScope, singleLang)?.let { cached ->
-                    return@withLock cached
-                }
-            } else {
-                getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
-                    return@withLock cachedBoth
-                }
-            }
+        updateActiveStep(
+            step = TranscriptionStep.WAITING_LOCK,
+            detail = "${cacheScope.startMs}ms..${cacheScope.endMs}ms",
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = highPriority,
+        )
 
-            if (targetLang != null && baseLang != null) {
-                val lidPrediction = if (languageDetector != null) {
-                    val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
-                    runCatching {
-                        languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
-                    }.getOrNull()
+        return recognitionLock.withLock(highPriority = highPriority) {
+            activeTrialEngineOverride = engineOverride
+            val lockAcquiredRealtimeMs = SystemClock.elapsedRealtime()
+            try {
+                if (forceRefresh) {
+                    evictCachedSttResults(cacheScope)
+                } else if (targetLang == null || baseLang == null) {
+                    val singleLang = targetLang ?: baseLang
+                    getCachedSttResult(cacheScope, singleLang)?.let { cached ->
+                        return@withLock cached
+                    }
                 } else {
-                    null
+                    getCachedBilingualResultIfBothPresent(cacheScope, targetLang, baseLang)?.let { cachedBoth ->
+                        return@withLock cachedBoth
+                    }
                 }
-                if (lidPrediction != null) {
-                    transcribeWithWhisperLidPrediction(
+
+                val selectedEngine =
+                    activeTrialEngineOverride ?: runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
+
+                val result = if (targetLang != null && baseLang != null) {
+                    updateActiveStep(
+                        step = TranscriptionStep.DETECTING_LANGUAGE,
+                        detail = "${targetLang.value} / ${baseLang.value}",
+                        startedAtEpochMs = startedAtEpochMs,
+                        highPriority = highPriority,
+                    )
+                    val lidPrediction = if (languageDetector != null) {
+                        val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
+                        runCatching {
+                            languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+                    if (lidPrediction != null) {
+                        transcribeWithWhisperLidPrediction(
+                            pcm16LeBytes = pcm16LeBytes,
+                            sampleRateHz = sampleRateHz,
+                            chunkDurationMs = chunkDurationMs,
+                            targetLang = targetLang,
+                            baseLang = baseLang,
+                            prediction = lidPrediction,
+                            preferOnDevice = preferOnDevice,
+                            cacheScope = cacheScope,
+                            startedAtEpochMs = startedAtEpochMs,
+                            highPriority = highPriority,
+                            selectedEngine = selectedEngine,
+                        )
+                    } else {
+                        transcribeWithTwoSecondLanguageProbe(
+                            pcm16LeBytes = pcm16LeBytes,
+                            sampleRateHz = sampleRateHz,
+                            chunkDurationMs = chunkDurationMs,
+                            targetLang = targetLang,
+                            baseLang = baseLang,
+                            preferOnDevice = preferOnDevice,
+                            cacheScope = cacheScope,
+                            startedAtEpochMs = startedAtEpochMs,
+                            highPriority = highPriority,
+                            selectedEngine = selectedEngine,
+                        )
+                    }
+                } else {
+                    val singleLang = targetLang ?: baseLang
+                    val bcp47Tag = singleLang?.value?.let(::toBcp47LocaleTag)
+                        ?: toBcp47LocaleTag(Locale.getDefault().toLanguageTag())
+                    updateActiveStep(
+                        step = TranscriptionStep.RECOGNIZING_PRIMARY,
+                        detail = "${singleLang?.value ?: bcp47Tag} (${selectedEngine.name})",
+                        startedAtEpochMs = startedAtEpochMs,
+                        highPriority = highPriority,
+                    )
+                    val attempt = executeAttempt(
                         pcm16LeBytes = pcm16LeBytes,
                         sampleRateHz = sampleRateHz,
-                        chunkDurationMs = chunkDurationMs,
-                        targetLang = targetLang,
-                        baseLang = baseLang,
-                        prediction = lidPrediction,
+                        bcp47LocaleTag = bcp47Tag,
                         preferOnDevice = preferOnDevice,
-                        cacheScope = cacheScope,
-                    )
-                } else {
-                    transcribeWithTwoSecondLanguageProbe(
-                        pcm16LeBytes = pcm16LeBytes,
-                        sampleRateHz = sampleRateHz,
-                        chunkDurationMs = chunkDurationMs,
-                        targetLang = targetLang,
-                        baseLang = baseLang,
-                        preferOnDevice = preferOnDevice,
-                        cacheScope = cacheScope,
-                    )
-                }
-            } else {
-                val singleLang = targetLang ?: baseLang
-                val bcp47Tag = singleLang?.value?.let(::toBcp47LocaleTag)
-                    ?: toBcp47LocaleTag(Locale.getDefault().toLanguageTag())
-                val attempt = executeAttempt(
-                    pcm16LeBytes = pcm16LeBytes,
-                    sampleRateHz = sampleRateHz,
-                    bcp47LocaleTag = bcp47Tag,
-                    preferOnDevice = preferOnDevice,
-                    isProbe = false,
-                    language = singleLang,
-                )
-                if (attempt != null && attempt.text.isNotBlank()) {
-                    logInfo(
-                        "singleLang chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} chars=${attempt.text.trim().length}",
-                    )
-                    val result = OnDeviceChunkTranscriptionResult(
-                        text = attempt.text.trim(),
+                        isProbe = false,
                         language = singleLang,
-                        confidence = attempt.confidence,
-                        engineId = attempt.engineId,
                     )
-                    putCachedSttResult(cacheScope, singleLang?.value ?: bcp47Tag, result)
-                    result
-                } else {
-                    logInfo(
-                        "singleLang empty chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} " +
-                            "modelUnavailable=${attempt?.isLanguageModelUnavailable == true}",
-                    )
-                    null
+                    if (attempt != null && attempt.text.isNotBlank()) {
+                        logInfo(
+                            "singleLang chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} chars=${attempt.text.trim().length}",
+                        )
+                        val res = OnDeviceChunkTranscriptionResult(
+                            text = attempt.text.trim(),
+                            language = singleLang,
+                            confidence = attempt.confidence,
+                            engineId = attempt.engineId,
+                        )
+                        putCachedSttResult(cacheScope, singleLang?.value ?: bcp47Tag, res)
+                        res
+                    } else {
+                        logInfo(
+                            "singleLang empty chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} " +
+                                "modelUnavailable=${attempt?.isLanguageModelUnavailable == true}",
+                        )
+                        null
+                    }
                 }
+                val totalElapsedMs = SystemClock.elapsedRealtime() - lockAcquiredRealtimeMs
+                appendDiagnostic(
+                    stage = if (highPriority) "FORCE_STT" else "LOOKAHEAD_STT",
+                    message = buildString {
+                        append("${cacheScope.startMs}..${cacheScope.endMs}ms (${totalElapsedMs}ms): ")
+                        when {
+                            result == null -> append("認識結果なし（無音または認識不能）")
+                            result.isLanguageOnly -> append("言語判定のみ (${result.language?.value ?: "-"} / モデル未導入)")
+                            else -> append("成功 lang=${result.language?.value ?: "-"} chars=${result.text.length} engine=${result.engineId.value}")
+                        }
+                    },
+                    isWarningOrError = result == null || result.isLanguageOnly,
+                )
+                result
+            } catch (ce: CancellationException) {
+                val elapsedMs = SystemClock.elapsedRealtime() - lockAcquiredRealtimeMs
+                appendDiagnostic(
+                    stage = if (highPriority) "FORCE_STT" else "LOOKAHEAD_STT",
+                    message = "認識を中断 (${cacheScope.startMs}..${cacheScope.endMs}ms, ${elapsedMs}ms)",
+                    isWarningOrError = false,
+                )
+                throw ce
+            } finally {
+                activeTrialEngineOverride = null
             }
         }
     }
@@ -1894,6 +2339,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         prediction: LanguagePairPrediction,
         preferOnDevice: Boolean,
         cacheScope: ChunkAudioCacheScope,
+        startedAtEpochMs: Long,
+        highPriority: Boolean,
+        selectedEngine: OnDeviceTranscriptionEngine,
     ): OnDeviceChunkTranscriptionResult? {
         val selectedLang = if (prediction.selectedTag.equals(baseLang.value, ignoreCase = true)) {
             baseLang
@@ -1911,6 +2359,12 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         var primaryModelUnavailable = false
         val primaryResult = getCachedSttResult(cacheScope, selectedLang) ?: run {
             val selectedBcp47 = toBcp47LocaleTag(selectedLang.value)
+            updateActiveStep(
+                step = TranscriptionStep.RECOGNIZING_PRIMARY,
+                detail = "${selectedLang.value} (${selectedEngine.name})",
+                startedAtEpochMs = startedAtEpochMs,
+                highPriority = highPriority,
+            )
             val attempt = executeAttempt(
                 pcm16LeBytes = pcm16LeBytes,
                 sampleRateHz = sampleRateHz,
@@ -1958,6 +2412,12 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         val fallbackResult = getCachedSttResult(cacheScope, fallbackLang) ?: run {
             val fallbackBcp47 = toBcp47LocaleTag(fallbackLang.value)
+            updateActiveStep(
+                step = TranscriptionStep.RECOGNIZING_FALLBACK,
+                detail = "${fallbackLang.value} (${selectedEngine.name})",
+                startedAtEpochMs = startedAtEpochMs,
+                highPriority = highPriority,
+            )
             val attempt = executeAttempt(
                 pcm16LeBytes = pcm16LeBytes,
                 sampleRateHz = sampleRateHz,
@@ -2057,6 +2517,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         baseLang: LanguageTag,
         preferOnDevice: Boolean,
         cacheScope: ChunkAudioCacheScope,
+        startedAtEpochMs: Long,
+        highPriority: Boolean,
+        selectedEngine: OnDeviceTranscriptionEngine,
     ): OnDeviceChunkTranscriptionResult? {
         val probeSlice = ChunkPcmExtractor.extractLeadingSpeechProbePcm(
             pcm16LeBytes = pcm16LeBytes,
@@ -2065,6 +2528,13 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val probeBytes = probeSlice.probePcm16LeBytes
         val targetBcp47 = toBcp47LocaleTag(targetLang.value)
         val baseBcp47 = toBcp47LocaleTag(baseLang.value)
+
+        updateActiveStep(
+            step = TranscriptionStep.DETECTING_LANGUAGE,
+            detail = "Probe ${targetLang.value}",
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = highPriority,
+        )
 
         val targetProbe = if (probeSlice.isFullChunkCovered) {
             getCachedSttResult(cacheScope, targetLang)?.let {
@@ -2098,6 +2568,13 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 language = targetLang,
             )?.takeIf { it.text.isNotBlank() }
         }
+
+        updateActiveStep(
+            step = TranscriptionStep.DETECTING_LANGUAGE,
+            detail = "Probe ${baseLang.value}",
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = highPriority,
+        )
 
         val baseProbe = if (probeSlice.isFullChunkCovered) {
             getCachedSttResult(cacheScope, baseLang)?.let {
@@ -2179,6 +2656,12 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
 
         val winningBcp47 = toBcp47LocaleTag(winningLang.value)
+        updateActiveStep(
+            step = TranscriptionStep.RECOGNIZING_PRIMARY,
+            detail = "${winningLang.value} (${selectedEngine.name})",
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = highPriority,
+        )
         val fullAttempt = executeAttempt(
             pcm16LeBytes = pcm16LeBytes,
             sampleRateHz = sampleRateHz,
@@ -2286,6 +2769,74 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         )
     }
 
+    private suspend fun tryMlKitInference(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        candidates: List<String>,
+        isProbe: Boolean,
+        language: LanguageTag?,
+    ): SpeechRecognitionAttemptResult? {
+        val gateway = mlKitGateway ?: return null
+        if (!gateway.isDevicePotentiallySupported()) return null
+        var lastMlKitAttempt: SpeechRecognitionAttemptResult? = null
+        for ((index, candidateTag) in candidates.withIndex()) {
+            val attempt = try {
+                gateway.recognizePcm16Le(
+                    pcm16LeBytes = pcm16LeBytes,
+                    sampleRateHz = sampleRateHz,
+                    bcp47LocaleTag = candidateTag,
+                    isProbe = isProbe,
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                null
+            }
+            lastMlKitAttempt = attempt
+            if (attempt?.errorCode != SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
+                if (index > 0 ||
+                    attempt?.text?.isNotBlank() == true ||
+                    attempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
+                ) {
+                    rememberResolvedBcp47Tag(language?.value, candidateTag)
+                }
+                if (attempt?.text?.isNotBlank() == true) {
+                    if (language != null) clearModelIssue(language)
+                    return attempt
+                }
+                if (attempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE && language != null) {
+                    val current = modelIssuesState.value[language]
+                    if (current != OnDeviceRecognitionModelState.DOWNLOADING &&
+                        current != OnDeviceRecognitionModelState.DOWNLOAD_FAILED
+                    ) {
+                        setModelIssue(language, OnDeviceRecognitionModelState.NOT_INSTALLED)
+                    }
+                    if (autoDownloadMlKitRequestedTags.add(candidateTag.lowercase(Locale.ROOT))) {
+                        downloadMlKitModel(language, candidateTag)
+                        val refreshedAttempt = try {
+                            gateway.recognizePcm16Le(
+                                pcm16LeBytes = pcm16LeBytes,
+                                sampleRateHz = sampleRateHz,
+                                bcp47LocaleTag = candidateTag,
+                                isProbe = isProbe,
+                            )
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (_: Exception) {
+                            null
+                        }
+                        if (refreshedAttempt?.text?.isNotBlank() == true) {
+                            clearModelIssue(language)
+                            return refreshedAttempt
+                        }
+                    }
+                }
+                return attempt
+            }
+        }
+        return lastMlKitAttempt
+    }
+
     private suspend fun executeAttempt(
         pcm16LeBytes: ByteArray,
         sampleRateHz: Int,
@@ -2294,7 +2845,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         isProbe: Boolean,
         language: LanguageTag? = null,
     ): SpeechRecognitionAttemptResult? {
-        val selectedEngine = runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
+        val selectedEngine =
+            activeTrialEngineOverride ?: runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
 
         // SHERPA_ONNX が明示選択されている場合は sherpa-onnx ローカルモデルを最優先で使用する
         if (selectedEngine == OnDeviceTranscriptionEngine.SHERPA_ONNX && language != null) {
@@ -2315,7 +2867,26 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
 
         val candidates = candidateBcp47TagsFor(language?.value, bcp47LocaleTag)
-        var lastAttempt: SpeechRecognitionAttemptResult? = null
+        var mlKitUnavailableAttempt: SpeechRecognitionAttemptResult? = null
+
+        // ML_KIT が明示選択されており、端末が AICore / ML Kit GenAI に対応している場合は ML Kit を最優先で試行する
+        if (selectedEngine == OnDeviceTranscriptionEngine.ML_KIT && isMlKitPotentiallyAvailable()) {
+            val mlKitAttempt = tryMlKitInference(
+                pcm16LeBytes = pcm16LeBytes,
+                sampleRateHz = sampleRateHz,
+                candidates = candidates,
+                isProbe = isProbe,
+                language = language,
+            )
+            if (mlKitAttempt?.text?.isNotBlank() == true) {
+                return mlKitAttempt
+            }
+            if (mlKitAttempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) {
+                mlKitUnavailableAttempt = mlKitAttempt
+            }
+        }
+
+        var lastAttempt: SpeechRecognitionAttemptResult? = mlKitUnavailableAttempt
         var lastTag: String = candidates.firstOrNull() ?: bcp47LocaleTag
 
         if (onDeviceAvailabilityChecker() || standardAvailabilityChecker() || attemptRunner != null) {
@@ -2351,6 +2922,23 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             "unsupportedTag=$candidateTag nextTag=${candidates[index + 1]}",
                     )
                 }
+            }
+        }
+
+        // AUTO モードで OS の SpeechRecognizer が利用不可または全候補で非対応だった場合、ML Kit 対応端末なら ML Kit を試行する
+        if (selectedEngine == OnDeviceTranscriptionEngine.AUTO && isMlKitPotentiallyAvailable()) {
+            val mlKitAttempt = tryMlKitInference(
+                pcm16LeBytes = pcm16LeBytes,
+                sampleRateHz = sampleRateHz,
+                candidates = candidates,
+                isProbe = isProbe,
+                language = language,
+            )
+            if (mlKitAttempt?.text?.isNotBlank() == true) {
+                return mlKitAttempt
+            }
+            if (mlKitAttempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) {
+                mlKitUnavailableAttempt = mlKitAttempt
             }
         }
 
@@ -2401,6 +2989,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         // OS の SpeechRecognizer が非対応（UNSUPPORTED）の場合、Stage 2 の sherpa-onnx ローカルモデルへフォールバックする
         if (language != null && selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER) {
             trySherpaInference(pcm16LeBytes, sampleRateHz, language)?.let { return it }
+            if (mlKitUnavailableAttempt != null) {
+                return mlKitUnavailableAttempt
+            }
             if (isSherpaSupportedFor(language)) {
                 val unavailableAttempt = SpeechRecognitionAttemptResult(
                     text = "",
@@ -2412,6 +3003,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             }
         }
 
+        if (mlKitUnavailableAttempt != null) {
+            return mlKitUnavailableAttempt
+        }
         noteRecognitionAttemptOutcome(language, lastTag, lastAttempt, selectedEngine)
         return lastAttempt
     }
@@ -2470,6 +3064,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             leadingSilenceMs = leadingSilenceMs,
             trailingSilenceMs = trailingSilenceMs,
         )
+        val audioDurationMs = ((paddedBytes.size / 2).toLong() * 1_000L) / sampleRateHz.coerceAtLeast(1).toLong()
+        val attemptTimeoutMs = ((audioDurationMs / 2L) + 4_500L).coerceIn(5_000L, RECOGNITION_TIMEOUT_MS)
 
         val pipe = try {
             ParcelFileDescriptor.createPipe()
@@ -2507,8 +3103,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     }
                 }
 
-                val recognitionResult = withTimeoutOrNull(RECOGNITION_TIMEOUT_MS) {
-                    recognizeFromPipeOnMainLooper(
+                var timedOut = true
+                val recognitionResult = withTimeoutOrNull(attemptTimeoutMs) {
+                    val res = recognizeFromPipeOnMainLooper(
                         readSide = readSide,
                         sampleRateHz = sampleRateHz,
                         bcp47LocaleTag = bcp47LocaleTag,
@@ -2516,6 +3113,15 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         onListeningStarted = { started ->
                             listeningStarted.complete(started)
                         },
+                    )
+                    timedOut = false
+                    res
+                }
+                if (timedOut) {
+                    appendDiagnostic(
+                        stage = "STT_TIMEOUT",
+                        message = "SpeechRecognizer が ${attemptTimeoutMs}ms 以内に応答しませんでした (lang=$bcp47LocaleTag)",
+                        isWarningOrError = true,
                     )
                 }
                 if (!listeningStarted.isCompleted) {
@@ -2596,6 +3202,13 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         logInfo(
                             "onError preferOnDevice=$preferOnDevice lang=$bcp47LocaleTag error=$error fallbackChars=${outcome?.text?.length ?: 0}",
                         )
+                        if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                            appendDiagnostic(
+                                stage = "STT_ERROR",
+                                message = "SpeechRecognizer エラー lang=$bcp47LocaleTag code=$error (${speechErrorName(error)})",
+                                isWarningOrError = true,
+                            )
+                        }
                         cleanup.run()
                         if (continuation.isActive) {
                             continuation.resume(outcome)
@@ -2690,10 +3303,29 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         internal const val INTER_RECOGNITION_SETTLE_DELAY_MS: Long = 200L
         private const val RECOGNITION_TIMEOUT_MS: Long = 12_000L
         private const val MAX_STT_CACHE_ENTRIES: Int = 2_048
+        private const val MAX_DIAGNOSTIC_ENTRIES: Int = 40
         private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.75f
         private const val LOW_STT_CONFIDENCE_THRESHOLD: Float = 0.68f
         private const val MODERATE_STT_CONFIDENCE_THRESHOLD: Float = 0.80f
         private const val MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS: Long = 15_000L
+
+        private fun speechErrorName(error: Int): String = when (error) {
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
+            SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
+            SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
+            SpeechRecognizer.ERROR_SERVER -> "SERVER"
+            SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
+            SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "RECOGNIZER_BUSY"
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "INSUFFICIENT_PERMISSIONS"
+            SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "TOO_MANY_REQUESTS"
+            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "SERVER_DISCONNECTED"
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "LANGUAGE_NOT_SUPPORTED"
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "LANGUAGE_UNAVAILABLE"
+            SpeechRecognizer.ERROR_CANNOT_CHECK_SUPPORT -> "CANNOT_CHECK_SUPPORT"
+            else -> "ERROR_$error"
+        }
 
         /**
          * `onResults` または `onError` コールバック時点で最終結果テキストと `onPartialResults` の保持テキストを統合する。
@@ -2757,6 +3389,37 @@ internal class PriorityRecognitionLock {
         }
     }
 
+    fun cancelWaiters(onlyLowPriority: Boolean) {
+        val toCancel = mutableListOf<CompletableDeferred<Unit>>()
+        synchronized(stateLock) {
+            toCancel.addAll(normalPriorityQueue)
+            normalPriorityQueue.clear()
+            if (!onlyLowPriority) {
+                toCancel.addAll(highPriorityQueue)
+                highPriorityQueue.clear()
+            }
+        }
+        val reason = CancellationException("Recognition lock waiter cancelled")
+        for (waiter in toCancel) {
+            waiter.cancel(reason)
+        }
+    }
+
+    fun forceResetLock() {
+        val toCancel = mutableListOf<CompletableDeferred<Unit>>()
+        synchronized(stateLock) {
+            toCancel.addAll(highPriorityQueue)
+            toCancel.addAll(normalPriorityQueue)
+            highPriorityQueue.clear()
+            normalPriorityQueue.clear()
+            isLocked = false
+        }
+        val reason = CancellationException("Recognition lock reset")
+        for (waiter in toCancel) {
+            waiter.cancel(reason)
+        }
+    }
+
     private suspend fun acquire(highPriority: Boolean) {
         val waiter: CompletableDeferred<Unit>? = synchronized(stateLock) {
             if (!isLocked && highPriorityQueue.isEmpty() && normalPriorityQueue.isEmpty()) {
@@ -2810,4 +3473,89 @@ internal class PriorityRecognitionLock {
             if (next.complete(Unit)) return
         }
     }
+}
+
+/**
+ * 16-bit signed LE モノラル PCM 音声に対し、ピッチを維持したまま再生速度を伸縮する（WSOLA: Waveform Similarity Overlap-Add）。
+ *
+ * `speed` が `1.0f` 付近（±0.02 未満）の場合は元のバイト配列をそのまま返す。
+ * `speed > 1.0f` で早回し（再生時間が短くなる）、`speed < 1.0f` でスロー（再生時間が長くなる）。
+ */
+internal fun timeStretchPcm16LeBytes(
+    pcm16LeBytes: ByteArray,
+    sampleRateHz: Int,
+    speed: Float,
+): ByteArray {
+    val clampedSpeed = speed.coerceIn(0.5f, 2.0f)
+    if (abs(clampedSpeed - 1.0f) < 0.02f || sampleRateHz <= 0 || pcm16LeBytes.size < 4) {
+        return pcm16LeBytes
+    }
+    val input = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
+    val windowSamples = (sampleRateHz * 30 / 1000).coerceAtLeast(64)
+    if (input.size < windowSamples * 2) {
+        return pcm16LeBytes
+    }
+    val synthesisHop = windowSamples / 2
+    val searchRadius = (sampleRateHz * 10 / 1000).coerceAtLeast(16)
+    val outputSamples = (input.size / clampedSpeed).roundToInt().coerceAtLeast(windowSamples)
+
+    val hannWindow = FloatArray(windowSamples) { i ->
+        (0.5 * (1.0 - cos(2.0 * PI * i / (windowSamples - 1)))).toFloat()
+    }
+    val outAccum = FloatArray(outputSamples)
+    val weightAccum = FloatArray(outputSamples)
+
+    var prevInputPos = 0
+    var outPos = 0
+    var isFirstFrame = true
+
+    while (outPos < outputSamples) {
+        val targetInPos = (outPos * clampedSpeed).roundToInt().coerceIn(0, input.size - windowSamples)
+        val bestInPos = if (isFirstFrame) {
+            isFirstFrame = false
+            targetInPos
+        } else {
+            val naturalNextPos = (prevInputPos + synthesisHop).coerceIn(0, input.size - windowSamples)
+            val searchStart = (targetInPos - searchRadius).coerceAtLeast(0)
+            val searchEnd = (targetInPos + searchRadius).coerceAtMost(input.size - windowSamples)
+            var bestCandidate = targetInPos
+            var bestScore = Float.NEGATIVE_INFINITY
+            val compareLen = min(synthesisHop, windowSamples)
+            for (candidate in searchStart..searchEnd) {
+                var dot = 0f
+                var candEnergy = 0f
+                for (k in 0 until compareLen) {
+                    val a = input[naturalNextPos + k].toFloat()
+                    val b = input[candidate + k].toFloat()
+                    dot += a * b
+                    candEnergy += b * b
+                }
+                val score = if (candEnergy > 1f) dot / sqrt(candEnergy) else 0f
+                if (score > bestScore) {
+                    bestScore = score
+                    bestCandidate = candidate
+                }
+            }
+            bestCandidate
+        }
+
+        val copyLen = min(windowSamples, outputSamples - outPos)
+        for (i in 0 until copyLen) {
+            val w = hannWindow[i]
+            outAccum[outPos + i] += input[bestInPos + i].toFloat() * w
+            weightAccum[outPos + i] += w
+        }
+        prevInputPos = bestInPos
+        outPos += synthesisHop
+    }
+
+    val outBytes = ByteArray(outputSamples * 2)
+    val byteBuffer = ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN)
+    for (i in 0 until outputSamples) {
+        val w = weightAccum[i]
+        val sampleFloat = if (w > 1e-4f) outAccum[i] / w else 0f
+        val clampedShort = sampleFloat.roundToInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        byteBuffer.putShort(clampedShort)
+    }
+    return outBytes
 }

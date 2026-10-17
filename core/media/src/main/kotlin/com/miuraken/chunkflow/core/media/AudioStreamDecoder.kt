@@ -3,6 +3,7 @@ package com.miuraken.chunkflow.core.media
 import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.audio.StreamingResampler
 import com.miuraken.chunkflow.core.model.AnalysisError
+import com.miuraken.chunkflow.core.model.Waveform
 import java.io.File
 
 /**
@@ -77,4 +78,26 @@ interface AudioStreamDecoder {
         expectedDurationMs: Long? = null,
         onProgress: suspend (DecodeProgress) -> Unit = {},
     ): AudioDecodeResult
+
+    /**
+     * 音声ファイルの秒数（全体長）と全体波形の横幅（カラム数 [targetColumns]）から必要なミリ秒間隔を割り出し、
+     * シークによる間引きサンプリングで低解像度の全体波形（[Waveform]）を即座に生成する。
+     *
+     * その後、30 秒幅のフル解像度（10ms ビン）解析データが揃うたびに順次置き換えていくために用いる。
+     * 非対応または音声長が不明な場合は `null` を返す。
+     */
+    suspend fun decodeCoarseOverviewWaveform(
+        file: File,
+        expectedDurationMs: Long? = null,
+        targetColumns: Int = DEFAULT_OVERVIEW_COLUMNS,
+        fineBinMs: Int = DEFAULT_FINE_BIN_MS,
+    ): Waveform? = null
+
+    companion object {
+        /** 全体波形の既定の横幅カラム数（画面幅約 360〜720dp ÷ 3dp/本 ≒ 240 本）。 */
+        const val DEFAULT_OVERVIEW_COLUMNS: Int = 240
+
+        /** 詳細波形の既定ビン長（10ms）。 */
+        const val DEFAULT_FINE_BIN_MS: Int = 10
+    }
 }

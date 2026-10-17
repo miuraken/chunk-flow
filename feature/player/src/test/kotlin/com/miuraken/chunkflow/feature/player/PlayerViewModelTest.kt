@@ -1120,4 +1120,220 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.UpdateItemLanguages(target = LanguageTag("ko"), base = LanguageTag("ko")))
         assertEquals(LanguagePair(target = LanguageTag("ko"), base = null), viewModel.uiState.value.languagePair)
     }
+
+    @Test
+    fun `再生設定の開閉_チャンクにチェックを付けてリピートONの状態でcloseして同じファイルを再openしてもチェックとリピートが維持される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+        val chunk0 = sample.chunks[0].id
+        val chunk2 = sample.chunks[2].id
+
+        // 2 つのチャンクにチェックを付け、リピートを ON にする
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(chunk0))
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(chunk2))
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+
+        assertEquals(setOf(chunk0, chunk2), playback.practiceState.value.repeatChunkIds)
+        assertTrue(playback.practiceState.value.repeatCheckedOnly)
+        assertTrue(viewModel.uiState.value.practice.repeatCheckedOnly)
+        assertTrue(viewModel.uiState.value.chunks.first { it.id == chunk0 }.isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks.first { it.id == chunk2 }.isRepeatChecked)
+
+        // 「再生設定」画面へ遷移して PlayerRoute が一時破棄される（DisposableEffect -> close(item.id)）
+        viewModel.close(item.id)
+        assertTrue(analysisRepo.openTranscriptionSessions.isEmpty())
+
+        // 「再生設定」画面を閉じて PlayerRoute に戻る（LaunchedEffect -> open(item.id)）
+        viewModel.open(item.id)
+        assertEquals(setOf(item.id), analysisRepo.openTranscriptionSessions)
+
+        // チェック状態・リピート ON 状態ともに失われず維持され、playbackController.open も再実行されない
+        assertEquals(listOf(item.id), playback.openedMediaIds)
+        assertEquals(setOf(chunk0, chunk2), playback.practiceState.value.repeatChunkIds)
+        assertTrue(playback.practiceState.value.repeatCheckedOnly)
+        assertTrue(viewModel.uiState.value.practice.repeatCheckedOnly)
+        assertTrue(viewModel.uiState.value.chunks.first { it.id == chunk0 }.isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks.first { it.id == chunk2 }.isRepeatChecked)
+    }
+
+    @Test
+    fun `Google翻訳URL生成_チャンク言語からベース言語への翻訳URLを正しく組み立てる`() {
+        val pair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+        val url = buildGoogleTranslateUrl(
+            text = "안녕하세요!",
+            chunkLanguage = LanguageTag("ko"),
+            languagePair = pair,
+            fallbackTargetLang = "en",
+        )
+        assertTrue(url.startsWith("https://translate.google.com/?sl=ko&tl=ja&text="))
+        assertTrue(url.endsWith("&op=translate"))
+
+        // チャンク言語が未設定のときは学習言語を翻訳元にし、ベース言語が未設定のときは fallbackTargetLang を翻訳先にする
+        val urlNoBase = buildGoogleTranslateUrl(
+            text = "Hello world",
+            chunkLanguage = null,
+            languagePair = LanguagePair(target = LanguageTag("zh-Hans"), base = null),
+            fallbackTargetLang = "ja",
+        )
+        assertTrue(urlNoBase.startsWith("https://translate.google.com/?sl=zh-CN&tl=ja&text="))
+        assertTrue(urlNoBase.contains("Hello%20world"))
+
+        // 翻訳元と翻訳先が同一言語になった場合は sl=auto にして空翻訳を防ぐ
+        val urlSameLang = buildGoogleTranslateUrl(
+            text = "テスト",
+            chunkLanguage = LanguageTag("ja"),
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+            fallbackTargetLang = "ja",
+        )
+        assertTrue(urlSameLang.startsWith("https://translate.google.com/?sl=auto&tl=ja&text="))
+    }
+
+    @Test
+    fun `resolveChunkTranscriptionStage_文字起こし中と待機中と空結果スキップおよび強制実行を正しく判定する`() {
+        val c1 = ChunkUi(id = ChunkId(1L), startMs = 0L, endMs = 1_000L, text = null, language = null)
+        val c2 = ChunkUi(id = ChunkId(2L), startMs = 1_000L, endMs = 2_000L, text = null, language = null)
+        val c3 = ChunkUi(id = ChunkId(3L), startMs = 2_000L, endMs = 3_000L, text = null, language = null)
+
+        // 1. 通常の先読み実行中: c1 が inFlight -> TRANSCRIBING, c2 が未試行 -> WAITING, c3 が空結果でスキップ済み -> IDLE
+        val activeStatus = LookaheadTranscriptionStatus(
+            enabled = true,
+            engineAvailable = true,
+            inFlightChunkId = c1.id,
+            queuedChunkIds = setOf(c2.id),
+            completedCount = 0,
+            totalTargetCount = 3,
+            skippedEmptyChunkIds = setOf(c3.id),
+        )
+        assertEquals(ChunkTranscriptionStage.TRANSCRIBING, resolveChunkTranscriptionStage(c1, activeStatus))
+        assertEquals(ChunkTranscriptionStage.WAITING, resolveChunkTranscriptionStage(c2, activeStatus))
+        assertEquals(ChunkTranscriptionStage.IDLE, resolveChunkTranscriptionStage(c3, activeStatus))
+
+        // 2. 全チャンク試行完了後 (completedCount >= totalTargetCount かつ inFlight == null) は未取得チャンクも WAITING に残さず IDLE にする
+        val finishedStatus = LookaheadTranscriptionStatus(
+            enabled = true,
+            engineAvailable = true,
+            inFlightChunkId = null,
+            queuedChunkIds = emptySet(),
+            completedCount = 3,
+            totalTargetCount = 3,
+        )
+        assertEquals(ChunkTranscriptionStage.IDLE, resolveChunkTranscriptionStage(c2, finishedStatus))
+
+        // 3. 先読み OFF でも強制文字起こし実行中 (isForcedChunkInFlight = true) のチャンクは TRANSCRIBING を返す
+        val forcedStatus = LookaheadTranscriptionStatus(
+            enabled = false,
+            engineAvailable = true,
+            inFlightChunkId = c2.id,
+            isForcedChunkInFlight = true,
+        )
+        assertEquals(ChunkTranscriptionStage.TRANSCRIBING, resolveChunkTranscriptionStage(c2, forcedStatus))
+        assertEquals(ChunkTranscriptionStage.IDLE, resolveChunkTranscriptionStage(c1, forcedStatus))
+    }
+
+    @Test
+    fun `文字起こし中断とリセット_SetLookaheadEnabledFalseおよびResetTranscriptionで進行中状態が即座にクリアされる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            update(item.id) { entry ->
+                entry.copy(
+                    lookaheadStatus = LookaheadTranscriptionStatus(
+                        enabled = true,
+                        engineAvailable = true,
+                        inFlightChunkId = sample.chunks[0].id,
+                        queuedChunkIds = setOf(sample.chunks[1].id),
+                        completedCount = 1,
+                        totalTargetCount = 5,
+                        isForcedChunkInFlight = true,
+                    ),
+                )
+            }
+        }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 文字起こし OFF にすると inFlightChunkId / queuedChunkIds / isForcedChunkInFlight が即座にクリアされる
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(false))
+        val afterDisable = viewModel.uiState.value.lookaheadStatus
+        assertFalse(afterDisable.enabled)
+        assertNull(afterDisable.inFlightChunkId)
+        assertTrue(afterDisable.queuedChunkIds.isEmpty())
+        assertFalse(afterDisable.isForcedChunkInFlight)
+
+        // ResetTranscription を呼ぶと resetTranscriptionRequests に記録され状態がクリアされる
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        viewModel.onEvent(PlayerEvent.ResetTranscription)
+        assertTrue(analysisRepo.resetTranscriptionRequests.contains(item.id))
+        assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertNull(viewModel.uiState.value.lookaheadStatus.inFlightChunkId)
+    }
+
+    @Test
+    fun `より詳しく文字起こし_ダイアログを開いてエンジンと速度を指定して試行し結果をチャンクに反映できる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val targetChunk = sample.chunks[1]
+
+        // 1. ダイアログを開く
+        viewModel.onEvent(PlayerEvent.OpenDetailedTranscription(targetChunk.id))
+        val openedDialog = viewModel.uiState.value.detailedTranscriptionDialog
+        assertNotNull(openedDialog)
+        assertEquals(targetChunk.id, openedDialog.chunkId)
+        val initialChunkText = viewModel.uiState.value.chunks[1].text.orEmpty()
+        assertEquals(initialChunkText, openedDialog.resultText)
+
+        // 2. エンジンと速度倍率 (1.5x) を指定して試行を実行する
+        viewModel.onEvent(
+            PlayerEvent.RunDetailedTranscriptionTrial(
+                chunkId = targetChunk.id,
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+                languageOverride = LanguageTag("ko"),
+                audioSpeed = 1.5f,
+            ),
+        )
+        val afterTrial = viewModel.uiState.value.detailedTranscriptionDialog
+        assertNotNull(afterTrial)
+        assertFalse(afterTrial.isRunning)
+        assertEquals(1, analysisRepo.customTrialRequests.size)
+        val trialReq = analysisRepo.customTrialRequests.single()
+        assertEquals(targetChunk.id, trialReq.chunkId)
+        assertEquals(com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT, trialReq.engine)
+        assertEquals(LanguageTag("ko"), trialReq.languageOverride)
+        assertEquals(1.5f, trialReq.audioSpeed)
+        assertNotNull(afterTrial.resultText)
+
+        // 3. 試行結果をチャンクへ反映するとダイアログが閉じ、チャンクのテキストと言語が更新される
+        viewModel.onEvent(
+            PlayerEvent.ApplyDetailedTranscriptionResult(
+                chunkId = targetChunk.id,
+                text = "より詳しい文字起こし結果",
+                language = LanguageTag("ko"),
+            ),
+        )
+        assertNull(viewModel.uiState.value.detailedTranscriptionDialog)
+        val updatedChunk = viewModel.uiState.value.chunks.first { it.id == targetChunk.id }
+        assertEquals("より詳しい文字起こし結果", updatedChunk.text)
+        assertEquals(LanguageTag("ko"), updatedChunk.language)
+    }
 }

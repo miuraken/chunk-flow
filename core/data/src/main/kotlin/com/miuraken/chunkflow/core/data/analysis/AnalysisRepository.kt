@@ -5,10 +5,12 @@ import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.ChunkTranscriptionTrialResult
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
@@ -138,6 +140,11 @@ interface AnalysisRepository {
     suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) = Unit
 
     /**
+     * 文字起こし処理が停止・スタックした場合などに、実行中の文字起こしジョブ・待機キュー・認識ロックをすべて強制中断・リセットする。
+     */
+    suspend fun resetTranscription(id: MediaId) = Unit
+
+    /**
      * 指定した教材のすべての文字起こしとメモリ上の文字起こしキャッシュを消去し、取り込みチャンク（[ChunkOrigin.IMPORTED]）があれば削除して自動分割チャンクへ戻す。
      */
     suspend fun clearTranscriptsForMedia(id: MediaId) = Unit
@@ -156,6 +163,31 @@ interface AnalysisRepository {
      * チャンクの文字起こしテキストを手動で修正し、`user_edited = true` として保存する（F7.4）。
      */
     suspend fun updateChunkText(id: MediaId, chunkId: ChunkId, text: String) = Unit
+
+    /**
+     * 「より詳しく文字起こし」ダイアログから、エンジン・言語・音声速度倍率を指定して 1 チャンクの試験的な文字起こしを実行する。
+     *
+     * DB の既存の文字起こしは書き換えず、認識結果のみを返す。
+     */
+    suspend fun tryTranscribeChunkCustom(
+        id: MediaId,
+        chunkId: ChunkId,
+        engine: OnDeviceTranscriptionEngine,
+        languageOverride: LanguageTag? = null,
+        audioSpeed: Float = 1.0f,
+    ): ChunkTranscriptionTrialResult? = null
+
+    /**
+     * 「より詳しく文字起こし」ダイアログの結果テキストと言語ラベルをチャンクへ反映して保存する。
+     */
+    suspend fun applyChunkTranscriptionTrial(
+        id: MediaId,
+        chunkId: ChunkId,
+        text: String,
+        language: LanguageTag? = null,
+    ) {
+        updateChunkText(id, chunkId, text)
+    }
 
     /**
      * 指定した時刻 [splitPositionMs] でチャンクを 2 つに分割し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。

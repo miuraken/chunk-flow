@@ -33,8 +33,8 @@
     <string name="settings_engine_android_desc">Uses only the built-in OS on-device speech recognition models.</string>
     <string name="settings_engine_sherpa_title">sherpa-onnx (Whisper Tiny Local Model)</string>
     <string name="settings_engine_sherpa_desc">Prefers downloaded offline sherpa-onnx Whisper Tiny models.</string>
-    <string name="settings_engine_mlkit_title">ML Kit GenAI Speech Recognition (Future / Pixel Flagship)</string>
-    <string name="settings_engine_mlkit_desc">Reserved for future AICore / ML Kit speech recognition on flagship Pixel devices (currently behaves like Auto).</string>
+    <string name="settings_engine_mlkit_title">ML Kit GenAI Speech Recognition (AICore Devices)</string>
+    <string name="settings_engine_mlkit_desc">Prefers Google ML Kit GenAI (AICore) speech recognition on supported devices, falling back like Auto for unsupported devices or languages.</string>
     <string name="settings_section_speech_models">Speech Recognition Models</string>
     <string name="settings_speech_models_description">Manage per-language OS models (SpeechRecognizer) and local fallback models (sherpa-onnx), including downloading and deleting models.</string>
     <string name="settings_speech_models_refresh">Refresh status</string>

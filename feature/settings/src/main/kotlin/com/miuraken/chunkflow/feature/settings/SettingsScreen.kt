@@ -775,20 +775,50 @@ private fun modelStatusStyle(
 }
 
 @Composable
-private fun speechModelLanguageDisplayName(language: LanguageTag): String = when (language.value.lowercase(Locale.ROOT)) {
-    "en" -> stringResource(R.string.settings_lang_en)
-    "ja" -> stringResource(R.string.settings_lang_ja)
-    "ko" -> stringResource(R.string.settings_lang_ko)
-    "zh" -> stringResource(R.string.settings_lang_zh)
-    "yue" -> stringResource(R.string.settings_lang_yue)
-    "hi" -> stringResource(R.string.settings_lang_hi)
-    "vi" -> stringResource(R.string.settings_lang_vi)
-    "ru" -> stringResource(R.string.settings_lang_ru)
-    "es" -> stringResource(R.string.settings_lang_es)
-    "de" -> stringResource(R.string.settings_lang_de)
-    "el" -> stringResource(R.string.settings_lang_el)
-    "id" -> stringResource(R.string.settings_lang_id)
-    else -> language.value.uppercase(Locale.ROOT)
+private fun speechModelLanguageDisplayName(language: LanguageTag): String {
+    val code = language.value.lowercase(Locale.ROOT)
+    return when (code) {
+        "en" -> stringResource(R.string.settings_lang_en)
+
+        "ja" -> stringResource(R.string.settings_lang_ja)
+
+        "ko" -> stringResource(R.string.settings_lang_ko)
+
+        "zh" -> stringResource(R.string.settings_lang_zh)
+
+        "yue" -> stringResource(R.string.settings_lang_yue)
+
+        "hi" -> stringResource(R.string.settings_lang_hi)
+
+        "vi" -> stringResource(R.string.settings_lang_vi)
+
+        "ru" -> stringResource(R.string.settings_lang_ru)
+
+        "es" -> stringResource(R.string.settings_lang_es)
+
+        "de" -> stringResource(R.string.settings_lang_de)
+
+        "el" -> stringResource(R.string.settings_lang_el)
+
+        "id" -> stringResource(R.string.settings_lang_id)
+
+        else -> {
+            val currentLocale = androidx.compose.ui.text.intl.Locale.current.platformLocale
+            val entry = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(code)
+            val isJapanese = currentLocale.language.equals("ja", ignoreCase = true)
+            val displayName = if (isJapanese) {
+                entry?.japaneseName
+            } else {
+                entry?.englishName
+            } ?: Locale.forLanguageTag(code).getDisplayLanguage(currentLocale)
+                .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
+            if (displayName != null) {
+                "$displayName ($code)"
+            } else {
+                language.value.uppercase(Locale.ROOT)
+            }
+        }
+    }
 }
 
 @Composable

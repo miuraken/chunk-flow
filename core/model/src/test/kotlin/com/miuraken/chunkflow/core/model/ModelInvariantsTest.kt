@@ -93,4 +93,25 @@ class ModelInvariantsTest {
         assertFailsWith<IllegalArgumentException> { Bookmark(mediaId = id, positionMs = -1L) }
         assertEquals(0L, Bookmark(mediaId = id, positionMs = 0L).positionMs)
     }
+
+    @Test
+    fun `SupportedLanguageCatalog_主要エンジン対応言語を網羅し先頭がjaとenで残りがコード順になる`() {
+        val all = SupportedLanguageCatalog.ALL_ENTRIES
+        kotlin.test.assertTrue(all.size >= 110, "Expected >= 110 languages, got ${all.size}")
+
+        val modelTags = SupportedLanguageCatalog.MODEL_MANAGEMENT_LANGUAGE_TAGS
+        assertEquals(LanguageTag("ja"), modelTags[0])
+        assertEquals(LanguageTag("en"), modelTags[1])
+
+        val itemEntries = SupportedLanguageCatalog.ITEM_LANGUAGE_ENTRIES
+        val itemCodes = itemEntries.map { it.code }
+        assertEquals(itemCodes.sorted(), itemCodes)
+
+        assertEquals("ja-JP", SupportedLanguageCatalog.toBcp47Tag("ja"))
+        assertEquals("cmn-Hans-CN", SupportedLanguageCatalog.toBcp47CandidateTags("zh")[1])
+        assertEquals("zh", SupportedLanguageCatalog.normalizeToModelManagementCode("cmn-Hans-CN"))
+        assertEquals("zh-tw", SupportedLanguageCatalog.normalizeToCatalogCode("cmn-Hant-TW"))
+        assertEquals("yue", SupportedLanguageCatalog.normalizeToCatalogCode("yue-Hant-HK"))
+        assertEquals("tl", SupportedLanguageCatalog.normalizeToCatalogCode("fil-PH"))
+    }
 }

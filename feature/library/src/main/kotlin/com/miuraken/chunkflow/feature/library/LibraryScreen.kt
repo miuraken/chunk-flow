@@ -106,25 +106,10 @@ internal data class LanguageDropdownOption(
     val label: String,
 )
 
-internal val ALPHABETICAL_LANGUAGE_OPTIONS: List<LanguageDropdownOption> = listOf(
-    LanguageDropdownOption("de", "de - ドイツ語"),
-    LanguageDropdownOption("el", "el - ギリシャ語"),
-    LanguageDropdownOption("en", "en - 英語"),
-    LanguageDropdownOption("es", "es - スペイン語"),
-    LanguageDropdownOption("fr", "fr - フランス語"),
-    LanguageDropdownOption("hi", "hi - ヒンディー語"),
-    LanguageDropdownOption("id", "id - インドネシア語"),
-    LanguageDropdownOption("it", "it - イタリア語"),
-    LanguageDropdownOption("ja", "ja - 日本語"),
-    LanguageDropdownOption("ko", "ko - 韓国語"),
-    LanguageDropdownOption("pt", "pt - ポルトガル語"),
-    LanguageDropdownOption("ru", "ru - ロシア語"),
-    LanguageDropdownOption("th", "th - タイ語"),
-    LanguageDropdownOption("vi", "vi - ベトナム語"),
-    LanguageDropdownOption("yue", "yue - 広東語"),
-    LanguageDropdownOption("zh-cn", "zh-cn - 簡体中国語"),
-    LanguageDropdownOption("zh-tw", "zh-tw - 繁体中国語"),
-)
+internal val ALPHABETICAL_LANGUAGE_OPTIONS: List<LanguageDropdownOption> =
+    com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.ITEM_LANGUAGE_ENTRIES.map { entry ->
+        LanguageDropdownOption(code = entry.code, label = "${entry.code} - ${entry.japaneseName}")
+    }
 
 internal fun normalizeDialogLanguageCode(rawCode: String): String {
     val cleaned = rawCode.trim().lowercase(Locale.ROOT).replace('_', '-')

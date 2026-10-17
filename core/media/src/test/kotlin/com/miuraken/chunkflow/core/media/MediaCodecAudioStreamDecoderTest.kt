@@ -226,6 +226,65 @@ class MediaCodecAudioStreamDecoderTest {
     }
 
     @Test
+    fun `decodeCoarseOverviewWaveform_音声の秒数と横幅から算出した間隔でseekToサンプリングし全体長の波形を即座に生成する`() = runTest {
+        val tempDir = Files.createTempDirectory("cf_coarse_test").toFile()
+        try {
+            val audioFile = File(tempDir, "overview.m4a").apply { writeBytes(ByteArray(64) { 1 }) }
+            val inputRate = 16_000
+            val channels = 1
+            // 10秒 (10,000ms) の音声を 4 カラム (2,500ms 間隔) でシークサンプリングするケース
+            val trackFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", inputRate, channels).apply {
+                setLong(MediaFormat.KEY_DURATION, 10_000_000L)
+            }
+
+            // 500ms ごとに 20 パケット (0ms..9,500ms) を配置し、4 カラム (0ms, 2,500ms, 5,000ms, 7,500ms) でシークさせる
+            val packets = (0 until 20).map { pktIdx ->
+                val colIdx = (pktIdx / 5).coerceIn(0, 3)
+                val amp = listOf(0.2f, 0.4f, 0.6f, 0.8f)[colIdx]
+                val shortVal = (amp * Short.MAX_VALUE).toInt().toShort()
+                val frames = 320 // 20ms @ 16kHz
+                val pcmBytes = ByteBuffer.allocate(frames * 2).order(ByteOrder.nativeOrder()).apply {
+                    repeat(frames) { putShort(shortVal) }
+                }.array()
+                FakePacket(ptsUs = pktIdx * 500_000L, pcmBytes = pcmBytes)
+            }
+
+            val extractorSession = FakeExtractorSession(trackFormat, packets)
+            val codecSession = FakeCodecSession(
+                outputFormat = MediaFormat.createAudioFormat("audio/raw", inputRate, channels).apply {
+                    setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+                },
+            )
+            val decoder = MediaCodecAudioStreamDecoder(
+                extractorOpener = { extractorSession },
+                codecCreator = { _, _ -> codecSession },
+            )
+
+            val waveform = decoder.decodeCoarseOverviewWaveform(
+                file = audioFile,
+                expectedDurationMs = 10_000L,
+                targetColumns = 4,
+            )
+            kotlin.test.assertNotNull(waveform)
+            assertEquals(10, waveform.binMs)
+            assertEquals(1_000, waveform.peak.size)
+            assertEquals(10_000L, waveform.durationMs)
+            assertEquals(3, extractorSession.seekHistoryUs.size)
+            assertTrue(codecSession.flushCount >= 3)
+
+            // 4 カラム分の振幅が段階的に大きく展開されていること
+            val p0 = waveform.peak[0].toInt() and 0xFF
+            val p1 = waveform.peak[250].toInt() and 0xFF
+            val p2 = waveform.peak[500].toInt() and 0xFF
+            val p3 = waveform.peak[750].toInt() and 0xFF
+            assertTrue(p0 > 0, "p0=$p0")
+            assertTrue(p1 > p0 && p2 > p1 && p3 > p2, "p0=$p0, p1=$p1, p2=$p2, p3=$p3")
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `decodeFromPosition_seekToが先頭に着地しても圧縮のまま読み飛ばし開始位置の500ms手前からだけデコーダに渡す`() = runTest {
         val tempDir = Files.createTempDirectory("cf_range_skip").toFile()
         try {
@@ -519,6 +578,7 @@ class MediaCodecAudioStreamDecoderTest {
         private var currentOutputBytes: ByteArray? = null
         private var emittedFormatChange = false
         var closed = false
+        var flushCount = 0
 
         /** デコーダに渡された入力（EOS を除く）の PTS（渡された順）。 */
         val queuedInputPtsUs = mutableListOf<Long>()
@@ -564,6 +624,12 @@ class MediaCodecAudioStreamDecoderTest {
         override fun getOutputBuffer(index: Int): ByteBuffer? = currentOutputBytes?.let { ByteBuffer.wrap(it).order(ByteOrder.nativeOrder()) }
 
         override fun releaseOutputBuffer(index: Int, render: Boolean) {
+            currentOutputBytes = null
+        }
+
+        override fun flush() {
+            flushCount += 1
+            queuedOutputs.clear()
             currentOutputBytes = null
         }
 

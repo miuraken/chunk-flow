@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import java.util.Locale
 
 /**
@@ -44,27 +45,12 @@ internal data class ItemLanguageOption(
 /**
  * 言語のプルダウンに並べる言語（コードのアルファベット順）。
  *
- * ライブラリの教材設定（`feature:library`）と同じ並び・表記にそろえる（feature モジュール間で依存できないため複製している）。
+ * `SpeechRecognizer` / `sherpa-onnx` (Whisper) / `ML Kit` で利用可能な全言語を [SupportedLanguageCatalog] から取得する。
  */
-internal val ITEM_LANGUAGE_OPTIONS: List<ItemLanguageOption> = listOf(
-    ItemLanguageOption("de", "de - ドイツ語"),
-    ItemLanguageOption("el", "el - ギリシャ語"),
-    ItemLanguageOption("en", "en - 英語"),
-    ItemLanguageOption("es", "es - スペイン語"),
-    ItemLanguageOption("fr", "fr - フランス語"),
-    ItemLanguageOption("hi", "hi - ヒンディー語"),
-    ItemLanguageOption("id", "id - インドネシア語"),
-    ItemLanguageOption("it", "it - イタリア語"),
-    ItemLanguageOption("ja", "ja - 日本語"),
-    ItemLanguageOption("ko", "ko - 韓国語"),
-    ItemLanguageOption("pt", "pt - ポルトガル語"),
-    ItemLanguageOption("ru", "ru - ロシア語"),
-    ItemLanguageOption("th", "th - タイ語"),
-    ItemLanguageOption("vi", "vi - ベトナム語"),
-    ItemLanguageOption("yue", "yue - 広東語"),
-    ItemLanguageOption("zh-cn", "zh-cn - 簡体中国語"),
-    ItemLanguageOption("zh-tw", "zh-tw - 繁体中国語"),
-)
+internal val ITEM_LANGUAGE_OPTIONS: List<ItemLanguageOption> =
+    SupportedLanguageCatalog.ITEM_LANGUAGE_ENTRIES.map { entry ->
+        ItemLanguageOption(code = entry.code, label = "${entry.code} - ${entry.japaneseName}")
+    }
 
 /**
  * 言語コードをプルダウンの選択肢のコードにそろえる（小文字にし、`_` を `-` にし、中国語の表記ゆれをまとめる）。

@@ -80,6 +80,7 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
+import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
@@ -91,6 +92,7 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.playback.PositionProvider
@@ -231,6 +233,8 @@ fun PlayerScreen(
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showResegmentSheet by remember { mutableStateOf(false) }
     val seekBackSeconds = (state.seekBackMs / 1_000L).toInt().coerceAtLeast(1)
+    val isAudioAnalysisRunning = state.analysis[AnalysisStage.FEATURES] is StageStatus.Running ||
+        state.analysis[AnalysisStage.SEGMENTATION] is StageStatus.Running
 
     Scaffold(
         modifier = modifier,
@@ -259,20 +263,33 @@ fun PlayerScreen(
                     }
                 },
                 actions = {
-                    if (state.isTranscriptionCompleted) {
+                    if (state.isTranscriptionCompleted && state.lookaheadStatus.inFlightChunkId == null) {
                         Text(
                             text = "✅️",
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.padding(horizontal = 8.dp),
                         )
                     } else {
-                        val isTranscribeOn = state.lookaheadStatus.enabled
+                        val isTranscribeOn = state.lookaheadStatus.enabled ||
+                            state.lookaheadStatus.isForcedChunkInFlight
+                        val baseChipLabel = stringResource(R.string.player_chip_transcribe)
+                        val chipLabel = if (isTranscribeOn && state.lookaheadStatus.totalTargetCount > 0) {
+                            "$baseChipLabel ${state.lookaheadStatus.completedCount}/${state.lookaheadStatus.totalTargetCount}"
+                        } else {
+                            baseChipLabel
+                        }
                         FilterChip(
                             selected = isTranscribeOn,
-                            onClick = { onEvent(PlayerEvent.SetLookaheadEnabled(!isTranscribeOn)) },
+                            onClick = {
+                                if (isTranscribeOn) {
+                                    onEvent(PlayerEvent.SetLookaheadEnabled(false))
+                                } else {
+                                    onEvent(PlayerEvent.SetLookaheadEnabled(true))
+                                }
+                            },
                             label = {
                                 Text(
-                                    text = stringResource(R.string.player_chip_transcribe),
+                                    text = chipLabel,
                                     fontWeight = if (isTranscribeOn) FontWeight.SemiBold else FontWeight.Normal,
                                     maxLines = 1,
                                 )
@@ -387,6 +404,7 @@ fun PlayerScreen(
                             transcriptImportBanner = state.transcriptImportBanner,
                             positionProvider = positionProvider,
                             lookaheadStatus = state.lookaheadStatus,
+                            isAudioAnalysisRunning = isAudioAnalysisRunning,
                             localTranscriptExported = state.localTranscriptExported,
                             transcriptExportBanner = state.transcriptExportBanner,
                             onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
@@ -421,11 +439,40 @@ fun PlayerScreen(
                             onSetLookaheadEnabled = { enabled ->
                                 onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
                             },
+                            onResetTranscription = {
+                                onEvent(PlayerEvent.ResetTranscription)
+                            },
                             onExportLocalTranscriptJson = {
                                 onEvent(PlayerEvent.ExportLocalTranscriptJson)
                             },
                             onRequestRecognitionModelDownload = { language ->
                                 onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
+                            },
+                            detailedTranscriptionDialog = state.detailedTranscriptionDialog,
+                            onOpenDetailedTranscription = { chunkId ->
+                                onEvent(PlayerEvent.OpenDetailedTranscription(chunkId))
+                            },
+                            onDismissDetailedTranscription = {
+                                onEvent(PlayerEvent.DismissDetailedTranscription)
+                            },
+                            onRunDetailedTranscriptionTrial = { chunkId, engine, languageOverride, audioSpeed ->
+                                onEvent(
+                                    PlayerEvent.RunDetailedTranscriptionTrial(
+                                        chunkId = chunkId,
+                                        engine = engine,
+                                        languageOverride = languageOverride,
+                                        audioSpeed = audioSpeed,
+                                    ),
+                                )
+                            },
+                            onApplyDetailedTranscriptionResult = { chunkId, text, language ->
+                                onEvent(
+                                    PlayerEvent.ApplyDetailedTranscriptionResult(
+                                        chunkId = chunkId,
+                                        text = text,
+                                        language = language,
+                                    ),
+                                )
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -496,6 +543,7 @@ fun PlayerScreen(
                         transcriptImportBanner = state.transcriptImportBanner,
                         positionProvider = positionProvider,
                         lookaheadStatus = state.lookaheadStatus,
+                        isAudioAnalysisRunning = isAudioAnalysisRunning,
                         localTranscriptExported = state.localTranscriptExported,
                         transcriptExportBanner = state.transcriptExportBanner,
                         onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
@@ -530,11 +578,40 @@ fun PlayerScreen(
                         onSetLookaheadEnabled = { enabled ->
                             onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
                         },
+                        onResetTranscription = {
+                            onEvent(PlayerEvent.ResetTranscription)
+                        },
                         onExportLocalTranscriptJson = {
                             onEvent(PlayerEvent.ExportLocalTranscriptJson)
                         },
                         onRequestRecognitionModelDownload = { language ->
                             onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
+                        },
+                        detailedTranscriptionDialog = state.detailedTranscriptionDialog,
+                        onOpenDetailedTranscription = { chunkId ->
+                            onEvent(PlayerEvent.OpenDetailedTranscription(chunkId))
+                        },
+                        onDismissDetailedTranscription = {
+                            onEvent(PlayerEvent.DismissDetailedTranscription)
+                        },
+                        onRunDetailedTranscriptionTrial = { chunkId, engine, languageOverride, audioSpeed ->
+                            onEvent(
+                                PlayerEvent.RunDetailedTranscriptionTrial(
+                                    chunkId = chunkId,
+                                    engine = engine,
+                                    languageOverride = languageOverride,
+                                    audioSpeed = audioSpeed,
+                                ),
+                            )
+                        },
+                        onApplyDetailedTranscriptionResult = { chunkId, text, language ->
+                            onEvent(
+                                PlayerEvent.ApplyDetailedTranscriptionResult(
+                                    chunkId = chunkId,
+                                    text = text,
+                                    language = language,
+                                ),
+                            )
                         },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -619,6 +696,10 @@ fun PlayerScreen(
                 onApply = { params ->
                     onEvent(PlayerEvent.Resegment(params))
                     showResegmentSheet = false
+                },
+                onOpenGlobalSettings = {
+                    showResegmentSheet = false
+                    onOpenPlaybackSettings()
                 },
                 onClose = { showResegmentSheet = false },
             )
@@ -1242,6 +1323,7 @@ private fun ResegmentSheetContent(
     onExportTranscript: (TranscriptExportFormat) -> Unit,
     onResetTranscripts: () -> Unit,
     onApply: (SegmentationParams) -> Unit,
+    onOpenGlobalSettings: () -> Unit,
     onClose: () -> Unit,
 ) {
     var minSilenceMs by remember(initialParams) { mutableIntStateOf(initialParams.minSilenceMs) }
@@ -1474,6 +1556,21 @@ private fun ResegmentSheetContent(
             ) {
                 Text(text = stringResource(R.string.player_resegment_apply))
             }
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        OutlinedButton(
+            onClick = onOpenGlobalSettings,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Tune,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(text = stringResource(R.string.player_open_global_settings))
         }
     }
 

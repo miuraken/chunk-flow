@@ -277,12 +277,18 @@ class SettingsViewModelTest {
             zhDownloading.status,
         )
 
-        // インストール完了後に状態更新すると INSTALLED になる
+        // インストール完了＋端末で新規言語 (例: en-AU) が検出された後に「状態を更新」すると、対応言語リストも最新化される
         analysisRepo.languageModelInfos[LanguageTag("zh")] =
             com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
                 language = LanguageTag("zh"),
                 status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
                 resolvedBcp47Tag = "cmn-Hans-CN",
+            )
+        analysisRepo.languageModelInfos[LanguageTag("en-AU")] =
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                language = LanguageTag("en-AU"),
+                status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                resolvedBcp47Tag = "en-AU",
             )
         viewModel.onEvent(SettingsEvent.RefreshRecognitionModels)
         val zhInstalled = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
@@ -290,6 +296,13 @@ class SettingsViewModelTest {
             com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
             zhInstalled.status,
         )
+        assertTrue(
+            viewModel.uiState.value.languageModels.any { it.language == LanguageTag("en-AU") },
+        )
+        val refreshedDeviceLanguages = SettingsUiState.availableDeviceLanguages(
+            viewModel.uiState.value.languageModels,
+        )
+        assertTrue(refreshedDeviceLanguages.any { it.tag == LanguageTag("en-AU") })
     }
 
     @Test

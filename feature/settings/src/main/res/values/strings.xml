@@ -33,8 +33,8 @@
     <string name="settings_engine_android_desc">OS 標準の端末内音声認識モデルのみを使用します。</string>
     <string name="settings_engine_sherpa_title">sherpa-onnx（Whisper Tiny ローカルモデル）</string>
     <string name="settings_engine_sherpa_desc">ダウンロード済みの sherpa-onnx オフラインモデルを優先して使用します。</string>
-    <string name="settings_engine_mlkit_title">ML Kit GenAI Speech Recognition（Pixel 上位機種向け・将来対応）</string>
-    <string name="settings_engine_mlkit_desc">将来的に Pixel 上位モデル向けの AICore / ML Kit 音声認識を使用します（現在は自動モードとして動作）。</string>
+    <string name="settings_engine_mlkit_title">ML Kit GenAI Speech Recognition（AICore 対応機種向け）</string>
+    <string name="settings_engine_mlkit_desc">対応端末では Google ML Kit GenAI (AICore) 音声認識を優先使用し、非対応の端末や言語では自動モードと同様に補完します。</string>
     <string name="settings_section_speech_models">音声認識モデルの管理</string>
     <string name="settings_speech_models_description">言語ごとの OS 標準モデル（SpeechRecognizer）とローカル補完モデル（sherpa-onnx）の対応状況・取得・削除を管理します。</string>
     <string name="settings_speech_models_refresh">状態を更新</string>

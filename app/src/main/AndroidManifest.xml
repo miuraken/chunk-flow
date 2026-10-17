@@ -27,9 +27,15 @@
         <intent>
             <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
         <package android:name="com.google.android.as" />
         <package android:name="com.google.android.tts" />
         <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.apps.translate" />
     </queries>
 
     <!-- WorkManager（androidx.work:work-runtime）が持ち込む RECEIVE_BOOT_COMPLETED を §8.2 の一覧に合わせて取り除く -->

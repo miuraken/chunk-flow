@@ -1,5 +1,10 @@
 package com.miuraken.chunkflow.feature.player
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -32,19 +37,24 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -53,6 +63,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,6 +76,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
@@ -80,6 +92,7 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
@@ -92,10 +105,16 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
+import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
+import com.miuraken.chunkflow.core.model.TranscriptionDiagnosticEntry
+import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.playback.PositionProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.Locale as JavaLocale
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlinx.coroutines.delay
@@ -104,6 +123,9 @@ import kotlinx.coroutines.launch
 
 /** 手動スクロール後に自動追従を再開するまでの待機時間（5 秒、§7.5.5）。 */
 private const val AUTO_FOLLOW_RESUME_DELAY_MS: Long = 5_000L
+
+/** 1 チャンクの文字起こしが停滞しているとみなして警告を出す経過時間（8 秒）。 */
+private const val TRANSCRIPTION_STALL_WARNING_MS: Long = 8_000L
 
 /**
  * チャンクごとの文字起こし進捗段階。
@@ -125,17 +147,21 @@ internal enum class ChunkTranscriptionStage {
 /**
  * チャンク [chunk] と先読み状態 [lookaheadStatus] から 2 段階の文字起こし状態を判定する。
  *
- * 本文がなく、チャンクの言語の音声認識モデルが使えない場合は [ChunkTranscriptionStage.MODEL_UNAVAILABLE] を返す。
+ * - 強制文字起こし中（`isForcedChunkInFlight == true` かつ `chunk.id == inFlightChunkId`）は本文の有無によらず [ChunkTranscriptionStage.TRANSCRIBING] を返す。
+ * - 本文がなく、チャンクの言語の音声認識モデルが使えない場合は [ChunkTranscriptionStage.MODEL_UNAVAILABLE] を返す。
+ * - 認識結果が空でスキップ済みのチャンク（`skippedEmptyChunkIds`）や、全対象チャンクの試行が完了した後は [ChunkTranscriptionStage.IDLE] に戻し、「待機中…」のまま残らないようにする。
  */
 internal fun resolveChunkTranscriptionStage(
     chunk: ChunkUi,
     lookaheadStatus: LookaheadTranscriptionStatus,
 ): ChunkTranscriptionStage {
+    if (chunk.id == lookaheadStatus.inFlightChunkId &&
+        (chunk.text.isNullOrBlank() || lookaheadStatus.isForcedChunkInFlight)
+    ) {
+        return ChunkTranscriptionStage.TRANSCRIBING
+    }
     if (!chunk.text.isNullOrBlank()) {
         return ChunkTranscriptionStage.IDLE
-    }
-    if (chunk.id == lookaheadStatus.inFlightChunkId) {
-        return ChunkTranscriptionStage.TRANSCRIBING
     }
     val hasModelIssue = lookaheadStatus.recognitionModelIssues.keys.any { language ->
         matchesLanguageRole(chunk.language, language)
@@ -143,7 +169,17 @@ internal fun resolveChunkTranscriptionStage(
     if (hasModelIssue) {
         return ChunkTranscriptionStage.MODEL_UNAVAILABLE
     }
-    if (chunk.id in lookaheadStatus.queuedChunkIds || lookaheadStatus.enabled) {
+    if (chunk.id in lookaheadStatus.skippedEmptyChunkIds) {
+        return ChunkTranscriptionStage.IDLE
+    }
+    if (chunk.id in lookaheadStatus.queuedChunkIds) {
+        return ChunkTranscriptionStage.WAITING
+    }
+    val allTargetsAttempted = lookaheadStatus.totalTargetCount > 0 &&
+        lookaheadStatus.completedCount >= lookaheadStatus.totalTargetCount &&
+        lookaheadStatus.inFlightChunkId == null &&
+        lookaheadStatus.queuedChunkIds.isEmpty()
+    if (lookaheadStatus.enabled && !allTargetsAttempted) {
         return ChunkTranscriptionStage.WAITING
     }
     return ChunkTranscriptionStage.IDLE
@@ -275,6 +311,7 @@ fun TranscriptList(
     showTargetRomanization: Boolean = false,
     positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
+    isAudioAnalysisRunning: Boolean = false,
     localTranscriptExported: Boolean = false,
     transcriptExportBanner: TranscriptExportBannerState? = null,
     onDismissExportBanner: () -> Unit = {},
@@ -283,13 +320,20 @@ fun TranscriptList(
     onUpdateChunkLanguage: (ChunkId, LanguageTag?) -> Unit = { _, _ -> },
     onUpdateChunkText: (ChunkId, String) -> Unit = { _, _ -> },
     onRetranscribeChunk: (ChunkId) -> Unit = {},
-    onSplitChunk: (ChunkId, Long) -> Unit = { _, _ -> },
-    onMergeWithNextChunk: (ChunkId) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onSplitChunk: (ChunkId, Long) -> Unit = { _, _ -> },
+    @Suppress("UNUSED_PARAMETER") onMergeWithNextChunk: (ChunkId) -> Unit = {},
     onMoveChunkBoundary: (ChunkId, Long, Long) -> Unit = { _, _, _ -> },
     onBulkSetUnknownLanguage: (LanguageTag) -> Unit = {},
-    onSetLookaheadEnabled: (Boolean) -> Unit = {},
+    @Suppress("UNUSED_PARAMETER") onSetLookaheadEnabled: (Boolean) -> Unit = {},
+    onResetTranscription: () -> Unit = {},
     onExportLocalTranscriptJson: () -> Unit = {},
     onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
+    detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
+    onOpenDetailedTranscription: (ChunkId) -> Unit = {},
+    onDismissDetailedTranscription: () -> Unit = {},
+    onRunDetailedTranscriptionTrial: (ChunkId, OnDeviceTranscriptionEngine, LanguageTag?, Float) -> Unit =
+        { _, _, _, _ -> },
+    onApplyDetailedTranscriptionResult: (ChunkId, String, LanguageTag?) -> Unit = { _, _, _ -> },
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
@@ -300,6 +344,7 @@ fun TranscriptList(
     var manualScrollTick by remember { mutableLongStateOf(0L) }
     var rangeSelectionStartChunkId by remember { mutableStateOf<ChunkId?>(null) }
     var editingTextChunk by remember { mutableStateOf<Pair<Int, ChunkUi>?>(null) }
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
 
     // ユーザーによる手動スクロールの検出
     LaunchedEffect(listState.isScrollInProgress) {
@@ -342,6 +387,9 @@ fun TranscriptList(
         resolveLoopChunkIds(loopMode, chunks)
     }
 
+    val isTranscriptionActive = lookaheadStatus.inFlightChunkId != null ||
+        (lookaheadStatus.enabled && lookaheadStatus.queuedChunkIds.isNotEmpty())
+
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             transcriptImportBanner?.let { banner ->
@@ -360,7 +408,46 @@ fun TranscriptList(
                 )
             }
 
-            if (localTranscriptExported) {
+            if (isTranscriptionActive) {
+                val activeChunkNumber = lookaheadStatus.inFlightChunkId?.let { inFlightId ->
+                    chunks.indexOfFirst { it.id == inFlightId }.takeIf { it >= 0 }?.plus(1)
+                }
+                TranscriptionProgressBanner(
+                    lookaheadStatus = lookaheadStatus,
+                    inFlightChunkNumber = activeChunkNumber,
+                    isAudioAnalysisRunning = isAudioAnalysisRunning,
+                    onAbortTranscription = onResetTranscription,
+                    onOpenDiagnostics = { showDiagnosticsDialog = true },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            } else if (lookaheadStatus.diagnostics.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (localTranscriptExported) {
+                        AssistChip(
+                            onClick = onExportLocalTranscriptJson,
+                            label = { Text(text = stringResource(R.string.player_lookahead_exported_badge)) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            },
+                        )
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    AssistChip(
+                        onClick = { showDiagnosticsDialog = true },
+                        label = { Text(text = stringResource(R.string.player_transcription_diagnostics_button)) },
+                    )
+                }
+            } else if (localTranscriptExported) {
                 LookaheadAndExportBanner(
                     localTranscriptExported = localTranscriptExported,
                     onExportLocalTranscriptJson = onExportLocalTranscriptJson,
@@ -417,15 +504,23 @@ fun TranscriptList(
                         chunk = chunk,
                         lookaheadStatus = lookaheadStatus,
                     )
+                    val isThisChunkInFlight = chunk.id == lookaheadStatus.inFlightChunkId
 
                     TranscriptChunkRow(
                         index = index,
                         chunk = chunk,
-                        hasNextChunk = index < chunks.lastIndex,
                         isActive = isActive,
                         isInLoopRange = isInLoopRange,
                         isMasked = isMasked,
                         transcriptionStage = transcriptionStage,
+                        isForcedInFlight = isThisChunkInFlight && lookaheadStatus.isForcedChunkInFlight,
+                        inFlightStep = if (isThisChunkInFlight) lookaheadStatus.inFlightStep else null,
+                        inFlightDetail = if (isThisChunkInFlight) lookaheadStatus.inFlightDetail else null,
+                        inFlightStartedAtEpochMs = if (isThisChunkInFlight) {
+                            lookaheadStatus.inFlightStartedAtEpochMs
+                        } else {
+                            null
+                        },
                         languagePair = languagePair,
                         chineseScript = chineseScript,
                         cantoneseScript = cantoneseScript,
@@ -460,10 +555,6 @@ fun TranscriptList(
                         onToggleRepeatChunk = {
                             onToggleRepeatChunk(chunk.id)
                         },
-                        onRepeatSingleInfinite = {
-                            onSetLoopMode(LoopMode.SingleChunk(chunk.id, times = null))
-                            onSeekToChunk(chunk.id)
-                        },
                         onStartRangeSelection = {
                             rangeSelectionStartChunkId = chunk.id
                         },
@@ -476,15 +567,8 @@ fun TranscriptList(
                         onRetranscribeChunk = {
                             onRetranscribeChunk(chunk.id)
                         },
-                        onSplitChunk = {
-                            val nowMs = positionProvider.currentPositionMs()
-                            val target = findSplitTargetChunk(chunks, nowMs)
-                            if (target != null) {
-                                onSplitChunk(target.id, nowMs)
-                            }
-                        },
-                        onMergeWithNextChunk = {
-                            onMergeWithNextChunk(chunk.id)
+                        onOpenDetailedTranscription = {
+                            onOpenDetailedTranscription(chunk.id)
                         },
                         onMoveChunkBoundary = { newStartMs, newEndMs ->
                             onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
@@ -529,6 +613,18 @@ fun TranscriptList(
         }
     }
 
+    if (showDiagnosticsDialog) {
+        TranscriptionDiagnosticsDialog(
+            lookaheadStatus = lookaheadStatus,
+            isAudioAnalysisRunning = isAudioAnalysisRunning,
+            onResetTranscription = {
+                onResetTranscription()
+                showDiagnosticsDialog = false
+            },
+            onDismiss = { showDiagnosticsDialog = false },
+        )
+    }
+
     editingTextChunk?.let { (chunkIndex, targetChunk) ->
         EditChunkTextDialog(
             chunkNumber = chunkIndex + 1,
@@ -538,6 +634,20 @@ fun TranscriptList(
                 onUpdateChunkText(targetChunk.id, newText)
             },
             onDismiss = { editingTextChunk = null },
+        )
+    }
+
+    detailedTranscriptionDialog?.let { dialogState ->
+        DetailedChunkTranscriptionDialog(
+            dialogState = dialogState,
+            languagePair = languagePair,
+            onRunTrial = { engine, langOverride, speed ->
+                onRunDetailedTranscriptionTrial(dialogState.chunkId, engine, langOverride, speed)
+            },
+            onApply = { text, lang ->
+                onApplyDetailedTranscriptionResult(dialogState.chunkId, text, lang)
+            },
+            onDismiss = onDismissDetailedTranscription,
         )
     }
 }
@@ -575,6 +685,653 @@ private fun EditChunkTextDialog(
             }
         },
     )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DetailedChunkTranscriptionDialog(
+    dialogState: DetailedTranscriptionDialogState,
+    languagePair: LanguagePair?,
+    onRunTrial: (OnDeviceTranscriptionEngine, LanguageTag?, Float) -> Unit,
+    onApply: (String, LanguageTag?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selectedEngine by remember(dialogState.chunkId) { mutableStateOf(dialogState.engine) }
+    var selectedLanguage by remember(dialogState.chunkId) { mutableStateOf(dialogState.languageOverride) }
+    var selectedSpeed by remember(dialogState.chunkId) { mutableFloatStateOf(dialogState.audioSpeed) }
+    var editableText by remember(dialogState.chunkId, dialogState.resultText, dialogState.hasAttempted) {
+        mutableStateOf(dialogState.resultText)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = stringResource(
+                    R.string.player_detailed_transcribe_dialog_title,
+                    dialogState.chunkIndex + 1,
+                ),
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.player_detailed_transcribe_engine_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    for (engine in OnDeviceTranscriptionEngine.entries) {
+                        val labelRes = when (engine) {
+                            OnDeviceTranscriptionEngine.AUTO -> R.string.player_detailed_transcribe_engine_auto
+
+                            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER ->
+                                R.string.player_detailed_transcribe_engine_os
+
+                            OnDeviceTranscriptionEngine.SHERPA_ONNX -> R.string.player_detailed_transcribe_engine_sherpa
+
+                            OnDeviceTranscriptionEngine.ML_KIT -> R.string.player_detailed_transcribe_engine_mlkit
+                        }
+                        FilterChip(
+                            selected = selectedEngine == engine,
+                            onClick = { selectedEngine = engine },
+                            label = { Text(text = stringResource(labelRes)) },
+                            enabled = !dialogState.isRunning,
+                        )
+                    }
+                }
+
+                if (languagePair != null) {
+                    Text(
+                        text = stringResource(R.string.player_detailed_transcribe_lang_label),
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        FilterChip(
+                            selected = selectedLanguage == null,
+                            onClick = { selectedLanguage = null },
+                            label = { Text(text = stringResource(R.string.player_detailed_transcribe_lang_auto)) },
+                            enabled = !dialogState.isRunning,
+                        )
+                        val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
+                        FilterChip(
+                            selected = matchesLanguageRole(selectedLanguage, languagePair.target),
+                            onClick = { selectedLanguage = languagePair.target },
+                            label = {
+                                Text(
+                                    text = stringResource(
+                                        R.string.player_detailed_transcribe_lang_target,
+                                        targetCode,
+                                    ),
+                                )
+                            },
+                            enabled = !dialogState.isRunning,
+                        )
+                        languagePair.base?.let { baseLang ->
+                            val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
+                            FilterChip(
+                                selected = matchesLanguageRole(selectedLanguage, baseLang),
+                                onClick = { selectedLanguage = baseLang },
+                                label = {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.player_detailed_transcribe_lang_base,
+                                            baseCode,
+                                        ),
+                                    )
+                                },
+                                enabled = !dialogState.isRunning,
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = stringResource(R.string.player_detailed_transcribe_speed_label),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    for (speedOption in DetailedTranscriptionDialogState.AUDIO_SPEED_OPTIONS) {
+                        val speedLabel = if (abs(speedOption - 1.0f) < 0.01f) {
+                            "1.0x"
+                        } else if (abs(speedOption - 1.5f) < 0.01f) {
+                            "1.5x"
+                        } else {
+                            String.format(JavaLocale.ROOT, "%.2fx", speedOption)
+                        }
+                        FilterChip(
+                            selected = abs(selectedSpeed - speedOption) < 0.01f,
+                            onClick = { selectedSpeed = speedOption },
+                            label = { Text(text = speedLabel) },
+                            enabled = !dialogState.isRunning,
+                        )
+                    }
+                }
+
+                FilledTonalButton(
+                    onClick = {
+                        onRunTrial(selectedEngine, selectedLanguage, selectedSpeed)
+                    },
+                    enabled = !dialogState.isRunning,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (dialogState.isRunning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = stringResource(R.string.player_detailed_transcribe_running))
+                    } else {
+                        Text(text = stringResource(R.string.player_detailed_transcribe_run_button))
+                    }
+                }
+
+                if (dialogState.recognizedEngineId != null) {
+                    val langText = (dialogState.recognizedLanguage ?: selectedLanguage)?.value
+                        ?.uppercase(JavaLocale.ROOT)
+                        ?: "-"
+                    Text(
+                        text = stringResource(
+                            R.string.player_detailed_transcribe_result_meta,
+                            dialogState.recognizedEngineId,
+                            langText,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (dialogState.hasAttempted && dialogState.resultText.isBlank() && !dialogState.isRunning) {
+                    Text(
+                        text = stringResource(R.string.player_detailed_transcribe_result_empty),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                OutlinedTextField(
+                    value = editableText,
+                    onValueChange = { editableText = it },
+                    label = { Text(text = stringResource(R.string.player_detailed_transcribe_result_label)) },
+                    enabled = !dialogState.isRunning,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val resolvedLang = dialogState.recognizedLanguage ?: selectedLanguage
+                    onApply(editableText, resolvedLang)
+                },
+                enabled = !dialogState.isRunning,
+            ) {
+                Text(text = stringResource(R.string.player_detailed_transcribe_apply))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.player_chunk_edit_cancel))
+            }
+        },
+    )
+}
+
+/**
+ * 選択した文字起こしテキストを Google 翻訳（Web / アプリ連携）で開くための URL を組み立てる。
+ *
+ * チャンクの言語（未判定なら学習言語、それもなければ `"auto"`）を翻訳元（`sl`）とし、
+ * ベース言語（未設定なら [fallbackTargetLang]）を翻訳先（`tl`）に設定する。
+ * 翻訳元と翻訳先が同一になった場合は `sl="auto"` にフォールバックする。
+ */
+internal fun buildGoogleTranslateUrl(
+    text: String,
+    chunkLanguage: LanguageTag?,
+    languagePair: LanguagePair?,
+    fallbackTargetLang: String = "ja",
+): String {
+    val rawSource = chunkLanguage?.value?.trim()?.takeUnless {
+        it.isEmpty() || it.equals("und", ignoreCase = true)
+    } ?: languagePair?.target?.value?.trim()?.takeIf { it.isNotEmpty() }
+    val normalizedSource = rawSource?.let(::normalizeGoogleTranslateLanguageCode) ?: "auto"
+
+    val rawTarget = languagePair?.base?.value?.trim()?.takeIf { it.isNotEmpty() }
+        ?: fallbackTargetLang.trim().ifEmpty { "ja" }
+    val targetLang = normalizeGoogleTranslateLanguageCode(rawTarget)
+
+    val sourceLang = if (normalizedSource.equals(targetLang, ignoreCase = true)) {
+        "auto"
+    } else {
+        normalizedSource
+    }
+
+    val trimmedText = text.trim()
+    val encodedText = URLEncoder.encode(trimmedText, StandardCharsets.UTF_8.name()).replace("+", "%20")
+    return "https://translate.google.com/?sl=$sourceLang&tl=$targetLang&text=$encodedText&op=translate"
+}
+
+/**
+ * チャンクのテキストを Google 翻訳で開く。
+ *
+ * Google 翻訳の Android アプリは `https://translate.google.com/?sl=...&tl=...&text=...` の App Link を捕捉した際に
+ * クエリ文字列（`text` / `sl` / `tl`）を破棄して空のホーム画面を開く挙動があるため、
+ * デフォルトの Web ブラウザパッケージが解決できる場合はブラウザを明示指定して Web 版 Google 翻訳（テキスト・言語指定済み）を開く。
+ * ブラウザが見つからない環境では `ACTION_PROCESS_TEXT` または通常の `ACTION_VIEW` にフォールバックする。
+ */
+internal fun openInGoogleTranslate(
+    context: Context,
+    url: String,
+    text: String,
+) {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return
+
+    // 万一ブラウザや翻訳アプリ側でパラメータが失われた場合にもすぐ貼り付けられるようクリップボードにもコピーしておく
+    runCatching {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.setPrimaryClip(ClipData.newPlainText("Chunk Flow transcript", trimmed))
+    }
+
+    val targetUri = url.toUri()
+    val pm = context.packageManager
+
+    // 1. まず汎用 https URL で Web ブラウザのパッケージを特定し、Google 翻訳アプリに横取りさせずに Web 版を開く
+    val browserProbe = Intent(Intent.ACTION_VIEW, "https://www.example.com".toUri()).apply {
+        addCategory(Intent.CATEGORY_BROWSABLE)
+    }
+    val browserPackage = runCatching {
+        val defaultResolved = pm.resolveActivity(browserProbe, 0)?.activityInfo?.packageName
+        if (!defaultResolved.isNullOrBlank() &&
+            defaultResolved != "android" &&
+            defaultResolved != "com.google.android.apps.translate"
+        ) {
+            defaultResolved
+        } else {
+            pm.queryIntentActivities(browserProbe, 0)
+                .mapNotNull { it.activityInfo?.packageName }
+                .firstOrNull { pkg ->
+                    pkg.isNotBlank() &&
+                        pkg != "android" &&
+                        pkg != "com.google.android.apps.translate"
+                }
+        }
+    }.getOrNull()
+
+    if (browserPackage != null) {
+        val browserOpened = runCatching {
+            val browserIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                setPackage(browserPackage)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(browserIntent)
+            true
+        }.getOrDefault(false)
+        if (browserOpened) return
+    }
+
+    // 2. ブラウザが利用できない場合は Google 翻訳アプリの PROCESS_TEXT (テキスト引き渡し) を試みる
+    val processTextOpened = runCatching {
+        val processIntent = Intent(Intent.ACTION_PROCESS_TEXT).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_PROCESS_TEXT, trimmed)
+            putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true)
+            setPackage("com.google.android.apps.translate")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(processIntent)
+        true
+    }.getOrDefault(false)
+    if (processTextOpened) return
+
+    // 3. 最終フォールバック: 通常の ACTION_VIEW
+    runCatching {
+        val fallbackIntent = Intent(Intent.ACTION_VIEW, targetUri).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(fallbackIntent)
+    }
+}
+
+internal fun normalizeGoogleTranslateLanguageCode(rawTag: String): String {
+    val normalized = rawTag.trim().replace('_', '-')
+    val lower = normalized.lowercase(JavaLocale.ROOT)
+    return when {
+        lower == "cmn" || lower == "zh" || lower.startsWith("zh-hans") || lower == "zh-cn" || lower == "zh-sg" ->
+            "zh-CN"
+
+        lower.startsWith("zh-hant") || lower == "zh-tw" || lower == "zh-hk" || lower == "zh-mo" ->
+            "zh-TW"
+
+        lower == "yue" || lower.startsWith("yue-") ->
+            "yue"
+
+        else -> normalized.substringBefore('-').lowercase(JavaLocale.ROOT).ifEmpty { "auto" }
+    }
+}
+
+@Composable
+internal fun transcriptionStepLabel(step: TranscriptionStep?): String = when (step) {
+    TranscriptionStep.WAITING_LOCK -> stringResource(R.string.player_transcription_step_waiting_lock)
+    TranscriptionStep.EXTRACTING_PCM -> stringResource(R.string.player_transcription_step_extracting_pcm)
+    TranscriptionStep.DETECTING_LANGUAGE -> stringResource(R.string.player_transcription_step_detecting_language)
+    TranscriptionStep.RECOGNIZING_PRIMARY -> stringResource(R.string.player_transcription_step_recognizing_primary)
+    TranscriptionStep.RECOGNIZING_FALLBACK -> stringResource(R.string.player_transcription_step_recognizing_fallback)
+    TranscriptionStep.SAVING -> stringResource(R.string.player_transcription_step_saving)
+    null -> stringResource(R.string.player_chunk_transcription_active)
+}
+
+/**
+ * 全体の文字起こし進捗・現在ステップ・競合や停滞の警告・中断/診断ボタンを表示するバナー。
+ */
+@Composable
+private fun TranscriptionProgressBanner(
+    lookaheadStatus: LookaheadTranscriptionStatus,
+    inFlightChunkNumber: Int?,
+    isAudioAnalysisRunning: Boolean,
+    onAbortTranscription: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val isInspectionMode = LocalInspectionMode.current
+    val startedAtMs = lookaheadStatus.inFlightStartedAtEpochMs
+    var elapsedMs by remember(startedAtMs, lookaheadStatus.inFlightChunkId) {
+        val initial = if (isInspectionMode || startedAtMs == null) {
+            0L
+        } else {
+            (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
+        }
+        mutableLongStateOf(initial)
+    }
+    if (!isInspectionMode && startedAtMs != null && lookaheadStatus.inFlightChunkId != null) {
+        LaunchedEffect(startedAtMs, lookaheadStatus.inFlightChunkId) {
+            while (isActive) {
+                elapsedMs = (System.currentTimeMillis() - startedAtMs).coerceAtLeast(0L)
+                delay(200L)
+            }
+        }
+    }
+
+    val isStalled = elapsedMs >= TRANSCRIPTION_STALL_WARNING_MS
+    val containerColor = when {
+        isStalled -> MaterialTheme.colorScheme.errorContainer
+        lookaheadStatus.isForcedChunkInFlight -> MaterialTheme.colorScheme.tertiaryContainer
+        else -> MaterialTheme.colorScheme.secondaryContainer
+    }
+    val contentColor = when {
+        isStalled -> MaterialTheme.colorScheme.onErrorContainer
+        lookaheadStatus.isForcedChunkInFlight -> MaterialTheme.colorScheme.onTertiaryContainer
+        else -> MaterialTheme.colorScheme.onSecondaryContainer
+    }
+
+    val totalCount = max(lookaheadStatus.totalTargetCount, lookaheadStatus.completedCount)
+    val stepFraction = lookaheadStatus.inFlightStep?.progressFraction ?: 0.35f
+    val overallProgress = if (totalCount > 0) {
+        val activeBonus = if (lookaheadStatus.inFlightChunkId != null) stepFraction else 0f
+        ((lookaheadStatus.completedCount.toFloat() + activeBonus) / totalCount.toFloat()).coerceIn(0f, 1f)
+    } else {
+        stepFraction
+    }
+
+    Surface(
+        color = containerColor,
+        contentColor = contentColor,
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ChunkTranscriptionSpinner(stage = ChunkTranscriptionStage.TRANSCRIBING)
+                val summaryText = if (lookaheadStatus.isForcedChunkInFlight) {
+                    stringResource(
+                        R.string.player_transcription_progress_forced_summary,
+                        lookaheadStatus.completedCount,
+                        totalCount,
+                    )
+                } else {
+                    stringResource(
+                        R.string.player_transcription_progress_summary,
+                        lookaheadStatus.completedCount,
+                        totalCount,
+                        lookaheadStatus.queuedChunkIds.size,
+                    )
+                }
+                Text(
+                    text = summaryText,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = onOpenDiagnostics,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.player_transcription_diagnostics_button),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                TextButton(
+                    onClick = onAbortTranscription,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.player_transcription_abort_button),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
+            LinearProgressIndicator(
+                progress = { overallProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+            )
+
+            val stepLabel = transcriptionStepLabel(lookaheadStatus.inFlightStep)
+            val chunkPrefix = if (inFlightChunkNumber != null) {
+                "#$inFlightChunkNumber: "
+            } else {
+                ""
+            }
+            val detailSuffix = lookaheadStatus.inFlightDetail
+                ?.takeIf { it.isNotBlank() }
+                ?.let { " [$it]" }
+                .orEmpty()
+            val elapsedSuffix = if (elapsedMs > 0L) {
+                String.format(JavaLocale.ROOT, " (%.1fs)", elapsedMs / 1_000f)
+            } else {
+                ""
+            }
+            Text(
+                text = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix",
+                style = MaterialTheme.typography.bodySmall,
+            )
+
+            if (isAudioAnalysisRunning) {
+                Text(
+                    text = stringResource(R.string.player_transcription_concurrent_analysis_notice),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+
+            if (isStalled) {
+                Text(
+                    text = stringResource(
+                        R.string.player_transcription_stall_warning,
+                        (elapsedMs / 1_000L).coerceAtLeast(1L),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 文字起こしの現在の状態・進行中ステップ・直近の診断履歴を確認し、強制リセットできるダイアログ。
+ */
+@Composable
+private fun TranscriptionDiagnosticsDialog(
+    lookaheadStatus: LookaheadTranscriptionStatus,
+    isAudioAnalysisRunning: Boolean,
+    onResetTranscription: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val stepText = lookaheadStatus.inFlightStep?.name ?: "IDLE"
+    val statusSummary = buildString {
+        appendLine("enabled=${lookaheadStatus.enabled}, engineAvailable=${lookaheadStatus.engineAvailable}")
+        appendLine(
+            "inFlightChunkId=${lookaheadStatus.inFlightChunkId?.value}, " +
+                "isForced=${lookaheadStatus.isForcedChunkInFlight}, step=$stepText",
+        )
+        appendLine("detail=${lookaheadStatus.inFlightDetail.orEmpty()}")
+        appendLine(
+            "progress=${lookaheadStatus.completedCount}/${lookaheadStatus.totalTargetCount}, " +
+                "queued=${lookaheadStatus.queuedChunkIds.size}, " +
+                "skippedEmpty=${lookaheadStatus.skippedEmptyChunkIds.size}",
+        )
+        appendLine("concurrentAudioAnalysis=$isAudioAnalysisRunning")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResource(R.string.player_transcription_diagnostics_title))
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = statusSummary.trimEnd(),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(8.dp),
+                    )
+                }
+
+                FilledTonalButton(
+                    onClick = onResetTranscription,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = stringResource(R.string.player_transcription_diagnostics_reset),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                HorizontalDivider()
+
+                if (lookaheadStatus.diagnostics.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.player_transcription_diagnostics_empty),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    for (entry in lookaheadStatus.diagnostics.asReversed()) {
+                        DiagnosticEntryCard(entry = entry)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val fullLog = buildString {
+                        appendLine("=== Transcription Status ===")
+                        appendLine(statusSummary)
+                        appendLine("=== Recent Diagnostics ===")
+                        for (entry in lookaheadStatus.diagnostics) {
+                            appendLine(
+                                "[${entry.timestampEpochMs}] [${entry.stage}] ${entry.message}" +
+                                    if (entry.isWarningOrError) " (WARN/ERR)" else "",
+                            )
+                        }
+                    }
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    clipboard?.setPrimaryClip(ClipData.newPlainText("Chunk Flow STT Diagnostics", fullLog))
+                },
+            ) {
+                Text(text = stringResource(R.string.player_transcription_diagnostics_copy))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.player_sheet_close))
+            }
+        },
+    )
+}
+
+@Composable
+private fun DiagnosticEntryCard(
+    entry: TranscriptionDiagnosticEntry,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = if (entry.isWarningOrError) {
+            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        shape = RoundedCornerShape(6.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = "[${entry.stage}]",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = entry.message,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
 }
 
 @Composable
@@ -835,7 +1592,6 @@ internal fun ChunkTranscriptionSpinner(
 private fun TranscriptChunkRow(
     index: Int,
     chunk: ChunkUi,
-    hasNextChunk: Boolean,
     isActive: Boolean,
     isInLoopRange: Boolean,
     isMasked: Boolean,
@@ -849,22 +1605,28 @@ private fun TranscriptChunkRow(
     onTimestampClick: () -> Unit,
     onToggleBookmark: () -> Unit,
     onToggleRepeatChunk: () -> Unit,
-    onRepeatSingleInfinite: () -> Unit,
     onStartRangeSelection: () -> Unit,
     onUpdateLanguage: (LanguageTag?) -> Unit,
     onRequestEditText: () -> Unit,
+    isForcedInFlight: Boolean = false,
+    inFlightStep: TranscriptionStep? = null,
+    inFlightDetail: String? = null,
+    inFlightStartedAtEpochMs: Long? = null,
     onRetranscribeChunk: () -> Unit = {},
-    onSplitChunk: () -> Unit,
-    onMergeWithNextChunk: () -> Unit,
+    onOpenDetailedTranscription: () -> Unit = {},
     onMoveChunkBoundary: (Long, Long) -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val uiLocale = LocalLocale.current.platformLocale
     val colorScheme = MaterialTheme.colorScheme
     val langPalette = chunkFlowLanguagePalette()
     val isTargetLang = matchesLanguageRole(chunk.language, languagePair?.target)
     val isBaseLang = matchesLanguageRole(chunk.language, languagePair?.base)
 
     val rowBackground = when {
+        isForcedInFlight -> colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+
         isActive -> when {
             isTargetLang -> langPalette.targetActiveRowBackground
             isBaseLang -> langPalette.baseActiveRowBackground
@@ -884,6 +1646,7 @@ private fun TranscriptChunkRow(
         else -> colorScheme.surface
     }
     val indicatorColor = when {
+        isForcedInFlight -> colorScheme.tertiary
         isActive -> colorScheme.primary
         isInLoopRange -> colorScheme.tertiary
         else -> Color.Transparent
@@ -1011,7 +1774,7 @@ private fun TranscriptChunkRow(
             }
             Spacer(modifier = Modifier.width(8.dp))
 
-            if (!displayText.isNullOrBlank()) {
+            if (!displayText.isNullOrBlank() && !isForcedInFlight) {
                 if (isMasked) {
                     Surface(
                         color = colorScheme.surfaceContainerHighest,
@@ -1103,62 +1866,103 @@ private fun TranscriptChunkRow(
                     }
                 }
             } else {
-                // 文字起こしがない（またはクリアされた）チャンク:
-                // 待機中 / 文字起こし中の2段階スピナーとステータスを表示する
-                Row(
+                // 文字起こしがない（または強制文字起こし割り込み中）チャンク:
+                // 待機中 / 文字起こし中の2段階スピナーとステップ進捗を表示する
+                Column(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        .padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    if (transcriptionStage != ChunkTranscriptionStage.IDLE) {
-                        ChunkTranscriptionSpinner(stage = transcriptionStage)
-                        val stageLabel = when (transcriptionStage) {
-                            ChunkTranscriptionStage.WAITING ->
-                                stringResource(R.string.player_chunk_transcription_waiting)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (transcriptionStage != ChunkTranscriptionStage.IDLE) {
+                            ChunkTranscriptionSpinner(stage = transcriptionStage)
+                            val stageLabel = when {
+                                isForcedInFlight ->
+                                    stringResource(R.string.player_chunk_transcription_forced_active)
 
-                            ChunkTranscriptionStage.TRANSCRIBING ->
-                                stringResource(R.string.player_chunk_transcription_active)
+                                transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING ->
+                                    transcriptionStepLabel(inFlightStep)
 
-                            ChunkTranscriptionStage.MODEL_UNAVAILABLE ->
-                                stringResource(R.string.player_chunk_transcription_model_unavailable)
+                                transcriptionStage == ChunkTranscriptionStage.WAITING ->
+                                    stringResource(R.string.player_chunk_transcription_waiting)
 
-                            ChunkTranscriptionStage.IDLE -> ""
+                                transcriptionStage == ChunkTranscriptionStage.MODEL_UNAVAILABLE ->
+                                    stringResource(R.string.player_chunk_transcription_model_unavailable)
+
+                                else -> ""
+                            }
+                            val stageColor = when {
+                                isForcedInFlight -> colorScheme.tertiary
+                                transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING -> colorScheme.primary
+                                else -> colorScheme.onSurfaceVariant
+                            }
+                            Text(
+                                text = stageLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
+                                    FontWeight.SemiBold
+                                } else {
+                                    FontWeight.Normal
+                                },
+                                color = stageColor,
+                            )
+                        } else {
+                            Text(
+                                text = stringResource(R.string.player_chunk_number_format, index + 1),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                color = colorScheme.onSurface,
+                            )
                         }
-                        val stageColor = when (transcriptionStage) {
-                            ChunkTranscriptionStage.WAITING -> colorScheme.onSurfaceVariant
-                            ChunkTranscriptionStage.TRANSCRIBING -> colorScheme.primary
-                            ChunkTranscriptionStage.MODEL_UNAVAILABLE -> colorScheme.onSurfaceVariant
-                            ChunkTranscriptionStage.IDLE -> colorScheme.onSurfaceVariant
-                        }
+                        // 時刻の範囲は左の開始時刻と重なる補足情報のため、幅が足りないときは省略して状態の表示を優先する
                         Text(
-                            text = stageLabel,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
-                                FontWeight.SemiBold
-                            } else {
-                                FontWeight.Normal
-                            },
-                            color = stageColor,
-                        )
-                    } else {
-                        Text(
-                            text = stringResource(R.string.player_chunk_number_format, index + 1),
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                            color = colorScheme.onSurface,
+                            text = "${formatDurationMs(chunk.startMs)} - ${formatDurationMs(chunk.endMs)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
                     }
-                    // 時刻の範囲は左の開始時刻と重なる補足情報のため、幅が足りないときは省略して状態の表示を優先する
-                    Text(
-                        text = "${formatDurationMs(chunk.startMs)} - ${formatDurationMs(chunk.endMs)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
+
+                    if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
+                        val stepProgress = inFlightStep?.progressFraction ?: 0.35f
+                        LinearProgressIndicator(
+                            progress = { stepProgress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                        )
+                        val detailParts = buildList {
+                            if (isForcedInFlight && inFlightStep != null) {
+                                add(transcriptionStepLabel(inFlightStep))
+                            }
+                            if (!inFlightDetail.isNullOrBlank()) {
+                                add(inFlightDetail)
+                            }
+                            if (!LocalInspectionMode.current && inFlightStartedAtEpochMs != null) {
+                                val elapsedSec =
+                                    ((System.currentTimeMillis() - inFlightStartedAtEpochMs).coerceAtLeast(0L)) / 1_000f
+                                if (elapsedSec >= 0.5f) {
+                                    add(String.format(JavaLocale.ROOT, "%.1fs", elapsedSec))
+                                }
+                            }
+                        }
+                        if (detailParts.isNotEmpty()) {
+                            Text(
+                                text = detailParts.joinToString(" • "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                 }
             }
 
@@ -1194,6 +1998,38 @@ private fun TranscriptChunkRow(
                     onRequestEditText()
                 },
             )
+            val textToUse = displayText ?: chunk.text
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_copy_text)) },
+                enabled = !textToUse.isNullOrBlank(),
+                onClick = {
+                    menuExpanded = false
+                    if (!textToUse.isNullOrBlank()) {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        clipboard?.setPrimaryClip(ClipData.newPlainText("Chunk Flow transcript", textToUse))
+                    }
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_open_google_translate)) },
+                enabled = !textToUse.isNullOrBlank(),
+                onClick = {
+                    menuExpanded = false
+                    if (!textToUse.isNullOrBlank()) {
+                        val url = buildGoogleTranslateUrl(
+                            text = textToUse,
+                            chunkLanguage = chunk.language,
+                            languagePair = languagePair,
+                            fallbackTargetLang = uiLocale.language.ifBlank { "ja" },
+                        )
+                        openInGoogleTranslate(
+                            context = context,
+                            url = url,
+                            text = textToUse,
+                        )
+                    }
+                },
+            )
             DropdownMenuItem(
                 text = { Text(text = stringResource(R.string.player_chunk_retranscribe)) },
                 onClick = {
@@ -1201,14 +2037,14 @@ private fun TranscriptChunkRow(
                     onRetranscribeChunk()
                 },
             )
-            HorizontalDivider()
             DropdownMenuItem(
-                text = { Text(text = stringResource(R.string.player_chunk_repeat_infinite)) },
+                text = { Text(text = stringResource(R.string.player_chunk_detailed_transcribe)) },
                 onClick = {
                     menuExpanded = false
-                    onRepeatSingleInfinite()
+                    onOpenDetailedTranscription()
                 },
             )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(text = stringResource(R.string.player_chunk_range_select_start)) },
                 onClick = {
@@ -1217,24 +2053,6 @@ private fun TranscriptChunkRow(
                 },
             )
             HorizontalDivider()
-            if (chunk.endMs - chunk.startMs >= 200L) {
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chunk_split_here)) },
-                    onClick = {
-                        menuExpanded = false
-                        onSplitChunk()
-                    },
-                )
-            }
-            if (hasNextChunk) {
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chunk_merge_next)) },
-                    onClick = {
-                        menuExpanded = false
-                        onMergeWithNextChunk()
-                    },
-                )
-            }
             DropdownMenuItem(
                 text = { Text(text = stringResource(R.string.player_chunk_boundary_start_minus)) },
                 onClick = {
@@ -1267,48 +2085,6 @@ private fun TranscriptChunkRow(
                     onMoveChunkBoundary(chunk.startMs, chunk.endMs + 100L)
                 },
             )
-            if (languagePair != null) {
-                HorizontalDivider()
-                val targetCode = languagePair.target.value.uppercase(JavaLocale.ROOT)
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = stringResource(
-                                R.string.player_chunk_set_lang_target,
-                                targetCode,
-                            ),
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onUpdateLanguage(languagePair.target)
-                    },
-                )
-                languagePair.base?.let { baseLang ->
-                    val baseCode = baseLang.value.uppercase(JavaLocale.ROOT)
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = stringResource(
-                                    R.string.player_chunk_set_lang_base,
-                                    baseCode,
-                                ),
-                            )
-                        },
-                        onClick = {
-                            menuExpanded = false
-                            onUpdateLanguage(baseLang)
-                        },
-                    )
-                }
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chunk_set_lang_unknown)) },
-                    onClick = {
-                        menuExpanded = false
-                        onUpdateLanguage(null)
-                    },
-                )
-            }
         }
     }
 }

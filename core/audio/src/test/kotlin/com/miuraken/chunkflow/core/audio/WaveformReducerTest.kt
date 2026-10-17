@@ -95,4 +95,51 @@ class WaveformReducerTest {
         assertNotSame(first, recomputed)
         assertTrue(recomputed.peak.contentEquals(first.peak))
     }
+
+    @Test
+    fun `低解像度全体波形の展開と30秒ごとの段階的置換_全体長を維持したまま解析済み区間を高解像度データで上書きする`() {
+        // 60秒 (6,000 ビン @ 10ms) の音声を 2 カラムの粗い全体波形として生成し、10ms ビンに展開する
+        val coarsePeak = byteArrayOf(50, 120)
+        val coarseRms = byteArrayOf(25, 60)
+        val coarseWaveform = FeatureAccumulator.expandCoarseToFineWaveform(
+            coarsePeak = coarsePeak,
+            coarseRms = coarseRms,
+            totalDurationMs = 60_000L,
+            fineBinMs = 10,
+        )
+        assertEquals(10, coarseWaveform.binMs)
+        assertEquals(6_000, coarseWaveform.peak.size)
+        assertEquals(60_000L, coarseWaveform.durationMs)
+        // 前半 3,000 ビンは 50、後半 3,000 ビンは 120
+        assertEquals(50, coarseWaveform.peak[0].toInt() and 0xFF)
+        assertEquals(50, coarseWaveform.peak[2_999].toInt() and 0xFF)
+        assertEquals(120, coarseWaveform.peak[3_000].toInt() and 0xFF)
+        assertEquals(120, coarseWaveform.peak[5_999].toInt() and 0xFF)
+
+        // 先頭 30秒 (3,000 ビン) の高解像度データが蓄積された時点で toProgressiveWaveform を呼ぶ
+        val accumulator = FeatureAccumulator(binMs = 10)
+        val finePeakAmp = 0.8f
+        val fineRmsAmp = 0.4f
+        val expectedFinePeak = DbfsQuantizer.quantize(finePeakAmp).toInt() and 0xFF
+        val expectedFineRms = DbfsQuantizer.quantize(fineRmsAmp).toInt() and 0xFF
+        for (i in 0 until FeatureAccumulator.BINS_PER_30_SECONDS) {
+            accumulator.onFrame(
+                index = i,
+                peak = finePeakAmp,
+                rms = fineRmsAmp,
+                logEnergyDb = -10f,
+            )
+        }
+
+        val progressive = accumulator.toProgressiveWaveform(coarseWaveform)
+        assertEquals(6_000, progressive.peak.size)
+        assertEquals(60_000L, progressive.durationMs)
+        // 先頭 30秒 (0 until 3,000) は高解像度データに置き換わり、後半 30秒 (3,000 until 6,000) は粗い全体波形 (120 / 60) が維持される
+        assertEquals(expectedFinePeak, progressive.peak[0].toInt() and 0xFF)
+        assertEquals(expectedFinePeak, progressive.peak[2_999].toInt() and 0xFF)
+        assertEquals(expectedFineRms, progressive.rms[0].toInt() and 0xFF)
+        assertEquals(120, progressive.peak[3_000].toInt() and 0xFF)
+        assertEquals(120, progressive.peak[5_999].toInt() and 0xFF)
+        assertEquals(60, progressive.rms[3_000].toInt() and 0xFF)
+    }
 }

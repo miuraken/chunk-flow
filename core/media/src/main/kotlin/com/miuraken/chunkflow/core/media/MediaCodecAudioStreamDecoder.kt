@@ -12,10 +12,13 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.mp3.Mp3Extractor
 import androidx.media3.inspector.MediaExtractorCompat
+import com.miuraken.chunkflow.core.audio.DbfsQuantizer
+import com.miuraken.chunkflow.core.audio.FeatureAccumulator
 import com.miuraken.chunkflow.core.audio.PcmDownmix
 import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.audio.StreamingResampler
 import com.miuraken.chunkflow.core.model.AnalysisError
+import com.miuraken.chunkflow.core.model.Waveform
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileNotFoundException
@@ -26,7 +29,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.sqrt
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -56,6 +61,7 @@ internal interface CodecSession : AutoCloseable {
     fun dequeueOutputBuffer(info: MediaCodec.BufferInfo, timeoutUs: Long): Int
     fun getOutputBuffer(index: Int): ByteBuffer?
     fun releaseOutputBuffer(index: Int, render: Boolean)
+    fun flush() {}
 }
 
 /**
@@ -276,6 +282,213 @@ class MediaCodecAudioStreamDecoder internal constructor(
         val current = rangeSession ?: return
         rangeSession = null
         runCatching { current.extractor.close() }
+    }
+
+    override suspend fun decodeCoarseOverviewWaveform(
+        file: File,
+        expectedDurationMs: Long?,
+        targetColumns: Int,
+        fineBinMs: Int,
+    ): Waveform? {
+        if (targetColumns <= 0 || fineBinMs <= 0) return null
+        if (!file.exists() || !file.isFile || !file.canRead() || file.length() <= 0L) return null
+        val extractor = try {
+            extractorOpener(file)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            return null
+        }
+
+        return try {
+            extractor.use { ex ->
+                decodeCoarseOverviewWithExtractor(
+                    extractor = ex,
+                    expectedDurationMs = expectedDurationMs,
+                    targetColumns = targetColumns,
+                    fineBinMs = fineBinMs,
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "NestedBlockDepth")
+    private suspend fun decodeCoarseOverviewWithExtractor(
+        extractor: ExtractorSession,
+        expectedDurationMs: Long?,
+        targetColumns: Int,
+        fineBinMs: Int,
+    ): Waveform? {
+        val trackIndex = (0 until extractor.trackCount).firstOrNull { idx ->
+            val mime = extractor.getTrackFormat(idx).getString(MediaFormat.KEY_MIME)
+            mime != null && (mime.startsWith("audio/") || mime == "application/ogg")
+        } ?: return null
+
+        val trackFormat = extractor.getTrackFormat(trackIndex)
+        val mime = trackFormat.getString(MediaFormat.KEY_MIME)?.takeIf { it.isNotBlank() } ?: return null
+        extractor.selectTrack(trackIndex)
+
+        val formatDurationUs = if (trackFormat.containsKey(MediaFormat.KEY_DURATION)) {
+            trackFormat.getLong(MediaFormat.KEY_DURATION).takeIf { it > 0L }
+        } else {
+            null
+        }
+        val totalDurationMs = expectedDurationMs?.takeIf { it > 0L }
+            ?: formatDurationUs?.let { it / 1_000L }
+            ?: return null
+
+        val columns = targetColumns.coerceIn(1, MAX_OVERVIEW_COLUMNS)
+        // 音声ファイルの秒数(ミリ秒) / 波形の横幅(カラム数) から、何ミリ秒ごとのデータが必要かを割り出す
+        val stepMs = (totalDurationMs / columns).coerceAtLeast(fineBinMs.toLong())
+        val stepUs = stepMs * 1_000L
+
+        val codec = try {
+            codecCreator(mime, trackFormat)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            return null
+        }
+
+        codec.use { decoder ->
+            val info = MediaCodec.BufferInfo()
+            var channels = trackFormat.intOrZero(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+            var floatPcm = trackFormat.intOr(
+                MediaFormat.KEY_PCM_ENCODING,
+                AudioFormat.ENCODING_PCM_16BIT,
+            ) == AudioFormat.ENCODING_PCM_FLOAT
+
+            val coarsePeak = ByteArray(columns)
+            val coarseRms = ByteArray(columns)
+            var shortBuf = ShortArray(0)
+            var floatBuf = FloatArray(0)
+            var monoBuf = FloatArray(4096)
+            var decodedAnySample = false
+
+            for (col in 0 until columns) {
+                currentCoroutineContext().ensureActive()
+                val targetTimeUs = col.toLong() * stepUs
+                val currentPtsUs = extractor.sampleTime
+                if (col > 0 && (currentPtsUs < 0L || targetTimeUs - currentPtsUs >= stepUs / 2L)) {
+                    runCatching { extractor.seekTo(targetTimeUs) }
+                    runCatching { decoder.flush() }
+                }
+
+                var colPeak = 0f
+                var colRms = 0f
+                var gotSample = false
+                var attempts = 0
+                var extractorEos = false
+
+                while (!gotSample && attempts < MAX_COARSE_SAMPLE_ATTEMPTS) {
+                    attempts++
+                    if (!extractorEos) {
+                        val inIdx = decoder.dequeueInputBuffer(COARSE_TIMEOUT_US)
+                        if (inIdx >= 0) {
+                            val inBuf = decoder.getInputBuffer(inIdx)
+                            if (inBuf != null) {
+                                inBuf.clear()
+                                val sampleSize = extractor.readSampleData(inBuf, 0)
+                                if (sampleSize < 0) {
+                                    decoder.queueInputBuffer(
+                                        inIdx,
+                                        0,
+                                        0,
+                                        0L,
+                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                                    )
+                                    extractorEos = true
+                                } else {
+                                    val pts = extractor.sampleTime.coerceAtLeast(0L)
+                                    decoder.queueInputBuffer(inIdx, 0, sampleSize, pts, 0)
+                                    if (!extractor.advance()) {
+                                        extractorEos = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    val outIdx = decoder.dequeueOutputBuffer(info, COARSE_TIMEOUT_US)
+                    when {
+                        outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val outFormat = decoder.outputFormat
+                            channels = outFormat.intOr(MediaFormat.KEY_CHANNEL_COUNT, channels).coerceAtLeast(1)
+                            val encoding = outFormat.intOr(
+                                MediaFormat.KEY_PCM_ENCODING,
+                                AudioFormat.ENCODING_PCM_16BIT,
+                            )
+                            floatPcm = encoding == AudioFormat.ENCODING_PCM_FLOAT
+                        }
+
+                        outIdx >= 0 -> {
+                            if (info.size > 0) {
+                                val outBuf = decoder.getOutputBuffer(outIdx)
+                                if (outBuf != null) {
+                                    outBuf.position(info.offset)
+                                    outBuf.limit(info.offset + info.size)
+                                    outBuf.order(ByteOrder.nativeOrder())
+                                    val frameCount = if (floatPcm) {
+                                        val sampleCount = info.size / 4
+                                        val frames = sampleCount / channels
+                                        if (frames > 0) {
+                                            val needed = frames * channels
+                                            if (floatBuf.size < needed) floatBuf = FloatArray(needed)
+                                            outBuf.asFloatBuffer().get(floatBuf, 0, needed)
+                                            if (monoBuf.size < frames) monoBuf = FloatArray(frames)
+                                            PcmDownmix.downmixFloat(floatBuf, frames, channels, monoBuf)
+                                        }
+                                        frames
+                                    } else {
+                                        val sampleCount = info.size / 2
+                                        val frames = sampleCount / channels
+                                        if (frames > 0) {
+                                            val needed = frames * channels
+                                            if (shortBuf.size < needed) shortBuf = ShortArray(needed)
+                                            outBuf.asShortBuffer().get(shortBuf, 0, needed)
+                                            if (monoBuf.size < frames) monoBuf = FloatArray(frames)
+                                            PcmDownmix.downmixS16(shortBuf, frames, channels, monoBuf)
+                                        }
+                                        frames
+                                    }
+                                    if (frameCount > 0) {
+                                        var peak = 0f
+                                        var sumSq = 0.0
+                                        for (i in 0 until frameCount) {
+                                            val v = abs(monoBuf[i])
+                                            if (v > peak) peak = v
+                                            sumSq += v.toDouble() * v.toDouble()
+                                        }
+                                        colPeak = peak.coerceIn(0f, 1f)
+                                        colRms = sqrt(sumSq / frameCount).toFloat().coerceIn(0f, 1f)
+                                        gotSample = true
+                                        decodedAnySample = true
+                                    }
+                                }
+                            }
+                            decoder.releaseOutputBuffer(outIdx, false)
+                            if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                break
+                            }
+                        }
+                    }
+                }
+                coarsePeak[col] = DbfsQuantizer.quantize(colPeak)
+                coarseRms[col] = DbfsQuantizer.quantize(colRms)
+            }
+
+            if (!decodedAnySample) return null
+            return FeatureAccumulator.expandCoarseToFineWaveform(
+                coarsePeak = coarsePeak,
+                coarseRms = coarseRms,
+                totalDurationMs = totalDurationMs,
+                fineBinMs = fineBinMs,
+            )
+        }
     }
 
     @Suppress("CyclomaticComplexMethod", "LongMethod")
@@ -544,6 +757,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
     companion object {
         private const val OUTPUT_TIMEOUT_US: Long = 5_000L
+        private const val COARSE_TIMEOUT_US: Long = 2_500L
         private const val STALL_TIMEOUT_MS: Long = 5_000L
         internal const val REPEATED_PTS_LIMIT: Int = 8
         private const val DEFAULT_PROGRESS_INTERVAL_MS: Long = 250L
@@ -559,6 +773,8 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
         /** 抽出器の `sampleTime` が入力の終わりを示す値。 */
         internal const val END_OF_INPUT_US: Long = -1L
+        private const val MAX_OVERVIEW_COLUMNS: Int = 600
+        private const val MAX_COARSE_SAMPLE_ATTEMPTS: Int = 6
 
         /**
          * 範囲デコードの開始位置へ [extractor] を進め、最初にデコーダへ渡すサンプルの時刻（µs）を返す。
@@ -666,6 +882,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 override fun dequeueOutputBuffer(info: MediaCodec.BufferInfo, timeoutUs: Long): Int = codec.dequeueOutputBuffer(info, timeoutUs)
                 override fun getOutputBuffer(index: Int): ByteBuffer? = codec.getOutputBuffer(index)
                 override fun releaseOutputBuffer(index: Int, render: Boolean) = codec.releaseOutputBuffer(index, render)
+                override fun flush() {
+                    runCatching { codec.flush() }
+                }
                 override fun close() {
                     runCatching { codec.stop() }
                     runCatching { codec.release() }

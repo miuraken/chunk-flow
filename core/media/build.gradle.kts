@@ -19,6 +19,7 @@ dependencies {
     implementation(libs.androidx.media3.inspector)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.onnxruntime.android)
+    implementation(libs.mlkit.genai.speech.recognition)
 
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.onnxruntime.jvm)
