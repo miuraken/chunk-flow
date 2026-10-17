@@ -1406,15 +1406,111 @@ class PlayerViewModelTest {
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
-        val targetChunk = sample.chunks[1]
+        // エンジン並び順と速度選択肢の仕様確認
+        assertEquals(
+            listOf(
+                com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+                com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+                com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.SHERPA_ONNX,
+            ),
+            DetailedTranscriptionDialogState.ENGINE_OPTIONS,
+        )
+        assertEquals(
+            listOf(0.5f, 0.75f, 1.0f, 1.5f),
+            DetailedTranscriptionDialogState.AUDIO_SPEED_OPTIONS,
+        )
 
-        // 1. ダイアログを開く
+        // ko は SpeechRecognizer が INSTALLED (ML Kit は UNSUPPORTED)、ja は ML Kit が INSTALLED とする
+        analysisRepo.languageModelInfos[LanguageTag("ko")] =
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                language = LanguageTag("ko"),
+                mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            )
+        analysisRepo.languageModelInfos[LanguageTag("ja")] =
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                language = LanguageTag("ja"),
+                mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            )
+
+        val targetChunk = sample.chunks[1] // ko チャンク
+
+        // 1. ダイアログを開くとチャンクの言語 (ko) が初期選択され、ko で INSTALLED の最上位エンジン (SpeechRecognizer) が自動選択される
         viewModel.onEvent(PlayerEvent.OpenDetailedTranscription(targetChunk.id))
         val openedDialog = viewModel.uiState.value.detailedTranscriptionDialog
         assertNotNull(openedDialog)
         assertEquals(targetChunk.id, openedDialog.chunkId)
+        assertEquals(LanguageTag("ko"), openedDialog.languageOverride)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            openedDialog.engine,
+        )
+        assertEquals(1.0f, openedDialog.audioSpeed)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+            openedDialog.engineStatus(
+                LanguageTag("ko"),
+                com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+            ),
+        )
         val initialChunkText = viewModel.uiState.value.chunks[1].text.orEmpty()
         assertEquals(initialChunkText, openedDialog.resultText)
+
+        // 認識言語を母語 (ja) に切り替えると、ja で INSTALLED の最上位エンジン (ML Kit) に自動切り替わる
+        viewModel.onEvent(PlayerEvent.SelectDetailedTranscriptionLanguage(LanguageTag("ja")))
+        val afterLangSwitch = viewModel.uiState.value.detailedTranscriptionDialog
+        assertNotNull(afterLangSwitch)
+        assertEquals(LanguageTag("ja"), afterLangSwitch.languageOverride)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ML_KIT,
+            afterLangSwitch.engine,
+        )
+
+        // 未インストールのエンジン (SpeechRecognizer for ja) のモデルダウンロードを要求すると、選択状態になり DOWNLOADING へ遷移する
+        viewModel.onEvent(
+            PlayerEvent.RequestDetailedTranscriptionModelDownload(
+                language = LanguageTag("ja"),
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            ),
+        )
+        val afterDownloadReq = viewModel.uiState.value.detailedTranscriptionDialog
+        assertNotNull(afterDownloadReq)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            afterDownloadReq.engine,
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.DOWNLOADING,
+            afterDownloadReq.engineStatus(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            ),
+        )
+        assertEquals(
+            listOf(LanguageTag("ja") to com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER),
+            analysisRepo.requestedSttModelDownloads,
+        )
+
+        // チャンクプレビュー再生: 元の速度 (1.25x) を保存して指定速度 (0.5x) で再生し、停止で元の速度に戻る
+        playback.setSpeed(1.25f)
+        viewModel.onEvent(
+            PlayerEvent.PlayDetailedTranscriptionChunkPreview(
+                chunkId = targetChunk.id,
+                speed = 0.5f,
+            ),
+        )
+        assertTrue(viewModel.uiState.value.detailedTranscriptionDialog?.isPreviewPlaying == true)
+        assertTrue(playback.status.value.isPlaying)
+        assertEquals(0.5f, playback.status.value.speed)
+        assertEquals(targetChunk.id, playback.status.value.currentChunkId)
+
+        viewModel.onEvent(PlayerEvent.StopDetailedTranscriptionChunkPreview)
+        assertFalse(viewModel.uiState.value.detailedTranscriptionDialog?.isPreviewPlaying == true)
+        assertFalse(playback.status.value.isPlaying)
+        assertEquals(1.25f, playback.status.value.speed)
 
         // 2. エンジンと速度倍率 (1.5x) を指定して試行を実行する
         viewModel.onEvent(

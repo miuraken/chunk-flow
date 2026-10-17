@@ -644,12 +644,28 @@ private fun PlayerChunkList(
         onRequestRecognitionModelDownload = { language ->
             onEvent(PlayerEvent.RequestRecognitionModelDownload(language))
         },
+        waveform = state.waveform,
         detailedTranscriptionDialog = state.detailedTranscriptionDialog,
         onOpenDetailedTranscription = { chunkId ->
             onEvent(PlayerEvent.OpenDetailedTranscription(chunkId))
         },
         onDismissDetailedTranscription = {
             onEvent(PlayerEvent.DismissDetailedTranscription)
+        },
+        onSelectDetailedTranscriptionLanguage = { language ->
+            onEvent(PlayerEvent.SelectDetailedTranscriptionLanguage(language))
+        },
+        onSelectDetailedTranscriptionEngine = { engine ->
+            onEvent(PlayerEvent.SelectDetailedTranscriptionEngine(engine))
+        },
+        onRequestDetailedTranscriptionModelDownload = { language, engine ->
+            onEvent(PlayerEvent.RequestDetailedTranscriptionModelDownload(language, engine))
+        },
+        onPlayDetailedTranscriptionPreview = { chunkId, speed ->
+            onEvent(PlayerEvent.PlayDetailedTranscriptionChunkPreview(chunkId, speed))
+        },
+        onStopDetailedTranscriptionPreview = {
+            onEvent(PlayerEvent.StopDetailedTranscriptionChunkPreview)
         },
         onRunDetailedTranscriptionTrial = { chunkId, engine, languageOverride, audioSpeed ->
             onEvent(
