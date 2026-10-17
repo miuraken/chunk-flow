@@ -820,12 +820,14 @@ class LibraryViewModelTest {
             setOf(LanguageTag("en"), LanguageTag("ja"), LanguageTag("ko")),
             viewModel.uiState.value.enabledLanguages.toSet(),
         )
+        assertTrue(viewModel.uiState.value.showLanguageOnboardingDialog)
         viewModel.onEvent(LibraryEvent.ToggleEnabledLanguage(LanguageTag("ko")))
         assertEquals(setOf(LanguageTag("en"), LanguageTag("ja")), viewModel.uiState.value.enabledLanguages.toSet())
         viewModel.onEvent(LibraryEvent.ToggleEnabledLanguage(LanguageTag("ja")))
         assertEquals(listOf(LanguageTag("en")), viewModel.uiState.value.enabledLanguages)
         viewModel.onEvent(LibraryEvent.ToggleEnabledLanguage(LanguageTag("en")))
         assertEquals(listOf(LanguageTag("en")), viewModel.uiState.value.enabledLanguages)
+        assertTrue(viewModel.uiState.value.showLanguageOnboardingDialog)
 
         // 3. CompleteLanguageOnboarding で showLanguageOnboardingDialog = false になる
         viewModel.onEvent(LibraryEvent.CompleteLanguageOnboarding)
