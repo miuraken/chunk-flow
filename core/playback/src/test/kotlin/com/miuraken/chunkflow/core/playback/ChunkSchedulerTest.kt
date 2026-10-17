@@ -991,6 +991,89 @@ class ChunkSchedulerTest {
         assertTrue(exoPlayer.currentPosition in c4.startMs..(c4.startMs + 200L))
     }
 
+    @Test
+    fun `skipOriginalSilence_AutoPauseがOffのときチャンク終端到達で即座に次のチャンク開始へシークして無音区間を飛ばす`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.IMPORTED)
+        val c2 = Chunk(ChunkId(2L), startMs = 3_500L, endMs = 5_000L, origin = ChunkOrigin.IMPORTED)
+        scheduler.setChunks(listOf(c1, c2))
+        practiceController.update {
+            it.copy(
+                autoPause = AutoPause.Off,
+                skipOriginalSilence = true,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        // c1 終端 (2000ms) 到達で [2000, 3500) の無音区間を飛ばして即座に c2 (3500ms) へシークされる
+        runUntil { scheduler.currentChunkId.value == c2.id }
+        pumpLoopers()
+
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(c2.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in c2.startMs..(c2.startMs + 300L))
+    }
+
+    @Test
+    fun `skipOriginalSilence_AutoPauseがFixedのときチャンク終端でポーズし再開時に元音声の無音区間を飛ばして次のチャンク開始へシークする`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.IMPORTED)
+        val c2 = Chunk(ChunkId(2L), startMs = 3_800L, endMs = 5_500L, origin = ChunkOrigin.IMPORTED)
+        scheduler.setChunks(listOf(c1, c2))
+        practiceController.update {
+            it.copy(
+                autoPause = AutoPause.Fixed(pauseMs = 1_000L),
+                autoPauseScope = AutoPauseScope.ALL_CHUNKS,
+                skipOriginalSilence = true,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        // c1 終端 (2000ms) で AutoPause に入る
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertTrue(exoPlayer.currentPosition in 2_000L..2_200L)
+
+        // 1000ms 経過後、元音声の無音 [2000, 3800) を再生せず c2.startMs (3800ms) へシークして再開する
+        shadowOf(Looper.getMainLooper()).idleFor(1_000L, TimeUnit.MILLISECONDS)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(c2.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in c2.startMs..(c2.startMs + 300L))
+    }
+
+    @Test
+    fun `skipOriginalSilenceとLanguageFilter_TARGET_ONLY併用時は該当チャンク直後の空白も再生せず即座に次の該当チャンクへシークする`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.IMPORTED)
+        val c2 = Chunk(ChunkId(2L), startMs = 2_800L, endMs = 4_200L, origin = ChunkOrigin.IMPORTED)
+        val c3 = Chunk(ChunkId(3L), startMs = 5_000L, endMs = 6_500L, origin = ChunkOrigin.IMPORTED)
+        scheduler.setChunks(listOf(c1, c2, c3))
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                c1.id to sampleTranscript(c1.id, "One", "en"),
+                c2.id to sampleTranscript(c2.id, "二", "ja"),
+                c3.id to sampleTranscript(c3.id, "Three", "en"),
+            ),
+        )
+        practiceController.update {
+            it.copy(
+                languageFilter = LanguageFilter.TARGET_ONLY,
+                skipOriginalSilence = true,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        // c1 終端 (2000ms) 到達で c1 直後の空白 [2000, 2800) も c2 (ja) も飛ばして即座に c3 (5000ms, en) へシークする
+        runUntil { scheduler.currentChunkId.value == c3.id }
+        pumpLoopers()
+
+        assertEquals(c3.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,
