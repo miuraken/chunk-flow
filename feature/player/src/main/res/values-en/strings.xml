@@ -128,6 +128,7 @@
     <string name="player_chunk_boundary_start_plus">Move start +100ms</string>
     <string name="player_chunk_boundary_end_minus">Move end -100ms</string>
     <string name="player_chunk_boundary_end_plus">Move end +100ms</string>
+    <string name="player_chunk_delete">Remove chunk</string>
     <string name="player_export_section_title">Transcript files</string>
     <string name="player_transcript_file_import">Import transcript / subtitle file</string>
     <string name="player_transcript_reset_button">Reset transcripts and delete files</string>

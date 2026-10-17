@@ -431,6 +431,7 @@ fun TranscriptList(
     @Suppress("UNUSED_PARAMETER") onSplitChunk: (ChunkId, Long) -> Unit = { _, _ -> },
     @Suppress("UNUSED_PARAMETER") onMergeWithNextChunk: (ChunkId) -> Unit = {},
     onMoveChunkBoundary: (ChunkId, Long, Long) -> Unit = { _, _, _ -> },
+    onDeleteChunk: (ChunkId) -> Unit = {},
     onBulkSetUnknownLanguage: (LanguageTag) -> Unit = {},
     @Suppress("UNUSED_PARAMETER") onSetLookaheadEnabled: (Boolean) -> Unit = {},
     onToggleBackgroundTranscription: (Boolean) -> Unit = {},
@@ -670,6 +671,9 @@ fun TranscriptList(
                         },
                         onMoveChunkBoundary = { newStartMs, newEndMs ->
                             onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
+                        },
+                        onDeleteChunk = {
+                            onDeleteChunk(chunk.id)
                         },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
@@ -2087,6 +2091,7 @@ private fun TranscriptChunkRow(
     onRetranscribeChunk: () -> Unit = {},
     onOpenDetailedTranscription: () -> Unit = {},
     onMoveChunkBoundary: (Long, Long) -> Unit,
+    onDeleteChunk: () -> Unit = {},
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -2640,6 +2645,14 @@ private fun TranscriptChunkRow(
                 onClick = {
                     menuExpanded = false
                     onMoveChunkBoundary(chunk.startMs, chunk.endMs + 100L)
+                },
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(text = stringResource(R.string.player_chunk_delete)) },
+                onClick = {
+                    menuExpanded = false
+                    onDeleteChunk()
                 },
             )
         }

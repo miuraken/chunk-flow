@@ -128,6 +128,7 @@
     <string name="player_chunk_boundary_start_plus">開始を 100ms 遅らせる (+100ms)</string>
     <string name="player_chunk_boundary_end_minus">終了を 100ms 早める (-100ms)</string>
     <string name="player_chunk_boundary_end_plus">終了を 100ms 遅らせる (+100ms)</string>
+    <string name="player_chunk_delete">チャンクを解除</string>
     <string name="player_export_section_title">文字起こしファイル</string>
     <string name="player_transcript_file_import">文字起こし・字幕ファイルをインポート</string>
     <string name="player_transcript_reset_button">文字起こしをリセットしてファイルを削除</string>

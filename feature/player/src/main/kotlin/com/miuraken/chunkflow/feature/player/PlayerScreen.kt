@@ -726,6 +726,9 @@ private fun PlayerChunkList(
         onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
             onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
         },
+        onDeleteChunk = { chunkId ->
+            onEvent(PlayerEvent.DeleteChunk(chunkId))
+        },
         onBulkSetUnknownLanguage = { lang ->
             onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
         },
@@ -876,7 +879,7 @@ private fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
  * 「再生位置で分割」が途中で切れて「再生位置」とだけ読めると、押したときの動作がわからなくなるため。
  * - 「全選択解除」: チャンクを 1 つ以上選択しているとき
  * - 「連結」: チャンクを 2 つ以上選択しているとき（[canMergeSelectedChunks]）。押すと確認ダイアログを表示する
- * - 「再生位置で分割」: チャンク選択がなく、かつ再生位置（拡大波形の中央のカーソル）がいずれかのチャンクの分割可能な範囲内（両端から [MIN_SPLIT_PIECE_MS] 以上内側）にあるとき（[canSplitChunkAtPosition]）
+ * - 「再生位置で分割」: 再生位置（拡大波形の中央のカーソル）がいずれかのチャンクの分割可能な範囲内（両端から [MIN_SPLIT_PIECE_MS] 以上内側）にあるとき（[canSplitChunkAtPosition]）
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -905,7 +908,7 @@ private fun ChunkSelectionActionStrip(
             }
         }
     }
-    val canSplitAtCursor = !hasSelection && isPositionInsideSplittableChunk
+    val canSplitAtCursor = isPositionInsideSplittableChunk
     var showMergeConfirmDialog by remember { mutableStateOf(false) }
 
     FlowRow(
@@ -1216,7 +1219,7 @@ private fun ChunkDisplaySettingsStrip(
         if (state.isTranslationSupported) {
             FilterChip(
                 selected = state.showTargetTranslation,
-                enabled = state.hasTranscript && (state.isAllTranscriptionCompleted || state.showTargetTranslation),
+                enabled = state.hasTranscript,
                 onClick = {
                     onEvent(PlayerEvent.SetShowTargetTranslation(!state.showTargetTranslation))
                 },
