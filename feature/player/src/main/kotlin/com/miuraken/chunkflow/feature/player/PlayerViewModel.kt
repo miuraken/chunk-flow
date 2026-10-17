@@ -743,7 +743,7 @@ class PlayerViewModel @Inject constructor(
             override fun observe(id: MediaId): kotlinx.coroutines.flow.Flow<com.miuraken.chunkflow.core.model.ItemSttOverride> = kotlinx.coroutines.flow.flowOf(com.miuraken.chunkflow.core.model.ItemSttOverride.NONE)
             override suspend fun get(id: MediaId): com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
             override suspend fun set(id: MediaId, override: com.miuraken.chunkflow.core.model.ItemSttOverride): Boolean = true
-        }
+        },
     )
 
     private val currentMediaId = MutableStateFlow<MediaId?>(null)
