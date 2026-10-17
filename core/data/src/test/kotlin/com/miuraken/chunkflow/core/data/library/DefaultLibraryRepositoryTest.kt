@@ -11,10 +11,12 @@ import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
+import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
 import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
+import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
@@ -29,6 +31,7 @@ import com.miuraken.chunkflow.core.drive.DriveRemoteFile
 import com.miuraken.chunkflow.core.drive.DriveSyncClient
 import com.miuraken.chunkflow.core.drive.DriveUploadResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.Chunk
@@ -38,6 +41,7 @@ import com.miuraken.chunkflow.core.model.DriveFileKind
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -90,6 +94,7 @@ class DefaultLibraryRepositoryTest {
     private lateinit var mediaItemDao: InMemoryMediaItemDao
     private lateinit var chunkDao: InMemoryChunkDao
     private lateinit var driveFileDao: InMemoryDriveFileDao
+    private lateinit var courseFolderDao: InMemoryCourseFolderDao
     private lateinit var driveSyncClient: FakeDriveSyncClient
     private lateinit var analysisRepository: RecordingAnalysisRepository
     private lateinit var transcriptParser: FakeTranscriptParser
@@ -126,6 +131,7 @@ class DefaultLibraryRepositoryTest {
         itemStateDao = InMemoryItemStateDao(mediaItemExistsCheck = { id -> mediaItemDao.getById(id) != null })
         chunkDao = InMemoryChunkDao()
         driveFileDao = InMemoryDriveFileDao()
+        courseFolderDao = InMemoryCourseFolderDao()
         driveSyncClient = FakeDriveSyncClient()
         mediaItemDao = InMemoryMediaItemDao(
             onCascadeDelete = { mediaId ->
@@ -157,6 +163,7 @@ class DefaultLibraryRepositoryTest {
         mediaFileLocator = mediaFileLocator,
         chunkDao = chunkDao,
         driveFileDao = driveFileDao,
+        courseFolderDao = courseFolderDao,
         driveSyncClient = driveSyncClient,
         analysisRepository = analysisRepository,
         transcriptParser = transcriptParser,
@@ -1506,6 +1513,249 @@ class DefaultLibraryRepositoryTest {
         assertEquals(1_800_000_000_000L, updatedState.updatedAtEpochMs)
     }
 
+    @Test
+    fun `linkLocalDirectoryとrescanLocalDirectories_音声をコピーせずLOCAL_REFERENCEで登録し再スキャンで増減を反映する`() = runTest {
+        val audio1Bytes = "local-ref-audio-01".encodeToByteArray()
+        val audio2Bytes = "local-ref-audio-02".encodeToByteArray()
+        val json1Bytes = """{"createdAt":"2026-10-17T00:00:00Z"}""".encodeToByteArray()
+        val rootDocId = "primary:Music/KoreanCourse"
+
+        val treeUri = registerTreeDirectoryWithChunkFlowDir(
+            rootDocId = rootDocId,
+            rootDisplayName = "KoreanCourse",
+            audioFiles = listOf("ep01.mp3" to audio1Bytes),
+            chunkFlowFiles = listOf(
+                "course.json" to """{"courseName":"KoreanCourse","targetLang":"ko","baseLang":"ja"}""".encodeToByteArray(),
+                "ep01.chunkflow.json" to json1Bytes,
+            ),
+        )
+
+        transcriptParser.result = { _, _ ->
+            TranscriptParseResult.Ok(
+                TranscriptDocument(
+                    audioSha256 = null,
+                    audioFileName = "ep01.mp3",
+                    durationMs = 120_000L,
+                    languages = LanguagePair(LanguageTag("ko"), LanguageTag("ja")),
+                    generator = EngineId("whisper"),
+                    segments = listOf(
+                        TranscriptSegment(
+                            startMs = 1_000L,
+                            endMs = 3_000L,
+                            language = LanguageTag("ko"),
+                            languageConfidence = 0.99f,
+                            text = "안녕하세요",
+                            textVariants = emptyMap(),
+                            words = emptyList(),
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val repo = createRepository()
+        val done = repo.linkLocalDirectory(treeUri).toList().last() as ImportProgress.Done
+        assertEquals(1, done.mediaIds.size)
+        assertEquals(1, done.transcriptsAttached)
+
+        val ep1Id = done.mediaIds.single()
+        val ep1 = assertNotNull(repo.observeItem(ep1Id).first())
+        assertEquals("KoreanCourse", ep1.course)
+        assertEquals(LanguagePair(LanguageTag("ko"), LanguageTag("ja")), ep1.languagePair)
+        assertEquals(AudioStorageState.LOCAL_REFERENCE, ep1.storageState)
+        assertNotNull(ep1.sourceUri)
+
+        // filesDir/media に音声コピー（.mp3）が作られていないこと
+        assertNull(mediaFileLocator.resolveAudioFile(ep1Id, ep1.mimeType))
+        assertEquals(emptySet(), repo.observeMissingAudioIds().first())
+
+        // CourseFolder が LOCAL_DIRECTORY として登録されていること
+        val folders = repo.observeCourseFolders().first()
+        assertEquals(1, folders.size)
+        assertEquals("KoreanCourse", folders.single().coursePath)
+        assertEquals(LibraryFolderKind.LOCAL_DIRECTORY, folders.single().kind)
+
+        // フォルダから ep01.mp3 が消え、ep02.mp3 が追加された状態を模擬して rescanLocalDirectories を実行
+        val ep1DocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, "$rootDocId/ep01.mp3")
+        TestContentProvider.entries.remove(ep1DocUri)
+        registerTreeDirectoryWithChunkFlowDir(
+            rootDocId = rootDocId,
+            rootDisplayName = "KoreanCourse",
+            audioFiles = listOf("ep02.mp3" to audio2Bytes),
+            chunkFlowFiles = listOf(
+                "course.json" to """{"courseName":"KoreanCourse","targetLang":"ko","baseLang":"ja"}""".encodeToByteArray(),
+            ),
+        )
+
+        val changed = repo.rescanLocalDirectories("KoreanCourse")
+        // ep01 削除 (1) + ep02 追加 (1) = 2 件変更
+        assertEquals(2, changed)
+        val remainingItems = repo.observeItems().first()
+        assertEquals(1, remainingItems.size)
+        assertEquals("ep02", remainingItems.single().title)
+        assertEquals(AudioStorageState.LOCAL_REFERENCE, remainingItems.single().storageState)
+    }
+
+    @Test
+    fun `createVirtualFolderとmoveItemsToCourse_仮想フォルダを作成し教材を移動するとコースと言語ペアが反映される`() = runTest {
+        val audioBytes = "move-course-audio".encodeToByteArray()
+        val uri = registerContent("mv1", "lesson.mp3", audioBytes.size.toLong(), audioBytes)
+        val repo = createRepository()
+        val mediaId = (repo.import(listOf(uri)).toList().last() as ImportProgress.Done).mediaIds.single()
+
+        val targetLangs = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("en"))
+        assertTrue(repo.createVirtualFolder("  HSK4/Part1  ", targetLangs))
+
+        val folders = repo.observeCourseFolders().first()
+        assertEquals(1, folders.size)
+        assertEquals("HSK4/Part1", folders.single().coursePath)
+        assertEquals(LibraryFolderKind.VIRTUAL_DIRECTORY, folders.single().kind)
+        assertEquals(targetLangs, folders.single().languagePair)
+
+        repo.moveItemsToCourse(setOf(mediaId), "HSK4/Part1")
+        val movedItem = assertNotNull(repo.observeItem(mediaId).first())
+        assertEquals("HSK4/Part1", movedItem.course)
+        assertEquals(targetLangs, movedItem.languagePair)
+    }
+
+    @Test
+    fun `deleteLocalAudioCopyとdownloadDriveAudio_Drive教材のローカル音声コピーを削除しても未取得状態になり再取得できる`() = runTest {
+        val remoteAudioBytes = "drive-ondemand-audio-bytes".encodeToByteArray()
+        val remoteAudioSha = sha256Hex(remoteAudioBytes)
+        driveSyncClient.coursesResult = DriveListResult.Success(
+            listOf(
+                DriveCourseFiles(
+                    courseName = "DriveCourse",
+                    audioFiles = listOf(
+                        DriveRemoteFile(
+                            id = "drive-audio-ondemand",
+                            name = "unit01.mp3",
+                            mimeType = "audio/mpeg",
+                            sizeBytes = remoteAudioBytes.size.toLong(),
+                            modifiedTimeEpochMs = 1_700_000_100_000L,
+                            sha256Checksum = remoteAudioSha,
+                        ),
+                    ),
+                    transcriptFiles = emptyList(),
+                ),
+            ),
+        )
+        driveSyncClient.audioPayloads["drive-audio-ondemand"] = remoteAudioBytes
+
+        val repo = createRepository()
+        repo.syncFromDrive().toList()
+
+        val initialItem = repo.observeItems().first().single()
+        val mediaId = initialItem.id
+        assertEquals(AudioStorageState.DRIVE_DOWNLOADED, initialItem.storageState)
+        assertNotNull(mediaFileLocator.resolveAudioFile(mediaId, initialItem.mimeType))
+
+        // ローカルコピーのみ削除 -> DRIVE_REMOTE_ONLY になり、欠損エラー (observeMissingAudioIds) には入らない
+        assertTrue(repo.deleteLocalAudioCopy(mediaId))
+        val afterDelete = assertNotNull(repo.observeItem(mediaId).first())
+        assertEquals(AudioStorageState.DRIVE_REMOTE_ONLY, afterDelete.storageState)
+        assertNull(mediaFileLocator.resolveAudioFile(mediaId, afterDelete.mimeType))
+        assertEquals(emptySet(), repo.observeMissingAudioIds().first())
+
+        // オンデマンド再ダウンロード -> DRIVE_DOWNLOADED に戻りローカルファイルが復活する
+        assertTrue(repo.downloadDriveAudio(mediaId))
+        val afterDownload = assertNotNull(repo.observeItem(mediaId).first())
+        assertEquals(AudioStorageState.DRIVE_DOWNLOADED, afterDownload.storageState)
+        val restoredFile = assertNotNull(mediaFileLocator.resolveAudioFile(mediaId, afterDownload.mimeType))
+        assertTrue(restoredFile.readBytes().contentEquals(remoteAudioBytes))
+    }
+
+    private fun registerTreeDirectoryWithChunkFlowDir(
+        rootDocId: String,
+        rootDisplayName: String,
+        audioFiles: List<Pair<String, ByteArray>>,
+        chunkFlowFiles: List<Pair<String, ByteArray>>,
+    ): Uri {
+        val treeUri = DocumentsContract.buildTreeDocumentUri(TestContentProvider.AUTHORITY, rootDocId)
+        val rootDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId)
+        TestContentProvider.entries[rootDocUri] = TestContentProvider.Entry(
+            displayName = rootDisplayName,
+            sizeBytes = null,
+            bytes = ByteArray(0),
+            mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+        )
+
+        val rootChildren = mutableListOf<TestContentProvider.ChildRow>()
+        for ((name, bytes) in audioFiles) {
+            val docId = "$rootDocId/$name"
+            val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+            TestContentProvider.entries[docUri] = TestContentProvider.Entry(
+                displayName = name,
+                sizeBytes = bytes.size.toLong(),
+                bytes = bytes,
+                mimeType = "audio/mpeg",
+            )
+            shadowOf(context.contentResolver).registerInputStreamSupplier(docUri) { ByteArrayInputStream(bytes) }
+            rootChildren += TestContentProvider.ChildRow(
+                documentId = docId,
+                displayName = name,
+                mimeType = "audio/mpeg",
+                sizeBytes = bytes.size.toLong(),
+            )
+        }
+
+        if (chunkFlowFiles.isNotEmpty()) {
+            val cfDirDocId = "$rootDocId/.chunkflow"
+            rootChildren += TestContentProvider.ChildRow(
+                documentId = cfDirDocId,
+                displayName = ".chunkflow",
+                mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+                sizeBytes = null,
+            )
+            val cfChildren = mutableListOf<TestContentProvider.ChildRow>()
+            for ((name, bytes) in chunkFlowFiles) {
+                val docId = "$cfDirDocId/$name"
+                val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                TestContentProvider.entries[docUri] = TestContentProvider.Entry(
+                    displayName = name,
+                    sizeBytes = bytes.size.toLong(),
+                    bytes = bytes,
+                    mimeType = "application/json",
+                )
+                shadowOf(context.contentResolver).registerInputStreamSupplier(docUri) { ByteArrayInputStream(bytes) }
+                cfChildren += TestContentProvider.ChildRow(
+                    documentId = docId,
+                    displayName = name,
+                    mimeType = "application/json",
+                    sizeBytes = bytes.size.toLong(),
+                )
+            }
+            val cfChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, cfDirDocId)
+            TestContentProvider.treeChildren[cfChildrenUri] = cfChildren
+        }
+
+        val rootChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, rootDocId)
+        TestContentProvider.treeChildren[rootChildrenUri] = rootChildren
+        return treeUri
+    }
+
+    private class InMemoryCourseFolderDao : CourseFolderDao {
+        private val folders = MutableStateFlow<Map<String, CourseFolderEntity>>(emptyMap())
+
+        override fun observeAll(): Flow<List<CourseFolderEntity>> = folders.map { map ->
+            map.values.sortedBy { it.coursePath }
+        }
+
+        override suspend fun getAll(): List<CourseFolderEntity> = folders.value.values.sortedBy { it.coursePath }
+
+        override suspend fun getByPath(coursePath: String): CourseFolderEntity? = folders.value[coursePath]
+
+        override suspend fun getByTreeUri(treeUri: String): CourseFolderEntity? = folders.value.values.firstOrNull { it.treeUri == treeUri }
+
+        override suspend fun upsert(folder: CourseFolderEntity) {
+            folders.update { it + (folder.coursePath to folder) }
+        }
+
+        override suspend fun deleteByPath(coursePath: String) {
+            folders.update { it - coursePath }
+        }
+    }
+
     private class InMemoryDriveFileDao : DriveFileDao {
         private val records = MutableStateFlow<Map<String, DriveFileEntity>>(emptyMap())
 
@@ -1777,6 +2027,19 @@ class DefaultLibraryRepositoryTest {
                 .filter { it.mediaId == mediaId && it.origin == origin }
                 .map { it.id }
             deleteByIds(targetIds)
+        }
+
+        override suspend fun updateSkippedByIds(mediaId: String, chunkIds: List<Long>, skipped: Boolean) {
+            val idSet = chunkIds.toSet()
+            chunks.update { list ->
+                list.map { chunk ->
+                    if (chunk.mediaId == mediaId && chunk.id in idSet) {
+                        chunk.copy(isSkipped = skipped)
+                    } else {
+                        chunk
+                    }
+                }
+            }
         }
 
         fun deleteByMediaId(mediaId: String) {

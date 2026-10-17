@@ -317,7 +317,7 @@ class ChunkScheduler(
             practiceSettings.loop !is LoopMode.AbRange &&
             practiceSettings.loop !is LoopMode.ChunkRange
         ) {
-            val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
+            val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
             if (repeatChunks.isNotEmpty()) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 val lastRepeatChunk = repeatChunks.last()
@@ -398,7 +398,7 @@ class ChunkScheduler(
             newSettings.loop !is LoopMode.AbRange &&
             newSettings.loop !is LoopMode.ChunkRange
         ) {
-            val repeatChunks = chunks.filter { it.id in newSettings.repeatChunkIds }
+            val repeatChunks = chunks.filter { it.id in newSettings.repeatChunkIds && !it.isSkipped }
             if (repeatChunks.size >= 2) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 if (repeatChunks.none { nowMs in it.startMs until it.endMs }) {
@@ -464,13 +464,14 @@ class ChunkScheduler(
 
         val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
         val filter = practiceSettings.languageFilter
+        val useSkipFilter = chunks.any { it.isSkipped }
         val useLanguageFilter = filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)
         val useBookmarkFilter = practiceSettings.bookmarksOnly && chunks.any(::isChunkBookmarked)
-        val hasSelectedRepeatChunks = chunks.any { it.id in practiceSettings.repeatChunkIds }
+        val hasSelectedRepeatChunks = chunks.any { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
         if (singleChunkPlaybackId == null &&
             loopMode == LoopMode.Off &&
             !hasSelectedRepeatChunks &&
-            (useLanguageFilter || useBookmarkFilter)
+            (useSkipFilter || useLanguageFilter || useBookmarkFilter)
         ) {
             rescheduleWithPlaybackFilter(
                 nowMs = nowMs,
@@ -771,9 +772,10 @@ class ChunkScheduler(
 
     private fun handlePostChunkSilenceEnd(chunk: Chunk, silenceEndMs: Long) {
         val filter = practiceSettings.languageFilter
+        val useSkipFilter = chunks.any { it.isSkipped }
         val useLanguageFilter = filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)
         val useBookmarkFilter = practiceSettings.bookmarksOnly && chunks.any(::isChunkBookmarked)
-        if (!useLanguageFilter && !useBookmarkFilter) {
+        if (!useSkipFilter && !useLanguageFilter && !useBookmarkFilter) {
             reschedule(minBoundaryAfterMs = silenceEndMs)
             return
         }
@@ -884,7 +886,7 @@ class ChunkScheduler(
         // チェックボックス（拡大波形の長押し）で選択したチャンク（repeatChunkIds）を時系列の順に再生する。
         // 最後の選択チャンクのあとは、リピートが ON なら最初へ戻り、OFF なら一時停止する。
         // LoopMode.SingleChunk が残っていても複数選択チャンクの順次再生・リピートが妨げられないよう SingleChunk より先に判定する。
-        val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds }
+        val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
         if (repeatChunks.isNotEmpty()) {
             val selectedIndex = repeatChunks.indexOfFirst { it.id == chunk.id }
             val nextTarget: Chunk? = if (selectedIndex >= 0) {
@@ -911,11 +913,12 @@ class ChunkScheduler(
             }
         }
 
-        // 言語フィルタ（ALL / TARGET_ONLY / BASE_ONLY）およびブックマーク連続再生（F8.1）の適用
+        // チャンクスキップ・言語フィルタ（ALL / TARGET_ONLY / BASE_ONLY）・ブックマーク連続再生（F8.1）の適用
         val filter = practiceSettings.languageFilter
+        val useSkipFilter = chunks.any { it.isSkipped }
         val useLanguageFilter = filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)
         val useBookmarkFilter = practiceSettings.bookmarksOnly && chunks.any(::isChunkBookmarked)
-        if (useLanguageFilter || useBookmarkFilter) {
+        if (useSkipFilter || useLanguageFilter || useBookmarkFilter) {
             val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
             val nextChunk = if (currentIndex >= 0) {
                 chunks.getOrNull(currentIndex + 1)
@@ -1213,6 +1216,7 @@ class ChunkScheduler(
         useLanguageFilter: Boolean,
         useBookmarkFilter: Boolean,
     ): Boolean {
+        if (chunk.isSkipped) return false
         if (useBookmarkFilter && !isChunkBookmarked(chunk)) return false
         if (useLanguageFilter && !matchesLanguageFilter(chunk.id, languageFilter)) return false
         return true

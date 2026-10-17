@@ -18,6 +18,7 @@ import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -150,7 +151,7 @@ class MediaControllerPlaybackController(
         learningPlayerInstance?.let { return it }
         val inner = rawPlayerFactory()
         val learning = LearningPlayer(inner) {
-            currentChunks.map { it.startMs }
+            currentChunks.filterNot { it.isSkipped }.ifEmpty { currentChunks }.map { it.startMs }
         }
         learning.chunks = currentChunks
         learning.addListener(ControllerPlayerListener())
@@ -224,8 +225,8 @@ class MediaControllerPlaybackController(
             return
         }
 
-        val audioFile = mediaFileLocator.resolveAudioFile(mediaId, item.mimeType)
-        if (audioFile == null || !audioFile.exists()) {
+        val playableUri = resolvePlayableAudioUri(item)
+        if (playableUri == null) {
             stopObservingChunks()
             learningPlayerInstance?.let { lp ->
                 lp.stop()
@@ -316,7 +317,7 @@ class MediaControllerPlaybackController(
         lp.chunks = initialChunks
         observeActiveMediaChunks(mediaId, item.languagePair)
 
-        val mediaItem = buildMediaItem(item, audioFile)
+        val mediaItem = buildMediaItem(item, playableUri)
         lp.setMediaItem(mediaItem, initialPositionMs)
         lp.setPlaybackSpeed(initialSpeed)
         lp.prepare()
@@ -441,8 +442,8 @@ class MediaControllerPlaybackController(
             ?: items.maxByOrNull { it.importedAtEpochMs }
             ?: return@withContext null
 
-        val audioFile = mediaFileLocator.resolveAudioFile(resumeItem.id, resumeItem.mimeType)
-        if (audioFile == null || !audioFile.exists()) {
+        val playableUri = resolvePlayableAudioUri(resumeItem)
+        if (playableUri == null) {
             stopObservingChunks()
             _status.update {
                 it.copy(
@@ -504,7 +505,7 @@ class MediaControllerPlaybackController(
         )
         notifyLookaheadIfChanged(resumeItem.id, resumeChunkId, force = true)
 
-        val mediaItem = buildMediaItem(resumeItem, audioFile)
+        val mediaItem = buildMediaItem(resumeItem, playableUri)
         MediaSession.MediaItemsWithStartPosition(
             listOf(mediaItem),
             0,
@@ -669,7 +670,30 @@ class MediaControllerPlaybackController(
         )
     }
 
-    private fun buildMediaItem(item: AudioItem, audioFile: File): MediaItem {
+    internal fun resolvePlayableAudioUri(item: AudioItem): Uri? {
+        val managedFile = mediaFileLocator.resolveAudioFile(item.id, item.mimeType)
+            ?: File(context.filesDir, "media/${item.id.value}").takeIf { it.isFile }
+        if (managedFile != null && managedFile.exists()) {
+            return Uri.fromFile(managedFile)
+        }
+        if (item.storageState == AudioStorageState.DRIVE_REMOTE_ONLY) {
+            return null
+        }
+        val localPath = item.localFilePath?.takeIf { it.isNotBlank() }
+        if (localPath != null) {
+            val localFile = File(localPath)
+            if (localFile.exists() && localFile.canRead()) {
+                return Uri.fromFile(localFile)
+            }
+        }
+        val sourceUri = item.sourceUri?.takeIf { it.isNotBlank() }
+        if (sourceUri != null) {
+            return Uri.parse(sourceUri)
+        }
+        return null
+    }
+
+    private fun buildMediaItem(item: AudioItem, playableUri: Uri): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(item.title)
             .apply {
@@ -678,7 +702,7 @@ class MediaControllerPlaybackController(
             .build()
         return MediaItem.Builder()
             .setMediaId(item.id.value)
-            .setUri(Uri.fromFile(audioFile))
+            .setUri(playableUri)
             .setMimeType(item.mimeType)
             .setMediaMetadata(metadata)
             .build()
