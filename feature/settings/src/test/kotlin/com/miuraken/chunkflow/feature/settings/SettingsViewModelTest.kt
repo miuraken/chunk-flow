@@ -270,7 +270,10 @@ class SettingsViewModelTest {
 
         // ダウンロード要求で DOWNLOADING に遷移する
         viewModel.onEvent(SettingsEvent.RequestSttModelDownload(LanguageTag("zh"), com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER))
-        assertEquals(listOf(LanguageTag("zh")), analysisRepo.requestedModelDownloads)
+        assertEquals(
+            listOf(LanguageTag("zh") to com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER),
+            analysisRepo.requestedSttModelDownloads,
+        )
         val zhDownloading = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("zh") }
         assertEquals(
             com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.DOWNLOADING,
