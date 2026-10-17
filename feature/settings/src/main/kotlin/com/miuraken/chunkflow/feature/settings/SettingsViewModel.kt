@@ -80,9 +80,9 @@ data class SettingsUiState(
     val targetPhoneticGuideKind: PhoneticGuideKind?
         get() = PhoneticGuideKind.forLanguage(defaultLanguagePair.target)
 
-    /** 既定の再生速度（0.5..2.0）。 */
+    /** 既定の再生速度（0.5..2.0、1.0x の場合は既定の指定速度 1.5x を返す）。 */
     val defaultSpeed: Float
-        get() = settings.defaultSpeed
+        get() = if (kotlin.math.abs(settings.defaultSpeed - 1.0f) < 0.01f) 1.5f else settings.defaultSpeed
 
     /** 巻き戻しミリ秒数。 */
     val seekBackMs: Long
@@ -150,8 +150,8 @@ data class SettingsUiState(
         /** 早送り秒数の選択肢（ミリ秒）。 */
         val SEEK_FORWARD_OPTIONS_MS: List<Long> = listOf(3_000L, 5_000L, 10_000L, 15_000L, 30_000L)
 
-        /** 既定の再生速度のプリセット一覧。 */
-        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+        /** 既定の再生速度のプリセット一覧（1.0x を除く）。 */
+        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f)
 
         /** 既定の自動ポーズの選択肢。 */
         val AUTO_PAUSE_OPTIONS: List<AutoPause> = listOf(

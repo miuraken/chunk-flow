@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -64,6 +66,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
@@ -467,9 +470,9 @@ fun PlayerScreen(
     if (showSpeedSheet) {
         ModalBottomSheet(onDismissRequest = { showSpeedSheet = false }) {
             PlayerSpeedSheetContent(
-                speed = state.speed,
-                onSetSpeed = { speed -> onEvent(PlayerEvent.SetSpeed(speed)) },
-                onAdjustSpeed = { delta -> onEvent(PlayerEvent.AdjustSpeed(delta)) },
+                speed = state.customSpeed,
+                onSetSpeed = { speed -> onEvent(PlayerEvent.SetCustomSpeed(speed)) },
+                onAdjustSpeed = { delta -> onEvent(PlayerEvent.AdjustCustomSpeed(delta)) },
                 onClose = { showSpeedSheet = false },
             )
         }
@@ -1115,10 +1118,12 @@ private fun ChunkDisplaySettingsStrip(
  * b) 再生に関するボタン列（下部の再生ボタン類のすぐ上部に配置）。
  *
  * 表示項目:
- * - 「1.00x」（再生速度）
+ * - 「1x」（通常再生速度）
+ * - 「{指定速度}」（短押しで指定速度に切り替え、長押しで速度設定シートを開く）
  * - 「リピート」（on, *off）
  * - 「再生設定」（全体設定の再生設定タブへ移動）
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlaybackControlStrip(
     state: PlayerUiState,
@@ -1127,6 +1132,8 @@ private fun PlaybackControlStrip(
     modifier: Modifier = Modifier,
     onOpenPlaybackSettings: () -> Unit = {},
 ) {
+    val isNormalSpeed = abs(state.speed - 1.0f) < 0.01f
+    val isCustomSpeedSelected = !isNormalSpeed
     val isRepeatOn = state.practice.loop !is LoopMode.Off || state.practice.repeatCheckedOnly
     val toggleColors = brightnessToggleChipColors()
 
@@ -1137,18 +1144,61 @@ private fun PlaybackControlStrip(
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 1. 「1.00x」（再生速度）
+        // 1. 「1x」（通常再生速度）
         FilterChip(
-            selected = abs(state.speed - 1.0f) >= 0.01f,
-            onClick = onOpenSpeedSheet,
+            selected = isNormalSpeed,
+            onClick = { onEvent(PlayerEvent.SetSpeed(1.0f)) },
             label = {
                 Text(
-                    text = formatSpeed(state.speed),
-                    fontWeight = FontWeight.SemiBold,
+                    text = "1x",
+                    fontWeight = if (isNormalSpeed) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                 )
             },
+            colors = toggleColors,
         )
+
+        // 2. 「{指定速度}」（短押しで指定速度に切り替え、長押しで速度設定シートを開く）
+        val customChipContainerColor = if (isCustomSpeedSelected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+        }
+        val customChipContentColor = if (isCustomSpeedSelected) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+        }
+        val customChipBorder = if (isCustomSpeedSelected) {
+            null
+        } else {
+            FilterChipDefaults.filterChipBorder(enabled = true, selected = false)
+        }
+        Surface(
+            shape = FilterChipDefaults.shape,
+            color = customChipContainerColor,
+            contentColor = customChipContentColor,
+            border = customChipBorder,
+            modifier = Modifier
+                .heightIn(min = FilterChipDefaults.Height)
+                .clip(FilterChipDefaults.shape)
+                .combinedClickable(
+                    onClick = { onEvent(PlayerEvent.SetSpeed(state.customSpeed)) },
+                    onLongClick = onOpenSpeedSheet,
+                ),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = formatSpeed(state.customSpeed),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isCustomSpeedSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            }
+        }
 
         // 2. 「リピート」（on, *off）
         FilterChip(

@@ -123,7 +123,7 @@ class PlayerViewModelTest {
     }
 
     @Test
-    fun `速度変更_プリセットと0_05刻み微調整と上下限クランプが機能する`() = runTest {
+    fun `速度変更_プリセットと0_05刻み微調整と上下限クランプと1xトグルが機能する`() = runTest {
         val item = SampleMaterials.jaKo.item
         val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
         val playback = FakePlaybackController()
@@ -132,11 +132,34 @@ class PlayerViewModelTest {
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
+        assertEquals(listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f), PlayerUiState.SPEED_PRESETS)
+        assertEquals(1.0f, viewModel.uiState.value.speed)
+        assertEquals(PlayerUiState.DEFAULT_CUSTOM_SPEED, viewModel.uiState.value.customSpeed)
+
+        viewModel.onEvent(PlayerEvent.SetCustomSpeed(1.25f))
+        assertEquals(1.25f, viewModel.uiState.value.speed)
+        assertEquals(1.25f, viewModel.uiState.value.customSpeed)
+        assertEquals(1.25f, settingsRepo.state.value.defaultSpeed)
+
+        viewModel.onEvent(PlayerEvent.AdjustCustomSpeed(0.05f))
+        assertEquals(1.3f, viewModel.uiState.value.speed)
+        assertEquals(1.3f, viewModel.uiState.value.customSpeed)
+        assertEquals(1.3f, settingsRepo.state.value.defaultSpeed)
+
+        // 1.0f に切り替えても customSpeed と設定の既定速度は維持される
+        viewModel.onEvent(PlayerEvent.SetSpeed(1.0f))
+        assertEquals(1.0f, viewModel.uiState.value.speed)
+        assertEquals(1.3f, viewModel.uiState.value.customSpeed)
+        assertEquals(1.3f, settingsRepo.state.value.defaultSpeed)
+
         viewModel.onEvent(PlayerEvent.SetSpeed(1.5f))
         assertEquals(1.5f, viewModel.uiState.value.speed)
+        assertEquals(1.5f, viewModel.uiState.value.customSpeed)
+        assertEquals(1.5f, settingsRepo.state.value.defaultSpeed)
 
         viewModel.onEvent(PlayerEvent.AdjustSpeed(0.05f))
         assertEquals(1.55f, viewModel.uiState.value.speed)
+        assertEquals(1.55f, viewModel.uiState.value.customSpeed)
 
         viewModel.onEvent(PlayerEvent.AdjustSpeed(-0.05f))
         assertEquals(1.5f, viewModel.uiState.value.speed)

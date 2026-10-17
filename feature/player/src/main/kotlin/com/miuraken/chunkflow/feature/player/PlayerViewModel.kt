@@ -567,6 +567,7 @@ data class PlayerUiState(
     val isPlaying: Boolean = false,
     val durationMs: Long = 0L,
     val speed: Float = 1.0f,
+    val customSpeed: Float = DEFAULT_CUSTOM_SPEED,
     val seekBackMs: Long = UserSettings.DEFAULT_SEEK_BACK_MS,
     val seekForwardMs: Long = UserSettings.DEFAULT_SEEK_FORWARD_MS,
     val practice: PracticeSettings = PracticeSettings(),
@@ -677,11 +678,14 @@ data class PlayerUiState(
         }
 
     companion object {
+        /** 指定速度バッジの初期倍率（1.5 倍）。 */
+        const val DEFAULT_CUSTOM_SPEED: Float = 1.5f
+
         /** 再生速度の微調整の刻み幅（0.05 倍、F3.2）。 */
         const val SPEED_STEP: Float = 0.05f
 
-        /** 再生速度のプリセット一覧（F3.2）。 */
-        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+        /** 再生速度のプリセット一覧（F3.2、1.0x を除く）。 */
+        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f)
     }
 }
 
@@ -716,6 +720,12 @@ sealed interface PlayerEvent {
 
     /** 現在の再生速度を [delta]（例: `-0.05f` / `+0.05f`）だけ増減する。 */
     data class AdjustSpeed(val delta: Float) : PlayerEvent
+
+    /** 指定速度（1x 以外のトグル対象速度）を指定した倍率（0.5〜2.0 倍）に変更し、その速度で再生する。 */
+    data class SetCustomSpeed(val speed: Float) : PlayerEvent
+
+    /** 指定速度（1x 以外のトグル対象速度）を [delta]（例: `-0.05f` / `+0.05f`）だけ増減し、その速度で再生する。 */
+    data class AdjustCustomSpeed(val delta: Float) : PlayerEvent
 
     /** リピートモードを変更する（F6.1、F6.2）。 */
     data class SetLoopMode(val loopMode: LoopMode) : PlayerEvent
@@ -913,6 +923,7 @@ private data class AnalysisSnapshot(
 )
 
 private data class LocalUiSnapshot(
+    val customSpeedOverride: Float? = null,
     val blindMode: BlindMode = BlindMode.OFF,
     val revealedChunkIds: Set<ChunkId> = emptySet(),
     val showTargetTranslation: Boolean = false,
@@ -1293,6 +1304,10 @@ class PlayerViewModel @Inject constructor(
                 val currentSpeed = playbackController.status.value.speed
                 setSpeed(currentSpeed + event.delta)
             }
+
+            is PlayerEvent.SetCustomSpeed -> setCustomSpeed(event.speed)
+
+            is PlayerEvent.AdjustCustomSpeed -> setCustomSpeed(uiState.value.customSpeed + event.delta)
 
             is PlayerEvent.SetLoopMode -> {
                 playbackController.updatePractice {
@@ -2557,10 +2572,29 @@ class PlayerViewModel @Inject constructor(
         seekToChunk(chunks[targetIdx].id)
     }
 
-    private fun setSpeed(rawSpeed: Float) {
+    private fun roundSpeed(rawSpeed: Float): Float {
         val clamped = rawSpeed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
-        val rounded = (clamped * 20f).roundToInt() / 20f
-        playbackController.setSpeed(rounded.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED))
+        return ((clamped * 20f).roundToInt() / 20f).coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+    }
+
+    private fun setSpeed(rawSpeed: Float) {
+        val rounded = roundSpeed(rawSpeed)
+        playbackController.setSpeed(rounded)
+        if (kotlin.math.abs(rounded - 1.0f) >= 0.01f) {
+            localUiState.update { it.copy(customSpeedOverride = rounded) }
+            viewModelScope.launch {
+                userSettingsRepository.setDefaultSpeed(rounded)
+            }
+        }
+    }
+
+    private fun setCustomSpeed(rawSpeed: Float) {
+        val rounded = roundSpeed(rawSpeed)
+        localUiState.update { it.copy(customSpeedOverride = rounded) }
+        viewModelScope.launch {
+            userSettingsRepository.setDefaultSpeed(rounded)
+        }
+        playbackController.setSpeed(rounded)
     }
 
     private fun buildUiState(
@@ -2627,6 +2661,10 @@ class PlayerViewModel @Inject constructor(
         val isTranslationSupported = item?.languagePair?.let { pair ->
             analysisRepository.isTranslationSupported(pair.target, pair.base)
         } ?: false
+        val resolvedCustomSpeed = local.customSpeedOverride
+            ?: settings.defaultSpeed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
+            ?: status.speed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
+            ?: PlayerUiState.DEFAULT_CUSTOM_SPEED
 
         return PlayerUiState(
             mediaId = mediaId ?: status.mediaId ?: item?.id,
@@ -2636,6 +2674,7 @@ class PlayerViewModel @Inject constructor(
             isPlaying = status.isPlaying,
             durationMs = resolvedDurationMs,
             speed = status.speed,
+            customSpeed = resolvedCustomSpeed,
             seekBackMs = settings.seekBackMs,
             seekForwardMs = settings.seekForwardMs,
             practice = practice,
