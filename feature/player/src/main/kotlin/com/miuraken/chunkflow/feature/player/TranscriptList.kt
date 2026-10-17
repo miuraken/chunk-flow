@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.player
 
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -942,6 +943,12 @@ internal fun openInGoogleTranslate(
     val browserProbe = Intent(Intent.ACTION_VIEW, "https://www.example.com".toUri()).apply {
         addCategory(Intent.CATEGORY_BROWSABLE)
     }
+
+    // QueryPermissionsNeeded を抑える理由:
+    // - パッケージ可視性の制限（Android 11 以降）で見えるアプリが絞られるため、queryIntentActivities が既定以外のブラウザを返さないことがある。
+    // - ブラウザが返らなくても、ACTION_PROCESS_TEXT や通常の ACTION_VIEW に切り替わるので、Google 翻訳で開く機能は使える。
+    // - 他のアプリの一覧を見られる範囲を広げないため、マニフェストに <queries> は足さずに抑える（人間の判断）。
+    @SuppressLint("QueryPermissionsNeeded")
     val browserPackage = runCatching {
         val defaultResolved = pm.resolveActivity(browserProbe, 0)?.activityInfo?.packageName
         if (!defaultResolved.isNullOrBlank() &&
