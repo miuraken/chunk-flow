@@ -5,6 +5,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
@@ -12,11 +13,13 @@ import com.miuraken.chunkflow.core.data.analysis.DefaultAnalysisRepository
 import com.miuraken.chunkflow.core.data.di.ChunkFlowDispatchers
 import com.miuraken.chunkflow.core.data.di.Dispatcher
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
+import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
 import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
+import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
@@ -33,6 +36,7 @@ import com.miuraken.chunkflow.core.drive.DriveSyncClient
 import com.miuraken.chunkflow.core.drive.DriveUploadResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -40,6 +44,8 @@ import com.miuraken.chunkflow.core.model.DriveFileKind
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -110,6 +116,7 @@ class DefaultLibraryRepository(
     private val chunkDao: ChunkDao? = null,
     private val transcriptDao: TranscriptDao? = null,
     private val driveFileDao: DriveFileDao? = null,
+    private val courseFolderDao: CourseFolderDao = NoOpCourseFolderDao,
     private val driveSyncClient: DriveSyncClient = NoOpDriveSyncClient,
     private val analysisRepository: AnalysisRepository = NoOpAnalysisRepository,
     private val transcriptParser: TranscriptParser = NoOpTranscriptParser,
@@ -129,6 +136,7 @@ class DefaultLibraryRepository(
         chunkDao: ChunkDao,
         transcriptDao: TranscriptDao,
         driveFileDao: DriveFileDao,
+        courseFolderDao: CourseFolderDao,
         driveSyncClient: DriveSyncClient,
         userSettingsRepository: UserSettingsRepository,
         analysisRepository: AnalysisRepository,
@@ -147,6 +155,7 @@ class DefaultLibraryRepository(
         chunkDao = chunkDao,
         transcriptDao = transcriptDao,
         driveFileDao = driveFileDao,
+        courseFolderDao = courseFolderDao,
         driveSyncClient = driveSyncClient,
         analysisRepository = analysisRepository,
         transcriptParser = transcriptParser,
@@ -159,6 +168,10 @@ class DefaultLibraryRepository(
 
     override fun observeItems(): Flow<List<AudioItem>> = mediaItemDao.observeAll().map { entities ->
         entities.map(MediaItemEntity::toExternalModel)
+    }
+
+    override fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = courseFolderDao.observeAll().map { entities ->
+        entities.map(CourseFolderEntity::toExternalModel)
     }
 
     override fun observeItem(id: MediaId): Flow<AudioItem?> = mediaItemDao.observeById(id.value).map { entity ->
@@ -379,6 +392,458 @@ class DefaultLibraryRepository(
         )
     }.flowOn(ioDispatcher)
 
+    override fun linkLocalDirectory(
+        treeUri: Uri,
+        course: String?,
+        languages: LanguagePair?,
+    ): Flow<ImportProgress> = flow {
+        if (treeUri.scheme != ContentResolver.SCHEME_CONTENT) {
+            emit(ImportProgress.Failed(ImportError.UNSUPPORTED_FORMAT))
+            return@flow
+        }
+
+        takePersistableFolderPermission(treeUri)
+
+        val explicitCourse = sanitizeCoursePath(course).takeIf { it.isNotBlank() }
+        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
+        val rootDocUri = rootDocId?.let {
+            runCatching { DocumentsContract.buildDocumentUriUsingTree(treeUri, it) }.getOrNull()
+        }
+        val rootMeta = rootDocUri?.let(::queryContentMetadata)
+        val courseJsonMeta = if (rootDocId != null) {
+            readCourseJsonFromSafDir(treeUri, rootDocId)
+        } else {
+            null
+        }
+        val defaultFolderName = sanitizeCourseName(
+            rootMeta?.displayName ?: rootDocId?.let(::extractFolderNameFromDocId),
+        ).takeIf { it.isNotBlank() }
+        val resolvedRootCourse = explicitCourse
+            ?: courseJsonMeta?.coursePath
+            ?: defaultFolderName
+            ?: DEFAULT_IMPORTED_COURSE_NAME
+
+        val defaultLanguages = userSettingsRepository.settings.first().defaultLanguagePair
+        val existingFolder = courseFolderDao.getByPath(resolvedRootCourse)
+            ?: courseFolderDao.getByTreeUri(treeUri.toString())
+        val effectiveLanguages = languages
+            ?: courseJsonMeta?.languages
+            ?: existingFolder?.toExternalModel()?.languagePair
+            ?: defaultLanguages
+
+        val nowMs = clock()
+        courseFolderDao.upsert(
+            CourseFolderEntity(
+                coursePath = resolvedRootCourse,
+                kind = LibraryFolderKind.LOCAL_DIRECTORY.name,
+                targetLang = effectiveLanguages.target.value,
+                baseLang = effectiveLanguages.base?.value,
+                treeUri = treeUri.toString(),
+                driveFolderId = null,
+                lastScannedAt = nowMs,
+            ),
+        )
+        if (rootDocId != null) {
+            writeCourseJsonToSafDir(
+                treeUri = treeUri,
+                dirDocId = rootDocId,
+                coursePath = resolvedRootCourse,
+                languages = effectiveLanguages,
+            )
+        }
+
+        val discoveredDirs = mutableListOf<DiscoveredDirectory>()
+        val rawCandidates = if (isTreeUriSafe(treeUri)) {
+            expandTreeUri(
+                treeUri = treeUri,
+                rootCourseOverride = resolvedRootCourse,
+                discoveredDirs = discoveredDirs,
+            )
+        } else {
+            emptyList()
+        }
+
+        for (dir in discoveredDirs) {
+            val subCourseJson = readCourseJsonFromSafDir(treeUri, dir.docId)
+            val subLanguages = languages ?: subCourseJson?.languages ?: effectiveLanguages
+            courseFolderDao.upsert(
+                CourseFolderEntity(
+                    coursePath = dir.coursePath,
+                    kind = LibraryFolderKind.LOCAL_DIRECTORY.name,
+                    targetLang = subLanguages.target.value,
+                    baseLang = subLanguages.base?.value,
+                    treeUri = treeUri.toString(),
+                    driveFolderId = null,
+                    lastScannedAt = nowMs,
+                ),
+            )
+            writeCourseJsonToSafDir(
+                treeUri = treeUri,
+                dirDocId = dir.docId,
+                coursePath = dir.coursePath,
+                languages = subLanguages,
+            )
+        }
+
+        val candidates = rawCandidates.distinctBy { it.uri }
+        if (candidates.isEmpty()) {
+            emit(ImportProgress.Done(mediaIds = emptyList(), duplicates = 0, transcriptsAttached = 0))
+            return@flow
+        }
+
+        val (transcriptCandidates, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
+        val audioCandidates = rawAudioCandidates.sortedWith { left, right ->
+            naturalFileNameComparator.compare(
+                left.meta?.displayName ?: left.uri.lastPathSegment.orEmpty(),
+                right.meta?.displayName ?: right.uri.lastPathSegment.orEmpty(),
+            )
+        }
+
+        val totalAudio = audioCandidates.size
+        val mediaIds = mutableListOf<MediaId>()
+        val batchAudioByStemAndCourse = LinkedHashMap<Pair<String?, String>, MediaId>()
+        val batchAudioByStem = LinkedHashMap<String, MediaId>()
+        var duplicates = 0
+
+        for ((index, candidate) in audioCandidates.withIndex()) {
+            currentCoroutineContext().ensureActive()
+            val declaredSize = candidate.meta?.sizeBytes?.takeIf { it > 0L }
+            if (declaredSize != null && declaredSize > MAX_AUDIO_SIZE_BYTES) {
+                continue
+            }
+
+            emit(ImportProgress.Copying(fraction = index.toFloat() / totalAudio.coerceAtLeast(1).toFloat()))
+
+            val folderLangs = candidate.course?.let { courseFolderDao.getByPath(it)?.toExternalModel()?.languagePair }
+                ?: effectiveLanguages
+            val outcome = linkSingleLocalAudioFile(
+                uri = candidate.uri,
+                meta = candidate.meta,
+                course = candidate.course ?: resolvedRootCourse,
+                languages = folderLangs,
+                fileIndex = index,
+                totalFiles = totalAudio.coerceAtLeast(1),
+                onProgress = { fraction -> emit(ImportProgress.Copying(fraction)) },
+            )
+
+            val resolvedMediaId = when (outcome) {
+                is SingleImportOutcome.Imported -> {
+                    mediaIds += outcome.mediaId
+                    scheduleCourseAnalysisUpToLimit(candidate.course ?: resolvedRootCourse)
+                    outcome.mediaId
+                }
+
+                is SingleImportOutcome.Duplicate -> {
+                    mediaIds += outcome.mediaId
+                    duplicates += 1
+                    if (outcome.reattachedAudioFile) {
+                        handleReattachedAudioAnalysis(outcome.mediaId, candidate.course ?: resolvedRootCourse)
+                    }
+                    outcome.mediaId
+                }
+
+                is SingleImportOutcome.Failed -> continue
+            }
+
+            val stem = extractFileStem(candidate.meta?.displayName ?: candidate.uri.lastPathSegment.orEmpty())
+            if (stem.isNotEmpty()) {
+                batchAudioByStemAndCourse[(candidate.course ?: resolvedRootCourse) to stem] = resolvedMediaId
+                batchAudioByStem[stem] = resolvedMediaId
+            }
+        }
+
+        var transcriptsAttached = 0
+        if (transcriptCandidates.isNotEmpty()) {
+            val matchedByMediaId = LinkedHashMap<String, MutableList<Pair<MediaItemEntity, ParsedTranscript>>>()
+            for (candidate in transcriptCandidates) {
+                currentCoroutineContext().ensureActive()
+                val parseOutcome = readAndParseTranscript(candidate.uri, candidate.meta)
+                val parsed = (parseOutcome as? InternalTranscriptParseOutcome.Ok)?.parsed ?: continue
+                val targetEntity = findMatchingMediaItem(
+                    doc = parsed.document,
+                    transcriptFileName = parsed.fileName,
+                    course = candidate.course ?: resolvedRootCourse,
+                    batchByStemAndCourse = batchAudioByStemAndCourse,
+                    batchByStem = batchAudioByStem,
+                ) ?: continue
+                matchedByMediaId.getOrPut(targetEntity.id) { mutableListOf() }
+                    .add(targetEntity to parsed)
+            }
+
+            for ((_, pairs) in matchedByMediaId) {
+                val winningPair = pairs.maxWithOrNull(
+                    compareBy<Pair<MediaItemEntity, ParsedTranscript>> { it.second.createdAt.orEmpty() },
+                ) ?: continue
+                val latestEntity = mediaItemDao.getById(winningPair.first.id) ?: winningPair.first
+                if (
+                    attachTranscriptToMediaItem(
+                        targetEntity = latestEntity,
+                        parsed = winningPair.second,
+                        preserveEntityLanguages = languages != null || courseJsonMeta?.languages != null,
+                    ) != null
+                ) {
+                    transcriptsAttached += 1
+                }
+            }
+        }
+
+        audioFileStateVersion.update { it + 1L }
+        emit(
+            ImportProgress.Done(
+                mediaIds = mediaIds.toList(),
+                duplicates = duplicates,
+                transcriptsAttached = transcriptsAttached,
+            ),
+        )
+    }.flowOn(ioDispatcher)
+
+    override suspend fun rescanLocalDirectories(coursePath: String?): Int = withContext(ioDispatcher) {
+        val allLocalFolders = courseFolderDao.getAll()
+            .filter { it.kind == LibraryFolderKind.LOCAL_DIRECTORY.name && !it.treeUri.isNullOrBlank() }
+        if (allLocalFolders.isEmpty()) return@withContext 0
+
+        val filterCourse = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() }
+        val groupedByTree = allLocalFolders.groupBy { it.treeUri.orEmpty() }
+        var changedCount = 0
+        val nowMs = clock()
+
+        for ((treeUriStr, foldersForTree) in groupedByTree) {
+            currentCoroutineContext().ensureActive()
+            if (filterCourse != null) {
+                val matchesScope = foldersForTree.any { folder ->
+                    folder.coursePath == filterCourse ||
+                        folder.coursePath.startsWith("$filterCourse/") ||
+                        filterCourse.startsWith("${folder.coursePath}/")
+                }
+                if (!matchesScope) continue
+            }
+
+            val rootFolder = foldersForTree.minByOrNull { it.coursePath.length } ?: continue
+            val treeUri = runCatching { Uri.parse(treeUriStr) }.getOrNull() ?: continue
+            if (!isTreeUriSafe(treeUri)) continue
+
+            val discoveredDirs = mutableListOf<DiscoveredDirectory>()
+            val allCandidates = expandTreeUri(
+                treeUri = treeUri,
+                rootCourseOverride = rootFolder.coursePath,
+                discoveredDirs = discoveredDirs,
+            ).distinctBy { it.uri }
+
+            val rootLanguages = rootFolder.toExternalModel().languagePair
+            for (dir in discoveredDirs) {
+                if (filterCourse == null ||
+                    dir.coursePath == filterCourse ||
+                    dir.coursePath.startsWith("$filterCourse/")
+                ) {
+                    val existingSub = courseFolderDao.getByPath(dir.coursePath)
+                    val subCourseJson = readCourseJsonFromSafDir(treeUri, dir.docId)
+                    val subLanguages = subCourseJson?.languages
+                        ?: existingSub?.toExternalModel()?.languagePair
+                        ?: rootLanguages
+                    courseFolderDao.upsert(
+                        CourseFolderEntity(
+                            coursePath = dir.coursePath,
+                            kind = LibraryFolderKind.LOCAL_DIRECTORY.name,
+                            targetLang = subLanguages.target.value,
+                            baseLang = subLanguages.base?.value,
+                            treeUri = treeUriStr,
+                            driveFolderId = null,
+                            lastScannedAt = nowMs,
+                        ),
+                    )
+                }
+            }
+
+            val scopedCandidates = if (filterCourse == null) {
+                allCandidates
+            } else {
+                allCandidates.filter { candidate ->
+                    val c = candidate.course ?: rootFolder.coursePath
+                    c == filterCourse || c.startsWith("$filterCourse/")
+                }
+            }
+
+            val (transcriptCandidates, rawAudioCandidates) = scopedCandidates.partition(::isTranscriptCandidate)
+            val audioCandidates = rawAudioCandidates.sortedWith { left, right ->
+                naturalFileNameComparator.compare(
+                    left.meta?.displayName ?: left.uri.lastPathSegment.orEmpty(),
+                    right.meta?.displayName ?: right.uri.lastPathSegment.orEmpty(),
+                )
+            }
+
+            val seenMediaIds = mutableSetOf<String>()
+            val seenSourceUris = mutableSetOf<String>()
+            val batchAudioByStemAndCourse = LinkedHashMap<Pair<String?, String>, MediaId>()
+            val batchAudioByStem = LinkedHashMap<String, MediaId>()
+
+            for ((index, candidate) in audioCandidates.withIndex()) {
+                currentCoroutineContext().ensureActive()
+                val declaredSize = candidate.meta?.sizeBytes?.takeIf { it > 0L }
+                if (declaredSize != null && declaredSize > MAX_AUDIO_SIZE_BYTES) {
+                    continue
+                }
+
+                val candidateCourse = candidate.course ?: rootFolder.coursePath
+                seenSourceUris += candidate.uri.toString()
+                val folderLangs = courseFolderDao.getByPath(candidateCourse)?.toExternalModel()?.languagePair
+                    ?: rootLanguages
+
+                val outcome = linkSingleLocalAudioFile(
+                    uri = candidate.uri,
+                    meta = candidate.meta,
+                    course = candidateCourse,
+                    languages = folderLangs,
+                    fileIndex = index,
+                    totalFiles = audioCandidates.size.coerceAtLeast(1),
+                    onProgress = {},
+                )
+
+                val resolvedMediaId = when (outcome) {
+                    is SingleImportOutcome.Imported -> {
+                        changedCount += 1
+                        seenMediaIds += outcome.mediaId.value
+                        scheduleCourseAnalysisUpToLimit(candidateCourse)
+                        outcome.mediaId
+                    }
+
+                    is SingleImportOutcome.Duplicate -> {
+                        seenMediaIds += outcome.mediaId.value
+                        if (outcome.reattachedAudioFile) {
+                            changedCount += 1
+                            handleReattachedAudioAnalysis(outcome.mediaId, candidateCourse)
+                        }
+                        outcome.mediaId
+                    }
+
+                    is SingleImportOutcome.Failed -> continue
+                }
+
+                val stem = extractFileStem(candidate.meta?.displayName ?: candidate.uri.lastPathSegment.orEmpty())
+                if (stem.isNotEmpty()) {
+                    batchAudioByStemAndCourse[candidateCourse to stem] = resolvedMediaId
+                    batchAudioByStem[stem] = resolvedMediaId
+                }
+            }
+
+            // フォルダから消失した LOCAL_REFERENCE 教材を DB から削除する（.chunkflow/ 内のデータは消さない）
+            val scopePrefix = filterCourse ?: rootFolder.coursePath
+            val existingItemsInScope = mediaItemDao.observeAll().first().filter { item ->
+                val c = item.course ?: return@filter false
+                (c == scopePrefix || c.startsWith("$scopePrefix/")) &&
+                    item.storageState == AudioStorageState.LOCAL_REFERENCE.name
+            }
+            for (item in existingItemsInScope) {
+                if (item.id !in seenMediaIds && (item.sourceUri == null || item.sourceUri !in seenSourceUris)) {
+                    val mediaId = MediaId(item.id)
+                    scheduledAnalysisMediaIds.remove(mediaId)
+                    mediaItemDao.deleteById(item.id)
+                    mediaFileLocator.deleteMediaFiles(mediaId)
+                    changedCount += 1
+                }
+            }
+
+            // 新規・更新された文字起こしファイルを反映する
+            if (transcriptCandidates.isNotEmpty()) {
+                val matchedByMediaId = LinkedHashMap<String, MutableList<Pair<MediaItemEntity, ParsedTranscript>>>()
+                for (candidate in transcriptCandidates) {
+                    currentCoroutineContext().ensureActive()
+                    val parseOutcome = readAndParseTranscript(candidate.uri, candidate.meta)
+                    val parsed = (parseOutcome as? InternalTranscriptParseOutcome.Ok)?.parsed ?: continue
+                    val targetEntity = findMatchingMediaItem(
+                        doc = parsed.document,
+                        transcriptFileName = parsed.fileName,
+                        course = candidate.course ?: rootFolder.coursePath,
+                        batchByStemAndCourse = batchAudioByStemAndCourse,
+                        batchByStem = batchAudioByStem,
+                    ) ?: continue
+                    matchedByMediaId.getOrPut(targetEntity.id) { mutableListOf() }
+                        .add(targetEntity to parsed)
+                }
+
+                for ((_, pairs) in matchedByMediaId) {
+                    val winningPair = pairs.maxWithOrNull(
+                        compareBy<Pair<MediaItemEntity, ParsedTranscript>> { it.second.createdAt.orEmpty() },
+                    ) ?: continue
+                    val targetEntity = winningPair.first
+                    val parsed = winningPair.second
+                    val ext = transcriptExtensionForFileName(parsed.fileName)
+                    val existingTranscriptFile = mediaFileLocator.transcriptFileFor(MediaId(targetEntity.id), ext)
+                    val alreadySame = existingTranscriptFile.exists() &&
+                        runCatching { existingTranscriptFile.readBytes().contentEquals(parsed.rawBytes) }.getOrDefault(false)
+                    if (!alreadySame) {
+                        val latestEntity = mediaItemDao.getById(targetEntity.id) ?: targetEntity
+                        if (
+                            attachTranscriptToMediaItem(
+                                targetEntity = latestEntity,
+                                parsed = parsed,
+                                preserveEntityLanguages = true,
+                            ) != null
+                        ) {
+                            changedCount += 1
+                        }
+                    }
+                }
+            }
+
+            for (folder in foldersForTree) {
+                if (filterCourse == null ||
+                    folder.coursePath == filterCourse ||
+                    folder.coursePath.startsWith("$filterCourse/")
+                ) {
+                    courseFolderDao.upsert(folder.copy(lastScannedAt = nowMs))
+                }
+            }
+        }
+
+        audioFileStateVersion.update { it + 1L }
+        changedCount
+    }
+
+    override suspend fun createVirtualFolder(
+        coursePath: String,
+        languages: LanguagePair,
+    ): Boolean = withContext(ioDispatcher) {
+        val normalizedCourse = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() }
+            ?: return@withContext false
+        val existing = courseFolderDao.getByPath(normalizedCourse)
+        val kind = existing?.kind ?: LibraryFolderKind.VIRTUAL_DIRECTORY.name
+        courseFolderDao.upsert(
+            CourseFolderEntity(
+                coursePath = normalizedCourse,
+                kind = kind,
+                targetLang = languages.target.value,
+                baseLang = languages.base?.value,
+                treeUri = existing?.treeUri,
+                driveFolderId = existing?.driveFolderId,
+                lastScannedAt = existing?.lastScannedAt ?: clock(),
+            ),
+        )
+        true
+    }
+
+    override suspend fun moveItemsToCourse(
+        mediaIds: Set<MediaId>,
+        targetCourse: String,
+    ) {
+        if (mediaIds.isEmpty()) return
+        withContext(ioDispatcher) {
+            val normalizedCourse = sanitizeCoursePath(targetCourse).takeIf { it.isNotBlank() }
+            val folderConfig = normalizedCourse?.let { courseFolderDao.getByPath(it) }
+            for (mediaId in mediaIds) {
+                if (folderConfig != null) {
+                    mediaItemDao.updateCourseAndLanguagePair(
+                        id = mediaId.value,
+                        course = normalizedCourse,
+                        targetLang = folderConfig.targetLang,
+                        baseLang = folderConfig.baseLang,
+                    )
+                } else {
+                    mediaItemDao.updateCourse(mediaId.value, normalizedCourse)
+                }
+            }
+        }
+    }
+
     override suspend fun importTranscript(uri: Uri): TranscriptImportResult = withContext(ioDispatcher) {
         if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
             return@withContext TranscriptImportResult.Invalid(TranscriptError.UNKNOWN_FORMAT)
@@ -515,6 +980,35 @@ class DefaultLibraryRepository(
                         baseLang = languages.base?.value,
                     )
                 }
+                val matchingFolders = courseFolderDao.getAll().filter {
+                    it.coursePath == currentCourse || it.coursePath.startsWith(prefix)
+                }
+                for (folder in matchingFolders) {
+                    val updatedPath = if (folder.coursePath == currentCourse) {
+                        normalizedNewCourse
+                    } else {
+                        val suffix = folder.coursePath.removePrefix(prefix)
+                        if (normalizedNewCourse != null) "$normalizedNewCourse/$suffix" else suffix
+                    }
+                    if (updatedPath != folder.coursePath) {
+                        courseFolderDao.deleteByPath(folder.coursePath)
+                    }
+                    if (updatedPath != null) {
+                        courseFolderDao.upsert(
+                            folder.copy(
+                                coursePath = updatedPath,
+                                targetLang = languages.target.value,
+                                baseLang = languages.base?.value,
+                            ),
+                        )
+                        folder.treeUri?.let(Uri::parse)?.let { treeUri ->
+                            val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
+                            if (rootDocId != null && folder.coursePath == currentCourse) {
+                                writeCourseJsonToSafDir(treeUri, rootDocId, updatedPath, languages)
+                            }
+                        }
+                    }
+                }
             } else {
                 mediaItemDao.updateUncategorizedCourseMetadata(
                     newCourse = normalizedNewCourse,
@@ -554,6 +1048,15 @@ class DefaultLibraryRepository(
 
         val uploadFileName = "${sanitizeDisplayName(entity.title).ifBlank { entity.id }}.chunkflow.json"
         val uploadCourse = entity.course.orEmpty()
+        if (uploadCourse.isNotBlank()) {
+            courseFolderDao.getByPath(uploadCourse)
+                ?.takeIf { it.kind == LibraryFolderKind.LOCAL_DIRECTORY.name && !it.treeUri.isNullOrBlank() }
+                ?.treeUri
+                ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                ?.let { treeUri ->
+                    writeTranscriptJsonToSafTree(treeUri, uploadFileName, jsonBytes, preferChunkFlowDir = true)
+                }
+        }
         when (val uploadResult = driveSyncClient.uploadTranscriptJson(uploadCourse, uploadFileName, jsonBytes)) {
             is DriveUploadResult.Success -> {
                 val uploaded = uploadResult.file
@@ -640,7 +1143,8 @@ class DefaultLibraryRepository(
                 val existingEntity = existingBySha ?: existingByDriveId
                 if (existingEntity != null) {
                     val existingFile = mediaFileLocator.resolveAudioFile(MediaId(existingEntity.id), existingEntity.mimeType)
-                    if (existingFile != null && existingFile.exists()) {
+                    val isRemoteOnly = existingEntity.storageState == AudioStorageState.DRIVE_REMOTE_ONLY.name
+                    if ((existingFile != null && existingFile.exists()) || isRemoteOnly) {
                         if (existingEntity.course == null && normalizedCourse != null) {
                             mediaItemDao.updateCourse(existingEntity.id, normalizedCourse)
                         }
@@ -889,14 +1393,112 @@ class DefaultLibraryRepository(
         )
     }.flowOn(ioDispatcher)
 
+    override suspend fun downloadDriveAudio(id: MediaId): Boolean = withContext(ioDispatcher) {
+        val entity = mediaItemDao.getById(id.value) ?: return@withContext false
+        val audioRecord = driveFileDao?.getByMediaId(id.value)
+            ?.firstOrNull { it.kind == DriveFileKind.AUDIO.name }
+            ?: return@withContext false
+
+        val tempFile = mediaFileLocator.tempFileFor(UUID.randomUUID().toString())
+        val dlResult = try {
+            driveSyncClient.downloadToFile(
+                fileId = audioRecord.driveFileId,
+                destFile = tempFile,
+                maxSizeBytes = MAX_AUDIO_SIZE_BYTES,
+            )
+        } catch (ce: CancellationException) {
+            tempFile.delete()
+            throw ce
+        }
+
+        val dlSuccess = when (dlResult) {
+            is DriveDownloadResult.Success -> dlResult
+
+            is DriveDownloadResult.Failure -> {
+                tempFile.delete()
+                return@withContext false
+            }
+        }
+
+        if (!hasEnoughDiskSpace(dlSuccess.bytesWritten)) {
+            tempFile.delete()
+            return@withContext false
+        }
+
+        val inspected = try {
+            audioFormatInspector.inspect(tempFile)
+        } catch (ce: CancellationException) {
+            tempFile.delete()
+            throw ce
+        } catch (_: Exception) {
+            null
+        }
+        val ext = inspected?.extension ?: extensionForMimeType(entity.mimeType)
+        val targetFile = mediaFileLocator.audioFileFor(id, ext)
+        if (!moveOrCopyTempFile(tempFile, targetFile)) {
+            tempFile.delete()
+            return@withContext false
+        }
+
+        mediaItemDao.upsert(
+            entity.copy(
+                storageState = AudioStorageState.DRIVE_DOWNLOADED.name,
+                localFilePath = null,
+            ),
+        )
+        audioFileStateVersion.update { it + 1L }
+        handleReattachedAudioAnalysis(id, entity.course)
+        true
+    }
+
+    override suspend fun deleteLocalAudioCopy(id: MediaId): Boolean = withContext(ioDispatcher) {
+        val entity = mediaItemDao.getById(id.value) ?: return@withContext false
+        val hasDriveAudioRecord = driveFileDao?.getByMediaId(id.value)
+            ?.any { it.kind == DriveFileKind.AUDIO.name } == true
+        val isDriveItem = entity.storageState == AudioStorageState.DRIVE_DOWNLOADED.name ||
+            entity.storageState == AudioStorageState.DRIVE_REMOTE_ONLY.name ||
+            hasDriveAudioRecord
+        if (!isDriveItem) {
+            return@withContext false
+        }
+
+        val audioFile = mediaFileLocator.resolveAudioFile(id, entity.mimeType)
+        if (audioFile != null && audioFile.exists()) {
+            audioFile.delete()
+        }
+        scheduledAnalysisMediaIds.remove(id)
+        mediaItemDao.upsert(
+            entity.copy(
+                storageState = AudioStorageState.DRIVE_REMOTE_ONLY.name,
+                localFilePath = null,
+            ),
+        )
+        audioFileStateVersion.update { it + 1L }
+        true
+    }
+
     override fun observeMissingAudioIds(): Flow<Set<MediaId>> = combine(
         mediaItemDao.observeAll(),
         audioFileStateVersion,
     ) { entities, _ ->
         entities.mapNotNullTo(linkedSetOf()) { entity ->
             val mediaId = MediaId(entity.id)
-            val file = mediaFileLocator.resolveAudioFile(mediaId, entity.mimeType)
-            if (file == null || !file.exists()) mediaId else null
+            val storageState = runCatching { AudioStorageState.valueOf(entity.storageState) }
+                .getOrDefault(AudioStorageState.APP_MANAGED)
+            when (storageState) {
+                AudioStorageState.DRIVE_REMOTE_ONLY -> null
+
+                AudioStorageState.LOCAL_REFERENCE -> {
+                    if (isAudioSourceAvailable(entity)) null else mediaId
+                }
+
+                AudioStorageState.APP_MANAGED,
+                AudioStorageState.DRIVE_DOWNLOADED,
+                -> {
+                    val file = mediaFileLocator.resolveAudioFile(mediaId, entity.mimeType)
+                    if (file == null || !file.exists()) mediaId else null
+                }
+            }
         }
     }
 
@@ -981,9 +1583,8 @@ class DefaultLibraryRepository(
 
         val unaccessedItems = allItems
             .filter { item ->
-                val itemId = MediaId(item.id)
                 DefaultAnalysisRepository.isItemUnaccessed(item, statesByMediaId[item.id]) &&
-                    mediaFileLocator.resolveAudioFile(itemId, item.mimeType)?.isFile == true
+                    isAudioSourceAvailable(item)
             }
             .sortedWith(
                 compareBy<MediaItemEntity, String>(naturalFileNameComparator) { it.title }
@@ -1124,6 +1725,13 @@ class DefaultLibraryRepository(
                 tempFile.delete()
                 return SingleImportOutcome.Failed(ImportError.IO)
             }
+            val current = mediaItemDao.getById(existingEntity.id) ?: existingEntity
+            mediaItemDao.upsert(
+                current.copy(
+                    storageState = AudioStorageState.DRIVE_DOWNLOADED.name,
+                    localFilePath = null,
+                ),
+            )
             audioFileStateVersion.update { it + 1L }
             return SingleImportOutcome.Duplicate(
                 mediaId = existingId,
@@ -1445,9 +2053,15 @@ class DefaultLibraryRepository(
      * SAF のフォルダ選択（`OpenDocumentTree`）で渡された Tree URI を展開し、
      * 直下の音声ファイル・サブフォルダ・および `transcription/` フォルダ内の文字起こしファイルを列挙する。
      */
+    private data class DiscoveredDirectory(
+        val docId: String,
+        val coursePath: String,
+    )
+
     private fun expandTreeUri(
         treeUri: Uri,
         rootCourseOverride: String? = null,
+        discoveredDirs: MutableList<DiscoveredDirectory>? = null,
     ): List<ImportCandidate> {
         val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
             ?: return emptyList()
@@ -1463,7 +2077,9 @@ class DefaultLibraryRepository(
             parentDocId = rootDocId,
             currentCourse = rootCourse,
             depth = 0,
+            inMetadataDir = false,
             out = results,
+            discoveredDirs = discoveredDirs,
         )
         return results
     }
@@ -1473,7 +2089,9 @@ class DefaultLibraryRepository(
         parentDocId: String,
         currentCourse: String?,
         depth: Int,
+        inMetadataDir: Boolean,
         out: MutableList<ImportCandidate>,
+        discoveredDirs: MutableList<DiscoveredDirectory>?,
     ) {
         val childrenUri = runCatching {
             DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
@@ -1504,8 +2122,9 @@ class DefaultLibraryRepository(
 
                 if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
                     if (depth < MAX_TREE_DEPTH) {
-                        val isTranscriptionDir = displayName?.equals(TRANSCRIPTION_DIR_NAME, ignoreCase = true) == true
-                        val childCourse = if (isTranscriptionDir) {
+                        val isMetadataDir = displayName?.equals(TRANSCRIPTION_DIR_NAME, ignoreCase = true) == true ||
+                            displayName?.equals(CHUNKFLOW_DIR_NAME, ignoreCase = true) == true
+                        val childCourse = if (isMetadataDir) {
                             currentCourse
                         } else {
                             val childSegment = sanitizeCourseName(displayName).takeIf { it.isNotBlank() }
@@ -1515,15 +2134,23 @@ class DefaultLibraryRepository(
                                 else -> "$currentCourse/$childSegment"
                             }
                         }
+                        if (!isMetadataDir && !childCourse.isNullOrBlank()) {
+                            discoveredDirs?.add(DiscoveredDirectory(docId = docId, coursePath = childCourse))
+                        }
                         collectTreeChildren(
                             treeUri = treeUri,
                             parentDocId = docId,
                             currentCourse = childCourse,
                             depth = depth + 1,
+                            inMetadataDir = inMetadataDir || isMetadataDir,
                             out = out,
+                            discoveredDirs = discoveredDirs,
                         )
                     }
                 } else {
+                    if (inMetadataDir && displayName?.equals(COURSE_JSON_FILE_NAME, ignoreCase = true) == true) {
+                        continue
+                    }
                     val docUri = runCatching {
                         DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
                     }.getOrNull() ?: continue
@@ -1576,7 +2203,10 @@ class DefaultLibraryRepository(
             val relSegments = relativePath.split('/').filter { it.isNotBlank() }
             val subDirSegments = if (relSegments.size >= 2) relSegments.dropLast(1) else emptyList()
             val cleanSubDirs = subDirSegments
-                .filterNot { it.equals(TRANSCRIPTION_DIR_NAME, ignoreCase = true) }
+                .filterNot {
+                    it.equals(TRANSCRIPTION_DIR_NAME, ignoreCase = true) ||
+                        it.equals(CHUNKFLOW_DIR_NAME, ignoreCase = true)
+                }
                 .mapNotNull { seg -> sanitizeCourseName(seg).takeIf { it.isNotBlank() } }
             return (listOfNotNull(rootCourse) + cleanSubDirs)
                 .joinToString("/")
@@ -1847,6 +2477,7 @@ class DefaultLibraryRepository(
             mp3HasHeader = mp3Info?.hasHeader ?: false,
             mp3SamplesPerFrame = mp3Info?.samplesPerFrame ?: Mp3HeaderInfo.SAMPLES_PER_FRAME_MPEG1,
             mp3EncoderDelay = mp3Info?.encoderDelay ?: Mp3HeaderInfo.DEFAULT_LAME_ENCODER_DELAY,
+            storageState = AudioStorageState.DRIVE_DOWNLOADED.name,
         )
         val initialState = ItemStateEntity(
             mediaId = newMediaId.value,
@@ -2426,22 +3057,24 @@ class DefaultLibraryRepository(
         treeUri: Uri,
         fileName: String,
         jsonBytes: ByteArray,
+        preferChunkFlowDir: Boolean = false,
     ): Boolean = runCatching {
         if (!isTreeUriSafe(treeUri)) return false
         val rootDocId = DocumentsContract.getTreeDocumentId(treeUri) ?: return false
         val rootDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId) ?: return false
 
+        val dirName = if (preferChunkFlowDir) CHUNKFLOW_DIR_NAME else TRANSCRIPTION_DIR_NAME
         val transcriptionDocId = findChildDocumentIdByName(
             treeUri = treeUri,
             parentDocId = rootDocId,
-            targetName = TRANSCRIPTION_DIR_NAME,
+            targetName = dirName,
             requireDirectory = true,
         ) ?: run {
             val createdDirUri = DocumentsContract.createDocument(
                 context.contentResolver,
                 rootDocUri,
                 DocumentsContract.Document.MIME_TYPE_DIR,
-                TRANSCRIPTION_DIR_NAME,
+                dirName,
             ) ?: return false
             DocumentsContract.getDocumentId(createdDirUri)
         }
@@ -2569,6 +3202,334 @@ class DefaultLibraryRepository(
         override suspend fun setTranscriptOffset(id: MediaId, offsetMs: Int) = Unit
     }
 
+    private suspend fun linkSingleLocalAudioFile(
+        uri: Uri,
+        meta: ContentMetadata?,
+        course: String,
+        languages: LanguagePair,
+        fileIndex: Int,
+        totalFiles: Int,
+        onProgress: suspend (Float?) -> Unit,
+    ): SingleImportOutcome {
+        val localFilePath = resolveLocalFilePathFromUri(uri)
+        val directFile = localFilePath?.let(::File)?.takeIf { it.isFile && it.canRead() }
+        val tempFile = if (directFile == null) {
+            mediaFileLocator.tempFileFor("link-${UUID.randomUUID()}")
+        } else {
+            null
+        }
+
+        try {
+            val declaredSize = meta?.sizeBytes?.takeIf { it > 0L }
+            val copyOutcome = if (directFile != null) {
+                digestFileOnly(
+                    file = directFile,
+                    declaredSize = declaredSize,
+                    fileIndex = fileIndex,
+                    totalFiles = totalFiles,
+                    onProgress = onProgress,
+                )
+            } else {
+                copyAndDigest(
+                    uri = uri,
+                    destFile = requireNotNull(tempFile),
+                    declaredSize = declaredSize,
+                    fileIndex = fileIndex,
+                    totalFiles = totalFiles,
+                    onProgress = onProgress,
+                )
+            }
+
+            val actualSizeBytes = when (copyOutcome) {
+                is CopyOutcome.Success -> copyOutcome.bytesWritten
+                is CopyOutcome.Failure -> return SingleImportOutcome.Failed(copyOutcome.error)
+            }
+            val sha256 = copyOutcome.sha256Hex
+            val fileToInspect = directFile ?: requireNotNull(tempFile)
+
+            val inspected = try {
+                audioFormatInspector.inspect(fileToInspect)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                null
+            }
+            if (inspected == null || inspected.durationMs <= 0L) {
+                return SingleImportOutcome.Failed(ImportError.UNSUPPORTED_FORMAT)
+            }
+
+            val existingEntity = mediaItemDao.getBySha256(sha256)
+            if (existingEntity != null) {
+                val wasMissing = !isAudioSourceAvailable(existingEntity)
+                mediaItemDao.upsert(
+                    existingEntity.copy(
+                        course = course,
+                        targetLang = languages.target.value,
+                        baseLang = languages.base?.value,
+                        storageState = AudioStorageState.LOCAL_REFERENCE.name,
+                        sourceUri = uri.toString(),
+                        localFilePath = localFilePath,
+                    ),
+                )
+                audioFileStateVersion.update { it + 1L }
+                return SingleImportOutcome.Duplicate(
+                    mediaId = MediaId(existingEntity.id),
+                    reattachedAudioFile = wasMissing,
+                )
+            }
+
+            val newMediaId = MediaId(UUID.randomUUID().toString())
+            val settings = userSettingsRepository.settings.first()
+            val sanitizedDisplayName = sanitizeDisplayName(meta?.displayName)
+                .ifBlank { DEFAULT_UNTITLED_NAME }
+            val resolvedTitle = inspected.title
+                ?.let(::sanitizeDisplayName)
+                ?.takeIf { it.isNotBlank() }
+                ?: sanitizedDisplayName
+            val nowMs = clock()
+            val initialOffsetMs = calculateInitialTranscriptOffsetMs(inspected)
+            val mp3Info = inspected.mp3HeaderInfo
+
+            val entity = MediaItemEntity(
+                id = newMediaId.value,
+                title = resolvedTitle,
+                durationMs = inspected.durationMs,
+                mimeType = inspected.mimeType,
+                sizeBytes = actualSizeBytes,
+                sha256 = sha256,
+                course = course,
+                targetLang = languages.target.value,
+                baseLang = languages.base?.value,
+                transcriptOffsetMs = initialOffsetMs,
+                importedAt = nowMs,
+                mp3HasHeader = mp3Info?.hasHeader ?: false,
+                mp3SamplesPerFrame = mp3Info?.samplesPerFrame ?: Mp3HeaderInfo.SAMPLES_PER_FRAME_MPEG1,
+                mp3EncoderDelay = mp3Info?.encoderDelay ?: Mp3HeaderInfo.DEFAULT_LAME_ENCODER_DELAY,
+                storageState = AudioStorageState.LOCAL_REFERENCE.name,
+                sourceUri = uri.toString(),
+                localFilePath = localFilePath,
+            )
+            val initialState = ItemStateEntity(
+                mediaId = newMediaId.value,
+                positionMs = 0L,
+                speed = settings.defaultSpeed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED),
+                updatedAt = 0L,
+            )
+            mediaItemDao.upsert(entity)
+            itemStateDao.upsert(initialState)
+            audioFileStateVersion.update { it + 1L }
+            return SingleImportOutcome.Imported(newMediaId)
+        } finally {
+            tempFile?.delete()
+        }
+    }
+
+    private suspend fun digestFileOnly(
+        file: File,
+        declaredSize: Long?,
+        fileIndex: Int,
+        totalFiles: Int,
+        onProgress: suspend (Float?) -> Unit,
+    ): CopyOutcome {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var totalBytes = 0L
+        val buffer = ByteArray(COPY_BUFFER_BYTES)
+        return try {
+            FileInputStream(file).use { input ->
+                while (true) {
+                    currentCoroutineContext().ensureActive()
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    if (read == 0) continue
+                    totalBytes += read
+                    if (totalBytes > MAX_AUDIO_SIZE_BYTES) {
+                        return CopyOutcome.Failure(ImportError.TOO_LARGE)
+                    }
+                    digest.update(buffer, 0, read)
+                    if (declaredSize != null && declaredSize > 0L) {
+                        val fileFraction = (totalBytes.toFloat() / declaredSize.toFloat()).coerceIn(0f, 1f)
+                        val overall = (fileIndex.toFloat() + fileFraction) / totalFiles.toFloat()
+                        onProgress(overall.coerceIn(0f, 1f))
+                    }
+                }
+            }
+            if (totalBytes <= 0L) {
+                CopyOutcome.Failure(ImportError.UNSUPPORTED_FORMAT)
+            } else {
+                val hex = digest.digest().joinToString("") { "%02x".format(it) }
+                CopyOutcome.Success(bytesWritten = totalBytes, sha256Hex = hex)
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            CopyOutcome.Failure(ImportError.IO)
+        }
+    }
+
+    private fun isAudioSourceAvailable(entity: MediaItemEntity): Boolean {
+        val mediaId = MediaId(entity.id)
+        val storageState = runCatching { AudioStorageState.valueOf(entity.storageState) }
+            .getOrDefault(AudioStorageState.APP_MANAGED)
+        return when (storageState) {
+            AudioStorageState.DRIVE_REMOTE_ONLY -> false
+
+            AudioStorageState.LOCAL_REFERENCE -> {
+                val copiedFile = mediaFileLocator.resolveAudioFile(mediaId, entity.mimeType)
+                if (copiedFile != null && copiedFile.isFile) return true
+                val localPath = entity.localFilePath?.takeIf { it.isNotBlank() }
+                if (localPath != null && File(localPath).isFile) return true
+                val sourceUriStr = entity.sourceUri?.takeIf { it.isNotBlank() } ?: return false
+                val uri = runCatching { Uri.parse(sourceUriStr) }.getOrNull() ?: return false
+                isSourceUriAccessible(uri)
+            }
+
+            AudioStorageState.APP_MANAGED,
+            AudioStorageState.DRIVE_DOWNLOADED,
+            -> mediaFileLocator.resolveAudioFile(mediaId, entity.mimeType)?.isFile == true
+        }
+    }
+
+    private fun isSourceUriAccessible(uri: Uri): Boolean = runCatching {
+        when (uri.scheme) {
+            ContentResolver.SCHEME_FILE -> uri.path?.let(::File)?.isFile == true
+
+            ContentResolver.SCHEME_CONTENT -> {
+                if (queryContentMetadata(uri) != null) {
+                    true
+                } else {
+                    context.contentResolver.openInputStream(uri)?.use { true } ?: false
+                }
+            }
+
+            else -> false
+        }
+    }.getOrDefault(false)
+
+    private fun resolveLocalFilePathFromUri(uri: Uri): String? = runCatching {
+        if (uri.scheme == ContentResolver.SCHEME_FILE) {
+            return uri.path
+        }
+        val docId = DocumentsContract.getDocumentId(uri) ?: return null
+        if (docId.startsWith("raw:")) {
+            return docId.removePrefix("raw:").takeIf { it.isNotBlank() }
+        }
+        if (uri.authority == "com.android.externalstorage.documents" && docId.startsWith("primary:")) {
+            val rel = docId.removePrefix("primary:").trimStart('/')
+            if (rel.isNotBlank()) {
+                val candidate = File("/storage/emulated/0", rel)
+                if (candidate.exists()) return candidate.absolutePath
+            }
+        }
+        null
+    }.getOrNull()
+
+    private fun takePersistableFolderPermission(treeUri: Uri) {
+        val resolver = context.contentResolver
+        val readWriteFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        if (runCatching { resolver.takePersistableUriPermission(treeUri, readWriteFlags) }.isFailure) {
+            runCatching {
+                resolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+    }
+
+    private data class CourseJsonMeta(
+        val coursePath: String?,
+        val languages: LanguagePair?,
+    )
+
+    private fun readCourseJsonFromSafDir(
+        treeUri: Uri,
+        dirDocId: String,
+    ): CourseJsonMeta? = runCatching {
+        val chunkflowDirDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = dirDocId,
+            targetName = CHUNKFLOW_DIR_NAME,
+            requireDirectory = true,
+        ) ?: return null
+        val courseJsonDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = chunkflowDirDocId,
+            targetName = COURSE_JSON_FILE_NAME,
+            requireDirectory = false,
+        ) ?: return null
+        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, courseJsonDocId) ?: return null
+        val bytes = context.contentResolver.openInputStream(docUri)?.use { it.readBytes() } ?: return null
+        val text = bytes.decodeToString()
+        val courseName = COURSE_NAME_JSON_REGEX.find(text)?.groupValues?.getOrNull(1)
+            ?.let(::sanitizeCoursePath)
+            ?.takeIf { it.isNotBlank() }
+        val target = TARGET_LANG_JSON_REGEX.find(text)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+        val base = BASE_LANG_JSON_REGEX.find(text)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+        val languages = target?.let { t ->
+            runCatching { LanguagePair(target = LanguageTag(t), base = base?.let(::LanguageTag)) }.getOrNull()
+        }
+        if (courseName == null && languages == null) null else CourseJsonMeta(courseName, languages)
+    }.getOrNull()
+
+    private fun writeCourseJsonToSafDir(
+        treeUri: Uri,
+        dirDocId: String,
+        coursePath: String,
+        languages: LanguagePair,
+    ): Boolean = runCatching {
+        if (!isTreeUriSafe(treeUri)) return false
+        val dirDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, dirDocId) ?: return false
+        val chunkflowDirDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = dirDocId,
+            targetName = CHUNKFLOW_DIR_NAME,
+            requireDirectory = true,
+        ) ?: run {
+            val createdDirUri = DocumentsContract.createDocument(
+                context.contentResolver,
+                dirDocUri,
+                DocumentsContract.Document.MIME_TYPE_DIR,
+                CHUNKFLOW_DIR_NAME,
+            ) ?: return false
+            DocumentsContract.getDocumentId(createdDirUri)
+        }
+
+        val existingFileDocId = findChildDocumentIdByName(
+            treeUri = treeUri,
+            parentDocId = chunkflowDirDocId,
+            targetName = COURSE_JSON_FILE_NAME,
+            requireDirectory = false,
+        )
+        val targetDocUri = if (existingFileDocId != null) {
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, existingFileDocId)
+        } else {
+            val chunkflowDirUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, chunkflowDirDocId)
+            DocumentsContract.createDocument(
+                context.contentResolver,
+                chunkflowDirUri,
+                "application/json",
+                COURSE_JSON_FILE_NAME,
+            )
+        } ?: return false
+
+        val baseField = languages.base?.value?.let { ",\"baseLang\":${jsonString(it)}" }.orEmpty()
+        val json = "{\"courseName\":${jsonString(coursePath)},\"targetLang\":${jsonString(languages.target.value)}$baseField}"
+        val outStream = context.contentResolver.openOutputStream(targetDocUri, "wt")
+            ?: context.contentResolver.openOutputStream(targetDocUri)
+            ?: return false
+        outStream.use { out ->
+            out.write(json.toByteArray(Charsets.UTF_8))
+            out.flush()
+        }
+        true
+    }.getOrDefault(false)
+
+    private object NoOpCourseFolderDao : CourseFolderDao {
+        override fun observeAll(): Flow<List<CourseFolderEntity>> = flowOf(emptyList())
+        override suspend fun getAll(): List<CourseFolderEntity> = emptyList()
+        override suspend fun getByPath(coursePath: String): CourseFolderEntity? = null
+        override suspend fun getByTreeUri(treeUri: String): CourseFolderEntity? = null
+        override suspend fun upsert(folder: CourseFolderEntity) = Unit
+        override suspend fun deleteByPath(coursePath: String) = Unit
+    }
+
     private object NoOpTranscriptParser : TranscriptParser {
         override fun parse(bytes: ByteArray, fileName: String): TranscriptParseResult = TranscriptParseResult.Error(TranscriptError.UNKNOWN_FORMAT, "NoOpTranscriptParser")
     }
@@ -2592,10 +3553,16 @@ class DefaultLibraryRepository(
         private const val COPY_BUFFER_BYTES: Int = 64 * 1024
         private const val MAX_TITLE_CODE_POINTS: Int = 200
         private const val DEFAULT_UNTITLED_NAME: String = "Untitled"
+        private const val DEFAULT_IMPORTED_COURSE_NAME: String = "インポート済み"
         private const val TRANSCRIPTION_DIR_NAME: String = "transcription"
+        private const val CHUNKFLOW_DIR_NAME: String = ".chunkflow"
+        private const val COURSE_JSON_FILE_NAME: String = "course.json"
         private const val LINKED_SYNC_PROPERTIES_FILE_NAME: String = "drive_sync_link.properties"
         private const val MAX_TREE_DEPTH: Int = 6
         private const val MAX_EXPORT_SEGMENT_CHARS: Int = 2_000
+        private val COURSE_NAME_JSON_REGEX = Regex(""""courseName"\s*:\s*"([^"]+)"""")
+        private val TARGET_LANG_JSON_REGEX = Regex(""""targetLang"\s*:\s*"([^"]+)"""")
+        private val BASE_LANG_JSON_REGEX = Regex(""""baseLang"\s*:\s*"([^"]+)"""")
 
         private fun extensionForMimeType(mimeType: String): String = when (mimeType.lowercase()) {
             "audio/mpeg", "audio/mp3" -> "mp3"

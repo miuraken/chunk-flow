@@ -169,7 +169,7 @@ class LearningPlayer(
     }
 
     private fun resolveChunkStartsMs(): List<Long> = if (chunks.isNotEmpty()) {
-        chunks.map { it.startMs }
+        chunks.filterNot { it.isSkipped }.ifEmpty { chunks }.map { it.startMs }
     } else {
         chunkStartsMsProvider()
     }

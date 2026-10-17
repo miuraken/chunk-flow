@@ -931,6 +931,66 @@ class ChunkSchedulerTest {
         assertTrue(exoPlayer.currentPosition in chunk1.startMs..(chunk1.startMs + 200L))
     }
 
+    @Test
+    fun `isSkipped_直前のチャンク後の無音は再生しスキップ対象チャンク開始時刻で本体と直後の無音を飛ばして次チャンクへシークする`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.IMPORTED, isSkipped = false)
+        val c2 = Chunk(ChunkId(2L), startMs = 2_600L, endMs = 4_000L, origin = ChunkOrigin.IMPORTED, isSkipped = true)
+        val c3 = Chunk(ChunkId(3L), startMs = 4_800L, endMs = 6_500L, origin = ChunkOrigin.IMPORTED, isSkipped = false)
+        scheduler.setChunks(listOf(c1, c2, c3))
+        pumpLoopers()
+
+        var seekCount = 0
+        exoPlayer.addListener(
+            object : Player.Listener {
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                        seekCount += 1
+                    }
+                }
+            },
+        )
+
+        exoPlayer.play()
+
+        // c1 (0..2000) 直後の無音 [2000, 2600) はシークせずそのまま再生される
+        runUntil { exoPlayer.currentPosition in 2_150L..2_500L }
+        pumpLoopers()
+        assertEquals(0, seekCount)
+        assertEquals(c1.id, scheduler.currentChunkId.value)
+
+        // c2.startMs (2600ms) に到達した時点で c2 (2600..4000) とその後の無音 [4000, 4800) を飛ばして c3 (4800ms) へシークする
+        runUntil { scheduler.currentChunkId.value == c3.id }
+        pumpLoopers()
+        assertEquals(1, seekCount)
+        assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
+    }
+
+    @Test
+    fun `isSkipped_スキップ対象チャンク内またはその直後の無音区間から再生開始やシークをした場合は直ちに次の非スキップチャンクへシークする`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.IMPORTED, isSkipped = true)
+        val c2 = Chunk(ChunkId(2L), startMs = 2_600L, endMs = 4_000L, origin = ChunkOrigin.IMPORTED, isSkipped = false)
+        val c3 = Chunk(ChunkId(3L), startMs = 4_500L, endMs = 6_000L, origin = ChunkOrigin.IMPORTED, isSkipped = true)
+        val c4 = Chunk(ChunkId(4L), startMs = 6_800L, endMs = 8_500L, origin = ChunkOrigin.IMPORTED, isSkipped = false)
+        scheduler.setChunks(listOf(c1, c2, c3, c4))
+        pumpLoopers()
+
+        // 先頭チャンク c1 (isSkipped = true) 上から再生開始すると、c1 とその後の無音 [2000, 2600) を飛ばして c2 (2600ms) へ直ちにシークする
+        exoPlayer.play()
+        pumpLoopers()
+        assertEquals(c2.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in c2.startMs..(c2.startMs + 200L))
+
+        // スキップ対象チャンク c3 直後の無音区間 [4500..6000 の後の 6300ms) に手動シークしても、直ちに c4 (6800ms) へシークされる
+        exoPlayer.seekTo(6_300L)
+        pumpLoopers()
+        assertEquals(c4.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in c4.startMs..(c4.startMs + 200L))
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,

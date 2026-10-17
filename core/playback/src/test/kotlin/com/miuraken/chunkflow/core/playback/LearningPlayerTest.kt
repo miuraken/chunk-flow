@@ -78,6 +78,29 @@ class LearningPlayerTest {
         assertEquals(12_000L, innerPlayer.currentPosition)
     }
 
+    @Test
+    fun `handleSeek_スキップ対象チャンクは前後のチャンク移動対象から除外される`() {
+        val innerPlayer = ControllableStubPlayer(
+            initialPositionMs = 1_500L,
+            reportedDurationUs = Util.msToUs(60_000L),
+        )
+        val learningPlayer = LearningPlayer(innerPlayer)
+        learningPlayer.chunks = listOf(
+            Chunk(ChunkId(1L), 0L, 5_000L, ChunkOrigin.AUTO, isSkipped = false),
+            Chunk(ChunkId(2L), 5_000L, 12_000L, ChunkOrigin.AUTO, isSkipped = true),
+            Chunk(ChunkId(3L), 12_000L, 20_000L, ChunkOrigin.AUTO, isSkipped = false),
+        )
+
+        // 次チャンク移動で isSkipped = true の Chunk(2) を飛ばして Chunk(3) (12_000ms) へ移動する
+        learningPlayer.seekToNext()
+        assertEquals(12_000L, innerPlayer.currentPosition)
+
+        // Chunk(3) の開始直後 (< 1000ms) から前チャンク移動で Chunk(2) を飛ばして Chunk(1) (0ms) へ戻る
+        innerPlayer.seekTo(12_400L)
+        learningPlayer.seekToPrevious()
+        assertEquals(0L, innerPlayer.currentPosition)
+    }
+
     private class ControllableStubPlayer(
         initialPositionMs: Long,
         private val reportedDurationUs: Long,

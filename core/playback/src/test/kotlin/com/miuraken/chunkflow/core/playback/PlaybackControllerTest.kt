@@ -22,6 +22,7 @@ import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChineseScript
@@ -600,6 +601,48 @@ class PlaybackControllerTest {
         assertTrue(exoPlayer.playWhenReady)
         assertEquals(chunk1.id, controller.status.value.currentChunkId)
 
+        controller.release()
+    }
+
+    @Test
+    fun `open_LOCAL_REFERENCE教材はアプリ内コピーがなくてもlocalFilePathまたはsourceUriで再生準備できる`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val externalDir = File(context.cacheDir, "external-course").apply { mkdirs() }
+        val externalFile = File(externalDir, "lesson01.mp3").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val localRefItem = sampleAudioItem(mediaId1, durationMs = 45_000L).copy(
+            storageState = AudioStorageState.LOCAL_REFERENCE,
+            localFilePath = externalFile.absolutePath,
+            sourceUri = "content://com.android.externalstorage.documents/tree/primary%3AAudio/document/primary%3AAudio%2Flesson01.mp3",
+        )
+        val safOnlyItem = sampleAudioItem(mediaId2, durationMs = 50_000L).copy(
+            storageState = AudioStorageState.LOCAL_REFERENCE,
+            localFilePath = "/nonexistent/path/lesson02.mp3",
+            sourceUri = "content://com.android.externalstorage.documents/tree/primary%3AAudio/document/primary%3AAudio%2Flesson02.mp3",
+        )
+        libraryRepository.items.value = listOf(localRefItem, safOnlyItem)
+
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+
+        controller.open(mediaId1)
+        advanceUntilIdle()
+        shadowOf(Looper.getMainLooper()).idle()
+        advanceUntilIdle()
+
+        assertNull(controller.status.value.error)
+        assertEquals(Uri.fromFile(externalFile), controller.resolvePlayableAudioUri(localRefItem))
+        assertEquals(Uri.parse(safOnlyItem.sourceUri), controller.resolvePlayableAudioUri(safOnlyItem))
+
+        externalDir.deleteRecursively()
         controller.release()
     }
 
