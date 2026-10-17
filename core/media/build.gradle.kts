@@ -20,6 +20,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.onnxruntime.android)
     implementation(libs.mlkit.genai.speech.recognition)
+    implementation(libs.mlkit.translate)
 
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.onnxruntime.jvm)

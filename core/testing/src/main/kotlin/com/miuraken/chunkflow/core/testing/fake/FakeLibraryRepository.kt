@@ -6,8 +6,12 @@ import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import kotlinx.coroutines.flow.Flow
@@ -24,9 +28,13 @@ import kotlinx.coroutines.flow.update
 class FakeLibraryRepository(
     initialItems: List<AudioItem> = emptyList(),
     initialItemStates: Map<MediaId, ItemState> = emptyMap(),
+    initialCourseFolders: List<LibraryCourseFolder> = emptyList(),
 ) : LibraryRepository {
     /** 教材の一覧。テストから直接書き換えられる。 */
     val items: MutableStateFlow<List<AudioItem>> = MutableStateFlow(initialItems)
+
+    /** 登録済みコースフォルダの一覧。テストから直接書き換えられる。 */
+    val courseFolders: MutableStateFlow<List<LibraryCourseFolder>> = MutableStateFlow(initialCourseFolders)
 
     /** 教材ごとの再生・学習状態。テストから直接書き換えられる。 */
     val itemStates: MutableStateFlow<Map<MediaId, ItemState>> = MutableStateFlow(initialItemStates)
@@ -36,6 +44,15 @@ class FakeLibraryRepository(
 
     /** [import]（コース名・言語ペア指定版）に渡された引数（呼ばれた順）。 */
     val importedConfigs: MutableList<Triple<List<Uri>, String?, LanguagePair?>> = mutableListOf()
+
+    /** [linkLocalDirectory] に渡された引数（呼ばれた順）。 */
+    val linkedLocalDirectories: MutableList<Triple<Uri, String?, LanguagePair?>> = mutableListOf()
+
+    /** [rescanLocalDirectories] の呼び出し履歴（呼ばれた順）。 */
+    val rescanRequests: MutableList<String?> = mutableListOf()
+
+    /** [rescanLocalDirectories] が返す更新件数。 */
+    var rescanResultCount: Int = 0
 
     /** [syncFromLinkedFolder] で登録された同期対象フォルダの Tree URI。 */
     var linkedSyncFolderUri: Uri? = null
@@ -90,6 +107,8 @@ class FakeLibraryRepository(
     val writtenTranscriptExports: MutableList<Triple<MediaId, TranscriptExportFormat, Uri>> = mutableListOf()
 
     override fun observeItems(): Flow<List<AudioItem>> = items
+
+    override fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = courseFolders
 
     override fun observeItem(id: MediaId): Flow<AudioItem?> = items.map { list -> list.firstOrNull { it.id == id } }
 
@@ -163,6 +182,69 @@ class FakeLibraryRepository(
         return import(uris)
     }
 
+    override fun linkLocalDirectory(
+        treeUri: Uri,
+        course: String?,
+        languages: LanguagePair?,
+    ): Flow<ImportProgress> {
+        linkedLocalDirectories += Triple(treeUri, course, languages)
+        val resolvedCourse = course?.trim()?.takeIf { it.isNotEmpty() } ?: "local-folder"
+        val resolvedLanguages = languages ?: LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
+        courseFolders.update { list ->
+            list.filterNot { it.coursePath == resolvedCourse } +
+                LibraryCourseFolder(
+                    coursePath = resolvedCourse,
+                    kind = LibraryFolderKind.LOCAL_DIRECTORY,
+                    languagePair = resolvedLanguages,
+                    treeUri = treeUri.toString(),
+                    lastScannedAtEpochMs = System.currentTimeMillis(),
+                )
+        }
+        return import(listOf(treeUri), resolvedCourse, resolvedLanguages)
+    }
+
+    override suspend fun rescanLocalDirectories(coursePath: String?): Int {
+        rescanRequests += coursePath
+        return rescanResultCount
+    }
+
+    override suspend fun createVirtualFolder(
+        coursePath: String,
+        languages: LanguagePair,
+    ): Boolean {
+        val trimmed = coursePath.trim().trim('/')
+        if (trimmed.isEmpty()) return false
+        courseFolders.update { list ->
+            list.filterNot { it.coursePath == trimmed } +
+                LibraryCourseFolder(
+                    coursePath = trimmed,
+                    kind = LibraryFolderKind.VIRTUAL_DIRECTORY,
+                    languagePair = languages,
+                )
+        }
+        return true
+    }
+
+    override suspend fun moveItemsToCourse(
+        mediaIds: Set<MediaId>,
+        targetCourse: String,
+    ) {
+        val normalized = targetCourse.trim().trim('/').ifEmpty { "imported" }
+        val folderLang = courseFolders.value.firstOrNull { it.coursePath == normalized }?.languagePair
+        items.update { list ->
+            list.map { item ->
+                if (item.id in mediaIds) {
+                    item.copy(
+                        course = normalized,
+                        languagePair = folderLang ?: item.languagePair,
+                    )
+                } else {
+                    item
+                }
+            }
+        }
+    }
+
     override suspend fun importTranscript(uri: Uri): TranscriptImportResult = importTranscriptResult(uri)
 
     override suspend fun importTranscriptForMedia(id: MediaId, uri: Uri): TranscriptImportResult {
@@ -176,6 +258,37 @@ class FakeLibraryRepository(
     }
 
     override fun syncFromDrive(): Flow<SyncProgress> = syncResult()
+
+    override suspend fun downloadDriveAudio(id: MediaId): Boolean {
+        var found = false
+        items.update { list ->
+            list.map { item ->
+                if (item.id == id) {
+                    found = true
+                    item.copy(storageState = AudioStorageState.DRIVE_DOWNLOADED)
+                } else {
+                    item
+                }
+            }
+        }
+        missingAudioIds.update { it - id }
+        return found
+    }
+
+    override suspend fun deleteLocalAudioCopy(id: MediaId): Boolean {
+        var found = false
+        items.update { list ->
+            list.map { item ->
+                if (item.id == id) {
+                    found = true
+                    item.copy(storageState = AudioStorageState.DRIVE_REMOTE_ONLY)
+                } else {
+                    item
+                }
+            }
+        }
+        return found
+    }
 
     override suspend fun hasLinkedSyncFolder(): Boolean = linkedSyncFolderUri != null
 
@@ -232,6 +345,18 @@ class FakeLibraryRepository(
 
                     else -> {
                         item
+                    }
+                }
+            }
+        }
+        if (!currentCourse.isNullOrBlank()) {
+            val targetPath = newCourse?.trim()?.trim('/')?.takeIf { it.isNotEmpty() } ?: currentCourse
+            courseFolders.update { folders ->
+                folders.map { folder ->
+                    if (folder.coursePath == currentCourse) {
+                        folder.copy(coursePath = targetPath, languagePair = languages)
+                    } else {
+                        folder
                     }
                 }
             }

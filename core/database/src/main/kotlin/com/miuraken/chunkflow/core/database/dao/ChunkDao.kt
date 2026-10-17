@@ -57,6 +57,10 @@ interface ChunkDao {
     @Query("DELETE FROM chunk WHERE media_id = :mediaId AND origin = :origin")
     suspend fun deleteByMediaIdAndOrigin(mediaId: String, origin: String)
 
+    /** 指定した複数のチャンクのスキップ状態を一括で更新する。 */
+    @Query("UPDATE chunk SET is_skipped = :skipped WHERE media_id = :mediaId AND id IN (:chunkIds)")
+    suspend fun updateSkippedByIds(mediaId: String, chunkIds: List<Long>, skipped: Boolean)
+
     /**
      * チャンクの作り直しトランザクション（§6.4、§7.4.6）。
      *
@@ -88,8 +92,16 @@ interface ChunkDao {
         } else {
             getTranscriptsByChunkIds(oldChunkIds).associateBy { it.chunkId }
         }
+        val oldSkippedIntervals = oldChunks.filter { it.isSkipped }.map { it.startMs to it.endMs }
 
-        val normalizedToInsert = newChunks.map { it.copy(id = 0L, mediaId = mediaId, origin = origin) }
+        val normalizedToInsert = newChunks.map { chunk ->
+            val inheritsSkipped =
+                chunk.isSkipped ||
+                    oldSkippedIntervals.any { (sStart, sEnd) ->
+                        max(chunk.startMs, sStart) < min(chunk.endMs, sEnd)
+                    }
+            chunk.copy(id = 0L, mediaId = mediaId, origin = origin, isSkipped = inheritsSkipped)
+        }
         val insertedIds = if (normalizedToInsert.isEmpty()) {
             emptyList()
         } else {

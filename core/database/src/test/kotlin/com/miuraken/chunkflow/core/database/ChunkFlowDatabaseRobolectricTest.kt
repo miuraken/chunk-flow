@@ -8,6 +8,7 @@ import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
+import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
@@ -99,7 +100,7 @@ class ChunkFlowDatabaseRobolectricTest {
         )
         assertEquals(1, db.analysisStateDao().getByMediaId(mediaId).size)
 
-        // chunk + transcript: 登録と replaceChunksTransaction での作り直し（userEdited 引き継ぎ）
+        // chunk + transcript: 登録と replaceChunksTransaction での作り直し（userEdited 引き継ぎ・isSkipped 引き継ぎ）
         val initialChunks = db.chunkDao().replaceChunksTransaction(
             mediaId = mediaId,
             origin = "IMPORTED",
@@ -113,6 +114,8 @@ class ChunkFlowDatabaseRobolectricTest {
             ),
         )
         assertEquals(2, initialChunks.size)
+        db.chunkDao().updateSkippedByIds(mediaId, listOf(initialChunks[0].id), skipped = true)
+        assertEquals(listOf(true, false), db.chunkDao().getByMediaIdAndOrigin(mediaId, "IMPORTED").map { it.isSkipped })
 
         val rebuiltChunks = db.chunkDao().replaceChunksTransaction(
             mediaId = mediaId,
@@ -126,6 +129,7 @@ class ChunkFlowDatabaseRobolectricTest {
                 1 to TranscriptEntity(chunkId = 0L, text = "新自動2", language = "ja", engine = "whisper", userEdited = false),
             ),
         )
+        assertEquals(listOf(true, false), rebuiltChunks.map { it.isSkipped })
         val savedTranscripts = db.transcriptDao().observeByMediaId(mediaId).first()
         assertEquals(listOf("手修正", "新自動2"), savedTranscripts.map { it.text })
         assertEquals(rebuiltChunks.map { it.id }, savedTranscripts.map { it.chunkId })
@@ -259,7 +263,7 @@ class ChunkFlowDatabaseRobolectricTest {
     }
 
     @Test
-    fun `MIGRATION_1_2_から_3_4_まで適用したDBをRoom_v4で開いて読み書きできる`() = runTest {
+    fun `MIGRATION_1_2_から_4_5_まで適用したDBをRoom_v5で開いて読み書きできる`() = runTest {
         val context = RuntimeEnvironment.getApplication()
         val dbName = "migration_test_${System.nanoTime()}.db"
         val v1Helper = FrameworkSQLiteOpenHelperFactory().create(
@@ -283,7 +287,7 @@ class ChunkFlowDatabaseRobolectricTest {
                             )
                             db.execSQL("CREATE INDEX IF NOT EXISTS `index_chunk_media_id_start_ms` ON `chunk` (`media_id`, `start_ms`)")
                             db.execSQL(
-                                "CREATE TABLE IF NOT EXISTS `transcript` (`chunk_id` INTEGER NOT NULL, `text` TEXT NOT NULL, `text_variants` TEXT NOT NULL, `language` TEXT, `language_confidence` REAL, `words` TEXT NOT NULL, `engine` TEXT NOT NULL, `user_edited` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, PRIMARY KEY(`chunk_id`), FOREIGN KEY(`chunk_id`) REFERENCES `chunk`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                                "CREATE TABLE IF NOT EXISTS `transcript` (`chunk_id` INTEGER NOT NULL, `text` TEXT NOT NULL, `text_variants` TEXT NOT NULL, `language` TEXT, `language_confidence` REAL, `words` TEXT NOT NULL, `engine` TEXT NOT NULL, `user_edited` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, PRIMARY KEY(`chunk_id`), FOREIGN KEY(`media_id`) REFERENCES `chunk`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )".replace("FOREIGN KEY(`media_id`)", "FOREIGN KEY(`chunk_id`)"),
                             )
                             db.execSQL(
                                 "CREATE TABLE IF NOT EXISTS `bookmark` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_id` TEXT NOT NULL, `position_ms` INTEGER NOT NULL, `note` TEXT NOT NULL, `created_at` INTEGER NOT NULL, FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
@@ -320,6 +324,17 @@ class ChunkFlowDatabaseRobolectricTest {
             assertEquals(4_500L, state?.positionMs)
             assertEquals(4_500L, state?.maxPositionMs)
             assertEquals(false, state?.isListened)
+            assertEquals("APP_MANAGED", migratedDb.mediaItemDao().getById(mediaId)?.storageState)
+
+            migratedDb.courseFolderDao().upsert(
+                CourseFolderEntity(
+                    coursePath = "imported",
+                    kind = "VIRTUAL_DIRECTORY",
+                    targetLang = "ko",
+                    baseLang = "ja",
+                ),
+            )
+            assertEquals("VIRTUAL_DIRECTORY", migratedDb.courseFolderDao().getByPath("imported")?.kind)
 
             assertTrue(
                 migratedDb.itemSttOverrideDao().setIfMediaExists(

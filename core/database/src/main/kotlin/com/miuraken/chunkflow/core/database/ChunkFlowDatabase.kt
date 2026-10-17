@@ -7,6 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
 import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
+import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
 import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
@@ -15,6 +16,7 @@ import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
+import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
@@ -36,8 +38,9 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         BookmarkEntity::class,
         DriveFileEntity::class,
         ItemSttOverrideEntity::class,
+        CourseFolderEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -64,6 +67,9 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
 
     /** `item_stt_override` テーブルの DAO（ADR-0011 §2.3）。 */
     abstract fun itemSttOverrideDao(): ItemSttOverrideDao
+
+    /** `course_folder` テーブルの DAO。 */
+    abstract fun courseFolderDao(): CourseFolderDao
 
     companion object {
         /** データベースファイル名（`data_extraction_rules.xml` の `database` ドメイン対象）。 */
@@ -96,7 +102,25 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             }
         }
 
+        /** バージョン 4 から 5 へのマイグレーション（`media_item` にソース参照・保持状態列、`chunk` に `is_skipped` 列、`transcript` に翻訳列、`course_folder` テーブルを追加）。 */
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `media_item` ADD COLUMN `source_uri` TEXT")
+                db.execSQL("ALTER TABLE `media_item` ADD COLUMN `local_file_path` TEXT")
+                db.execSQL("ALTER TABLE `media_item` ADD COLUMN `storage_state` TEXT NOT NULL DEFAULT 'APP_MANAGED'")
+                db.execSQL("ALTER TABLE `chunk` ADD COLUMN `is_skipped` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `transcript` ADD COLUMN `translated_text` TEXT")
+                db.execSQL("ALTER TABLE `transcript` ADD COLUMN `translated_lang` TEXT")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `course_folder` (" +
+                        "`course_path` TEXT NOT NULL, `kind` TEXT NOT NULL, `target_lang` TEXT NOT NULL, " +
+                        "`base_lang` TEXT, `tree_uri` TEXT, `drive_folder_id` TEXT, " +
+                        "`last_scanned_at` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`course_path`))",
+                )
+            }
+        }
+
         /** アプリで使うすべてのマイグレーション（古い順）。データベースを開くときに渡す。 */
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
     }
 }

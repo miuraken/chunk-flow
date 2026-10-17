@@ -4,6 +4,7 @@ import android.net.Uri
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.transcript.TranscriptError
@@ -18,6 +19,9 @@ import kotlinx.coroutines.flow.flowOf
 interface LibraryRepository {
     /** すべての教材を購読する。 */
     fun observeItems(): Flow<List<AudioItem>>
+
+    /** 登録されているすべてのコースフォルダ（ローカルフォルダ・仮想フォルダ・Drive フォルダ）を購読する。 */
+    fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = flowOf(emptyList())
 
     /** 教材 1 件を購読する。削除されたら `null` を流す。 */
     fun observeItem(id: MediaId): Flow<AudioItem?>
@@ -55,7 +59,7 @@ interface LibraryRepository {
      * コース名（フォルダ名）と言語ペアを共通設定して、音声と文字起こしファイルをまとめて取り込む。
      *
      * @param uris SAF の `content://` URI（または Tree URI）。
-     * @param course 取り込む教材に設定するコース名（`null` の場合は URI から推定）。
+     * @param course 取り込む教材に設定するコース名（`null` の場合は URI から推定または既定の `"imported"`）。
      * @param languages 取り込む教材に共通で設定する言語ペア（`null` の場合は既定の言語ペア）。
      */
     fun import(
@@ -63,6 +67,40 @@ interface LibraryRepository {
         course: String?,
         languages: LanguagePair?,
     ): Flow<ImportProgress> = import(uris)
+
+    /**
+     * ローカルフォルダ（SAF Tree URI）をリンクし、再帰的に音声ファイルと `.chunkflow/` を走査して登録する。
+     * 音声ファイルのコピーは作らず、元の URI / ファイルパスへの参照を保持する。
+     */
+    fun linkLocalDirectory(
+        treeUri: Uri,
+        course: String? = null,
+        languages: LanguagePair? = null,
+    ): Flow<ImportProgress> = import(listOf(treeUri), course, languages)
+
+    /**
+     * 登録済みのローカルフォルダを再スキャンし、新規ファイルの追加や消失したファイルの DB 削除を行う。
+     * `.chunkflow/` 内の解析・文字起こしデータは削除しない。
+     *
+     * @param coursePath 対象のコースパス（`null` の場合はすべてのローカルフォルダを再スキャン）。
+     */
+    suspend fun rescanLocalDirectories(coursePath: String? = null): Int = 0
+
+    /**
+     * 新しい仮想フォルダ（ファイル単位取り込みの整理用ディレクトリ）を作成する。
+     */
+    suspend fun createVirtualFolder(
+        coursePath: String,
+        languages: LanguagePair,
+    ): Boolean = false
+
+    /**
+     * 複数の教材を指定したコース（フォルダ）へ移動する。
+     */
+    suspend fun moveItemsToCourse(
+        mediaIds: Set<MediaId>,
+        targetCourse: String,
+    ) = Unit
 
     /** 文字起こしファイルだけを取り込み、SHA-256 が一致する既存の教材に付ける。 */
     suspend fun importTranscript(uri: Uri): TranscriptImportResult
@@ -79,8 +117,19 @@ interface LibraryRepository {
      */
     suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean = false
 
-    /** Drive の `ChunkFlow/` フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
+    /** Drive の `ChunkFlow/` フォルダからファイル一覧とメタデータ・文字起こしを同期する（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
     fun syncFromDrive(): Flow<SyncProgress>
+
+    /**
+     * Google Drive 上の教材（`DRIVE_REMOTE_ONLY`）の音声ファイルをオンデマンドでローカルへダウンロードする。
+     */
+    suspend fun downloadDriveAudio(id: MediaId): Boolean = false
+
+    /**
+     * Google Drive 由来の教材のローカル音声コピーだけを削除し、`DRIVE_REMOTE_ONLY`（未ダウンロード状態）に戻す。
+     * チャンクや文字起こし、学習進捗は保持する。
+     */
+    suspend fun deleteLocalAudioCopy(id: MediaId): Boolean = false
 
     /**
      * Drive 同期対象のフォルダ（Tree URI）が設定されているかどうかを返す。
@@ -125,7 +174,7 @@ interface LibraryRepository {
     suspend fun exportLocalTranscriptJson(id: MediaId): Boolean = false
 
     /**
-     * バックアップからの復元後など、DB に項目があるが `filesDir/media/` に音声ファイルが存在しない教材 ID の集合を購読する（F2.4）。
+     * バックアップからの復元後など、DB に項目があるが音声ファイルにアクセスできない教材 ID の集合を購読する（F2.4）。
      */
     fun observeMissingAudioIds(): Flow<Set<MediaId>> = flowOf(emptySet())
 

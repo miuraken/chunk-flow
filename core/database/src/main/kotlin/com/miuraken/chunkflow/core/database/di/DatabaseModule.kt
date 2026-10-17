@@ -6,6 +6,7 @@ import com.miuraken.chunkflow.core.database.ChunkFlowDatabase
 import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
 import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
+import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
 import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
@@ -66,4 +67,8 @@ object DatabaseModule {
     /** [ItemSttOverrideDao] を提供する（ADR-0011 §2.3）。 */
     @Provides
     fun providesItemSttOverrideDao(database: ChunkFlowDatabase): ItemSttOverrideDao = database.itemSttOverrideDao()
+
+    /** [CourseFolderDao] を提供する。 */
+    @Provides
+    fun providesCourseFolderDao(database: ChunkFlowDatabase): CourseFolderDao = database.courseFolderDao()
 }

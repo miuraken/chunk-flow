@@ -50,6 +50,10 @@ data class TranscriptEntity(
     val userEdited: Boolean = false,
     @ColumnInfo(name = "created_at")
     val createdAt: Long = 0L,
+    @ColumnInfo(name = "translated_text")
+    val translatedText: String? = null,
+    @ColumnInfo(name = "translated_lang")
+    val translatedLang: String? = null,
 )
 
 @Serializable
@@ -88,6 +92,8 @@ fun TranscriptEntity.toExternalModel(): Transcript {
         words = parsedWords,
         engine = EngineId(engine),
         userEdited = userEdited,
+        translatedText = translatedText?.takeIf { it.isNotBlank() },
+        translatedLanguage = translatedLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag),
     )
 }
 
@@ -114,5 +120,7 @@ fun Transcript.toEntity(createdAtEpochMs: Long = 0L): TranscriptEntity {
         engine = engine.value,
         userEdited = userEdited,
         createdAt = createdAtEpochMs,
+        translatedText = translatedText,
+        translatedLang = translatedLanguage?.value,
     )
 }

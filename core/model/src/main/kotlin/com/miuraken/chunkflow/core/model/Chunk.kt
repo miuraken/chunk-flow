@@ -9,12 +9,14 @@ package com.miuraken.chunkflow.core.model
  * @property startMs 再生範囲の開始（ミリ秒）。
  * @property endMs 再生範囲の終了（ミリ秒）。
  * @property origin チャンクの出どころ。
+ * @property isSkipped このチャンク（および直後の無音区間）の再生をスキップするかどうか。
  */
 data class Chunk(
     val id: ChunkId,
     val startMs: Long,
     val endMs: Long,
     val origin: ChunkOrigin,
+    val isSkipped: Boolean = false,
 ) {
     init {
         require(startMs < endMs)

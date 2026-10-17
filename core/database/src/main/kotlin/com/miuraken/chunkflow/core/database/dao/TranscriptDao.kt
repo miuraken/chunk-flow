@@ -70,6 +70,16 @@ interface TranscriptDao {
     )
     suspend fun bulkSetUnknownLanguageForMedia(mediaId: String, language: String)
 
+    /** チャンクの翻訳テキストと翻訳先言語を保存する。 */
+    @Query(
+        """
+        UPDATE transcript
+        SET translated_text = :translatedText, translated_lang = :translatedLang
+        WHERE chunk_id = :chunkId
+        """,
+    )
+    suspend fun updateTranslation(chunkId: Long, translatedText: String?, translatedLang: String?)
+
     /** 指定したチャンク ID の文字起こしを削除する。 */
     @Query("DELETE FROM transcript WHERE chunk_id = :chunkId")
     suspend fun deleteByChunkId(chunkId: Long)
