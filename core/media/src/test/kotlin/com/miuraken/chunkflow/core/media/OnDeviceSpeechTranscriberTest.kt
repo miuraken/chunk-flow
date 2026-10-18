@@ -2011,6 +2011,55 @@ class OnDeviceSpeechTranscriberTest {
         assertTrue(osCallCount >= 1)
     }
 
+    @Test
+    fun `transcribeChunk_precomputedLanguageが指定されている場合はWhisperLIDを再実行せず指定言語から認識を開始する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        var lidCallCount = 0
+        val recognizedLocales = mutableListOf<String>()
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47Tag, _ ->
+                recognizedLocales += bcp47Tag
+                SpeechRecognitionAttemptResult(text = "こんにちはテストです", confidence = 0.92f)
+            },
+            languageDetector = { _, _, _ ->
+                lidCallCount += 1
+                LanguagePairPrediction(
+                    selectedTag = "en",
+                    fallbackTag = "ja",
+                    selectedProbability = 0.95f,
+                    targetProbability = 0.95f,
+                    baseProbability = 0.05f,
+                    inferenceTimeMs = 50L,
+                )
+            },
+        )
+
+        val audioFile = tempFolder.newFile("precomputed_lid.wav").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val result = transcriber.transcribeChunk(
+            audioFile = audioFile,
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+            forceRefresh = true,
+            highPriority = false,
+            itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+            engineByLanguage = emptyMap(),
+            precomputedLanguage = LanguageTag("ja"),
+            precomputedLanguageConfidence = 0.91f,
+        )
+
+        assertNotNull(result)
+        assertEquals("こんにちはテストです", result.text)
+        assertEquals(LanguageTag("ja"), result.language)
+        assertEquals(0, lidCallCount, "事前判定済みの言語がある場合は Whisper LID を再実行しない")
+        assertEquals(listOf("ja-JP"), recognizedLocales)
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

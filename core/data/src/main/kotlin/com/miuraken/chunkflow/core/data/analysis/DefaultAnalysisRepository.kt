@@ -1677,6 +1677,15 @@ class DefaultAnalysisRepository(
                                     ?.language?.trim()?.takeIf {
                                         it.isNotEmpty() && !it.equals("und", ignoreCase = true)
                                     }
+                                val precomputedLidLang = latestExisting
+                                    ?.takeIf { it.isLanguageIdOnly() }
+                                    ?.language?.trim()?.takeIf {
+                                        it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+                                    }
+                                    ?.let(::LanguageTag)
+                                val precomputedLidConfidence = latestExisting
+                                    ?.takeIf { it.isLanguageIdOnly() }
+                                    ?.languageConfidence
                                 val mediaLanguagePair = mediaItem?.let { item ->
                                     val target = item.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
                                     val base = item.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
@@ -1698,6 +1707,8 @@ class DefaultAnalysisRepository(
                                         itemSttOverride = itemSttOverride,
                                         engineByLanguage = engineByLanguage,
                                         highPriority = true,
+                                        precomputedLanguage = precomputedLidLang,
+                                        precomputedLanguageConfidence = precomputedLidConfidence,
                                     )
                                 } catch (ce: CancellationException) {
                                     throw ce
@@ -2440,7 +2451,7 @@ class DefaultAnalysisRepository(
 
                             val existingBefore = transcriptDao.getByChunkId(targetChunk.id)
                             val existingBeforeLang = existingBefore?.language
-                            // 利用者が設定した言語（本文なし）はその言語だけで認識する。言語判定のみの結果は仮の言語のため両言語で判定し直す
+                            // 利用者が設定した言語（本文なし）はその言語だけで認識する。言語判定のみの結果は事前判定結果として引き継ぎ、二重の音声LID推論を省く
                             val effectiveLanguagePair = if (
                                 existingBefore != null &&
                                 existingBefore.text.isBlank() &&
@@ -2452,6 +2463,15 @@ class DefaultAnalysisRepository(
                             } else {
                                 languagePair
                             }
+                            val precomputedLidLang = existingBefore
+                                ?.takeIf { it.isLanguageIdOnly() }
+                                ?.language?.trim()?.takeIf {
+                                    it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+                                }
+                                ?.let(::LanguageTag)
+                            val precomputedLidConfidence = existingBefore
+                                ?.takeIf { it.isLanguageIdOnly() }
+                                ?.languageConfidence
 
                             try {
                                 if (!isMediaOpenForTranscription(id)) {
@@ -2473,6 +2493,8 @@ class DefaultAnalysisRepository(
                                         itemSttOverride = itemSttOverride,
                                         engineByLanguage = engineByLanguage,
                                         highPriority = false,
+                                        precomputedLanguage = precomputedLidLang,
+                                        precomputedLanguageConfidence = precomputedLidConfidence,
                                     )
                                 } catch (ce: CancellationException) {
                                     throw ce

@@ -235,6 +235,34 @@ interface OnDeviceChunkTranscriber {
     )
 
     /**
+     * 音声ファイル [audioFile] の `[startMs, endMs]` 区間を 16kHz モノラル 16-bit PCM に切り出して端末内音声認識を行う。
+     *
+     * @param precomputedLanguage 先行する言語判定パス（`language-id-only` 等）で既に判定済みの言語タグ（未判定時は `null`）。
+     * @param precomputedLanguageConfidence [precomputedLanguage] の判定確率（0.0..1.0、不明時は `null`）。
+     */
+    suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+        precomputedLanguage: LanguageTag?,
+        precomputedLanguageConfidence: Float?,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = forceRefresh,
+        highPriority = highPriority,
+        itemSttOverride = itemSttOverride,
+        engineByLanguage = engineByLanguage,
+    )
+
+    /**
      * 切り出し済みの 16kHz モノラル 16-bit リトルエンディアン PCM（[pcm16LeBytes]）に対して端末内音声認識を行う。
      */
     suspend fun transcribePcm16Le(
@@ -2068,6 +2096,30 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         highPriority: Boolean,
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
         engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = forceRefresh,
+        highPriority = highPriority,
+        itemSttOverride = itemSttOverride,
+        engineByLanguage = engineByLanguage,
+        precomputedLanguage = null,
+        precomputedLanguageConfidence = null,
+    )
+
+    override suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+        precomputedLanguage: LanguageTag?,
+        precomputedLanguageConfidence: Float?,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || startMs < 0L || endMs <= startMs || !audioFile.isFile) {
             return null
@@ -2172,6 +2224,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 startedAtEpochMs = startedAtEpochMs,
                 itemSttOverride = itemSttOverride,
                 engineByLanguage = engineByLanguage,
+                precomputedLanguage = precomputedLanguage,
+                precomputedLanguageConfidence = precomputedLanguageConfidence,
             )
         } finally {
             if (jobHandle != null) {
@@ -2355,6 +2409,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         startedAtEpochMs: Long = System.currentTimeMillis(),
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
         engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine> = emptyMap(),
+        precomputedLanguage: LanguageTag? = null,
+        precomputedLanguageConfidence: Float? = null,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || pcm16LeBytes.isEmpty() || sampleRateHz <= 0) {
             return null
@@ -2419,13 +2475,25 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     activeTrialEngineOverride ?: runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
 
                 val result = if (targetLang != null && baseLang != null) {
-                    updateActiveStep(
-                        step = TranscriptionStep.DETECTING_LANGUAGE,
-                        detail = "${targetLang.value} / ${baseLang.value}",
-                        startedAtEpochMs = startedAtEpochMs,
-                        highPriority = highPriority,
+                    val precomputedPrediction = buildPrecomputedLanguagePairPrediction(
+                        precomputedLanguage = precomputedLanguage,
+                        precomputedConfidence = precomputedLanguageConfidence,
+                        targetLang = targetLang,
+                        baseLang = baseLang,
                     )
-                    val lidPrediction = if (languageDetector != null) {
+                    val lidPrediction = if (precomputedPrediction != null) {
+                        logDebug(
+                            "whisperLid skipped (reusing precomputed language=${precomputedPrediction.selectedTag} " +
+                                "prob=${precomputedPrediction.selectedProbability}) chunkDurationMs=$chunkDurationMs",
+                        )
+                        precomputedPrediction
+                    } else if (languageDetector != null) {
+                        updateActiveStep(
+                            step = TranscriptionStep.DETECTING_LANGUAGE,
+                            detail = "${targetLang.value} / ${baseLang.value}",
+                            startedAtEpochMs = startedAtEpochMs,
+                            highPriority = highPriority,
+                        )
                         val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
                         runCatching {
                             languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
@@ -2529,6 +2597,43 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             } finally {
                 activeTrialEngineOverride = null
             }
+        }
+    }
+
+    private fun buildPrecomputedLanguagePairPrediction(
+        precomputedLanguage: LanguageTag?,
+        precomputedConfidence: Float?,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): LanguagePairPrediction? {
+        val rawTag = precomputedLanguage?.value?.trim()?.takeIf {
+            it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+        } ?: return null
+        val isBase = rawTag.equals(baseLang.value, ignoreCase = true)
+        val isTarget = rawTag.equals(targetLang.value, ignoreCase = true)
+        if (!isBase && !isTarget) return null
+
+        val selectedProb = (precomputedConfidence?.takeIf { it.isFinite() } ?: DEFAULT_PRECOMPUTED_LID_CONFIDENCE)
+            .coerceIn(0.5f, 1.0f)
+        val otherProb = (1.0f - selectedProb).coerceIn(0.0f, 0.5f)
+        return if (isBase) {
+            LanguagePairPrediction(
+                selectedTag = baseLang.value,
+                fallbackTag = targetLang.value,
+                selectedProbability = selectedProb,
+                targetProbability = otherProb,
+                baseProbability = selectedProb,
+                inferenceTimeMs = 0L,
+            )
+        } else {
+            LanguagePairPrediction(
+                selectedTag = targetLang.value,
+                fallbackTag = baseLang.value,
+                selectedProbability = selectedProb,
+                targetProbability = selectedProb,
+                baseProbability = otherProb,
+                inferenceTimeMs = 0L,
+            )
         }
     }
 
@@ -3530,6 +3635,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         private const val MAX_STT_CACHE_ENTRIES: Int = 2_048
         private const val MAX_DIAGNOSTIC_ENTRIES: Int = 40
         private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.75f
+        private const val DEFAULT_PRECOMPUTED_LID_CONFIDENCE: Float = 0.85f
         private const val LOW_STT_CONFIDENCE_THRESHOLD: Float = 0.68f
         private const val MODERATE_STT_CONFIDENCE_THRESHOLD: Float = 0.80f
         private const val MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS: Long = 15_000L

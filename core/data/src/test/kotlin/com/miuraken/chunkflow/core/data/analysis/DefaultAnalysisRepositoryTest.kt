@@ -3394,4 +3394,95 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(listOf(0L), transcribedChunks)
         assertNull(transcriptDao.getByChunkId(2302L))
     }
+
+    @Test
+    fun `startLanguageDetectionOnly_判定済みのチャンクを文字起こしする際にprecomputedLanguageとconfidenceを引き渡す`() = runTest {
+        val capturedPrecomputed = mutableListOf<Pair<LanguageTag?, Float?>>()
+        var detectCallCount = 0
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun detectChunkLanguage(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair,
+            ): OnDeviceChunkTranscriptionResult {
+                detectCallCount += 1
+                return OnDeviceChunkTranscriptionResult(
+                    text = "",
+                    language = LanguageTag("ja"),
+                    confidence = 0.88f,
+                    engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                )
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                forceRefresh: Boolean,
+                highPriority: Boolean,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+                precomputedLanguage: LanguageTag?,
+                precomputedLanguageConfidence: Float?,
+            ): OnDeviceChunkTranscriptionResult {
+                capturedPrecomputed += precomputedLanguage to precomputedLanguageConfidence
+                return OnDeviceChunkTranscriptionResult(
+                    text = "判定済み言語で認識",
+                    language = precomputedLanguage ?: LanguageTag("en"),
+                    confidence = 0.93f,
+                )
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_precomputed_lid_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Precomputed LID Test",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 3101L, mediaId = mediaId.value, startMs = 0L, endMs = 1_500L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        repository.startLanguageDetectionOnly(mediaId)
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, detectCallCount)
+        assertEquals("ja", transcriptDao.getByChunkId(3101L)?.language)
+
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        repository.setLookaheadEnabled(mediaId, true)
+        repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(3101L))
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(listOf<Pair<LanguageTag?, Float?>>(LanguageTag("ja") to 0.88f), capturedPrecomputed)
+        assertEquals("判定済み言語で認識", transcriptDao.getByChunkId(3101L)?.text)
+    }
 }
