@@ -32,12 +32,18 @@ $PY verify_onnx.py --bin $ASSETS/whisper_tiny_lid_q8q4.bin --onnx $ASSETS/whispe
 
 # 速度と誤差を比べる（作業用のディレクトリに組み合わせごとの ONNX を書く）
 $PY bench_onnx.py --bin $ASSETS/whisper_tiny_lid_q8q4.bin --out-dir <作業用ディレクトリ>
+
+# Lint（このディレクトリで実行する。ほかの場所からだと、このディレクトリのモジュールを first-party と判定できない）
+RUFF=/Users/miuraken/src/gogaku-player/tools/transcriber/.venv/bin/ruff
+$RUFF format --check --line-length 100 --target-version py312 .
+$RUFF check --line-length 100 --target-version py312 --select E,F,W,I,B,UP,SIM,RUF \
+    --ignore RUF001,RUF002,RUF003,E501 .
 ```
 
 `build_onnx.py` の選択肢（既定はアプリに入れているもの）:
 
 - `--q4-accuracy-level {0,1,4}`: MatMulNBits の accuracy_level。4 は入力を int8 にして計算する（Mac で約 1.5 倍速いが、
-  ロジットが最大 0.5 程度ずれる。精度の評価は `docs/spikes/S3-onnx-whisper-lid.md`）。
+  ロジットが合成音声で最大 0.5、実際の教材で最大 0.9 ずれる。精度の評価は `docs/spikes/S3-onnx-whisper-lid.md`）。
 - `--q8 {dq,nbits8}`: Q8 の重みを DequantizeLinear + Gemm にするか、MatMulNBits（bits=8）にするか。
 - `--attention {matmul,mha}`: エンコーダの自己注意を標準の演算にするか、com.microsoft.MultiHeadAttention にするか。
 - `--no-nbits-bias`: MatMulNBits の bias 入力を使わず、Add で足す。
@@ -66,10 +72,12 @@ $PY bench_onnx.py --bin $ASSETS/whisper_tiny_lid_q8q4.bin --out-dir <作業用�
 ## 外部データ方式（APK を増やさない案）
 
 `--external-data` で作ったグラフ（約 50 KB）は、191 個のテンソルを `.bin` の位置（オフセットと長さ）で参照し、
-14 個の小さな定数（形やマスク）だけを持つ。Python の onnxruntime 1.30 で次を確かめた（結果は重み入りの ONNX と完全に同じ）。
+14 個の小さな定数（形やマスク）だけを持つ。次を確かめた（結果は重み入りの ONNX と完全に同じ）。
 
-- `.bin` を同じディレクトリに置いてファイルのパスから読む: 読める。
-- バイト列から読み、`SessionOptions.add_external_initializers` で `.bin` から切り出したテンソルを渡す: 読める。
-- `SessionOptions.add_initializer` で渡す: 読めない（バイト列から読んだモデルの外部データのパスの検証で失敗する）。
+- Python（onnxruntime 1.30）: `.bin` を同じディレクトリに置いてファイルのパスから読む → 読める。
+- Python: バイト列から読み、`SessionOptions.add_external_initializers` で `.bin` から切り出したテンソルを渡す → 読める。
+- Python: `SessionOptions.add_initializer` で渡す → 読めない（バイト列から読んだモデルの外部データのパスの検証で失敗する）。
+- Java（onnxruntime 1.31、JVM）: バイト列から読み、`SessionOptions.addExternalInitializers` で `.bin` の direct バッファを
+  `slice()` したテンソルを渡す → 読める（テンソルはセッションにコピーされるので、作成後に閉じてよい）。
 
-アプリでの使い方の案と課題は `docs/spikes/S3-onnx-whisper-lid.md` に書く。
+アプリでの使い方の案と課題は `docs/spikes/S3-onnx-whisper-lid.md` §6 に書く。

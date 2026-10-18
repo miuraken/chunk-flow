@@ -6,10 +6,11 @@
      ニブルの順を入れ替えた重みでは一致しないこと（確認の感度）。
    - DequantizeLinear + Gemm（Q8）、im2col + Gemm の畳み込み（conv1 / conv2）。
 3. モデル全体: 合成音声の log-mel で、ロジットとエンコーダ出力の最大誤差、上位の言語の一致。
-4. （任意）Kotlin が書き出した mel・ロジット・エンコーダ出力（`--kotlin-dump`）との比較。
 
 使い方:
-    python verify_onnx.py --bin <whisper_tiny_lid_q8q4.bin> --onnx <whisper_tiny_lid.onnx> [--kotlin-dump <dir>]
+    python verify_onnx.py --bin <whisper_tiny_lid_q8q4.bin> --onnx <whisper_tiny_lid.onnx> [--config key=value]
+
+Kotlin の実装との比較は、Kotlin の単体テスト（`WhisperLidOnnxRuntimeTest`）で行う。
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import onnxruntime as ort
 import onnx_proto as P
 import reference as R
 from build_onnx import MS_DOMAIN
-from lid_bin import D_MODEL, N_MELS, Q4_GROUP_SIZE, LidModel, Q4Matrix, Q8Matrix, load_lid_model
+from lid_bin import Q4_GROUP_SIZE, LidModel, Q4Matrix, Q8Matrix, load_lid_model
 
 
 def _session(
@@ -174,27 +175,11 @@ def synth_signals(n: int = 6) -> list[np.ndarray]:
     return out
 
 
-def compare_kotlin_dump(sess: ort.InferenceSession, dump_dir: Path) -> None:
-    """Kotlin が書き出した mel（[300, 80]）・ロジット（[99]）・エンコーダ出力（[150, 384]）と比べる。"""
-    for mel_path in sorted(dump_dir.glob("*_mel.f32")):
-        stem = mel_path.name.removesuffix("_mel.f32")
-        mel = np.fromfile(mel_path, dtype="<f4").reshape(300, N_MELS)
-        kt_logits = np.fromfile(dump_dir / f"{stem}_logits.f32", dtype="<f4")
-        kt_af = np.fromfile(dump_dir / f"{stem}_af.f32", dtype="<f4").reshape(-1, D_MODEL)
-        logits, af = sess.run(None, {"mel": mel[None]})
-        print(
-            f"  {stem}: logits max|ORT−Kotlin|={np.abs(logits[0] - kt_logits).max():.3e} "
-            f"af max|ORT−Kotlin|={np.abs(af[0] - kt_af).max():.3e} "
-            f"top1 {int(np.argmax(logits[0]))}/{int(np.argmax(kt_logits))}"
-        )
-
-
 def main() -> None:
     """確認を順に実行する。"""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--bin", type=Path, required=True)
     parser.add_argument("--onnx", type=Path, required=True)
-    parser.add_argument("--kotlin-dump", type=Path, default=None)
     parser.add_argument(
         "--config", action="append", default=[], help="セッションの設定（key=value）"
     )
@@ -234,10 +219,6 @@ def main() -> None:
                 else min(worst.get(k, 1.0), v)
             )
     print("  最悪値: " + ", ".join(f"{k}={v:.3e}" for k, v in worst.items()))
-
-    if args.kotlin_dump is not None:
-        print("4. Kotlin の出力との比較")
-        compare_kotlin_dump(sess, args.kotlin_dump)
 
 
 if __name__ == "__main__":
