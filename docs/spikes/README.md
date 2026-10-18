@@ -6,7 +6,7 @@ Phase 0 のスパイクの報告と、そこから決めた ADR の対応です�
 | --- | --- | --- | --- |
 | S1 PC の文字起こしパイプライン | transcriber | [S1-pipeline-prototype.md](S1-pipeline-prototype.md)（合成音声）、[S1-real-materials.md](S1-real-materials.md)（実際の教材） | [0009](../adr/0009-transcriber-parameters.md) |
 | S2 再生エンジン | playback | [S2-playback.md](S2-playback.md) | [0006](../adr/0006-mp3-seeking.md)、[0007](../adr/0007-chunk-boundary-timing.md)、[0008](../adr/0008-time-axis-alignment.md) |
-| S3 デコードと時間軸 | audio-analysis | [S3-audio-analysis.md](S3-audio-analysis.md) | [0005](../adr/0005-analysis-decoding.md)、[0008](../adr/0008-time-axis-alignment.md) |
+| S3 デコードと時間軸 | audio-analysis | [S3-audio-analysis.md](S3-audio-analysis.md)、[S3-onnx-whisper-lid.md](S3-onnx-whisper-lid.md)（言語判定の推論の ONNX Runtime 化。実機の結果は ADR 0010 §2.6） | [0005](../adr/0005-analysis-decoding.md)、[0008](../adr/0008-time-axis-alignment.md)、[0010](../adr/0010-on-device-speech-and-whisper-lid.md) |
 
 S2・S3 の数値はすべてエミュレータ（Pixel_8_Pro、android-36）で測ったものです。時間軸（シークの誤差、クリックの時刻）とメモリは
 出力のタイミングに依存しない測り方ですが、速度とタイミング（ループの行き過ぎ、自動ポーズの遅れ）は参考値です。

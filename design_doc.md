@@ -177,7 +177,7 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 - **compileSdk / targetSdk**: 最新の安定 API。Google Play の要件（2026-08-31 以降は API 36 以上）には縛られないが、最新の挙動に合わせておく。
 - **配布**: Android Studio または `adb install` で自分の端末に入れる。署名鍵はリポジトリの外で管理する。
 - targetSdk 35 / 36 の挙動変更に対応する: edge-to-edge の強制、予測型「戻る」、大画面での向き・リサイズ制限の無視（→ アダプティブレイアウトが必須。§7.5.6）。
-- **端末内の推論・音声認識・翻訳**: `core:media` 内の純 Kotlin 量子化 Whisper Tiny モデル（`whisper_tiny_lid_q8q4.bin`、約 10.75 MB）による 2 言語音響判定（ADR 0010）と、用途・言語に応じて切り替え可能な 3 種の音声認識エンジン（① ML Kit GenAI Speech Recognition 既定、② Android 標準 `SpeechRecognizer`、③ `sherpa-onnx` SenseVoice / Whisper、ADR 0011）、および ML Kit On-Device Translation による端末内翻訳を組み合わせる。
+- **端末内の推論・音声認識・翻訳**: `core:media` 内の量子化 Whisper Tiny モデル（`whisper_tiny_lid.onnx` を ONNX Runtime（CPU）で推論、失敗時は同じ重みの `whisper_tiny_lid_q8q4.bin` を純 Kotlin で推論）による 2 言語音響判定（ADR 0010 §2.6）と、用途・言語に応じて切り替え可能な 3 種の音声認識エンジン（① ML Kit GenAI Speech Recognition 既定、② Android 標準 `SpeechRecognizer`、③ `sherpa-onnx` SenseVoice / Whisper、ADR 0011）、および ML Kit On-Device Translation による端末内翻訳を組み合わせる。
 
 ### 4.2 ライブラリ
 
@@ -187,7 +187,7 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | UI | Jetpack Compose（BOM）、Material 3、material3-adaptive | Expressive 系の API は安定版に揃ってから段階的に採用する |
 | 画面遷移 | Navigation 3 | |
 | 再生 | Media3: `exoplayer`、`session`、`ui-compose`、`ui-compose-material3` | |
-| メディア解析・端末内音声認識・翻訳 | `MediaExtractorCompat` + `MediaCodec`、純 Kotlin 量子化 Whisper Tiny 2 言語判定（`WhisperTinyLanguageDetector`）、ML Kit GenAI Speech Recognition（`com.google.mlkit:genai-speech-recognition`）、Android `SpeechRecognizer`（`EXTRA_AUDIO_SOURCE`）、`sherpa-onnx`（SenseVoice / Whisper）、ML Kit On-Device Translation（`com.google.mlkit:translate`） | ADR 0005、ADR 0010、ADR 0011 |
+| メディア解析・端末内音声認識・翻訳 | `MediaExtractorCompat` + `MediaCodec`、量子化 Whisper Tiny 2 言語判定（`WhisperTinyLanguageDetector`、ONNX Runtime（CPU）で推論し失敗時は純 Kotlin）、ML Kit GenAI Speech Recognition（`com.google.mlkit:genai-speech-recognition`）、Android `SpeechRecognizer`（`EXTRA_AUDIO_SOURCE`）、`sherpa-onnx`（SenseVoice / Whisper）、ML Kit On-Device Translation（`com.google.mlkit:translate`） | ADR 0005、ADR 0010、ADR 0011 |
 | DI | Hilt（KSP） | Worker（`@HiltWorker`）と Service への注入も Hilt で統一する |
 | 永続化 | Room（KSP）、DataStore | |
 | バックグラウンド処理 | WorkManager | |
@@ -994,7 +994,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 - **時刻のずれの補正**（F7.6）: 取り込み時に形式ごとの固定オフセットを `transcriptOffsetMs` の初期値として入れ（ADR 0008）、その上で文字起こしの発話の開始時刻と端末内の解析で求めた発話の立ち上がり（§7.3.1 の特徴量）を比べ、初期値を中心に ±500ms の範囲で最もよく一致するずれを自動で設定する。設定画面で 10ms 単位の手動調整もできる。
 - **端末内の文字起こし（3 エンジン切り替え）・2 言語判定・端末内翻訳**（`core:media` / `core:data`、ADR 0010・ADR 0011）:
   - 文字起こし JSON がない教材（または未認識チャンクが残っている教材）では、再生・選択位置から前方に向かって認識する「先読み文字起こし」（`lookaheadTranscriptionEnabled`）に加え、ライブラリやプレイヤーから「ファイル単位のバックグラウンド文字起こし」を実行できる。
-  - チャンクの 2 言語判定には純 Kotlin 実装の量子化 Whisper Tiny モデル（`WhisperTinyLanguageDetector`、`whisper_tiny_lid_q8q4.bin`）を用い、教材の `base` と `target` の 2 言語ロジット比較および認識テキストの書記体系ヒューリスティック（`LanguageHeuristics`）で言語を決定する。
+  - チャンクの 2 言語判定には量子化 Whisper Tiny モデル（`WhisperTinyLanguageDetector`。推論は `whisper_tiny_lid.onnx` を ONNX Runtime（CPU）で行い、失敗時は同じ重みの `whisper_tiny_lid_q8q4.bin` を純 Kotlin で推論する。ADR 0010 §2.6）を用い、教材の `base` と `target` の 2 言語ロジット比較および認識テキストの書記体系ヒューリスティック（`LanguageHeuristics`）で言語を決定する。
   - チャンクのテキスト化には、① **ML Kit GenAI Speech Recognition**（既定、`AudioSource.fromPfd()`）、② **Android 標準 `SpeechRecognizer`**（`EXTRA_AUDIO_SOURCE` パイプ入力）、③ **`sherpa-onnx`**（SenseVoice Small / Whisper Tiny・Base・Small のオフライン ONNX 推論）の 3 エンジンを `OnDeviceSpeechTranscriber` インターフェース配下で切り替えられる（ADR 0011）。アプリ全体の既定エンジンに加え、言語別（`perLanguageTranscriptionEngines`）および教材別（`item_stt_override` テーブル）のオーバーライドに対応する。
   - ユーザーが言語バッジをタップして言語を切り替えたとき（`updateChunkLanguage`）や、長押しメニューから「強制文字起こし」（`retranscribeChunk`）を実行したときは、優先キュー（`PriorityRecognitionLock`）によってバックグラウンドタスクに割り込み、対象チャンクの認識を最優先で実行する。
   - 1 チャンク以上文字起こしが完了した時点でプレイヤー画面の翻訳バッジが有効になり、ML Kit On-Device Translation（`com.google.mlkit:translate`）による端末内翻訳テキストを表示できる。
@@ -1361,11 +1361,11 @@ M4  編集と仕上げ
 
 ## 付録 C: 端末内での文字起こし・2 言語判定アーキテクチャ（ADR 0010・ADR 0011）
 
-PC の `chunkflow-transcribe` で事前生成した JSON を取り込む方式（§7.4）に加え、音声ファイル単体を取り込んだ直後の即時利用・ファイル単位のバックグラウンド文字起こし・チャンク単位の言語切り替えや強制文字起こしを実現するため、**純 Kotlin 実装の量子化 Whisper Tiny 2 言語判定（ADR 0010）と、切り替え可能な 3 種の端末内音声認識エンジン（ADR 0011）**を採用しています。
+PC の `chunkflow-transcribe` で事前生成した JSON を取り込む方式（§7.4）に加え、音声ファイル単体を取り込んだ直後の即時利用・ファイル単位のバックグラウンド文字起こし・チャンク単位の言語切り替えや強制文字起こしを実現するため、**量子化 Whisper Tiny 2 言語判定（ONNX Runtime で推論、失敗時は純 Kotlin。ADR 0010）と、切り替え可能な 3 種の端末内音声認識エンジン（ADR 0011）**を採用しています。
 
 | 構成要素 / エンジン | 概要 | 役割と特徴 |
 | --- | --- | --- |
-| **共通 2 言語判定**: `WhisperTinyLanguageDetector`（ADR 0010） | 純 Kotlin 実装の量子化 Whisper Tiny（`whisper_tiny_lid_q8q4.bin` 約 10.75 MB）で教材の 2 言語のトークンロジットを比較し、書記体系ヒューリスティックと統合 | NDK / JNI に依存せず、短いチャンクでも候補を教材の 2 言語に絞って高精度に言語識別を行う |
+| **共通 2 言語判定**: `WhisperTinyLanguageDetector`（ADR 0010） | 量子化 Whisper Tiny（`whisper_tiny_lid.onnx` 約 11.2 MB を ONNX Runtime（CPU）で推論。失敗時は同じ重みの `whisper_tiny_lid_q8q4.bin` 約 10.75 MB を純 Kotlin で推論）で教材の 2 言語のトークンロジットを比較し、書記体系ヒューリスティックと統合 | sherpa-onnx 用に同梱済みの ONNX Runtime を使い（新しいネイティブライブラリは増えない）、短いチャンクでも候補を教材の 2 言語に絞って高速・高精度に言語識別を行う |
 | **エンジン 1（既定）**: ML Kit GenAI Speech Recognition（`ML_KIT`、ADR 0011） | Google 公式のオンデバイス音声認識 SDK（`com.google.mlkit:genai-speech-recognition`）。`AudioSource.fromPfd()` で 16kHz PCM をパイプ入力 | 主要言語で認識精度と安定性が高く、アプリの既定エンジンとして採用。非対応言語・エラー時は自動的に `SpeechRecognizer` へフォールバック |
 | **エンジン 2**: Android 標準 `SpeechRecognizer`（`ANDROID_SPEECH_RECOGNIZER`、ADR 0010） | OS 標準の音声認識サービスへ `ParcelFileDescriptor.createPipe()` + `EXTRA_AUDIO_SOURCE` で 16kHz PCM を供給 | 追加モデルのダウンロードなしで幅広い言語に対応。`PriorityRecognitionLock` により優先割り込みを制御 |
 | **エンジン 3**: `sherpa-onnx` オフライン認識（`SHERPA_SENSE_VOICE` / `SHERPA_WHISPER_*`、ADR 0011） | ONNX Runtime ベースの完全オフライン推論（SenseVoice Small Int8：日・英・中・広東語・韓の高速認識＋言語識別、および Whisper Tiny / Base / Small 多言語モデル） | Google Play 開発者サービスや OS の音声認識サービスに依存せず、バックグラウンドでも制限なく高速に動作。モデルは設定画面からオンデマンドにダウンロード・削除可能 |
