@@ -49,6 +49,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -1615,6 +1616,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
      * 一括言語判定の終わりに、どの推論エンジン（onnxruntime / kotlin）で判定したかと推論時間を診断ログに出すために使う。
      */
     private val languageDetectionStats: (() -> LidInferenceStats)? = null,
+    /**
+     * 一括言語判定の音声の切り出しの方式（[LidExtractionMethod]）。本番の既定は [DEFAULT_LID_EXTRACTION_METHOD]。
+     * 速い方式を使えない場合（デコーダが [MediaCodecAudioStreamDecoder] でないなど）は今の方式で切り出す。
+     */
+    private val languageOnlyExtractionMethod: LidExtractionMethod = DEFAULT_LID_EXTRACTION_METHOD,
+    /** 順に流す切り出し（[LidExtractionMethod.STREAMING]）の設定。 */
+    private val streamingExtractionOptions: StreamingExtractionOptions = StreamingExtractionOptions(),
+    /**
+     * 一括言語判定で切り出した PCM を、チャンクの番号と一緒に受け取る（計測ツールが方式ごとの PCM の一致を確かめるため。本番では `null`）。
+     * 複数のスレッドから呼ばれることがある。
+     */
+    private val languageOnlyPcmObserver: ((index: Int, pcm: ShortArray) -> Unit)? = null,
 ) : OnDeviceChunkTranscriber {
 
     @Inject
@@ -1688,6 +1701,17 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     )
 
     internal val voiceProfileTracker: VoiceProfileLanguageTracker = VoiceProfileLanguageTracker()
+
+    /** 言語判定のための音声の切り出しの各段階の時間の累計（[languageOnlyExtractionTimings]）。 */
+    private val languageOnlyTimings = LidExtractionTimings()
+
+    /** 直近の一括言語判定で実際に使った切り出しの方式（指定した方式を使えずに今の方式にした場合を含む）。まだなければ `null`。 */
+    @Volatile
+    internal var lastLanguageOnlyExtractionMethod: LidExtractionMethod? = null
+        private set
+
+    /** 言語判定のための音声の切り出しの各段階の時間の累計（計測ツールが前後の差を取る）。 */
+    internal fun languageOnlyExtractionTimings(): LidExtractionTimingsSnapshot = languageOnlyTimings.snapshot()
 
     private data class ChunkAudioCacheScope(
         val audioPath: String,
@@ -2691,6 +2715,23 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         startMs: Long,
         endMs: Long,
         languagePair: LanguagePair,
+    ): OnDeviceChunkTranscriptionResult? = detectChunkLanguageObserved(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        index = null,
+    )
+
+    /**
+     * [detectChunkLanguage] の本体。[index]（一括言語判定のチャンクの番号）があれば、切り出した PCM を [languageOnlyPcmObserver] に渡す。
+     */
+    private suspend fun detectChunkLanguageObserved(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair,
+        index: Int?,
     ): OnDeviceChunkTranscriptionResult? {
         if (startMs < 0L || endMs <= startMs || !audioFile.isFile) {
             return null
@@ -2713,6 +2754,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 highPriority = false,
             )
             val shorts = extractLanguageOnlyPcm(audioFile, startMs, endMs) ?: return null
+            if (index != null) languageOnlyPcmObserver?.invoke(index, shorts)
 
             updateActiveStep(
                 step = TranscriptionStep.DETECTING_LANGUAGE,
@@ -2721,28 +2763,35 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 highPriority = false,
             )
             val analysis = analyzeWhisperLidSafely(shorts, startMs, endMs, targetLang, baseLang) ?: return null
-            return adaptLanguageOnlyResult(
-                analysis = analysis,
-                audioScopeKey = audioFile.absolutePath,
-                startMs = startMs,
-                endMs = endMs,
-                targetLang = targetLang,
-                baseLang = baseLang,
-            )
+            val adaptStartNanos = System.nanoTime()
+            return try {
+                adaptLanguageOnlyResult(
+                    analysis = analysis,
+                    audioScopeKey = audioFile.absolutePath,
+                    startMs = startMs,
+                    endMs = endMs,
+                    targetLang = targetLang,
+                    baseLang = baseLang,
+                )
+            } finally {
+                languageOnlyTimings.adaptNanos.addAndGet(System.nanoTime() - adaptStartNanos)
+            }
         } finally {
             clearActiveStepIfMatches(startedAtEpochMs)
         }
     }
 
     /**
-     * 複数チャンクの言語判定（[detectChunkLanguage] と同じ判定）を、Whisper Tiny の推論だけ並列にして行う。
+     * 複数チャンクの言語判定（[detectChunkLanguage] と同じ判定）を、Whisper Tiny の推論を並列にして行う。
      *
-     * - 音声の切り出しは、チャンクの順に 1 件ずつ行う（デコーダは同時に 1 区間しか切り出せない）。
-     * - 推論は [computeDispatcher] 上で最大 `workers` 件まで同時に進め、さらに 1 件を切り出し済みで待たせて、CPU を遊ばせない。
+     * - 音声の切り出しの方式は [languageOnlyExtractionMethod]（[LidExtractionMethod]）。今の方式では、切り出しはチャンクの順に
+     *   呼び出し側で 1 件ずつ行う。並列の切り出しと順に流す切り出しは [detectChunkLanguagesPipelined]。
+     * - 推論は [computeDispatcher] 上で最大 `workers` 件まで同時に進める。
      * - ファイル内の補正（アンカーの登録を含む）と [onResult] はチャンクの順に行うため、結果は 1 件ずつ処理した場合と同じになる。
      *
-     * 2 言語でない、判定器がない、同時に 1 件しか推論しない（端末が熱い・省電力モードを含む）場合は、1 件ずつ処理する。
-     * 終わりに、推論エンジン（onnxruntime / kotlin）と推論時間を診断ログに残す（[describeLanguageDetectionEngine]）。
+     * 2 言語でない、判定器がない場合は 1 件ずつ処理する。今の方式で、同時に 1 件しか推論しない（端末が熱い・省電力モードを含む）
+     * 場合も 1 件ずつ処理する。終わりに、推論エンジン（onnxruntime / kotlin）と推論時間（[describeLanguageDetectionEngine]）、
+     * 切り出しの方式と各段階の時間（[describeLanguageOnlyExtraction]）を診断ログに残す。
      */
     override suspend fun detectChunkLanguages(
         audioFile: File,
@@ -2753,10 +2802,19 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
     ) {
         val statsBefore = languageDetectionStats?.let { provider -> runCatching { provider() }.getOrNull() }
+        val timingsBefore = languageOnlyTimings.snapshot()
+        val startedNanos = System.nanoTime()
+        var method: LidExtractionMethod? = null
         try {
-            detectChunkLanguagesInChunkOrder(audioFile, chunks, languagePair, parallelism, computeDispatcher, onResult)
+            detectChunkLanguagesInChunkOrder(audioFile, chunks, languagePair, parallelism, computeDispatcher, onResult) { chosen ->
+                method = chosen
+                lastLanguageOnlyExtractionMethod = chosen
+            }
         } finally {
             if (statsBefore != null) appendLanguageDetectionEngineDiagnostic(statsBefore)
+            method?.let { chosen ->
+                appendLanguageOnlyExtractionDiagnostic(chosen, languageOnlyTimings.snapshot().since(timingsBefore), System.nanoTime() - startedNanos)
+            }
         }
     }
 
@@ -2777,7 +2835,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         )
     }
 
-    /** [detectChunkLanguages] の本体（推論だけを並列にし、補正と [onResult] はチャンクの順に行う）。 */
+    /** 一括言語判定の切り出しの方式と各段階の時間（[delta]）を診断ログに残す。切り出さなかった場合は何もしない。 */
+    private fun appendLanguageOnlyExtractionDiagnostic(method: LidExtractionMethod, delta: LidExtractionTimingsSnapshot, elapsedNanos: Long) {
+        if (delta.extractions <= 0L && delta.streamWindows <= 0L) return
+        appendDiagnostic(
+            stage = "LID_ONLY",
+            message = describeLanguageOnlyExtraction(method, delta, elapsedNanos),
+        )
+    }
+
+    /**
+     * [detectChunkLanguages] の本体。進め方（同時に推論する数と切り出しの方式）を決め、[onMethodChosen] に実際の方式を渡してから判定する。
+     */
     private suspend fun detectChunkLanguagesInChunkOrder(
         audioFile: File,
         chunks: List<ChunkTimeRange>,
@@ -2785,16 +2854,17 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         parallelism: Int,
         computeDispatcher: CoroutineDispatcher,
         onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+        onMethodChosen: (LidExtractionMethod) -> Unit,
     ) {
         val targetLang = languagePair.target
         val baseLang = distinctBaseLanguage(languagePair)
+        if (baseLang == null || chunks.size <= 1 || !audioFile.isFile || (languageDetector == null && languageAnalyzer == null)) {
+            onMethodChosen(LidExtractionMethod.CURRENT)
+            detectChunkLanguagesOneByOne(audioFile, chunks, languagePair, onResult)
+            return
+        }
         val requestedWorkers = parallelism.coerceIn(1, OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM)
-        val canRunInParallel = baseLang != null &&
-            chunks.size > 1 &&
-            requestedWorkers > 1 &&
-            audioFile.isFile &&
-            (languageDetector != null || languageAnalyzer != null)
-        val workers = if (canRunInParallel && isDeviceConstrainedForParallelInference()) {
+        val workers = if (requestedWorkers > 1 && isDeviceConstrainedForParallelInference()) {
             appendDiagnostic(
                 stage = "LID_ONLY",
                 message = PARALLEL_LID_CONSTRAINED_MESSAGE,
@@ -2803,11 +2873,97 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         } else {
             requestedWorkers
         }
-        if (!canRunInParallel || baseLang == null || workers <= 1) {
-            super.detectChunkLanguages(audioFile, chunks, languagePair, parallelism, computeDispatcher, onResult)
-            return
-        }
+        val decoder = audioStreamDecoder as? MediaCodecAudioStreamDecoder
+        val method = resolveLanguageOnlyExtractionMethod(chunks, decoder)
+        onMethodChosen(method)
+        when {
+            method != LidExtractionMethod.CURRENT && decoder != null -> detectChunkLanguagesPipelined(
+                audioFile = audioFile,
+                chunks = chunks,
+                targetLang = targetLang,
+                baseLang = baseLang,
+                workers = workers,
+                computeDispatcher = computeDispatcher,
+                method = method,
+                decoder = decoder,
+                onResult = onResult,
+            )
 
+            workers <= 1 -> detectChunkLanguagesOneByOne(audioFile, chunks, languagePair, onResult)
+
+            else -> detectChunkLanguagesWithCurrentExtraction(audioFile, chunks, targetLang, baseLang, workers, computeDispatcher, onResult)
+        }
+    }
+
+    /**
+     * 指定された切り出しの方式（[languageOnlyExtractionMethod]）を、このチャンクの並びで使えるかを見て、実際の方式を決める。
+     *
+     * - 速い方式はデコーダが [MediaCodecAudioStreamDecoder] のときだけ使う（それ以外は今の方式）。
+     * - 順に流す切り出しは、チャンクが開始位置の順に並んでいて、1 つの MediaCodec で平均 2 窓以上を続けて切り出せるときだけ使う。
+     *   まばらなとき（間が大きく空いて run が短い）や並んでいないときは、並列の切り出しにする。
+     */
+    private fun resolveLanguageOnlyExtractionMethod(
+        chunks: List<ChunkTimeRange>,
+        decoder: MediaCodecAudioStreamDecoder?,
+    ): LidExtractionMethod {
+        val requested = languageOnlyExtractionMethod
+        if (requested == LidExtractionMethod.CURRENT || decoder == null) return LidExtractionMethod.CURRENT
+        if (requested == LidExtractionMethod.PARALLEL) return LidExtractionMethod.PARALLEL
+        val windows = streamWindowsFor(chunks)
+        val sorted = windows.zipWithNext().all { (a, b) -> a.startMs <= b.startMs }
+        if (!sorted) {
+            appendDiagnostic(stage = "LID_ONLY", message = STREAMING_UNSORTED_MESSAGE)
+            return LidExtractionMethod.PARALLEL
+        }
+        val runs = planStreamRuns(windows, MediaCodecAudioStreamDecoder.SEEK_PRE_ROLL_MS, streamingExtractionOptions)
+        if (windows.size >= 2 && runs.size * 2 > windows.size) {
+            appendDiagnostic(stage = "LID_ONLY", message = STREAMING_SPARSE_MESSAGE)
+            return LidExtractionMethod.PARALLEL
+        }
+        return LidExtractionMethod.STREAMING
+    }
+
+    /** 順に流す切り出しで切り出す窓（区間が正しいチャンクだけ。窓の終わりはチャンクの先頭から最大 [LID_ONLY_MAX_EXTRACT_DURATION_MS]）。 */
+    private fun streamWindowsFor(chunks: List<ChunkTimeRange>): List<StreamWindowRequest> = chunks.mapIndexedNotNull { index, chunk ->
+        if (chunk.startMs >= 0L && chunk.endMs > chunk.startMs) {
+            StreamWindowRequest(index = index, startMs = chunk.startMs, endMs = languageOnlyExtractEndMs(chunk.startMs, chunk.endMs))
+        } else {
+            null
+        }
+    }
+
+    /** チャンクを 1 件ずつ判定する（[OnDeviceChunkTranscriber.detectChunkLanguages] の既定と同じ。切り出した PCM を観察できる）。 */
+    private suspend fun detectChunkLanguagesOneByOne(
+        audioFile: File,
+        chunks: List<ChunkTimeRange>,
+        languagePair: LanguagePair,
+        onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        for ((index, chunk) in chunks.withIndex()) {
+            val result = try {
+                detectChunkLanguageObserved(audioFile, chunk.startMs, chunk.endMs, languagePair, index)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                null
+            }
+            val deliverStartNanos = System.nanoTime()
+            onResult(index, result)
+            languageOnlyTimings.adaptNanos.addAndGet(System.nanoTime() - deliverStartNanos)
+        }
+    }
+
+    /** 今の方式: 切り出しはチャンクの順に呼び出し側で 1 件ずつ行い、推論だけを並列にする。補正と [onResult] はチャンクの順に行う。 */
+    private suspend fun detectChunkLanguagesWithCurrentExtraction(
+        audioFile: File,
+        chunks: List<ChunkTimeRange>,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+        workers: Int,
+        computeDispatcher: CoroutineDispatcher,
+        onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        val timings = languageOnlyTimings
         val audioScopeKey = audioFile.absolutePath
         val inferenceDispatcher = computeDispatcher.limitedParallelism(workers)
         val startedAtEpochMs = System.currentTimeMillis()
@@ -2825,12 +2981,14 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 for ((index, chunk) in chunks.withIndex()) {
                     // 推論中と推論待ちを合わせて (workers + 1) 件まで用意する
                     while (nextToStart < chunks.size && pending.size <= workers) {
-                        val next = chunks[nextToStart]
+                        val nextIndex = nextToStart
+                        val next = chunks[nextIndex]
                         val shorts = if (next.startMs >= 0L && next.endMs > next.startMs) {
                             extractLanguageOnlyPcm(audioFile, next.startMs, next.endMs)
                         } else {
                             null
                         }
+                        if (shorts != null) languageOnlyPcmObserver?.invoke(nextIndex, shorts)
                         pending.addLast(
                             shorts?.let { pcm ->
                                 async(inferenceDispatcher) {
@@ -2840,7 +2998,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         )
                         nextToStart += 1
                     }
+                    val awaitStartNanos = System.nanoTime()
                     val analysis = pending.removeFirst()?.await()
+                    timings.awaitNanos.addAndGet(System.nanoTime() - awaitStartNanos)
+                    val adaptStartNanos = System.nanoTime()
                     val result = analysis?.let {
                         adaptLanguageOnlyResult(
                             analysis = it,
@@ -2852,11 +3013,174 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         )
                     }
                     onResult(index, result)
+                    timings.adaptNanos.addAndGet(System.nanoTime() - adaptStartNanos)
                 }
             }
         } finally {
             clearActiveStepIfMatches(startedAtEpochMs)
         }
+    }
+
+    /** 速い方式で、ワーカーに渡す 1 件（[detectChunkLanguagesPipelined]）。 */
+    private sealed interface LanguageOnlyWorkItem {
+        /** チャンクの番号。 */
+        val index: Int
+
+        /**
+         * ワーカーが切り出してから推論する。
+         *
+         * @property viaLane 並列の切り出しのレーンで切り出す（`false` なら今の方式。順に流す切り出しで切り出せなかった窓）。
+         */
+        class Extract(override val index: Int, val viaLane: Boolean) : LanguageOnlyWorkItem
+
+        /** 切り出し済みの PCM（順に流す切り出し。切り出せなかった場合は `null`）を推論する。 */
+        class Analyze(override val index: Int, val shorts: ShortArray?) : LanguageOnlyWorkItem
+    }
+
+    /** 並列の切り出しのワーカー 1 つが持つレーン。[usable] が false になったら、以後は今の方式（共有の抽出器）で切り出す。 */
+    private class LaneState(val lane: RangeDecodeLane) {
+        var usable: Boolean = true
+    }
+
+    /**
+     * 速い方式（[LidExtractionMethod.PARALLEL] / [LidExtractionMethod.STREAMING]）で一括言語判定を行う。
+     *
+     * - 並列の切り出し: `workers` 個のワーカーが、それぞれ独立した抽出器（[MediaCodecAudioStreamDecoder.openRangeDecodeLane]）で
+     *   チャンクを切り出してから推論する。MediaCodec はチャンクごとに作るので、切り出す PCM は今の方式と同じ。
+     * - 順に流す切り出し: 呼び出し側のコルーチンで [MediaCodecAudioStreamDecoder.streamLanguageWindows] が窓を切り出し、
+     *   上限付きの待ち行列（[StreamingExtractionOptions.queueCapacity]）でワーカーに渡す。ワーカーは推論だけを行う。
+     * - どちらも、速い方式で切り出せなかったチャンクは今の方式で切り出し直す。
+     * - 結果はチャンクの順に受け取り、補正と [onResult] をチャンクの順に行う。終わったら（キャンセル・エラーでも）レーンを閉じる。
+     */
+    @Suppress("LongParameterList")
+    private suspend fun detectChunkLanguagesPipelined(
+        audioFile: File,
+        chunks: List<ChunkTimeRange>,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+        workers: Int,
+        computeDispatcher: CoroutineDispatcher,
+        method: LidExtractionMethod,
+        decoder: MediaCodecAudioStreamDecoder,
+        onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        val timings = languageOnlyTimings
+        val audioScopeKey = audioFile.absolutePath
+        val inferenceDispatcher = computeDispatcher.limitedParallelism(workers)
+        val results = arrayOfNulls<CompletableDeferred<WhisperLidAnalysis?>>(chunks.size)
+        val validIndices = ArrayList<Int>(chunks.size)
+        for ((index, chunk) in chunks.withIndex()) {
+            val deferred = CompletableDeferred<WhisperLidAnalysis?>()
+            results[index] = deferred
+            if (chunk.startMs >= 0L && chunk.endMs > chunk.startMs) validIndices += index else deferred.complete(null)
+        }
+        val startedAtEpochMs = System.currentTimeMillis()
+        updateActiveStep(
+            step = TranscriptionStep.DETECTING_LANGUAGE,
+            detail = "${targetLang.value} / ${baseLang.value}（$workers 並列）",
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = false,
+        )
+        try {
+            coroutineScope {
+                val capacity = if (method == LidExtractionMethod.STREAMING) streamingExtractionOptions.queueCapacity else workers
+                val queue = Channel<LanguageOnlyWorkItem>(capacity = capacity)
+                launch {
+                    try {
+                        if (method == LidExtractionMethod.STREAMING) {
+                            decoder.streamLanguageWindows(
+                                file = audioFile,
+                                windows = streamWindowsFor(chunks),
+                                outputSampleRate = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+                                options = streamingExtractionOptions,
+                                timings = timings,
+                            ) { result ->
+                                val item = when (result) {
+                                    is StreamWindowResult.Pcm -> LanguageOnlyWorkItem.Analyze(result.index, result.shorts)
+                                    is StreamWindowResult.Fallback -> LanguageOnlyWorkItem.Extract(result.index, viaLane = false)
+                                }
+                                queue.send(item)
+                            }
+                        } else {
+                            for (index in validIndices) queue.send(LanguageOnlyWorkItem.Extract(index, viaLane = true))
+                        }
+                    } finally {
+                        queue.close()
+                    }
+                }
+                repeat(workers) {
+                    launch(inferenceDispatcher) {
+                        val laneState = if (method == LidExtractionMethod.PARALLEL) LaneState(decoder.openRangeDecodeLane()) else null
+                        try {
+                            for (item in queue) {
+                                val chunk = chunks[item.index]
+                                val shorts = when (item) {
+                                    is LanguageOnlyWorkItem.Analyze -> item.shorts
+
+                                    is LanguageOnlyWorkItem.Extract -> if (item.viaLane && laneState != null) {
+                                        extractWithLane(audioFile, chunk, laneState)
+                                    } else {
+                                        extractLanguageOnlyPcm(audioFile, chunk.startMs, chunk.endMs)
+                                    }
+                                }
+                                if (shorts != null) languageOnlyPcmObserver?.invoke(item.index, shorts)
+                                val analysis = shorts?.let { pcm ->
+                                    analyzeWhisperLidSafely(pcm, chunk.startMs, chunk.endMs, targetLang, baseLang)
+                                }
+                                results[item.index]?.complete(analysis)
+                            }
+                        } finally {
+                            laneState?.lane?.close()
+                        }
+                    }
+                }
+                for ((index, chunk) in chunks.withIndex()) {
+                    val awaitStartNanos = System.nanoTime()
+                    val analysis = results[index]?.await()
+                    results[index] = null
+                    timings.awaitNanos.addAndGet(System.nanoTime() - awaitStartNanos)
+                    val adaptStartNanos = System.nanoTime()
+                    val result = analysis?.let {
+                        adaptLanguageOnlyResult(
+                            analysis = it,
+                            audioScopeKey = audioScopeKey,
+                            startMs = chunk.startMs,
+                            endMs = chunk.endMs,
+                            targetLang = targetLang,
+                            baseLang = baseLang,
+                        )
+                    }
+                    onResult(index, result)
+                    timings.adaptNanos.addAndGet(System.nanoTime() - adaptStartNanos)
+                }
+            }
+        } finally {
+            clearActiveStepIfMatches(startedAtEpochMs)
+        }
+    }
+
+    /**
+     * 並列の切り出しのワーカーが 1 チャンクを切り出す。
+     *
+     * レーンで切り出せなければ、今の方式（共有の抽出器）で切り出し直す。今の方式では切り出せた場合は、レーンに問題がある
+     * （MediaCodec を作れないなどの資源不足を含む）とみなして、以後このレーンは使わない。
+     */
+    private suspend fun extractWithLane(audioFile: File, chunk: ChunkTimeRange, state: LaneState): ShortArray? {
+        if (state.usable) {
+            extractLanguageOnlyPcm(audioFile, chunk.startMs, chunk.endMs, lane = state.lane)?.let { return it }
+        }
+        languageOnlyTimings.fallbacks.incrementAndGet()
+        val shorts = extractLanguageOnlyPcm(audioFile, chunk.startMs, chunk.endMs)
+        if (shorts != null && state.usable) {
+            state.usable = false
+            state.lane.close()
+            appendDiagnostic(
+                stage = "LID_ONLY",
+                message = "並列の切り出しに失敗したため、以後このワーカーは今の方式で切り出す (${chunk.startMs}ms)",
+                isWarningOrError = true,
+            )
+        }
+        return shorts
     }
 
     /** [languagePair] の解説言語が学習対象言語と異なる場合はそれを返し、1 言語だけの場合は `null` を返す。 */
@@ -2870,32 +3194,46 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     /**
      * 言語判定のみの処理のために、チャンクの先頭（[languageOnlyExtractEndMs] まで）を 16kHz モノラルの PCM に切り出す。
      *
-     * @return 切り出した PCM。切り出せなかった場合は診断ログに残して `null`。
+     * @param lane 並列の切り出しのレーン。`null` なら共有の抽出器を使う（今の方式）。
+     * @return 切り出した PCM。切り出せなかった場合は `null`（例外の場合は診断ログに残す）。
      */
     private suspend fun extractLanguageOnlyPcm(
         audioFile: File,
         startMs: Long,
         endMs: Long,
+        lane: RangeDecodeLane? = null,
     ): ShortArray? {
-        val pcmBytes = try {
-            ChunkPcmExtractor.extractChunkPcm16LeBytes(
-                decoder = audioStreamDecoder,
-                audioFile = audioFile,
-                startMs = startMs,
-                endMs = languageOnlyExtractEndMs(startMs, endMs),
-                sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
-            )
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (e: Exception) {
-            appendDiagnostic(
-                stage = "LID_ONLY",
-                message = "音声切り出しエラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
-                isWarningOrError = true,
-            )
-            null
-        } ?: return null
-        return ChunkPcmExtractor.pcm16LeBytesToShorts(pcmBytes)
+        val timings = languageOnlyTimings
+        val startNanos = System.nanoTime()
+        try {
+            val pcmBytes = try {
+                ChunkPcmExtractor.extractChunkPcm16LeBytes(
+                    decoder = audioStreamDecoder,
+                    audioFile = audioFile,
+                    startMs = startMs,
+                    endMs = languageOnlyExtractEndMs(startMs, endMs),
+                    sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+                    lane = lane,
+                    timings = timings,
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                appendDiagnostic(
+                    stage = "LID_ONLY",
+                    message = "音声切り出しエラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
+                    isWarningOrError = true,
+                )
+                null
+            } ?: return null
+            val handoffStartNanos = System.nanoTime()
+            val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcmBytes)
+            timings.handoffNanos.addAndGet(System.nanoTime() - handoffStartNanos)
+            return shorts
+        } finally {
+            timings.extractions.incrementAndGet()
+            timings.extractNanos.addAndGet(System.nanoTime() - startNanos)
+        }
     }
 
     /**
@@ -4364,6 +4702,57 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     companion object {
         /** 端末が熱いか省電力モードのため、一括言語判定を並列にせず 1 件ずつ行うときに診断ログに出す文（計測ツールもこれで見分ける）。 */
         internal const val PARALLEL_LID_CONSTRAINED_MESSAGE: String = "端末の温度が高いか省電力モードのため、言語判定を 1 件ずつ実行"
+
+        /**
+         * 一括言語判定の音声の切り出しの方式の本番の既定。実機の計測（docs/spikes/S3-onnx-whisper-lid.md §10）を見て lead が決めるまで、今の方式のままにする。
+         */
+        internal val DEFAULT_LID_EXTRACTION_METHOD: LidExtractionMethod = LidExtractionMethod.CURRENT
+
+        /** 順に流す切り出しを指定されたが、チャンクが開始位置の順に並んでいないので並列の切り出しにしたときの診断ログの文。 */
+        internal const val STREAMING_UNSORTED_MESSAGE: String = "チャンクが時刻の順に並んでいないため、順に流す切り出しの代わりに並列の切り出しを使う"
+
+        /** 順に流す切り出しを指定されたが、対象のチャンクがまばらなので並列の切り出しにしたときの診断ログの文。 */
+        internal const val STREAMING_SPARSE_MESSAGE: String = "対象のチャンクがまばらなため、順に流す切り出しの代わりに並列の切り出しを使う"
+
+        /**
+         * 一括言語判定の切り出しの方式と各段階の時間（[delta] は 1 回の一括判定の間の増分、[elapsedNanos] はその全体時間）を、診断ログの 1 行にする。
+         *
+         * 例: `切り出し: 方式 cur（60 件、全体 3.6 秒。1 件あたり 61.2 ms = 位置合わせ 1.2 + MediaCodec 作成 25.3 + デコード待ち 20.1 + …。MediaCodec 60 回）`
+         * 並列の方式では複数のスレッドの時間を足すので、1 件あたりの合計が全体時間 ÷ 件数より長くなる。
+         */
+        internal fun describeLanguageOnlyExtraction(
+            method: LidExtractionMethod,
+            delta: LidExtractionTimingsSnapshot,
+            elapsedNanos: Long,
+        ): String {
+            val count = if (method == LidExtractionMethod.STREAMING) delta.streamWindows + delta.extractions else delta.extractions
+            val divisor = count.coerceAtLeast(1L).toDouble() * 1_000_000.0
+            fun ms(nanos: Long): String = String.format(Locale.ROOT, "%.1f", nanos / divisor)
+            val busyNanos = (delta.extractNanos - delta.queueWaitNanos).coerceAtLeast(0L)
+            return buildString {
+                append("切り出し: 方式 ").append(method.label)
+                append("（").append(count).append(" 件、全体 ")
+                append(String.format(Locale.ROOT, "%.1f", elapsedNanos / 1_000_000_000.0)).append(" 秒。1 件あたり ")
+                append(ms(busyNanos)).append(" ms = ")
+                append("抽出器 ").append(ms(delta.extractorOpenNanos))
+                append(" + 位置合わせ ").append(ms(delta.positionNanos))
+                append(" + MediaCodec 作成 ").append(ms(delta.codecCreateNanos))
+                append(" + デコード待ち ").append(ms(delta.codecWaitNanos))
+                append(" + モノラル化 ").append(ms(delta.mixNanos))
+                append(" + リサンプル ").append(ms(delta.resampleOnlyNanos))
+                append(" + PCM ").append(ms(delta.pcmNanos))
+                append(" + 解放 ").append(ms(delta.codecReleaseNanos))
+                append(" + 受け渡し ").append(ms(delta.handoffNanos))
+                append(" + その他 ").append(ms(delta.otherNanos))
+                append("。MediaCodec ").append(delta.codecCreates).append(" 回")
+                if (method == LidExtractionMethod.STREAMING) {
+                    append("、run ").append(delta.streamRuns).append("、窓 ").append(delta.streamWindows)
+                    append("、待ち行列の待ち ").append(String.format(Locale.ROOT, "%.1f", delta.queueWaitNanos / 1_000_000.0)).append(" ms")
+                }
+                if (delta.fallbacks > 0L) append("、今の方式で切り出し直し ").append(delta.fallbacks).append(" 件")
+                append("）")
+            }
+        }
 
         /**
          * 一括言語判定の推論エンジンと推論時間（[delta] は 1 回の一括判定の間の増分）を、診断ログの 1 行にする。
