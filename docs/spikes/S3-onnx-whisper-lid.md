@@ -10,6 +10,9 @@
 log-mel の計算・平均プーリング・同系言語の合算と 2 言語の判定・ファイル内の補正は、main と同じ Kotlin のコードを使う。
 数値はすべて Mac（M3 Pro、12 コア）の JVM / Python で測った。**実機（Pixel）では測っていない（未確認）。**
 
+> 2026-10-19 追加: 実機で全体時間を頭打ちにしていた音声の切り出しを速くする方式（並列・順に流す）と、切り出しの内訳の計測、
+> 計測ツールでの方式の比べ方を §10 に書いた（ブランチ `agent/audio-analysis/faster-lid-extraction`）。§9 の計測ツールの説明も合わせて直した。
+
 ## 0. まとめ
 
 1. **結果は main と同じ**: 実際の教材 2 本（764 チャンク）で、Whisper 単体の判定は全チャンクで一致し、
@@ -345,7 +348,7 @@ Kotlin で実装する場合の手順:
        --es name Hindi_1_Lesson_16 --es target hi --es base en --ei maxChunks 60
    ```
 
-   韓国語の教材は `--es name Korean_lesson_ja --es target ko --es base ja`。
+   韓国語の教材は `--es name Korean_lesson_ja --es target ko --es base ja`。音声の切り出しの方式を比べる手順は §10.4。
 
 5. `END` 行が出るまで待つ。60 チャンク・既定の設定で 5〜10 分の見込み（Mac の値からの見込みで、大半は純 Kotlin の回とクールダウン。
    実機は未確認）。画面は点けたままにし、ほかのアプリに切り替えない。計測中にもう一度 `am start` しても無視する（`BUSY` 行）。
@@ -354,9 +357,12 @@ Kotlin で実装する場合の手順:
 
    ```sh
    adb logcat -d -v raw -s ChunkFlowLidBench:I \
-       | grep -E '^(START|WARMUP|ONNX_LOAD|THERMAL_WAIT|RESULT|DIFF|TABLE|SUMMARY|END|ERROR|WARN|LOG_FILE)'
+       | grep -E '^(START|WARMUP|ONNX_LOAD|THERMAL_WAIT|RESULT|DIFF|PCMDIFF|TABLE|SUMMARY|END|ERROR|WARN|LOG_FILE)'
    adb pull /sdcard/Android/data/$PKG/files/lid-bench/ ./lid-bench-results/
    ```
+
+   `adb logcat -d` で後から吐き出すと、ほかのアプリのログに押し出されて前半の行が消えることがある（qa の Pixel 11 での計測で起きた）。
+   起動の前から `adb logcat -v raw ChunkFlowLidBench:V AndroidRuntime:E '*:S' > <ファイル>` で流し続けるか、端末の `<name>-<日時>.log` を使う。
 
    内部の `files/lid-bench` に置いた場合は `adb shell run-as $PKG cat files/lid-bench/<name>-<日時>.log`。
 
@@ -372,31 +378,40 @@ Kotlin で実装する場合の手順:
 | `--ei thermalWaitSec` | 300 | クールダウンのあと、温度の状態が MODERATE（2）未満に下がるまで追加で待つ上限の秒数 |
 | `--es engines` | `kotlin,onnx` | 計測するエンジンと順番（例: `onnx` だけ、`onnx,kotlin` の順） |
 | `--es modes` | `seq,par3` | 各エンジンで計測する進め方と順番 |
+| `--es extraction` | `cur` | 各エンジン・進め方で計測する音声の切り出しの方式と順番（`cur` = 今、`par` = 並列、`str` = 順に流す。§10.2） |
+| `--ei streamGapMs` | 10000 | 順に流す切り出しで、窓と窓の間がこれより長ければデコードせずに読み飛ばす（ミリ秒。0〜600000） |
+| `--ei streamRunWindows` | 16 | 順に流す切り出しで、1 つの MediaCodec で続けて切り出す窓の数の上限（1〜1000） |
+| `--ei streamRunMs` | 120000 | 順に流す切り出しで、1 つの MediaCodec で続けてデコードする長さの上限（ミリ秒。1000〜3600000） |
+| `--ei streamQueue` | 16 | 順に流す切り出しで、切り出した窓を推論に渡す待ち行列の長さ（1〜64） |
 | `--es audio` | `<name>.mp3` | 音声のファイル名（m4a などの場合） |
 
 数値の引数は `--es`（文字列）で渡してもよい。正しくない引数は `ERROR 引数が正しくない: …` と使い方（`USAGE` 行）を出して終わる。
 
 ### 9.3 計測の流れ
 
-1. エンジンごとにウォームアップする（先頭の `warmupChunks` 件。モデルの読み込みと JIT）。ONNX Runtime は `ONNX_LOAD ok loadMs=…`
-   （プロセスで最初の読み込みの時間。ネイティブライブラリの初期化を含む）。
-2. エンジン × 進め方の順（既定は 純 Kotlin 逐次 → 純 Kotlin 3 並列 → ONNX Runtime 逐次 → ONNX Runtime 3 並列）に、
-   `COOLDOWN`（必要なら `THERMAL_WAIT`）→ `RUN_START` → 計測 → `DIAG`（その回の文字起こし器の診断ログ）→ `RUN_DONE`。
+1. エンジンごとにウォームアップする（先頭の `warmupChunks` 件。モデルの読み込みと JIT。切り出しは今の方式）。ONNX Runtime は
+   `ONNX_LOAD ok loadMs=…`（プロセスで最初の読み込みの時間。ネイティブライブラリの初期化を含む）。
+2. エンジン × 進め方 × 切り出しの方式の順（既定は 純 Kotlin 逐次 → 純 Kotlin 3 並列 → ONNX Runtime 逐次 → ONNX Runtime 3 並列。
+   切り出しの方式は既定では `cur` だけ）に、`COOLDOWN`（必要なら `THERMAL_WAIT`）→ `RUN_START` → 計測 → `DIAG`（その回の
+   文字起こし器の診断ログ。切り出しの方式と内訳の行を含む）→ `RUN_DONE`。
    - 回ごとに新しいデコーダと文字起こし器を作る（ファイル内の補正の状態と、切り出しのキャッシュを持ち越さない）。
    - 推論はツールの中で作る 3 スレッドのプールで行う。逐次の回は、本番の `parallelism=1` と同じく呼び出し側のスレッドで 1 件ずつ。
-3. 最後に `RESULT`（各回 1 行。判定の一致を含む）、`DIFF`（判定が違うチャンク）、`TABLE`（表）、`SUMMARY`（進め方ごとの
-   純 Kotlin / ONNX Runtime の比）、`END`。
+   - 切り出した PCM の指紋（サンプル数・64 ビット FNV-1a・絶対値の合計）をチャンクごとに記録する（PCM そのものは持たない）。
+3. 最後に `RESULT`（各回 1 行。判定と PCM の一致を含む）、`DIFF`（判定が違うチャンク）、`PCMDIFF`（PCM が今の方式と違うチャンク）、
+   `TABLE`（表）、`SUMMARY`（切り出しの方式・進め方ごとの純 Kotlin / ONNX Runtime の比）、`SUMMARY_EXT`（切り出しの方式ごとの
+   今の方式との比と一致。§10.3）、`END`。
 
 ### 9.4 RESULT 行
 
 1 回の計測を 1 行で出す（`key=value` を空白で区切る。`note=` は行の最後で、空白を含むことがある）。例（値は例）:
 
 ```text
-RESULT name=Hindi_1_Lesson_16 engine=onnx mode=par3 status=OK chunks=60 detected=58 totalMs=1234.5 perChunkMs=20.6 inferN=58 inferMedianMs=31.0 inferMeanMs=32.4 engineMeanMs=28.1 melMeanMs=2.30 nullAnalyses=2 onnxRuns=58 kotlinRuns=0 workers=3 degraded=false cpuMs=4567 thermal=0->1 headroom=0.41->0.47 powerSave=false bg=false agree=1.000 agreeN=60/60 ref=kotlin/par3
+RESULT name=Hindi_1_Lesson_16 engine=onnx mode=par3 ext=str extUsed=str status=OK chunks=60 detected=58 totalMs=1234.5 perChunkMs=20.6 inferN=58 inferMedianMs=31.0 inferMeanMs=32.4 engineMeanMs=28.1 melMeanMs=2.30 nullAnalyses=2 onnxRuns=58 kotlinRuns=0 workers=3 degraded=false cpuMs=4567 thermal=0->1 headroom=0.41->0.47 powerSave=false bg=false exN=60 exMs=18.20 exOpenMs=0.10 exPosMs=0.40 codecNewMs=0.90 codecWaitMs=11.30 mixMs=0.50 rsMs=3.80 pcmMs=0.40 codecRelMs=0.30 handoffMs=0.00 exOtherMs=0.50 adaptMs=0.10 awaitMs=2.00 codecs=4 exOpens=1 seeks=3 skipSamples=120 decodedSamples=12345678 runs=4 windows=60 qWaitMs=35.0 fallbacks=0 agree=1.000 agreeN=60/60 ref=onnx/par3/cur pcmSame=60/60 pcmRef=onnx/par3/cur
 ```
 
 | 項目 | 内容 |
 | --- | --- |
+| `ext` / `extUsed` | 指定した音声の切り出しの方式 / 実際に使った方式（`str` を指定しても、チャンクがまばらなら `par` になる。デコーダが MediaCodec でないなどの場合は `cur`。計測しなかった回は `-`）。§10.2 |
 | `status` | `OK` / `FALLBACK`（ONNX Runtime の回で純 Kotlin に切り替わった）/ `NO_INFERENCE` / `SKIPPED`（ウォームアップでそのエンジンを使えなかった。ふつうは ONNX Runtime を読み込めない場合）/ `ERROR`。`OK` 以外の回は比べない |
 | `chunks` / `detected` | 計測したチャンク数 / 言語を判定できたチャンク数 |
 | `totalMs` / `perChunkMs` | `detectChunkLanguages` の全体時間（音声の切り出し・log-mel・推論・ファイル内の補正）/ 1 チャンクあたり |
@@ -408,7 +423,9 @@ RESULT name=Hindi_1_Lesson_16 engine=onnx mode=par3 status=OK chunks=60 detected
 | `cpuMs` | その回にプロセスが使った CPU 時間（全スレッドの合計。参考） |
 | `thermal` / `headroom` | 開始→終了の `PowerManager.currentThermalStatus`（0 = NONE、1 = LIGHT、2 = MODERATE、3 = SEVERE …）/ `getThermalHeadroom(0)`（1.0 で重い制限が始まる目安。取れなければ NaN） |
 | `powerSave` / `bg` | 開始時に省電力モードだった / 計測中に画面が前面でなくなった |
-| `agree` / `agreeN` / `ref` | 最終判定（ファイル内の補正の後）の一致率 / 件数 / 比べた回。ONNX Runtime の回は同じ進め方の純 Kotlin の回と、純 Kotlin の 3 並列は純 Kotlin の逐次と比べる |
+| `exN`〜`fallbacks` | 音声の切り出しの内訳（1 件あたりのミリ秒と回数。§10.1） |
+| `agree` / `agreeN` / `ref` | 最終判定（ファイル内の補正の後）の一致率 / 件数 / 比べた回（`engine/mode/ext`）。今の方式でない回は同じエンジン・進め方の今の方式の回と、ONNX Runtime の今の方式の回は同じ進め方の純 Kotlin の回と、純 Kotlin の 3 並列は純 Kotlin の逐次と比べる |
+| `pcmSame` / `pcmRef` | 切り出した PCM が今の方式の回と同じだったチャンク数 / 比べた回（今の方式でない回だけ。同じエンジン・進め方の今の方式の回を優先）。今の方式の回は `NA` |
 | `note` | 補足（切り替わった理由、例外など） |
 
 ### 9.5 結果を見るときの注意
@@ -431,3 +448,195 @@ RESULT name=Hindi_1_Lesson_16 engine=onnx mode=par3 status=OK chunks=60 detected
 - クラス: `core:media` の debug のコンパイル結果には `…/core/media/bench/` があり、release のコンパイル結果
   （`built_in_kotlinc/release/compileReleaseKotlin/classes`）にはない。debug の APK の dex には `LidBenchActivity` がある。
 - 計測ツールの単体テストは `src/testDebug` に置いた（`testReleaseUnitTest` からは見えない debug だけのクラスを使うため）。
+
+## 10. 追加: 言語判定の音声の切り出しを速くする（2026-10-19）
+
+- **担当**: audio-analysis（lead からの依頼）。ブランチ `agent/audio-analysis/faster-lid-extraction`（main の cc33920 から）。
+- **背景**: qa の Pixel 11 での計測では、ONNX Runtime の 3 並列の全体時間（60 チャンクで 3.6〜4.1 秒、1 チャンク 61〜68 ms）は、
+  呼び出し側のスレッドで 1 件ずつ行う音声の切り出し（MediaCodec のデコードなど。1 チャンク約 60〜160 ms）で頭打ちになっていた。
+  推論（3 並列のときの 1 件 30〜40 ms）は切り出しの裏に隠れている。
+- **やったこと**: (1) 切り出しの各段階の時間を測る（本番でも常に測り、診断ログに出す）、(2) 切り出しの方式を 2 つ追加した
+  （並列 `par`・順に流す `str`。内部の設定で選ぶ。**本番の既定は今の方式 `cur` のまま**）、(3) 計測ツールで方式を選び、内訳と、
+  今の方式との PCM・判定の一致を出す。
+- **変えていないもの**: 第 2 段階（文字起こし）の切り出し、解析の時間軸（ADR 0005・0008）、log-mel・推論・ファイル内の補正、本番の既定の方式。
+  新しい依存はない。
+- 数値は単体テスト（JVM、偽の MediaCodec）で動きを確かめただけで、**実機での速さと一致は未確認**（§10.4 で qa に測ってもらう）。
+
+### 10.1 切り出しの内訳
+
+`LidExtractionTimings`（`System.nanoTime` の差を `AtomicLong` に足すだけ。1 チャンクあたり数十回）で、一括言語判定の切り出しを
+段階に分けて測る。本番でも常に測り、一括言語判定の終わりに診断ログに 1 行出す。
+
+```text
+切り出し: 方式 cur（60 件、全体 3.6 秒。1 件あたり 61.2 ms = 抽出器 0.1 + 位置合わせ 1.2 + MediaCodec 作成 25.3 + デコード待ち 20.1 + モノラル化 1.0 + リサンプル 4.0 + PCM 0.5 + 解放 6.0 + 受け渡し 0.1 + その他 2.9。MediaCodec 60 回）
+```
+
+（値は例。）計測ツールの `RESULT` 行では、同じ内訳を次の項目で出す。時間は 1 件あたり（切り出した数 `exN` で割る。`adaptMs`・`awaitMs`
+はチャンク数で割る）。並列の方式では複数のスレッドの時間を足すので、1 件あたりの時間は壁時計の時間ではない（全体の速さは `totalMs` で比べる）。
+
+| 項目 | 診断ログ | 範囲 |
+| --- | --- | --- |
+| `exMs` | 1 件あたり | 切り出し全体（順に流す切り出しでは、待ち行列がいっぱいで待った時間 `qWaitMs` を除く）。下の段階の合計 |
+| `exOpenMs` | 抽出器 | 抽出器（MediaExtractor）を開く・トラックを選ぶ（今の方式は共有の抽出器を 1 回だけ開く） |
+| `exPosMs` | 位置合わせ | 開始位置の 500 ms 手前の最初のフレームまで進める（30 秒以内なら圧縮のまま読み飛ばし、遠ければ `seekTo` してから読み飛ばす） |
+| `codecNewMs` | MediaCodec 作成 | MediaCodec の作成・`configure`・`start` |
+| `codecWaitMs` | デコード待ち | デコードのループのうち、入力の詰め込みと出力の待ち（MediaCodec とのやり取り）。モノラル化とリサンプルを除く |
+| `mixMs` | モノラル化 | 出力バッファの読み出しとモノラル化 |
+| `rsMs` | リサンプル | 16 kHz へのリサンプル（PCM への変換を除く） |
+| `pcmMs` | PCM | 16-bit PCM への変換 |
+| `codecRelMs` | 解放 | MediaCodec の `stop`・`release` |
+| `handoffMs` | 受け渡し | バイト列から `ShortArray` への変換 |
+| `exOtherMs` | その他 | どの段階にも入らない時間（ファイルの確認、ロックの待ちなど） |
+| `adaptMs` | — | ファイル内の補正と結果の受け渡し（チャンク数で割る） |
+| `awaitMs` | — | 結果をチャンクの順に受け取る側が、推論（と切り出し）の終わりを待った時間（チャンク数で割る） |
+| `codecs` / `exOpens` / `seeks` | MediaCodec N 回 | MediaCodec を作った数 / 抽出器を開いた数 / `seekTo` した数 |
+| `skipSamples` | — | 位置合わせで圧縮のまま読み飛ばしたフレーム（MediaExtractor のサンプル。MP3 なら 1 フレーム 1,152 サンプル）の数 |
+| `decodedSamples` | — | デコーダが出力したサンプル数（ネイティブのレート、1 チャンネルあたり） |
+| `runs` / `windows` / `qWaitMs` | run / 窓 / 待ち行列の待ち | 順に流す切り出しの run の数 / 切り出した窓の数 / 待ち行列がいっぱいで推論を待った時間の合計 |
+| `fallbacks` | 今の方式で切り出し直し | 速い方式で切り出せず、今の方式で切り出し直した数 |
+
+### 10.2 切り出しの方式
+
+| 方式 | 内容 |
+| --- | --- |
+| `cur`（今） | 呼び出し側のスレッドで、共有の抽出器を使ってチャンクを 1 件ずつ切り出し、推論だけを最大 3 並列にする。MediaCodec はチャンクごとに作る |
+| `par`（並列） | 推論のワーカー（最大 3）が、それぞれ自分の抽出器（レーン）でチャンクを切り出してから推論する。MediaCodec はチャンクごとに作る（今と同じ処理）ので、**PCM は今の方式と同じ** |
+| `str`（順に流す） | 対象のチャンクを含む範囲（run）を 1 つの MediaCodec で頭から順にデコードし、各チャンクの窓（先頭から最大 2.8 秒）を切り出して、上限付きの待ち行列で推論のワーカーに渡す。窓ごとに今の方式と同じ位相でリサンプルするので、**PCM は今の方式と同じになる見込み**（実機では `pcmSame` で確かめる） |
+
+どの方式も共通:
+
+- 結果の受け渡しとファイル内の補正はチャンクの順（今と同じ）。PCM が同じなら、判定も今の方式と同じ。
+- 同時に使う MediaCodec は最大 3 つ（`par` はワーカーごとに 1 つ、`str` は run の 1 つと、今の方式で切り出し直す分の 1 つ）。
+- 速い方式で切り出せなければ、そのチャンクは今の方式で切り出し直す（MediaCodec を作れない、デコードが止まる、出力のレートが変わる、
+  MP3 の出力の長さがずれる、途中でファイルが変わった、など）。計測ツールの `fallbacks`。
+- キャンセル・エラー・ファイルが変わったときも、追加の抽出器と MediaCodec は必ず閉じる（単体テストで確かめた）。
+- デコーダが `MediaCodecAudioStreamDecoder` でない（テストの偽のデコーダなど）、2 言語でない、チャンクが 1 つだけ、などの場合は今の方式。
+- 本番の既定は `AndroidSpeechRecognizerChunkTranscriber.DEFAULT_LID_EXTRACTION_METHOD`（今は `CURRENT`）。
+
+並列の切り出し（`par`）:
+
+- 抽出器はワーカーごとに必要になったときに開き、終わったら閉じる（同時に開くファイルが最大 3 つ増える）。
+- レーンで切り出せず、今の方式では切り出せた場合は、そのワーカーは以後今の方式（共有の抽出器）で切り出す
+  （診断ログの警告「並列の切り出しに失敗したため、以後このワーカーは今の方式で切り出す」）。
+- 切り出しは推論のスレッドで行う（本番は Default の Dispatcher を最大 3 本）。MediaCodec の出力を待つ間、そのスレッドは止まる。
+
+順に流す切り出し（`str`）:
+
+- **run の分け方**: 窓を開始位置の順に並べ、次の窓のデコードを始める位置（開始の 500 ms 手前）が今の run の終わりから
+  `streamGapMs`（既定 10 秒）より後ろなら run を分け、その間は圧縮のまま読み飛ばす。1 つの run は最大 `streamRunWindows`（16）窓・
+  `streamRunMs`（120 秒）。run の中では、長いチャンクの後半や窓と窓の間もデコードする（MediaCodec を作り直すより速い見込み）。
+- **今の方式と同じ PCM にする方法**: 今の方式は、窓ごとに「開始の 500 ms 手前以降の最初のフレーム」（着地フレーム）から新しい
+  MediaCodec でデコードし、そのフレームの時刻から 16 kHz のサンプル番号を数えて新しいリサンプラを通す。順に流す切り出しでも、
+  窓ごとに同じ着地フレームを基準にし、リサンプラの位相（44.1 kHz → 16 kHz の格子。`StreamingResampler.inputPeriod` /
+  `outputPeriod`）を今の方式と同じにそろえ、先頭のゼロの補いの影響（`startupOutputs`）が窓より前に収まる位置から始める。
+  セッションの先頭で削られる遅延（デコーダの遅延・エンコーダの遅延）は、run の先頭と今の方式の各チャンクのどちらでも削られるので
+  打ち消し合う。デコーダの出力が窓の付近で今の方式と同じなら PCM も同じになる（MP3 は 500 ms の余白でデコーダの状態がそろう見込み）。
+- **MP3 はまとめて渡す**（128 フレーム。まとめてよいと確かめたデコーダだけ）。まとめ入れでフレームが落ちると窓の時刻がずれるので、
+  run の終わりで出力の長さを確かめてから、その run の窓を渡す。ずれていたら、その run の窓をすべて今の方式で切り出し直し、
+  以後はまとめない。このため MP3 では窓を run ごとにまとめて渡す。待ち行列の既定の長さ（16）は run の窓の数の上限と同じにして、
+  推論が追いついている間は、まとめて渡すときにデコードが止まらないようにした。
+- **まばら・並んでいないとき**: run の数 × 2 > 窓の数（間が大きく空いて 1 run あたり 2 窓未満）のときと、開始位置の順に
+  並んでいないときは、並列の切り出しにする（診断ログ「…順に流す切り出しの代わりに並列の切り出しを使う」、計測ツールでは `extUsed=par`）。
+- **メモリ**（§7.3.1）: 全体の PCM は持たない。持つのは切り出し中の窓と、まとめて渡す前の run の窓（MP3、最大 16）、待ち行列の窓
+  （最大 16）、推論中の窓（最大 3）だけ（1 窓は 16 kHz で最大 2.8 秒・約 88 KB。最大でも約 3 MB）。
+- 推論が追いつかないとき（待ち行列がいっぱいのとき）は、デコードを止めて待つ（`qWaitMs`）。
+
+### 10.3 計測ツールで比べる
+
+- `--es extraction cur,par,str` で、同じエンジン・進め方を方式ごとに測る（§9.2）。回ごとに新しいデコーダと文字起こし器を作り、
+  回の前にクールダウンする。ウォームアップは今の方式で行う（`par`・`str` の固有のコードは最初の回で JIT される。方式の順を
+  入れ替えた回で、順番の影響がないかを確かめるとよい）。
+- 出力（§9.4 に加えて）:
+  - `RESULT`: `ext` / `extUsed`、切り出しの内訳（§10.1）、`pcmSame` / `pcmRef`。今の方式でない回の `ref` は、同じエンジン・進め方の今の方式の回。
+  - `PCMDIFF`: PCM が今の方式と違うチャンク（最初の 20 件）。`番号@開始ms:サンプル数/今の方式のサンプル数:abs+0.012%`
+    （最後は、絶対値の合計の差の割合。違いの大きさの目安）。
+  - `TABLE`: `ext`（指定と実際が違う回は `str>par`）・`exMs`（1 件あたりの切り出し）・`pcm`（`pcmSame`）の欄を追加。
+  - `SUMMARY_EXT`: 速い方式の回ごとに、同じエンジン・進め方の今の方式の回との比と一致。
+
+```text
+SUMMARY_EXT engine=onnx mode=par3 ext=str extUsed=str curTotalMs=3659.0 totalMs=1500.0 totalSpeedup=2.4x curPerChunkMs=61.0 perChunkMs=25.0 curExMs=58.0 exMs=18.2 agree=1.000 agreeN=60/60 pcmSame=60/60
+```
+
+（値は例。）教材全体（371 / 393 チャンク）でも動く: 結果はチャンクの数だけの小さな配列で、PCM は指紋だけを持つ。`DIFF`・`PCMDIFF` は
+最初の 20 件まで。
+
+### 10.4 実機での計測（qa への依頼）
+
+1. このブランチ（`agent/audio-analysis/faster-lid-extraction`）の debug ビルドを入れる（§9.1 の 1。別の作業ツリーで作る場合は
+   `--detach`）。前回の計測（構成 B）と比べられるように、前回と同じく `app/build.gradle.kts` の debug を一時的に
+   debuggable=false にしたビルドで測る（コミットしない。終わったら戻す）。
+2. 入力を置き、端末を準備する（§9.1 の 2・3）。logcat は起動の前から流し続ける（§9.1 の 6）。
+3. 60 チャンクで、ONNX Runtime の 3 並列を方式ごとに測る（教材ごとに 1 回起動する。クールダウンを含めて 1 回 3 分ほどの見込み）。
+
+   ```sh
+   adb shell am start -n $PKG/com.miuraken.chunkflow.core.media.bench.LidBenchActivity \
+       --es name Hindi_1_Lesson_16 --es target hi --es base en \
+       --es engines onnx --es modes par3 --es extraction cur,par,str --ei maxChunks 60
+   adb shell am start -n $PKG/com.miuraken.chunkflow.core.media.bench.LidBenchActivity \
+       --es name Korean_lesson_ja --es target ko --es base ja \
+       --es engines onnx --es modes par3 --es extraction cur,par,str --ei maxChunks 60
+   ```
+
+4. 教材全体（`--ei maxChunks 0`）で同じことをする（371 / 393 チャンク。今の方式は 1 回 23〜27 秒の見込み）。
+5. 余裕があれば:
+   - 方式の順を入れ替えた回（`--es extraction str,par,cur`）。順番の影響（JIT・温度）の確認。
+   - 逐次（`--es modes seq`）。順に流す切り出しは、推論が 1 件ずつでも切り出しと推論が重なる。
+   - 順に流す切り出しの設定（`--ei streamRunWindows 8`、`--ei streamGapMs 3000` / `30000`）。
+6. 知らせてほしいもの: `SUMMARY_EXT`・`TABLE`・`RESULT` の行、`DIFF`・`PCMDIFF` の行（あれば）、`DIAG` の「切り出し: 方式 …」の行、
+   温度の状態。
+
+見ること:
+
+- **一致**: `par`・`str` の `agree=1.000` と `pcmSame` = チャンク数。`par` は今の方式と同じ処理なので必ず同じになるはず。
+  `str` で `pcmSame` がチャンク数より少なければ、`PCMDIFF` の行を audio-analysis に知らせてほしい（判定が同じでも知らせる）。
+- **速さ**: `SUMMARY_EXT` の `totalSpeedup`。`str` の `qWaitMs` が大きければ、推論が律速になった（切り出しはもう頭打ちの原因でない）。
+- **今の方式の内訳**（依頼の (1)）: `cur` の回の `codecNewMs` + `codecRelMs`（チャンクごとに MediaCodec を作る分）、`codecWaitMs`
+  （デコード）、`exPosMs`（位置合わせ）、`rsMs`（リサンプル）のどれが大きいか。
+- `fallbacks` が 0、`extUsed` が指定どおり（`str` が `par` になっていないか）、`status=OK`・`degraded=false`・`bg=false`。
+
+### 10.5 見込み（未確認）
+
+qa の数字（構成 B、ONNX 3 並列）からの大まかな見積もり。実機の数字で判断してほしい。
+
+| 方式 | 律速になるところ | 60 チャンクの全体時間の見込み |
+| --- | --- | --- |
+| `cur` | 呼び出し側のスレッドで順に行う切り出し（1 チャンク 61〜68 ms） | 3.6〜4.1 秒（実測） |
+| `par` | 各ワーカーの「切り出し + 推論」（1 チャンク約 100 ms ÷ 3 ワーカー）。3 つの MediaCodec と 3 つの推論が CPU を取り合うので、切り出し自体は遅くなるかもしれない | 約 2〜2.5 秒（1.5〜2 倍） |
+| `str` | 1 本のデコード（MediaCodec の作成がほぼなくなり、run の中は続けてデコードする）か、推論（1 件 30〜40 ms ÷ 3） | 約 1〜2 秒（2〜4 倍） |
+
+- どの方式でも、推論の合計を 3 で割った時間（60 チャンクで約 0.8〜1.0 秒）より速くはならない。
+- `str` は、窓と窓の間や長いチャンクの後半もデコードするので、デコードする量は今の方式（1 チャンク 3.3 秒ぶん）の 1.5〜2 倍になり得る
+  （`decodedSamples` で分かる）。MP3 のデコードは MediaCodec の作成・解放より十分速いと見込んでいる（未確認）。
+- qa の報告のとおり、1 スレッドだけが動く状態では CPU の周波数が上がりきらない可能性がある。`par`・`str` は複数のスレッドが同時に動くので、
+  この影響も変わる（未確認）。
+
+### 10.6 入れていない案
+
+- **MediaCodec の使い回し**（`flush` して次のチャンクへ）: `flush` の後はセッションの先頭の遅延が削られないので、PCM が今の方式と
+  変わる（ADR 0005 の決定 2 で、呼び出しごとに作るとした理由）。順に流す切り出しなら、PCM を変えずに MediaCodec の作成をまとめられる。
+- **余白（500 ms）を短くする**: デコードする量が 1 チャンク 3.3 秒 → 3.0 秒ほどに減るが、MP3 のデコーダの状態がそろわずに PCM が
+  変わり得るので、判定が変わらないかを評価データで確かめる必要がある。
+- **今の方式・並列の方式で MP3 をもっとまとめて渡す**（16 → 128 フレーム）: チャンクの切り出しでは出力の長さを確かめていない
+  （まとめ入れでフレームが落ちたことに気づけない）ので入れていない。
+- **リサンプラの係数の表を共有する**: 今はチャンクごとに約 32 KB の表を作る。`rsMs` / `exOtherMs` が大きければ検討する（`core:audio`）。
+
+### 10.7 本番で使う場合（lead の判断）
+
+- 既定を変えるなら `DEFAULT_LID_EXTRACTION_METHOD` の 1 行を変える（ADR 0010 §2.6 に記録する）。DI の変更はいらない。
+- `str` を既定にしても、まばらなとき・並んでいないときは自動で `par` になり、デコーダが MediaCodec でなければ `cur` になる。
+- 診断ログの「切り出し: 方式 …」の行で、本番で使った方式と内訳が分かる（`str` から `par` にした場合は、その理由の行も出る）。
+
+### 10.8 作ったもの
+
+| 場所 | 内容 |
+| --- | --- |
+| `core/audio/.../StreamingResampler.kt` | `reset`、出力の格子の周期（`inputPeriod` / `outputPeriod`）、先頭のゼロの補いの影響の範囲（`startupOutputs`） |
+| `core/media/.../LidExtractionTimings.kt` | 切り出しの方式（`LidExtractionMethod`）と、各段階の時間の累計・差 |
+| `core/media/.../LidStreamingExtractor.kt` | 順に流す切り出し（run の分け方、窓の切り出しとリサンプラの位相合わせ、MP3 の長さの確認） |
+| `core/media/.../MediaCodecAudioStreamDecoder.kt` | 抽出器のスロットとレーン（並列の切り出し）、各段階の計測、`streamLanguageWindows` |
+| `core/media/.../OnDeviceSpeechTranscriber.kt` | 一括言語判定の方式の選択、並列・順に流す切り出しの組み込み、診断ログの「切り出し: …」の行 |
+| `core/media/src/debug/.../bench/` | 計測ツールの方式の選択（`--es extraction` ほか）、内訳、PCM の指紋と一致、`PCMDIFF`、`SUMMARY_EXT` |
+| `core/audio/src/test/.../StreamingResamplerTest.kt` | `reset` と出力の格子の周期のテスト（2 件追加） |
+| `core/media/src/test/.../FakeMediaSessions.kt` | テスト用の偽の抽出器と MediaCodec（セッションの先頭の遅延の削り、MP3 のまとめ入れ・フレームの欠落をまねる） |
+| `core/media/src/test/.../LidExtractionMethodsTest.kt` | 並列・順に流す切り出しの PCM と判定の一致、資源の解放、キャンセル、待ち行列の上限、間の読み飛ばし、ファイルの終わり、MP3 のずれ（15 件） |
+| `core/media/src/testDebug/.../bench/` | 計測ツールのテスト（方式ごとの計測、PCM の一致、引数、出力の行。7 件追加） |
