@@ -50,6 +50,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -101,6 +102,21 @@ data class OnDeviceChunkTranscriptionResult(
 data class ChunkTimeRange(
     val startMs: Long,
     val endMs: Long,
+)
+
+/**
+ * 初回デコード中に順次確定するチャンクの 16kHz モノラル PCM スライス（[pcm16kMono]）の言語判定要求。
+ *
+ * @property chunkId 対象チャンクの ID。
+ * @property startMs チャンクの開始位置（ミリ秒）。
+ * @property endMs チャンクの終了位置（ミリ秒）。
+ * @property pcm16kMono チャンク先頭（最大 2 秒分）の 16kHz モノラル PCM。
+ */
+data class PcmChunkLanguageRequest(
+    val chunkId: Long,
+    val startMs: Long,
+    val endMs: Long,
+    val pcm16kMono: ShortArray,
 )
 
 /**
@@ -379,6 +395,57 @@ interface OnDeviceChunkTranscriber {
                 null
             }
             onResult(index, result)
+        }
+    }
+
+    /**
+     * デコード済みの 16kHz モノラル PCM（[pcm16kMono]）から、音声認識（文字起こし）は行わずに
+     * Whisper Tiny による言語判定（[LanguagePair.target] と [LanguagePair.base] の比較）のみを実行する。
+     */
+    suspend fun detectChunkLanguageFromPcm(
+        audioScopeKey: String,
+        pcm16kMono: ShortArray,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair,
+        audioFile: File? = null,
+    ): OnDeviceChunkTranscriptionResult? = if (audioFile != null && audioFile.isFile) {
+        detectChunkLanguage(audioFile, startMs, endMs, languagePair)
+    } else {
+        null
+    }
+
+    /**
+     * ストリーミングデコード中に確定したチャンクの PCM スライス（[requests]）を順次受け取り、
+     * [computeDispatcher] 上で最大 [parallelism] 並列で Whisper Tiny 推論を進めつつ、
+     * チャンクの到着順（開始時刻順）にファイル内の話者プロファイル適応（[VoiceProfileLanguageTracker]）と
+     * [onResult] の呼び出しを行う。
+     */
+    suspend fun detectChunkLanguagesFromPcmStream(
+        audioScopeKey: String,
+        requests: ReceiveChannel<PcmChunkLanguageRequest>,
+        languagePair: LanguagePair,
+        parallelism: Int,
+        computeDispatcher: CoroutineDispatcher,
+        audioFile: File? = null,
+        onResult: suspend (request: PcmChunkLanguageRequest, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        for (req in requests) {
+            val result = try {
+                detectChunkLanguageFromPcm(
+                    audioScopeKey = audioScopeKey,
+                    pcm16kMono = req.pcm16kMono,
+                    startMs = req.startMs,
+                    endMs = req.endMs,
+                    languagePair = languagePair,
+                    audioFile = audioFile,
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                null
+            }
+            onResult(req, result)
         }
     }
 
@@ -2825,6 +2892,146 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         languagePair = languagePair,
         index = null,
     )
+
+    override suspend fun detectChunkLanguageFromPcm(
+        audioScopeKey: String,
+        pcm16kMono: ShortArray,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair,
+        audioFile: File?,
+    ): OnDeviceChunkTranscriptionResult? {
+        if (startMs < 0L || endMs <= startMs || pcm16kMono.isEmpty()) {
+            return null
+        }
+        val targetLang = languagePair.target
+        val baseLang = distinctBaseLanguage(languagePair)
+            ?: return OnDeviceChunkTranscriptionResult(
+                text = "",
+                language = targetLang,
+                confidence = 1.0f,
+                engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+            )
+        if (languageDetector == null && languageAnalyzer == null) return null
+        val startedAtEpochMs = System.currentTimeMillis()
+        try {
+            updateActiveStep(
+                step = TranscriptionStep.DETECTING_LANGUAGE,
+                detail = "${targetLang.value} / ${baseLang.value}",
+                startedAtEpochMs = startedAtEpochMs,
+                highPriority = false,
+            )
+            val analysis = analyzeWhisperLidSafely(pcm16kMono, startMs, endMs, targetLang, baseLang) ?: return null
+            val adaptStartNanos = System.nanoTime()
+            return try {
+                adaptLanguageOnlyResult(
+                    analysis = analysis,
+                    audioScopeKey = audioScopeKey,
+                    startMs = startMs,
+                    endMs = endMs,
+                    targetLang = targetLang,
+                    baseLang = baseLang,
+                )
+            } finally {
+                languageOnlyTimings.adaptNanos.addAndGet(System.nanoTime() - adaptStartNanos)
+            }
+        } finally {
+            clearActiveStepIfMatches(startedAtEpochMs)
+        }
+    }
+
+    override suspend fun detectChunkLanguagesFromPcmStream(
+        audioScopeKey: String,
+        requests: ReceiveChannel<PcmChunkLanguageRequest>,
+        languagePair: LanguagePair,
+        parallelism: Int,
+        computeDispatcher: CoroutineDispatcher,
+        audioFile: File?,
+        onResult: suspend (request: PcmChunkLanguageRequest, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        val targetLang = languagePair.target
+        val baseLang = distinctBaseLanguage(languagePair)
+        if (baseLang == null || (languageDetector == null && languageAnalyzer == null)) {
+            for (req in requests) {
+                onResult(req, null)
+            }
+            return
+        }
+        val statsBefore = languageDetectionStats?.let { provider -> runCatching { provider() }.getOrNull() }
+        val requestedWorkers = parallelism.coerceIn(1, OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM)
+        val workers = if (requestedWorkers > 1 && isDeviceConstrainedForParallelInference()) {
+            appendDiagnostic(
+                stage = "LID_ONLY",
+                message = PARALLEL_LID_CONSTRAINED_MESSAGE,
+            )
+            1
+        } else {
+            requestedWorkers
+        }
+        val inferenceDispatcher = computeDispatcher.limitedParallelism(workers)
+        val startedAtEpochMs = System.currentTimeMillis()
+        updateActiveStep(
+            step = TranscriptionStep.DETECTING_LANGUAGE,
+            detail = "${targetLang.value} / ${baseLang.value}（$workers 並列）",
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = false,
+        )
+        try {
+            coroutineScope {
+                val inFlight = Channel<Pair<PcmChunkLanguageRequest, Deferred<WhisperLidAnalysis?>?>>(
+                    capacity = (workers * 2).coerceAtLeast(2),
+                )
+                launch {
+                    try {
+                        for (req in requests) {
+                            val validRange = req.startMs >= 0L && req.endMs > req.startMs && req.pcm16kMono.isNotEmpty()
+                            if (validRange) {
+                                languageOnlyPcmObserver?.invoke(req.chunkId.toInt(), req.pcm16kMono)
+                            }
+                            val deferred = if (validRange) {
+                                async(inferenceDispatcher) {
+                                    analyzeWhisperLidSafely(
+                                        shorts = req.pcm16kMono,
+                                        startMs = req.startMs,
+                                        endMs = req.endMs,
+                                        targetLang = targetLang,
+                                        baseLang = baseLang,
+                                    )
+                                }
+                            } else {
+                                null
+                            }
+                            inFlight.send(req to deferred)
+                        }
+                    } finally {
+                        inFlight.close()
+                    }
+                }
+
+                for ((req, deferred) in inFlight) {
+                    val awaitStartNanos = System.nanoTime()
+                    val analysis = deferred?.await()
+                    languageOnlyTimings.awaitNanos.addAndGet(System.nanoTime() - awaitStartNanos)
+                    val adaptStartNanos = System.nanoTime()
+                    val result = analysis?.let {
+                        adaptLanguageOnlyResult(
+                            analysis = it,
+                            audioScopeKey = audioScopeKey,
+                            startMs = req.startMs,
+                            endMs = req.endMs,
+                            targetLang = targetLang,
+                            baseLang = baseLang,
+                        )
+                    }
+                    onResult(req, result)
+                    languageOnlyTimings.adaptNanos.addAndGet(System.nanoTime() - adaptStartNanos)
+                }
+            }
+        } finally {
+            clearActiveStepIfMatches(startedAtEpochMs)
+            if (statsBefore != null) appendLanguageDetectionEngineDiagnostic(statsBefore)
+        }
+    }
 
     /**
      * [detectChunkLanguage] の本体。[index]（一括言語判定のチャンクの番号）があれば、切り出した PCM を [languageOnlyPcmObserver] に渡す。
