@@ -424,7 +424,6 @@ fun PlayerScreen(
                             state = state,
                             positionProvider = positionProvider,
                             onEvent = onEvent,
-                            onPickTranscriptJson = onPickTranscriptJson,
                             hasRecordAudioPermission = hasRecordAudioPermission,
                             onRequestRecordAudioPermission = onRequestRecordAudioPermission,
                             onOpenFileSettings = { showResegmentSheet = true },
@@ -455,7 +454,6 @@ fun PlayerScreen(
                         state = state,
                         positionProvider = positionProvider,
                         onEvent = onEvent,
-                        onPickTranscriptJson = onPickTranscriptJson,
                         hasRecordAudioPermission = hasRecordAudioPermission,
                         onRequestRecordAudioPermission = onRequestRecordAudioPermission,
                         onOpenFileSettings = { showResegmentSheet = true },
@@ -670,7 +668,6 @@ private fun PlayerChunkList(
     state: PlayerUiState,
     positionProvider: PositionProvider,
     onEvent: (PlayerEvent) -> Unit,
-    onPickTranscriptJson: () -> Unit,
     modifier: Modifier = Modifier,
     hasRecordAudioPermission: Boolean = true,
     onRequestRecordAudioPermission: () -> Unit = {},
@@ -706,7 +703,6 @@ private fun PlayerChunkList(
         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
-        onPickTranscriptJson = onPickTranscriptJson,
         onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
         onUpdateChunkLanguage = { chunkId, lang ->
             onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
@@ -717,12 +713,6 @@ private fun PlayerChunkList(
         onRetranscribeChunk = { chunkId ->
             onEvent(PlayerEvent.RetranscribeChunk(chunkId))
         },
-        onSplitChunk = { chunkId, splitMs ->
-            onEvent(PlayerEvent.SplitChunk(chunkId, splitMs))
-        },
-        onMergeWithNextChunk = { chunkId ->
-            onEvent(PlayerEvent.MergeWithNextChunk(chunkId))
-        },
         onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
             onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
         },
@@ -731,9 +721,6 @@ private fun PlayerChunkList(
         },
         onBulkSetUnknownLanguage = { lang ->
             onEvent(PlayerEvent.BulkSetUnknownTranscriptLanguage(lang))
-        },
-        onSetLookaheadEnabled = { enabled ->
-            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
         },
         onToggleBackgroundTranscription = { enabled ->
             onEvent(PlayerEvent.SetBackgroundTranscriptionEnabled(enabled))

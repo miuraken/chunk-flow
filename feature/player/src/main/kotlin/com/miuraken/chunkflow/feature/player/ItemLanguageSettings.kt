@@ -26,87 +26,34 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
 import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithModalLink
+import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
+import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
+import com.miuraken.chunkflow.core.designsystem.component.normalizeSelectableLanguageCode
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.SttEngine
-import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import java.util.Locale
 
-/**
- * 言語のプルダウンの選択肢。
- *
- * @property code 保存する言語コード（小文字。ベース言語の「なし」は空文字）。
- * @property label 表示名。
- */
-internal data class ItemLanguageOption(
-    val code: String,
-    val label: String,
-)
+internal typealias ItemLanguageOption = SelectableLanguageOption
 
-/**
- * 言語のプルダウンに並べる言語（コードのアルファベット順）。
- *
- * `SpeechRecognizer` / `sherpa-onnx` (Whisper) / `ML Kit` で利用可能な全言語を [SupportedLanguageCatalog] から取得する。
- */
-internal val ITEM_LANGUAGE_OPTIONS: List<ItemLanguageOption> =
-    SupportedLanguageCatalog.ITEM_LANGUAGE_ENTRIES.map { entry ->
-        ItemLanguageOption(code = entry.code, label = "${entry.code} - ${entry.japaneseName}")
-    }
+internal val ITEM_LANGUAGE_OPTIONS: List<ItemLanguageOption> = ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
 
-/**
- * 言語コードをプルダウンの選択肢のコードにそろえる（小文字にし、`_` を `-` にし、中国語の表記ゆれをまとめる）。
- */
-internal fun normalizeItemLanguageCode(rawCode: String): String {
-    val cleaned = rawCode.trim().lowercase(Locale.ROOT).replace('_', '-')
-    return when (cleaned) {
-        "zh", "zh-hans", "zh-cn" -> "zh-cn"
-        "zh-hant", "zh-tw", "zh-hk" -> "zh-tw"
-        else -> cleaned
-    }
-}
+internal fun normalizeItemLanguageCode(rawCode: String): String = normalizeSelectableLanguageCode(rawCode)
 
-/**
- * プルダウンの選択肢を作る。いまの言語 [currentCode] が一覧にない場合は追加し、[noneLabel] があれば先頭に「なし」を置く。
- */
 internal fun buildItemLanguageOptions(
     currentCode: String,
     noneLabel: String? = null,
     enabledLanguages: List<LanguageTag> = emptyList(),
-): List<ItemLanguageOption> {
-    val normalizedCurrent = normalizeItemLanguageCode(currentCode)
-    val allowedCodes: Set<String>? = if (enabledLanguages.isEmpty()) {
-        null
-    } else {
-        buildSet {
-            enabledLanguages.forEach { tag ->
-                val norm = normalizeItemLanguageCode(tag.value)
-                if (norm.isNotBlank()) {
-                    add(norm)
-                    if (norm == "zh-cn" || norm == "zh-tw") {
-                        add("zh-cn")
-                        add("zh-tw")
-                    }
-                }
-            }
-        }
-    }
-    val options = if (allowedCodes == null) {
-        ITEM_LANGUAGE_OPTIONS.toMutableList()
-    } else {
-        ITEM_LANGUAGE_OPTIONS.filter { it.code in allowedCodes }.toMutableList()
-    }
-    if (normalizedCurrent.isNotBlank() && options.none { it.code == normalizedCurrent }) {
-        val catalogEntry = ITEM_LANGUAGE_OPTIONS.firstOrNull { it.code == normalizedCurrent }
-            ?: ItemLanguageOption(normalizedCurrent, normalizedCurrent)
-        options.add(catalogEntry)
-        options.sortBy { it.code }
-    }
-    return if (noneLabel != null) listOf(ItemLanguageOption("", noneLabel)) + options else options
-}
+): List<ItemLanguageOption> = buildSelectableLanguageOptions(
+    currentCode = currentCode,
+    noneLabel = noneLabel,
+    enabledLanguages = enabledLanguages,
+)
 
 /**
  * 学習言語を [targetCode] に変えたあとの言語ペアを返す。変更がない、または無効な場合は `null`。

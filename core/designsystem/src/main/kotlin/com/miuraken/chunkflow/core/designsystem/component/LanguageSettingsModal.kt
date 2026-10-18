@@ -311,3 +311,73 @@ fun MissingLanguageHintWithModalLink(
         modifier = modifier,
     )
 }
+
+/**
+ * 言語選択プルダウンの選択肢。
+ *
+ * @property code 保存する言語コード（小文字。ベース言語の「なし」は空文字）。
+ * @property label プルダウンに表示するラベル（例: `en - 英語`）。
+ */
+data class SelectableLanguageOption(
+    val code: String,
+    val label: String,
+)
+
+/**
+ * アルファベット順のすべての選択可能言語オプション。
+ */
+val ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS: List<SelectableLanguageOption> =
+    SupportedLanguageCatalog.ITEM_LANGUAGE_ENTRIES.map { entry ->
+        SelectableLanguageOption(code = entry.code, label = "${entry.code} - ${entry.japaneseName}")
+    }
+
+/**
+ * 言語コードをプルダウンの選択肢のコードにそろえる（小文字にし、`_` を `-` にし、中国語の表記ゆれをまとめる）。
+ */
+fun normalizeSelectableLanguageCode(rawCode: String): String {
+    val cleaned = rawCode.trim().lowercase(Locale.ROOT).replace('_', '-')
+    return when (cleaned) {
+        "zh", "zh-hans", "zh-cn" -> "zh-cn"
+        "zh-hant", "zh-tw", "zh-hk" -> "zh-tw"
+        else -> cleaned
+    }
+}
+
+/**
+ * プルダウンの選択肢を作る。いまの言語 [currentCode] が一覧にない場合は追加し、[noneLabel] があれば先頭に「なし」を置く。
+ */
+fun buildSelectableLanguageOptions(
+    currentCode: String,
+    noneLabel: String? = null,
+    enabledLanguages: List<LanguageTag> = emptyList(),
+): List<SelectableLanguageOption> {
+    val normalizedCurrent = normalizeSelectableLanguageCode(currentCode)
+    val allowedCodes: Set<String>? = if (enabledLanguages.isEmpty()) {
+        null
+    } else {
+        buildSet {
+            enabledLanguages.forEach { tag ->
+                val norm = normalizeSelectableLanguageCode(tag.value)
+                if (norm.isNotBlank()) {
+                    add(norm)
+                    if (norm == "zh-cn" || norm == "zh-tw") {
+                        add("zh-cn")
+                        add("zh-tw")
+                    }
+                }
+            }
+        }
+    }
+    val options = if (allowedCodes == null) {
+        ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS.toMutableList()
+    } else {
+        ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS.filter { it.code in allowedCodes }.toMutableList()
+    }
+    if (normalizedCurrent.isNotBlank() && options.none { it.code == normalizedCurrent }) {
+        val catalogEntry = ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS.firstOrNull { it.code == normalizedCurrent }
+            ?: SelectableLanguageOption(normalizedCurrent, normalizedCurrent)
+        options.add(catalogEntry)
+        options.sortBy { it.code }
+    }
+    return if (noneLabel != null) listOf(SelectableLanguageOption("", noneLabel)) + options else options
+}

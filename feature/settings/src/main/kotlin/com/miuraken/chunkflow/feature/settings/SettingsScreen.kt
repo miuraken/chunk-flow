@@ -219,7 +219,6 @@ fun SettingsScreen(
                     SettingsTab.TRANSCRIPTION -> {
                         TranscriptionSettingsSection(
                             lookaheadEnabled = state.lookaheadTranscriptionEnabled,
-                            transcriptionEngine = state.transcriptionEngine,
                             languageModels = state.languageModels,
                             enabledLanguages = state.enabledLanguages,
                             sttEngineByLanguage = state.sttEngineByLanguage,
@@ -526,7 +525,6 @@ private fun SegmentationDefaultsSection(
 @Composable
 private fun TranscriptionSettingsSection(
     lookaheadEnabled: Boolean,
-    transcriptionEngine: OnDeviceTranscriptionEngine,
     languageModels: List<OnDeviceLanguageModelInfo>,
     enabledLanguages: Set<LanguageTag>,
     sttEngineByLanguage: Map<LanguageTag, SttEngine>,
