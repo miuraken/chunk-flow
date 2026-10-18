@@ -40,7 +40,7 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         ItemSttOverrideEntity::class,
         CourseFolderEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -120,7 +120,23 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             }
         }
 
+        /** バージョン 5 から 6 へのマイグレーション（`item_state` に `is_favorite`、`queued_at`、`access_count`、`custom_segmentation` 列を追加）。 */
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `item_state` ADD COLUMN `is_favorite` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `item_state` ADD COLUMN `queued_at` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `item_state` ADD COLUMN `access_count` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `item_state` ADD COLUMN `custom_segmentation` TEXT")
+            }
+        }
+
         /** アプリで使うすべてのマイグレーション（古い順）。データベースを開くときに渡す。 */
-        val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+            MIGRATION_1_2,
+            MIGRATION_2_3,
+            MIGRATION_3_4,
+            MIGRATION_4_5,
+            MIGRATION_5_6,
+        )
     }
 }

@@ -65,6 +65,12 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [resegment] の呼び出し（呼ばれた順）。 */
     val resegmentRequests: MutableList<Pair<MediaId, SegmentationParams>> = mutableListOf()
 
+    /** [setCustomSegmentationParams] で設定された教材ごとの分割パラメータ（`null` は全体設定に従う）。 */
+    val customSegmentationParamsByMedia: MutableMap<MediaId, SegmentationParams?> = mutableMapOf()
+
+    /** [startLanguageDetectionOnly] の呼び出し履歴（呼ばれた順）。 */
+    val languageDetectionOnlyRequests: MutableList<MediaId> = mutableListOf()
+
     /** [setChunkSource] で設定された出どころ。 */
     val chunkSources: MutableMap<MediaId, ChunkOrigin> = mutableMapOf()
 
@@ -159,6 +165,14 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override suspend fun resegment(id: MediaId, params: SegmentationParams) {
         resegmentRequests += id to params
+    }
+
+    override suspend fun setCustomSegmentationParams(id: MediaId, params: SegmentationParams?) {
+        customSegmentationParamsByMedia[id] = params
+    }
+
+    override suspend fun startLanguageDetectionOnly(id: MediaId) {
+        languageDetectionOnlyRequests += id
     }
 
     override suspend fun setChunkSource(id: MediaId, source: ChunkOrigin) {

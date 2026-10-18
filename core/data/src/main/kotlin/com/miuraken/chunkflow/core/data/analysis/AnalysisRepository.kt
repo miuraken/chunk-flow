@@ -48,6 +48,19 @@ interface AnalysisRepository {
     /** 保存済みの特徴量からチャンクを再計算する（再デコード不要）。 */
     suspend fun resegment(id: MediaId, params: SegmentationParams)
 
+    /**
+     * 教材ごとの自動チャンク分割パラメータの上書きを保存する。
+     *
+     * [params] に `null` を指定すると「全体設定に従う」に戻る。
+     */
+    suspend fun setCustomSegmentationParams(id: MediaId, params: SegmentationParams?) = Unit
+
+    /**
+     * 指定した教材でまだ言語判定・文字起こしが行われていないすべてのチャンクについて、
+     * バックグラウンドで言語判定のみ（Whisper Tiny）を実行してチャンクの言語ラベルを設定する。
+     */
+    suspend fun startLanguageDetectionOnly(id: MediaId) = Unit
+
     /** チャンクの出どころ（[ChunkOrigin.IMPORTED] / [ChunkOrigin.AUTO]）を切り替える（F5.4）。 */
     suspend fun setChunkSource(id: MediaId, source: ChunkOrigin)
 

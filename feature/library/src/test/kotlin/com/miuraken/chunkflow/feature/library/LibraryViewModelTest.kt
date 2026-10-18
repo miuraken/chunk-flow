@@ -1085,5 +1085,76 @@ class LibraryViewModelTest {
         assertEquals(LibraryPlaylistCategory.FAVORITES, viewModel.uiState.value.selectedPlaylistCategory)
         viewModel.onEvent(LibraryEvent.NavigateUp)
         assertEquals(null, viewModel.uiState.value.selectedPlaylistCategory)
+
+        // OpenItem でアクセス回数がインクリメントされ、ViewModel 再生成後もすべて保持される
+        viewModel.onEvent(LibraryEvent.OpenItem(item2.id))
+        viewModel.onEvent(LibraryEvent.OpenItem(item2.id))
+
+        val recreatedViewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { recreatedViewModel.uiState.collect() }
+        assertEquals(
+            listOf(item2.id),
+            recreatedViewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.FAVORITES).map { it.item.id },
+        )
+        assertEquals(
+            listOf(item2.id, item1.id),
+            recreatedViewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.UP_NEXT_QUEUE).map { it.item.id },
+        )
+        assertEquals(
+            listOf(item2.id, item1.id),
+            recreatedViewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.FREQUENTLY_ACCESSED).map { it.item.id },
+        )
+    }
+
+    @Test
+    fun `選択モードのお気に入り一括トグル_未お気に入りを含む場合はすべてお気に入りに追加し全員お気に入り済みならすべて解除する`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val item1 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-1"),
+            title = "Lesson 1",
+            course = "韓国語 I",
+        )
+        val item2 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-2"),
+            title = "Lesson 2",
+            course = "韓国語 I",
+        )
+        val item3 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-3"),
+            title = "Lesson 3",
+            course = "英語 I",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2, item3))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 最初に item1 だけお気に入りにしておく
+        viewModel.onEvent(LibraryEvent.ToggleFavorite(item1.id))
+        assertEquals(setOf(item1.id), viewModel.uiState.value.favoriteItemIds)
+
+        // item1（お気に入り済み）と item2（未お気に入り）を複数選択
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item1.id))
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item2.id))
+        assertFalse(viewModel.uiState.value.areAllSelectedFavorite)
+
+        // 1回目の ToggleFavoriteSelected -> まだお気に入りでない item2 もお気に入りに追加され、両方お気に入りになる
+        viewModel.onEvent(LibraryEvent.ToggleFavoriteSelected)
+        assertEquals(setOf(item1.id, item2.id), viewModel.uiState.value.favoriteItemIds)
+        assertTrue(viewModel.uiState.value.areAllSelectedFavorite)
+
+        // 2回目の ToggleFavoriteSelected -> 選択中のすべてがお気に入り済みなので両方お気に入りから外れる
+        viewModel.onEvent(LibraryEvent.ToggleFavoriteSelected)
+        assertTrue(viewModel.uiState.value.favoriteItemIds.isEmpty())
+        assertFalse(viewModel.uiState.value.areAllSelectedFavorite)
+
+        // ディレクトリ長押し選択時にも配下のファイル（item1, item2）をまとめてお気に入りトグルできる
+        viewModel.onEvent(LibraryEvent.ClearSelection)
+        viewModel.onEvent(LibraryEvent.ToggleDirectorySelection("韓国語 I"))
+        assertEquals(listOf(item1.id, item2.id), viewModel.uiState.value.selectedTargetItemIds)
+        assertFalse(viewModel.uiState.value.areAllSelectedFavorite)
+
+        viewModel.onEvent(LibraryEvent.ToggleFavoriteSelected)
+        assertEquals(setOf(item1.id, item2.id), viewModel.uiState.value.favoriteItemIds)
+        assertTrue(viewModel.uiState.value.areAllSelectedFavorite)
     }
 }

@@ -6,6 +6,7 @@ import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +35,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -48,9 +50,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -552,8 +556,11 @@ fun PlayerScreen(
         ModalBottomSheet(onDismissRequest = { showResegmentSheet = false }) {
             ResegmentSheetContent(
                 initialParams = state.segmentationParams,
+                useGlobalSegmentation = state.useGlobalSegmentationParams,
                 languagePair = state.languagePair,
                 itemSttOverride = state.itemSttOverride,
+                sttEngineByLanguage = state.sttEngineByLanguage,
+                languageModelInfos = state.languageModelInfos,
                 enabledLanguages = state.enabledLanguages,
                 onChangeLanguages = { pair ->
                     onEvent(PlayerEvent.UpdateItemLanguages(target = pair.target, base = pair.base))
@@ -590,8 +597,15 @@ fun PlayerScreen(
                     showResegmentSheet = false
                     showDiagnosticsDialog = true
                 },
+                onToggleUseGlobalSegmentation = { useGlobal ->
+                    onEvent(PlayerEvent.SetUseGlobalSegmentation(useGlobal))
+                },
                 onApply = { params ->
                     onEvent(PlayerEvent.Resegment(params))
+                    showResegmentSheet = false
+                },
+                onRunLanguageDetectionOnly = {
+                    onEvent(PlayerEvent.RunLanguageDetectionOnly)
                     showResegmentSheet = false
                 },
                 onOpenGlobalSettings = {
@@ -1852,8 +1866,11 @@ private fun PlayerSpeedSheetContent(
 @Composable
 private fun ResegmentSheetContent(
     initialParams: SegmentationParams,
+    useGlobalSegmentation: Boolean,
     languagePair: LanguagePair?,
     itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+    sttEngineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+    languageModelInfos: Map<LanguageTag, com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo>,
     enabledLanguages: List<com.miuraken.chunkflow.core.model.LanguageTag>,
     onChangeLanguages: (LanguagePair) -> Unit,
     onChangeTargetEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
@@ -1866,10 +1883,13 @@ private fun ResegmentSheetContent(
     onExportTranscript: (TranscriptExportFormat) -> Unit,
     onResetTranscripts: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onToggleUseGlobalSegmentation: (Boolean) -> Unit,
     onApply: (SegmentationParams) -> Unit,
+    onRunLanguageDetectionOnly: () -> Unit,
     onOpenGlobalSettings: () -> Unit,
     onClose: () -> Unit,
 ) {
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     var minSilenceMs by remember(initialParams) { mutableIntStateOf(initialParams.minSilenceMs) }
     var prePaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.prePaddingMs) }
     var postPaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.postPaddingMs) }
@@ -1882,257 +1902,371 @@ private fun ResegmentSheetContent(
         transcriptOffsetMs.toString()
     }
 
+    val tabTitles = listOf(
+        stringResource(R.string.player_file_settings_tab_language),
+        stringResource(R.string.player_file_settings_tab_transcript_file),
+        stringResource(R.string.player_file_settings_tab_segmentation),
+    )
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // 教材の言語（学習言語・ベース言語）を選び直す
-        ItemLanguageSettingsSection(
-            languagePair = languagePair,
-            itemSttOverride = itemSttOverride,
-            onChangeLanguages = onChangeLanguages,
-            onChangeTargetEngine = onChangeTargetEngine,
-            onChangeBaseEngine = onChangeBaseEngine,
-            enabledLanguages = enabledLanguages,
-            onToggleEnabledLanguage = onToggleEnabledLanguage,
-        )
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-        // 文字起こしファイル (F1.3, F1.4, F7.5)
-        Text(
-            text = stringResource(R.string.player_export_section_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        FilledTonalButton(
-            onClick = onImportTranscript,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Description,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(text = stringResource(R.string.player_transcript_file_import))
-        }
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(
-                onClick = { onExportTranscript(TranscriptExportFormat.SRT) },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Download,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.player_export_srt),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            OutlinedButton(
-                onClick = { onExportTranscript(TranscriptExportFormat.LRC) },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Download,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.player_export_lrc),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            OutlinedButton(
-                onClick = { onExportTranscript(TranscriptExportFormat.TXT) },
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Download,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = stringResource(R.string.player_export_txt),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-        }
-        // 文字起こしの診断ログ（状態の要約・直近のログ・コピー・強制リセット）を開く
-        OutlinedButton(
-            onClick = onOpenDiagnostics,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Description,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(text = stringResource(R.string.player_transcription_diagnostics_button))
-        }
-        OutlinedButton(
-            onClick = { showResetConfirmDialog = true },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = MaterialTheme.colorScheme.error,
-            ),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Delete,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(text = stringResource(R.string.player_transcript_reset_button))
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-        // 文字起こしの時刻ずれ補正 (F7.6)
-        Text(
-            text = stringResource(R.string.player_offset_section_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            text = stringResource(R.string.player_offset_current_value, formattedOffset),
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf(-50, -10, 10, 50).forEach { delta ->
-                val label = if (delta > 0) "+${delta}ms" else "${delta}ms"
-                OutlinedButton(
-                    onClick = { onAdjustTranscriptOffset(delta) },
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                ) {
-                    Text(text = label, style = MaterialTheme.typography.labelMedium)
-                }
-            }
-        }
-        FilledTonalButton(
-            onClick = onAutoAlignTranscriptOffset,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Bolt,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(text = stringResource(R.string.player_offset_auto_align))
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-        // 自動チャンク分割の調整 (F5.2)
-        Text(
-            text = stringResource(R.string.player_resegment_sheet_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-
-        Text(
-            text = stringResource(R.string.player_resegment_min_silence, minSilenceMs),
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Slider(
-            value = minSilenceMs.toFloat(),
-            onValueChange = { minSilenceMs = ((it / 50f).roundToInt() * 50).coerceIn(200, 1_500) },
-            valueRange = 200f..1_500f,
-        )
-
-        Text(
-            text = stringResource(R.string.player_resegment_pre_padding, prePaddingMs),
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Slider(
-            value = prePaddingMs.toFloat(),
-            onValueChange = { prePaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
-            valueRange = 0f..500f,
-        )
-
-        Text(
-            text = stringResource(R.string.player_resegment_post_padding, postPaddingMs),
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Slider(
-            value = postPaddingMs.toFloat(),
-            onValueChange = { postPaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
-            valueRange = 0f..500f,
-        )
-
-        Text(
-            text = stringResource(
-                R.string.player_resegment_threshold,
-                String.format(Locale.ROOT, "%.2f", thresholdRatio),
-            ),
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Slider(
-            value = thresholdRatio,
-            onValueChange = { thresholdRatio = ((it * 20f).roundToInt() / 20f).coerceIn(0.05f, 0.80f) },
-            valueRange = 0.05f..0.80f,
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Text(
+                text = stringResource(R.string.player_file_settings_title),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
             TextButton(onClick = onClose) {
                 Text(text = stringResource(R.string.player_sheet_close))
             }
-            Button(
-                onClick = {
-                    val updatedMergeGap = max(initialParams.mergeGapMs, minSilenceMs)
-                    onApply(
-                        initialParams.copy(
-                            minSilenceMs = minSilenceMs,
-                            mergeGapMs = updatedMergeGap,
-                            prePaddingMs = prePaddingMs,
-                            postPaddingMs = postPaddingMs,
-                            thresholdRatio = thresholdRatio,
-                        ),
-                    )
-                },
-            ) {
-                Text(text = stringResource(R.string.player_resegment_apply))
+        }
+
+        PrimaryTabRow(selectedTabIndex = selectedTabIndex) {
+            tabTitles.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedTabIndex == index,
+                    onClick = { selectedTabIndex = index },
+                    text = {
+                        Text(
+                            text = title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                )
             }
         }
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        when (selectedTabIndex) {
+            0 -> {
+                // 「言語」タブ: 学習言語、ベース言語とそれぞれの文字起こしエンジン
+                ItemLanguageSettingsSection(
+                    languagePair = languagePair,
+                    itemSttOverride = itemSttOverride,
+                    onChangeLanguages = onChangeLanguages,
+                    onChangeTargetEngine = onChangeTargetEngine,
+                    onChangeBaseEngine = onChangeBaseEngine,
+                    enabledLanguages = enabledLanguages,
+                    onToggleEnabledLanguage = onToggleEnabledLanguage,
+                    sttEngineByLanguage = sttEngineByLanguage,
+                    languageModelInfos = languageModelInfos,
+                    showSectionTitle = false,
+                )
 
-        OutlinedButton(
-            onClick = onOpenGlobalSettings,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Tune,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(text = stringResource(R.string.player_open_global_settings))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                OutlinedButton(
+                    onClick = onOpenGlobalSettings,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Tune,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_open_global_settings))
+                }
+            }
+
+            1 -> {
+                // 「文字起こしファイル」タブ: エクスポート / インポート / リセット / ログ
+                // 1. エクスポート
+                Text(
+                    text = stringResource(R.string.player_file_settings_section_export),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { onExportTranscript(TranscriptExportFormat.SRT) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.player_export_srt),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { onExportTranscript(TranscriptExportFormat.LRC) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.player_export_lrc),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { onExportTranscript(TranscriptExportFormat.TXT) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = stringResource(R.string.player_export_txt),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // 2. インポート（文字起こし・字幕ファイルのインポート + 時刻補正）
+                Text(
+                    text = stringResource(R.string.player_file_settings_section_import),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                FilledTonalButton(
+                    onClick = onImportTranscript,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_transcript_file_import))
+                }
+                Text(
+                    text = stringResource(R.string.player_offset_section_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = stringResource(R.string.player_offset_current_value, formattedOffset),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(-50, -10, 10, 50).forEach { delta ->
+                        val label = if (delta > 0) "+${delta}ms" else "${delta}ms"
+                        OutlinedButton(
+                            onClick = { onAdjustTranscriptOffset(delta) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                        ) {
+                            Text(text = label, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+                FilledTonalButton(
+                    onClick = onAutoAlignTranscriptOffset,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Bolt,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_offset_auto_align))
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // 3. リセット
+                Text(
+                    text = stringResource(R.string.player_file_settings_section_reset),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                OutlinedButton(
+                    onClick = { showResetConfirmDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_transcript_reset_button))
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // 4. ログ
+                Text(
+                    text = stringResource(R.string.player_file_settings_section_log),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                OutlinedButton(
+                    onClick = onOpenDiagnostics,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_transcription_diagnostics_button))
+                }
+            }
+
+            2 -> {
+                // 「チャンク分割」タブ: 全体設定に従うチェックボックス + 個別調整スライダー + 言語判定のみを行う
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onToggleUseGlobalSegmentation(!useGlobalSegmentation) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = useGlobalSegmentation,
+                        onCheckedChange = { checked -> onToggleUseGlobalSegmentation(checked) },
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.player_segmentation_use_global),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+
+                val slidersEnabled = !useGlobalSegmentation
+
+                Text(
+                    text = stringResource(R.string.player_resegment_min_silence, minSilenceMs),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (slidersEnabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    },
+                )
+                Slider(
+                    value = minSilenceMs.toFloat(),
+                    onValueChange = { minSilenceMs = ((it / 50f).roundToInt() * 50).coerceIn(200, 1_500) },
+                    valueRange = 200f..1_500f,
+                    enabled = slidersEnabled,
+                )
+
+                Text(
+                    text = stringResource(R.string.player_resegment_pre_padding, prePaddingMs),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (slidersEnabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    },
+                )
+                Slider(
+                    value = prePaddingMs.toFloat(),
+                    onValueChange = { prePaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
+                    valueRange = 0f..500f,
+                    enabled = slidersEnabled,
+                )
+
+                Text(
+                    text = stringResource(R.string.player_resegment_post_padding, postPaddingMs),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (slidersEnabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    },
+                )
+                Slider(
+                    value = postPaddingMs.toFloat(),
+                    onValueChange = { postPaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
+                    valueRange = 0f..500f,
+                    enabled = slidersEnabled,
+                )
+
+                Text(
+                    text = stringResource(
+                        R.string.player_resegment_threshold,
+                        String.format(Locale.ROOT, "%.2f", thresholdRatio),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (slidersEnabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    },
+                )
+                Slider(
+                    value = thresholdRatio,
+                    onValueChange = { thresholdRatio = ((it * 20f).roundToInt() / 20f).coerceIn(0.05f, 0.80f) },
+                    valueRange = 0.05f..0.80f,
+                    enabled = slidersEnabled,
+                )
+
+                Button(
+                    onClick = {
+                        val updatedMergeGap = max(initialParams.mergeGapMs, minSilenceMs)
+                        onApply(
+                            initialParams.copy(
+                                minSilenceMs = minSilenceMs,
+                                mergeGapMs = updatedMergeGap,
+                                prePaddingMs = prePaddingMs,
+                                postPaddingMs = postPaddingMs,
+                                thresholdRatio = thresholdRatio,
+                            ),
+                        )
+                    },
+                    enabled = slidersEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(text = stringResource(R.string.player_resegment_apply))
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                FilledTonalButton(
+                    onClick = onRunLanguageDetectionOnly,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Translate,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_segmentation_language_detection_only))
+                }
+            }
         }
     }
 

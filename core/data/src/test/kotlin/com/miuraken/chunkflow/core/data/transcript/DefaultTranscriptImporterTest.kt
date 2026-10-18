@@ -757,6 +757,8 @@ class DefaultTranscriptImporterTest {
             states.update { it + (mediaId to existing.copy(chunkSource = chunkSource, updatedAt = updatedAt)) }
             return 1
         }
+
+        override suspend fun getMaxQueuedAt(): Long = states.value.values.maxOfOrNull { it.queuedAt } ?: 0L
     }
 
     class TestTranscriptContentProvider : ContentProvider() {

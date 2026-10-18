@@ -1972,6 +1972,8 @@ class DefaultLibraryRepositoryTest {
             return 1
         }
 
+        override suspend fun getMaxQueuedAt(): Long = states.value.values.maxOfOrNull { it.queuedAt } ?: 0L
+
         fun deleteByMediaId(mediaId: String) {
             states.update { it - mediaId }
         }

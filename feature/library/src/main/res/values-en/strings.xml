@@ -39,6 +39,8 @@
     <string name="library_selection_count">%1$d selected</string>
     <string name="library_selection_clear">Clear selection</string>
     <string name="library_selection_delete_action">Delete (%1$d)</string>
+    <string name="library_selection_delete_badge">Delete</string>
+    <string name="library_selection_favorite_badge">Favorite</string>
     <string name="library_delete_content_description">Delete %1$s</string>
     <string name="library_delete_dialog_title">Delete material?</string>
     <string name="library_delete_dialog_message">“%1$s” will be removed from your library (external transcript files are kept).</string>

@@ -111,6 +111,9 @@ enum class LibraryTranscriptStatus {
  * @property isAudioMissing バックアップ復元後などで音声ファイルが未取り込みかどうか（F2.4）。
  * @property isListened ファイルの 95%〜100% の位置を 1 秒以上聴取した完了フラグ。
  * @property lastAccessedAtEpochMs 最終アクセス日時（ミリ秒、未アクセスの場合は `null`）。
+ * @property isFavorite お気に入り（「お気に入り」プレイリスト）に登録されているかどうか。
+ * @property queuedAtEpochMs 「次に再生するキュー」に追加された時刻（ミリ秒、未登録なら `0L`）。
+ * @property accessCount 教材を開いた累計アクセス回数（0 以上）。
  */
 data class LibraryItemUiModel(
     val item: AudioItem,
@@ -131,6 +134,9 @@ data class LibraryItemUiModel(
     val isAudioMissing: Boolean = false,
     val isListened: Boolean = false,
     val lastAccessedAtEpochMs: Long? = null,
+    val isFavorite: Boolean = false,
+    val queuedAtEpochMs: Long = 0L,
+    val accessCount: Int = 0,
 ) {
     /** 前回の再生位置（ミリ秒）。 */
     val lastPositionMs: Long
@@ -460,8 +466,16 @@ data class LibraryUiState(
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
     val selectedPlaylistCategory: LibraryPlaylistCategory? = null,
-    val favoriteItemIds: Set<MediaId> = emptySet(),
-    val queuedItemIds: List<MediaId> = emptyList(),
+    val favoriteItemIds: Set<MediaId> = items
+        .filter { it.isFavorite }
+        .mapTo(linkedSetOf()) { it.item.id },
+    val queuedItemIds: List<MediaId> = items
+        .filter { it.queuedAtEpochMs > 0L }
+        .sortedWith(
+            compareBy<LibraryItemUiModel> { it.queuedAtEpochMs }
+                .thenBy { it.item.id.value },
+        )
+        .map { it.item.id },
 ) {
     companion object {
         /** 最近開いたファイル欄に表示する最大件数。 */
@@ -526,13 +540,15 @@ data class LibraryUiState(
         LibraryPlaylistCategory.FREQUENTLY_ACCESSED ->
             items
                 .filter {
-                    it.isListened ||
+                    it.accessCount > 0 ||
+                        it.isListened ||
                         it.maxPositionMs > 0L ||
                         it.positionMs > 0L ||
                         it.lastAccessedAtEpochMs != null
                 }
                 .sortedWith(
-                    compareByDescending<LibraryItemUiModel> { it.isListened }
+                    compareByDescending<LibraryItemUiModel> { it.accessCount }
+                        .thenByDescending { it.isListened }
                         .thenByDescending { it.maxProgressFraction }
                         .thenByDescending { it.lastAccessedAtEpochMs ?: 0L }
                         .thenBy { it.item.id.value },
@@ -540,7 +556,7 @@ data class LibraryUiState(
 
         LibraryPlaylistCategory.FAVORITES ->
             items
-                .filter { it.item.id in favoriteItemIds }
+                .filter { it.isFavorite || it.item.id in favoriteItemIds }
                 .sortedWith { a, b ->
                     val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                     if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
@@ -584,6 +600,26 @@ data class LibraryUiState(
             path == normalized || (path != null && path.startsWith(prefix))
         }
     }
+
+    /**
+     * 複数選択モードで対象となる全教材 ID の一覧（選択中のディレクトリ配下の教材と選択中の教材、重複なし）。
+     */
+    val selectedTargetItemIds: List<MediaId>
+        get() {
+            val fromDirs = selectedDirectoryPaths.flatMap { path ->
+                itemsInDirectoryTree(path).map { it.item.id }
+            }
+            return (fromDirs + selectedItemIds).distinct()
+        }
+
+    /**
+     * 複数選択されている対象教材が 1 件以上あり、そのすべてがお気に入りに登録済みかどうか。
+     */
+    val areAllSelectedFavorite: Boolean
+        get() {
+            val targetIds = selectedTargetItemIds
+            return targetIds.isNotEmpty() && targetIds.all { it in favoriteItemIds }
+        }
 
     /**
      * 現在の削除確認ダイアログで削除対象となる全 [AudioItem] の一覧（重複なし）。
@@ -909,6 +945,9 @@ sealed interface LibraryEvent {
     /** 教材 [id] のお気に入り登録状態を切り替える。 */
     data class ToggleFavorite(val id: MediaId) : LibraryEvent
 
+    /** 複数選択されている教材のお気に入り状態を一括で切り替える（すべてお気に入りなら解除、それ以外はすべて追加）。 */
+    data object ToggleFavoriteSelected : LibraryEvent
+
     /** 教材 [id] の「次に再生するキュー」への登録状態を切り替える。 */
     data class ToggleQueueItem(val id: MediaId) : LibraryEvent
 }
@@ -954,8 +993,6 @@ private data class NavigationAndSelectionSnapshot(
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
     val selectedPlaylistCategory: LibraryPlaylistCategory? = null,
-    val favoriteItemIds: Set<MediaId> = emptySet(),
-    val queuedItemIds: List<MediaId> = emptyList(),
 )
 
 private object EmptyAnalysisRepository : AnalysisRepository {
@@ -1020,8 +1057,6 @@ class LibraryViewModel @Inject constructor(
     private val fileSearchQuery = MutableStateFlow("")
     private val fileTargetLanguageFilter = MutableStateFlow<LanguageTag?>(null)
     private val selectedPlaylistCategory = MutableStateFlow<LibraryPlaylistCategory?>(null)
-    private val favoriteItemIds = MutableStateFlow<Set<MediaId>>(emptySet())
-    private val queuedItemIds = MutableStateFlow<List<MediaId>>(emptyList())
     private var defaultLanguagePair: LanguagePair = LanguagePair(
         target = LanguageTag("en"),
         base = LanguageTag("ja"),
@@ -1173,20 +1208,12 @@ class LibraryViewModel @Inject constructor(
                 selectedPlaylistCategory = playlistCategory,
             )
         },
-        combine(
-            favoriteItemIds,
-            queuedItemIds,
-        ) { favorites, queue ->
-            favorites to queue
-        },
-    ) { baseNav, tabAndFilter, (favorites, queue) ->
+    ) { baseNav, tabAndFilter ->
         baseNav.copy(
             selectedTab = tabAndFilter.selectedTab,
             fileSearchQuery = tabAndFilter.fileSearchQuery,
             fileTargetLanguageFilter = tabAndFilter.fileTargetLanguageFilter,
             selectedPlaylistCategory = tabAndFilter.selectedPlaylistCategory,
-            favoriteItemIds = favorites,
-            queuedItemIds = queue,
         )
     }
 
@@ -1396,14 +1423,57 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.ToggleFavorite -> {
-                favoriteItemIds.update { current ->
-                    if (event.id in current) current - event.id else current + event.id
+                viewModelScope.launch {
+                    libraryRepository.toggleFavorite(event.id)
+                }
+            }
+
+            LibraryEvent.ToggleFavoriteSelected -> {
+                val stateSnapshot = uiState.value
+                val dirSnapshot = selectedDirectoryPaths.value
+                val itemSnapshot = selectedItemIds.value
+                if (dirSnapshot.isNotEmpty() || itemSnapshot.isNotEmpty()) {
+                    viewModelScope.launch {
+                        val targetIds = stateSnapshot.selectedTargetItemIds.ifEmpty {
+                            val dirItemIds = if (dirSnapshot.isNotEmpty()) {
+                                val allItems = libraryRepository.observeItems().firstOrNull().orEmpty()
+                                allItems.filter { item ->
+                                    val c = item.course?.trim('/')?.takeIf { it.isNotBlank() }
+                                        ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+                                    dirSnapshot.any { dir -> c == dir || c.startsWith("$dir/") }
+                                }.map { it.id }
+                            } else {
+                                emptyList()
+                            }
+                            (dirItemIds + itemSnapshot).distinct()
+                        }
+                        if (targetIds.isEmpty()) return@launch
+                        val latestStates = libraryRepository.observeItemStates().firstOrNull().orEmpty()
+                        val currentFavoriteIds = latestStates
+                            .filterValues { it.isFavorite }
+                            .keys
+                        val allFavorite = targetIds.all { it in currentFavoriteIds }
+                        val idsToToggle = if (allFavorite) {
+                            targetIds.filter { it in currentFavoriteIds }
+                        } else {
+                            targetIds.filterNot { it in currentFavoriteIds }
+                        }
+                        for (id in idsToToggle) {
+                            libraryRepository.toggleFavorite(id)
+                        }
+                    }
                 }
             }
 
             is LibraryEvent.ToggleQueueItem -> {
-                queuedItemIds.update { current ->
-                    if (event.id in current) current - event.id else current + event.id
+                viewModelScope.launch {
+                    libraryRepository.toggleQueueItem(event.id)
+                }
+            }
+
+            is LibraryEvent.OpenItem -> {
+                viewModelScope.launch {
+                    libraryRepository.recordItemAccess(event.id)
                 }
             }
 
@@ -1635,7 +1705,6 @@ class LibraryViewModel @Inject constructor(
             LibraryEvent.RequestImportTranscript,
             is LibraryEvent.RequestImportTranscriptForItem,
             LibraryEvent.RequestSelectDriveSyncFolder,
-            is LibraryEvent.OpenItem,
             LibraryEvent.OpenSettings,
             -> Unit
         }
@@ -1882,6 +1951,9 @@ class LibraryViewModel @Inject constructor(
                 isAudioMissing = audioItem.id in missingAudioIds,
                 isListened = state?.isListened ?: false,
                 lastAccessedAtEpochMs = state?.updatedAtEpochMs?.takeIf { it > 0L },
+                isFavorite = state?.isFavorite ?: false,
+                queuedAtEpochMs = state?.queuedAtEpochMs ?: 0L,
+                accessCount = state?.accessCount ?: 0,
             )
         }
         val activeMediaId = playbackStatus.mediaId
@@ -1923,8 +1995,16 @@ class LibraryViewModel @Inject constructor(
         }
         val validItemIds = items.mapTo(mutableSetOf()) { it.id }
         val filteredSelectedItemIds = navAndSelection.selectedItemIds.intersect(validItemIds)
-        val filteredFavoriteIds = navAndSelection.favoriteItemIds.intersect(validItemIds)
-        val filteredQueuedIds = navAndSelection.queuedItemIds.filter { it in validItemIds }
+        val favoriteIds = uiItems
+            .filter { it.isFavorite }
+            .mapTo(linkedSetOf()) { it.item.id }
+        val queuedIds = uiItems
+            .filter { it.queuedAtEpochMs > 0L }
+            .sortedWith(
+                compareBy<LibraryItemUiModel> { it.queuedAtEpochMs }
+                    .thenBy { it.item.id.value },
+            )
+            .map { it.item.id }
 
         return LibraryUiState(
             items = uiItems,
@@ -1950,8 +2030,8 @@ class LibraryViewModel @Inject constructor(
             fileSearchQuery = navAndSelection.fileSearchQuery,
             fileTargetLanguageFilter = navAndSelection.fileTargetLanguageFilter,
             selectedPlaylistCategory = navAndSelection.selectedPlaylistCategory,
-            favoriteItemIds = filteredFavoriteIds,
-            queuedItemIds = filteredQueuedIds,
+            favoriteItemIds = favoriteIds,
+            queuedItemIds = queuedIds,
         )
     }
 }

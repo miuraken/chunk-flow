@@ -113,4 +113,111 @@ interface ItemStateDao {
         upsert(updated)
         return true
     }
+
+    /**
+     * 教材のお気に入り登録フラグ（`is_favorite`）を切り替える。
+     *
+     * まだ `item_state` の行がない場合は既定値で行を作成し `isFavorite = true` にする。教材が削除済みなら何もしない。
+     *
+     * @return 書き込んだら true、教材がなければ false。
+     */
+    @Transaction
+    suspend fun toggleFavorite(mediaId: String): Boolean {
+        val existing = getByMediaId(mediaId)
+        if (existing == null && !mediaItemExists(mediaId)) return false
+        val nextFavorite = !(existing?.isFavorite ?: false)
+        val updated = existing?.copy(
+            isFavorite = nextFavorite,
+        ) ?: ItemStateEntity(
+            mediaId = mediaId,
+            isFavorite = nextFavorite,
+        )
+        upsert(updated)
+        return true
+    }
+
+    /** 現在 `item_state` に登録されている最大の `queued_at` を返す。 */
+    @Query("SELECT COALESCE(MAX(queued_at), 0) FROM item_state")
+    suspend fun getMaxQueuedAt(): Long
+
+    /**
+     * 教材の「次に再生するキュー」への登録状態（`queued_at`）を切り替える。
+     *
+     * 未登録（`queued_at == 0`）なら [queuedAt]（既存の最大値 + 1 以上）を設定し、登録済みなら `0L` に戻す。
+     * まだ `item_state` の行がない場合は既定値で行を作成する。教材が削除済みなら何もしない。
+     *
+     * @return 書き込んだら true、教材がなければ false。
+     */
+    @Transaction
+    suspend fun toggleQueue(mediaId: String, queuedAt: Long): Boolean {
+        val existing = getByMediaId(mediaId)
+        if (existing == null && !mediaItemExists(mediaId)) return false
+        val nextQueuedAt = if ((existing?.queuedAt ?: 0L) > 0L) {
+            0L
+        } else {
+            maxOf(queuedAt.coerceAtLeast(1L), getMaxQueuedAt() + 1L)
+        }
+        val updated = existing?.copy(
+            queuedAt = nextQueuedAt,
+        ) ?: ItemStateEntity(
+            mediaId = mediaId,
+            queuedAt = nextQueuedAt,
+        )
+        upsert(updated)
+        return true
+    }
+
+    /**
+     * 教材を開いたときのアクセス回数（`access_count`）を 1 増やし、最終アクセス日時（`updated_at`）を更新する。
+     *
+     * まだ `item_state` の行がない場合は既定値で行を作成する。教材が削除済みなら何もしない。
+     *
+     * @return 書き込んだら true、教材がなければ false。
+     */
+    @Transaction
+    suspend fun recordAccess(mediaId: String, accessedAt: Long): Boolean {
+        val existing = getByMediaId(mediaId)
+        if (existing == null && !mediaItemExists(mediaId)) return false
+        val nextCount = (existing?.accessCount ?: 0).coerceAtLeast(0) + 1
+        val nextUpdatedAt = maxOf(existing?.updatedAt ?: 0L, accessedAt)
+        val updated = existing?.copy(
+            accessCount = nextCount,
+            updatedAt = nextUpdatedAt,
+        ) ?: ItemStateEntity(
+            mediaId = mediaId,
+            accessCount = nextCount,
+            updatedAt = nextUpdatedAt,
+        )
+        upsert(updated)
+        return true
+    }
+
+    /**
+     * 教材ごとの自動チャンク分割パラメータの上書き（`custom_segmentation`）を更新する。
+     *
+     * `null` を指定すると「全体設定に従う」に戻る。
+     * まだ `item_state` の行がない場合は既定値で行を作成する。教材が削除済みなら何もしない。
+     *
+     * @return 書き込んだら true、教材がなければ false。
+     */
+    @Transaction
+    suspend fun updateCustomSegmentation(
+        mediaId: String,
+        customSegmentation: String?,
+        updatedAt: Long,
+    ): Boolean {
+        val existing = getByMediaId(mediaId)
+        if (existing == null && !mediaItemExists(mediaId)) return false
+        val nextUpdatedAt = maxOf(existing?.updatedAt ?: 0L, updatedAt)
+        val updated = existing?.copy(
+            customSegmentation = customSegmentation,
+            updatedAt = nextUpdatedAt,
+        ) ?: ItemStateEntity(
+            mediaId = mediaId,
+            customSegmentation = customSegmentation,
+            updatedAt = nextUpdatedAt,
+        )
+        upsert(updated)
+        return true
+    }
 }

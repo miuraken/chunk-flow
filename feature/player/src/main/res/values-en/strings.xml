@@ -232,4 +232,16 @@
     <string name="player_transcription_progress_background_checkbox">Transcribe in background</string>
     <string name="player_background_speech_recognizer_warning_title">Background Transcription Limitation</string>
     <string name="player_background_speech_recognizer_warning_close">Close</string>
+    <string name="player_file_settings_title">Per-File Settings</string>
+    <string name="player_file_settings_tab_language">Languages</string>
+    <string name="player_file_settings_tab_transcript_file">Transcript File</string>
+    <string name="player_file_settings_tab_segmentation">Chunk Segmentation</string>
+    <string name="player_settings_stt_engine_default_with_name">Follow language setting (%1$s)</string>
+    <string name="player_file_settings_section_export">Export</string>
+    <string name="player_file_settings_section_import">Import</string>
+    <string name="player_file_settings_section_reset">Reset</string>
+    <string name="player_file_settings_section_log">Logs</string>
+    <string name="player_segmentation_use_global">Follow global settings</string>
+    <string name="player_segmentation_language_detection_only">Detect languages only</string>
+    <string name="player_segmentation_language_detection_started">Started language detection for undetected chunks (continues in background)</string>
 </resources>

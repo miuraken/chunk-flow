@@ -15,6 +15,10 @@ package com.miuraken.chunkflow.core.model
  * @property languageFilter 言語フィルタ。
  * @property updatedAtEpochMs 更新時刻（UNIX エポックからのミリ秒）。
  * @property isListened ファイルの 95%〜100% の位置を 1 秒以上再生したかどうか（聴取完了フラグ）。
+ * @property isFavorite お気に入り（「お気に入り」プレイリスト）に登録されているかどうか。
+ * @property queuedAtEpochMs 「次に再生するキュー」に追加された時刻（UNIX エポックからのミリ秒。未登録なら `0L`）。
+ * @property accessCount 教材を開いた累計アクセス回数（0 以上）。
+ * @property customSegmentationParams 教材ごとの自動チャンク分割パラメータの上書き（`null` のときは「全体設定に従う」）。
  */
 data class ItemState(
     val mediaId: MediaId,
@@ -27,11 +31,17 @@ data class ItemState(
     val updatedAtEpochMs: Long = 0L,
     val isListened: Boolean = false,
     val maxPositionMs: Long = positionMs,
+    val isFavorite: Boolean = false,
+    val queuedAtEpochMs: Long = 0L,
+    val accessCount: Int = 0,
+    val customSegmentationParams: SegmentationParams? = null,
 ) {
     init {
         require(positionMs >= 0L) { "positionMs must be >= 0: $positionMs" }
         require(maxPositionMs >= 0L) { "maxPositionMs must be >= 0: $maxPositionMs" }
         require(speed in MIN_SPEED..MAX_SPEED) { "speed must be in $MIN_SPEED..$MAX_SPEED: $speed" }
+        require(queuedAtEpochMs >= 0L) { "queuedAtEpochMs must be >= 0: $queuedAtEpochMs" }
+        require(accessCount >= 0) { "accessCount must be >= 0: $accessCount" }
     }
 
     companion object {

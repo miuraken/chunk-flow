@@ -782,44 +782,49 @@ object ChunkFlowIcons {
         }
     }
 
-    /** お気に入り（ハート塗りつぶし）アイコン。 */
+    /** お気に入り（星塗りつぶし）アイコン。 */
     val Favorite: ImageVector by lazy {
         materialIcon(name = "Favorite") {
-            moveTo(12f, 21.35f)
-            lineToRelative(-1.45f, -1.32f)
-            curveTo(5.4f, 15.36f, 2f, 12.28f, 2f, 8.5f)
-            curveTo(2f, 5.42f, 4.42f, 3f, 7.5f, 3f)
-            curveToRelative(1.74f, 0f, 3.41f, 0.81f, 4.5f, 2.09f)
-            curveTo(13.09f, 3.81f, 14.76f, 3f, 16.5f, 3f)
-            curveTo(19.58f, 3f, 22f, 5.42f, 22f, 8.5f)
-            curveToRelative(0f, 3.78f, -3.4f, 6.86f, -8.55f, 11.54f)
-            lineTo(12f, 21.35f)
+            moveTo(12f, 17.27f)
+            lineTo(18.18f, 21f)
+            lineToRelative(-1.64f, -7.03f)
+            lineTo(22f, 9.24f)
+            lineToRelative(-7.19f, -0.61f)
+            lineTo(12f, 2f)
+            lineTo(9.19f, 8.63f)
+            lineTo(2f, 9.24f)
+            lineToRelative(5.46f, 4.73f)
+            lineTo(5.82f, 21f)
             close()
         }
     }
 
-    /** お気に入り未設定（ハート枠線）アイコン。 */
+    /** お気に入り未設定（星枠線）アイコン。 */
     val FavoriteBorder: ImageVector by lazy {
         materialIcon(name = "FavoriteBorder") {
-            moveTo(16.5f, 3f)
-            curveToRelative(-1.74f, 0f, -3.41f, 0.81f, -4.5f, 2.09f)
-            curveTo(10.91f, 3.81f, 9.24f, 3f, 7.5f, 3f)
-            curveTo(4.42f, 3f, 2f, 5.42f, 2f, 8.5f)
-            curveToRelative(0f, 3.78f, -3.4f, 6.86f, -8.55f, 11.54f)
-            lineTo(12f, 21.35f)
-            lineToRelative(-1.45f, -1.32f)
-            curveTo(5.4f, 15.36f, 2f, 12.28f, 2f, 8.5f)
+            moveTo(22f, 9.24f)
+            lineToRelative(-7.19f, -0.62f)
+            lineTo(12f, 2f)
+            lineTo(9.19f, 8.63f)
+            lineTo(2f, 9.24f)
+            lineToRelative(5.46f, 4.73f)
+            lineTo(5.82f, 21f)
+            lineTo(12f, 17.27f)
+            lineTo(18.18f, 21f)
+            lineToRelative(-1.63f, -7.03f)
+            lineTo(22f, 9.24f)
             close()
-            moveTo(12.1f, 18.55f)
-            lineToRelative(-0.1f, 0.1f)
-            lineToRelative(-0.1f, -0.1f)
-            curveTo(7.14f, 14.24f, 4f, 11.39f, 4f, 8.5f)
-            curveTo(4f, 6.5f, 5.5f, 5f, 7.5f, 5f)
-            curveToRelative(1.54f, 0f, 3.04f, 0.99f, 3.57f, 2.36f)
-            horizontalLineToRelative(1.87f)
-            curveTo(13.46f, 5.99f, 14.96f, 5f, 16.5f, 5f)
-            curveToRelative(2f, 0f, 3.5f, 1.5f, 3.5f, 3.5f)
-            curveToRelative(0f, 2.89f, -3.14f, 5.74f, -7.9f, 10.05f)
+            moveTo(12f, 15.4f)
+            lineToRelative(-3.76f, 2.27f)
+            lineToRelative(1f, -4.28f)
+            lineToRelative(-3.32f, -2.88f)
+            lineToRelative(4.38f, -0.38f)
+            lineTo(12f, 6.1f)
+            lineToRelative(1.71f, 4.04f)
+            lineToRelative(4.38f, 0.38f)
+            lineToRelative(-3.32f, 2.88f)
+            lineToRelative(1f, 4.28f)
+            lineTo(12f, 15.4f)
             close()
         }
     }

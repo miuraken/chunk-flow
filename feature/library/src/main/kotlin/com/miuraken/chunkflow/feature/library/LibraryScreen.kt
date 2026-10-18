@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -68,6 +69,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -109,6 +111,9 @@ import kotlin.math.roundToInt
 
 private val LAST_ACCESSED_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm", Locale.ROOT)
+
+/** お気に入り登録済み（⭐️）の塗りつぶし星アイコン色。 */
+private val FavoriteStarColor = Color(0xFFFFB300)
 
 /** この割合（%）を超えて聴いた教材を既習として、進捗バーと再生状況を緑系で表示する。 */
 private const val COMPLETED_PROGRESS_PERCENT_THRESHOLD = 95
@@ -265,7 +270,10 @@ fun LibraryRoute(
                     )
                 }
 
-                is LibraryEvent.OpenItem -> onOpenPlayer(event.id)
+                is LibraryEvent.OpenItem -> {
+                    viewModel.onEvent(event)
+                    onOpenPlayer(event.id)
+                }
 
                 LibraryEvent.OpenSettings -> onOpenSettings()
 
@@ -342,24 +350,58 @@ fun LibraryScreen(
                 },
                 actions = {
                     if (state.isSelectionMode) {
+                        val hasSelectedFiles = state.selectedItemIds.isNotEmpty() ||
+                            state.selectedTargetItemIds.isNotEmpty()
+                        if (hasSelectedFiles) {
+                            val allFavorite = state.areAllSelectedFavorite
+                            FilledTonalButton(
+                                onClick = { onEvent(LibraryEvent.ToggleFavoriteSelected) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = if (allFavorite) {
+                                        ChunkFlowIcons.Favorite
+                                    } else {
+                                        ChunkFlowIcons.FavoriteBorder
+                                    },
+                                    contentDescription = null,
+                                    tint = if (allFavorite) {
+                                        FavoriteStarColor
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
+                                    },
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = stringResource(R.string.library_selection_favorite_badge),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         FilledTonalButton(
                             onClick = { onEvent(LibraryEvent.RequestDeleteSelected) },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            ),
                         ) {
                             Icon(
                                 imageVector = ChunkFlowIcons.Delete,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp),
+                                modifier = Modifier.size(16.dp),
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = stringResource(
-                                    R.string.library_selection_delete_action,
-                                    state.selectedCount,
-                                ),
+                                text = stringResource(R.string.library_selection_delete_badge),
+                                style = MaterialTheme.typography.labelMedium,
                                 maxLines = 1,
                             )
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
                     } else {
                         IconButton(onClick = { onEvent(LibraryEvent.RescanLocalDirectories) }) {
                             Icon(
@@ -649,12 +691,11 @@ private fun LibraryFoldersTabContent(
                 folderPath = currentFolderPath,
                 itemCount = totalItemsInFolder,
                 isSelectionMode = state.isSelectionMode,
+                isSelected = currentFolderPath in state.selectedDirectoryPaths,
                 onNavigateUp = { onEvent(LibraryEvent.NavigateUp) },
+                onLongClick = { onEvent(LibraryEvent.ToggleDirectorySelection(currentFolderPath)) },
                 onEditDirectoryMetadata = {
                     onEvent(LibraryEvent.RequestEditDirectoryMetadata(currentFolderPath))
-                },
-                onDeleteDirectory = {
-                    onEvent(LibraryEvent.RequestDeleteDirectory(currentFolderPath))
                 },
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
             )
@@ -689,11 +730,6 @@ private fun LibraryFoldersTabContent(
                     },
                     onEditDirectoryMetadata = {
                         onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
-                    },
-                    onDeleteDirectory = {
-                        if (dirPath.isNotEmpty()) {
-                            onEvent(LibraryEvent.RequestDeleteDirectory(dirPath))
-                        }
                     },
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
@@ -738,9 +774,6 @@ private fun LibraryFoldersTabContent(
                             onEditMetadataClick = {
                                 onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
                             },
-                            onDeleteClick = {
-                                onEvent(LibraryEvent.RequestDelete(itemModel.item))
-                            },
                             onDownloadDriveAudioClick = {
                                 onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
                             },
@@ -777,26 +810,35 @@ private fun LibraryFoldersTabContent(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibraryCurrentFolderHeader(
     folderPath: String,
     itemCount: Int,
     isSelectionMode: Boolean,
+    isSelected: Boolean,
     onNavigateUp: () -> Unit,
+    onLongClick: () -> Unit,
     onEditDirectoryMetadata: () -> Unit,
-    onDeleteDirectory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val hierarchicalTitle = folderPath.replace("/", " / ")
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
         shape = RoundedCornerShape(12.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onNavigateUp)
+                .combinedClickable(
+                    onClick = onNavigateUp,
+                    onLongClick = onLongClick,
+                )
                 .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -837,20 +879,6 @@ private fun LibraryCurrentFolderHeader(
                     Icon(
                         imageVector = ChunkFlowIcons.Edit,
                         contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                IconButton(
-                    onClick = onDeleteDirectory,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Delete,
-                        contentDescription = stringResource(
-                            R.string.library_delete_content_description,
-                            hierarchicalTitle,
-                        ),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )
@@ -1076,7 +1104,11 @@ private fun LibraryPlaylistsTabContent(
                     Icon(
                         imageVector = playlistCategoryIcon(activeCategory),
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = if (activeCategory == LibraryPlaylistCategory.FAVORITES) {
+                            FavoriteStarColor
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
                         modifier = Modifier.size(22.dp),
                     )
                     Spacer(modifier = Modifier.width(10.dp))
@@ -1206,7 +1238,11 @@ private fun LibraryPlaylistCategoryRow(
                 Icon(
                     imageVector = playlistCategoryIcon(category),
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = if (category == LibraryPlaylistCategory.FAVORITES) {
+                        FavoriteStarColor
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
                     modifier = Modifier.size(26.dp),
                 )
             }
@@ -1260,7 +1296,6 @@ private fun LibraryDirectoryRow(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onEditDirectoryMetadata: () -> Unit,
-    onDeleteDirectory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
@@ -1327,20 +1362,6 @@ private fun LibraryDirectoryRow(
                     Icon(
                         imageVector = ChunkFlowIcons.Edit,
                         contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                IconButton(
-                    onClick = onDeleteDirectory,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Delete,
-                        contentDescription = stringResource(
-                            R.string.library_delete_content_description,
-                            directoryTitle,
-                        ),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )
@@ -1705,8 +1726,8 @@ private fun LibraryItemRow(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onEditMetadataClick: () -> Unit,
-    onDeleteClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onDeleteClick: () -> Unit = {},
     onDownloadDriveAudioClick: () -> Unit = {},
     isFavorite: Boolean = false,
     onToggleFavoriteClick: (() -> Unit)? = null,
@@ -1716,7 +1737,6 @@ private fun LibraryItemRow(
     val item = itemModel.item
     val formattedDuration = formatDurationMs(item.durationMs)
     val editCd = stringResource(R.string.library_edit_metadata_cd)
-    val deleteCd = stringResource(R.string.library_delete_content_description, item.title)
     val favoriteCd = stringResource(
         if (isFavorite) R.string.library_favorite_remove_cd else R.string.library_favorite_add_cd,
     )
@@ -1757,28 +1777,28 @@ private fun LibraryItemRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if (!isSelectionMode) {
-                if (onToggleFavoriteClick != null) {
-                    IconButton(
-                        onClick = onToggleFavoriteClick,
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(
-                            imageVector = if (isFavorite) {
-                                ChunkFlowIcons.Favorite
-                            } else {
-                                ChunkFlowIcons.FavoriteBorder
-                            },
-                            contentDescription = favoriteCd,
-                            tint = if (isFavorite) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
+            if (onToggleFavoriteClick != null) {
+                IconButton(
+                    onClick = onToggleFavoriteClick,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isFavorite) {
+                            ChunkFlowIcons.Favorite
+                        } else {
+                            ChunkFlowIcons.FavoriteBorder
+                        },
+                        contentDescription = favoriteCd,
+                        tint = if (isFavorite) {
+                            FavoriteStarColor
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                        },
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
+            }
+            if (!isSelectionMode) {
                 if (onToggleQueueClick != null) {
                     IconButton(
                         onClick = onToggleQueueClick,
@@ -1803,17 +1823,6 @@ private fun LibraryItemRow(
                     Icon(
                         imageVector = ChunkFlowIcons.Edit,
                         contentDescription = editCd,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                IconButton(
-                    onClick = onDeleteClick,
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Delete,
-                        contentDescription = deleteCd,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )

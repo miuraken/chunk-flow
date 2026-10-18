@@ -35,7 +35,10 @@ import com.miuraken.chunkflow.core.designsystem.component.normalizeSelectableLan
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.SttEngine
 import java.util.Locale
 
@@ -54,6 +57,38 @@ internal fun buildItemLanguageOptions(
     noneLabel = noneLabel,
     enabledLanguages = enabledLanguages,
 )
+
+/**
+ * 言語設定（[sttEngineByLanguage] および [languageModelInfos]）で規定されている当該言語の既定文字起こしエンジンを返す。
+ */
+internal fun resolveConfiguredDefaultEngineForLanguage(
+    rawCode: String,
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
+): SttEngine {
+    val normalized = normalizeItemLanguageCode(rawCode).ifBlank { return SttEngine.ML_KIT }
+    val langTag = LanguageTag(normalized)
+    val settingsNormalizedTag = LanguageSettings.normalize(langTag)
+    val modelLangTag = LanguageTag(
+        com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(langTag.value),
+    )
+
+    val explicitPreferred = sttEngineByLanguage[langTag]
+        ?: sttEngineByLanguage[settingsNormalizedTag]
+        ?: sttEngineByLanguage[modelLangTag]
+    if (explicitPreferred != null) {
+        return explicitPreferred
+    }
+
+    val rawInfo = languageModelInfos[langTag]
+        ?: languageModelInfos[settingsNormalizedTag]
+        ?: languageModelInfos[modelLangTag]
+        ?: OnDeviceLanguageModelInfo(language = langTag)
+    val enriched = DetailedTranscriptionDialogState.enrichWithCatalog(rawInfo, langTag)
+    return enriched.effectiveEngine(override = null, userPreferred = null)
+        ?: SttEngine.AUTO_ORDER.firstOrNull { enriched.statusOf(it) != OnDeviceLanguageModelStatus.UNSUPPORTED }
+        ?: SttEngine.ML_KIT
+}
 
 /**
  * 学習言語を [targetCode] に変えたあとの言語ペアを返す。変更がない、または無効な場合は `null`。
@@ -109,6 +144,9 @@ internal fun ItemLanguageSettingsSection(
     modifier: Modifier = Modifier,
     enabledLanguages: List<LanguageTag> = emptyList(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
+    showSectionTitle: Boolean = true,
 ) {
     var showLanguageSettingsModal by rememberSaveable { mutableStateOf(false) }
     val langPalette = chunkFlowLanguagePalette()
@@ -125,16 +163,32 @@ internal fun ItemLanguageSettingsSection(
             enabledLanguages = enabledLanguages,
         )
     }
+    val targetDefaultEngine = remember(targetCode, sttEngineByLanguage, languageModelInfos) {
+        resolveConfiguredDefaultEngineForLanguage(
+            rawCode = targetCode,
+            sttEngineByLanguage = sttEngineByLanguage,
+            languageModelInfos = languageModelInfos,
+        )
+    }
+    val baseDefaultEngine = remember(baseCode, sttEngineByLanguage, languageModelInfos) {
+        resolveConfiguredDefaultEngineForLanguage(
+            rawCode = baseCode,
+            sttEngineByLanguage = sttEngineByLanguage,
+            languageModelInfos = languageModelInfos,
+        )
+    }
 
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(
-            text = stringResource(R.string.player_settings_language_section_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
+        if (showSectionTitle) {
+            Text(
+                text = stringResource(R.string.player_settings_language_section_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
         ItemLanguageDropdown(
             label = stringResource(R.string.player_settings_target_lang_label),
             selectedCode = targetCode,
@@ -147,6 +201,7 @@ internal fun ItemLanguageSettingsSection(
         SttEngineDropdown(
             label = stringResource(R.string.player_settings_target_stt_engine_label),
             selectedEngine = itemSttOverride.targetEngine,
+            defaultEngine = targetDefaultEngine,
             containerColor = langPalette.targetRowBackground,
             accentColor = langPalette.onTargetBadgeContainer,
             onSelect = onChangeTargetEngine,
@@ -163,6 +218,7 @@ internal fun ItemLanguageSettingsSection(
         SttEngineDropdown(
             label = stringResource(R.string.player_settings_base_stt_engine_label),
             selectedEngine = itemSttOverride.baseEngine,
+            defaultEngine = baseDefaultEngine,
             containerColor = langPalette.baseRowBackground,
             accentColor = langPalette.onBaseBadgeContainer,
             onSelect = onChangeBaseEngine,
@@ -182,19 +238,31 @@ internal fun ItemLanguageSettingsSection(
     }
 }
 
+@Composable
+private fun sttEngineDisplayName(engine: SttEngine): String = when (engine) {
+    SttEngine.ML_KIT -> stringResource(R.string.player_settings_stt_engine_mlkit)
+    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.player_settings_stt_engine_speech_recognizer)
+    SttEngine.SHERPA_ONNX -> stringResource(R.string.player_settings_stt_engine_sherpa_onnx)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SttEngineDropdown(
     label: String,
     selectedEngine: SttEngine?,
+    defaultEngine: SttEngine,
     containerColor: Color,
     accentColor: Color,
     onSelect: (SttEngine?) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val defaultEngineLabel = stringResource(
+        R.string.player_settings_stt_engine_default_with_name,
+        sttEngineDisplayName(defaultEngine),
+    )
 
     val options = listOf(
-        null to stringResource(R.string.player_settings_stt_engine_default),
+        null to defaultEngineLabel,
         SttEngine.ML_KIT to stringResource(R.string.player_settings_stt_engine_mlkit),
         SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.player_settings_stt_engine_speech_recognizer),
         SttEngine.SHERPA_ONNX to stringResource(R.string.player_settings_stt_engine_sherpa_onnx),

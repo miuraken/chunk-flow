@@ -263,6 +263,17 @@ interface OnDeviceChunkTranscriber {
         highPriority = true,
     )
 
+    /**
+     * 音声ファイル [audioFile] の `[startMs, endMs]` 区間を切り出し、音声認識（文字起こし）は行わずに
+     * Whisper Tiny による言語判定（[LanguagePair.target] と [LanguagePair.base] の比較）のみを実行する。
+     */
+    suspend fun detectChunkLanguage(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair,
+    ): OnDeviceChunkTranscriptionResult? = null
+
     companion object {
         const val DEFAULT_SAMPLE_RATE_HZ: Int = 16_000
 
@@ -2219,6 +2230,91 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
             engineByLanguage = emptyMap(),
         )
+    }
+
+    override suspend fun detectChunkLanguage(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair,
+    ): OnDeviceChunkTranscriptionResult? {
+        if (startMs < 0L || endMs <= startMs || !audioFile.isFile) {
+            return null
+        }
+        val targetLang = languagePair.target
+        val baseLang = languagePair.base?.takeIf {
+            !it.value.equals(targetLang.value, ignoreCase = true)
+        }
+        if (baseLang == null) {
+            return OnDeviceChunkTranscriptionResult(
+                text = "",
+                language = targetLang,
+                confidence = 1.0f,
+                engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+            )
+        }
+        val startedAtEpochMs = System.currentTimeMillis()
+        try {
+            updateActiveStep(
+                step = TranscriptionStep.EXTRACTING_PCM,
+                detail = "${startMs}ms..${endMs}ms",
+                startedAtEpochMs = startedAtEpochMs,
+                highPriority = false,
+            )
+            val pcmBytes = try {
+                ChunkPcmExtractor.extractChunkPcm16LeBytes(
+                    decoder = audioStreamDecoder,
+                    audioFile = audioFile,
+                    startMs = startMs,
+                    endMs = endMs,
+                    sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                appendDiagnostic(
+                    stage = "LID_ONLY",
+                    message = "音声切り出しエラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
+                    isWarningOrError = true,
+                )
+                null
+            } ?: return null
+
+            updateActiveStep(
+                step = TranscriptionStep.DETECTING_LANGUAGE,
+                detail = "${targetLang.value} / ${baseLang.value}",
+                startedAtEpochMs = startedAtEpochMs,
+                highPriority = false,
+            )
+            val detector = languageDetector ?: return null
+            val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcmBytes)
+            val prediction = try {
+                detector.invoke(shorts, targetLang.value, baseLang.value)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                appendDiagnostic(
+                    stage = "LID_ONLY",
+                    message = "言語判定エラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
+                    isWarningOrError = true,
+                )
+                null
+            } ?: return null
+
+            val selectedLang = if (prediction.selectedTag.equals(baseLang.value, ignoreCase = true)) {
+                baseLang
+            } else {
+                targetLang
+            }
+            return OnDeviceChunkTranscriptionResult(
+                text = "",
+                language = selectedLang,
+                confidence = prediction.selectedProbability,
+                engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+            )
+        } finally {
+            clearActiveStepIfMatches(startedAtEpochMs)
+        }
     }
 
     override suspend fun transcribePcm16Le(

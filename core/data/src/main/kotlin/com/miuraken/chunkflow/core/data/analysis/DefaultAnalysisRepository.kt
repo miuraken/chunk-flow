@@ -622,7 +622,12 @@ class DefaultAnalysisRepository(
                     return
                 }
 
-                val params = runCatching {
+                val customParams = runCatching {
+                    itemStateDao.getByMediaId(mediaId.value)?.let {
+                        ItemStateEntity.decodeSegmentationParams(it.customSegmentation)
+                    }
+                }.getOrNull()
+                val params = customParams ?: runCatching {
                     userSettingsRepository?.settings?.first()?.defaultSegmentationParams
                 }.getOrNull() ?: SegmentationParams()
 
@@ -772,6 +777,116 @@ class DefaultAnalysisRepository(
                     updatedAtEpochMs = completedAt,
                 ),
             )
+        }
+    }
+
+    override suspend fun setCustomSegmentationParams(id: MediaId, params: SegmentationParams?) {
+        withContext(ioDispatcher) {
+            val encoded = ItemStateEntity.encodeSegmentationParams(params)
+            itemStateDao.updateCustomSegmentation(
+                mediaId = id.value,
+                customSegmentation = encoded,
+                updatedAt = clock(),
+            )
+        }
+    }
+
+    override suspend fun startLanguageDetectionOnly(id: MediaId) {
+        backgroundScope.launch(ioDispatcher) {
+            withTrackedTranscriptionJob(id) {
+                val mediaItem = mediaItemDao.getById(id.value) ?: return@withTrackedTranscriptionJob
+                val target = mediaItem.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                    ?: return@withTrackedTranscriptionJob
+                val base = mediaItem.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                val languagePair = LanguagePair(target = target, base = base)
+                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
+                if (audioFile == null || !audioFile.isFile) return@withTrackedTranscriptionJob
+
+                val chunkSource = itemStateDao.getByMediaId(id.value)?.chunkSource ?: ChunkOrigin.AUTO.name
+                val allChunks = chunkDao.observeByMediaId(id.value).first()
+                val activeChunks = allChunks.filter { it.origin == chunkSource }.ifEmpty { allChunks }
+                if (activeChunks.isEmpty()) return@withTrackedTranscriptionJob
+
+                val transcriptsByChunkId = transcriptDao.observeByMediaId(id.value).first().associateBy { it.chunkId }
+                val targetChunks = activeChunks.filter { chunk ->
+                    val existing = transcriptsByChunkId[chunk.id]
+                    existing == null || (
+                        existing.text.isBlank() &&
+                            (existing.language.isNullOrBlank() || existing.language.equals("und", ignoreCase = true)) &&
+                            !(existing.userEdited && existing.language == null)
+                        )
+                }
+                if (targetChunks.isEmpty()) return@withTrackedTranscriptionJob
+
+                val stateFlow = lookaheadStateFor(id)
+                val remainingIds = targetChunks.map { ChunkId(it.id) }.toMutableSet()
+                runCatching {
+                    onDeviceChunkTranscriber.recordExternalDiagnostic(
+                        stage = "LID_ONLY",
+                        message = "言語判定のみを開始 (${targetChunks.size} チャンク)",
+                    )
+                }
+
+                try {
+                    for (chunk in targetChunks) {
+                        val currentChunkId = ChunkId(chunk.id)
+                        remainingIds.remove(currentChunkId)
+                        // 直前に別の処理で既に言語または本文が入っていればスキップする
+                        val latestTranscript = transcriptDao.getByChunkId(chunk.id)
+                        val alreadyHasLanguage = latestTranscript != null && (
+                            latestTranscript.text.isNotBlank() ||
+                                (!latestTranscript.language.isNullOrBlank() && !latestTranscript.language.equals("und", ignoreCase = true))
+                            )
+                        if (alreadyHasLanguage) continue
+
+                        val startedAt = clock()
+                        stateFlow.update { current ->
+                            current.copy(
+                                engineAvailable = true,
+                                inFlightChunkId = currentChunkId,
+                                inFlightStep = TranscriptionStep.DETECTING_LANGUAGE,
+                                inFlightDetail = "言語判定のみを実行中",
+                                inFlightStartedAtEpochMs = startedAt,
+                                queuedChunkIds = current.queuedChunkIds + remainingIds,
+                            )
+                        }
+
+                        val detected = try {
+                            onDeviceChunkTranscriber.detectChunkLanguage(
+                                audioFile = audioFile,
+                                startMs = chunk.startMs,
+                                endMs = chunk.endMs,
+                                languagePair = languagePair,
+                            )
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (_: Exception) {
+                            null
+                        }
+
+                        if (detected != null && detected.language != null) {
+                            withContext(NonCancellable) {
+                                persistLanguageOnlyTranscript(chunk.id, detected)
+                            }
+                        }
+                    }
+                } finally {
+                    withContext(NonCancellable) {
+                        stateFlow.update { current ->
+                            val isLidStep = current.inFlightDetail == "言語判定のみを実行中"
+                            current.copy(
+                                inFlightChunkId = if (isLidStep) null else current.inFlightChunkId,
+                                inFlightStep = if (isLidStep) null else current.inFlightStep,
+                                inFlightDetail = if (isLidStep) null else current.inFlightDetail,
+                                inFlightStartedAtEpochMs = if (isLidStep) null else current.inFlightStartedAtEpochMs,
+                                queuedChunkIds = current.queuedChunkIds - remainingIds,
+                            )
+                        }
+                        updateQueuedChunkIdsState(id)
+                        persistTranscriptBackupFile(id)
+                    }
+                }
+            }
         }
     }
 

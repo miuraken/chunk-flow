@@ -1039,6 +1039,40 @@ class DefaultLibraryRepository(
         }
     }
 
+    override suspend fun toggleFavorite(id: MediaId) {
+        withContext(ioDispatcher) {
+            itemStateDao.toggleFavorite(id.value)
+        }
+    }
+
+    override suspend fun toggleQueueItem(
+        id: MediaId,
+        queuedAtEpochMs: Long,
+    ) {
+        withContext(ioDispatcher) {
+            itemStateDao.toggleQueue(
+                mediaId = id.value,
+                queuedAt = queuedAtEpochMs.coerceAtLeast(1L),
+            )
+        }
+    }
+
+    override suspend fun recordItemAccess(
+        id: MediaId,
+        accessedAtEpochMs: Long,
+    ) {
+        withContext(ioDispatcher) {
+            val saved = itemStateDao.recordAccess(
+                mediaId = id.value,
+                accessedAt = accessedAtEpochMs,
+            )
+            if (saved) {
+                val course = mediaItemDao.getById(id.value)?.course
+                scheduleCourseAnalysisUpToLimit(course)
+            }
+        }
+    }
+
     override suspend fun exportLocalTranscriptJson(id: MediaId): Boolean = withContext(ioDispatcher) {
         val entity = mediaItemDao.getById(id.value) ?: return@withContext false
         val jsonBytes = buildLocalTranscriptJsonBytes(entity) ?: return@withContext false

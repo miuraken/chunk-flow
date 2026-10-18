@@ -2101,4 +2101,90 @@ class PlayerViewModelTest {
         assertTrue(viewModel.uiState.value.lookaheadStatus.backgroundEnabled)
         assertNull(viewModel.uiState.value.backgroundSpeechRecognizerWarning)
     }
+
+    @Test
+    fun `ファイル個別設定_チャンク分割の全体設定追従チェック切替と個別パラメータ保存および言語判定のみ実行が動作する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. 初期状態では「全体設定に従う」(useGlobalSegmentationParams = true) になっている
+        assertTrue(viewModel.uiState.value.useGlobalSegmentationParams)
+
+        // 2. チェックを外して個別パラメータで再分割すると customSegmentationParams が保存される
+        viewModel.onEvent(PlayerEvent.SetUseGlobalSegmentation(false))
+        assertFalse(viewModel.uiState.value.useGlobalSegmentationParams)
+        val customParams = SegmentationParams(
+            minSilenceMs = 520,
+            minSpeechMs = 280,
+            prePaddingMs = 110,
+            postPaddingMs = 170,
+        )
+        viewModel.onEvent(PlayerEvent.Resegment(customParams))
+        assertEquals(customParams, viewModel.uiState.value.segmentationParams)
+        assertEquals(
+            customParams,
+            analysisRepo.customSegmentationParamsByMedia[item.id],
+        )
+
+        // 3. ItemState に保存された個別設定がある状態で ViewModel を再生成すると useGlobalSegmentationParams = false が復元される
+        val libraryRepoWithSavedCustomSeg = FakeLibraryRepository(
+            initialItems = listOf(item),
+            initialItemStates = mapOf(
+                item.id to com.miuraken.chunkflow.core.model.ItemState(
+                    mediaId = item.id,
+                    customSegmentationParams = customParams,
+                ),
+            ),
+        )
+        val recreatedViewModel = PlayerViewModel(
+            libraryRepoWithSavedCustomSeg,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            itemSttOverrideRepository,
+        )
+        backgroundScope.launch(testDispatcher) { recreatedViewModel.uiState.collect() }
+        recreatedViewModel.open(item.id)
+        assertFalse(recreatedViewModel.uiState.value.useGlobalSegmentationParams)
+        assertEquals(customParams, recreatedViewModel.uiState.value.segmentationParams)
+
+        // 4. 「全体設定に従う」を ON に戻すと customSegmentationParams がクリアされ全体設定値で再分割される
+        recreatedViewModel.onEvent(PlayerEvent.SetUseGlobalSegmentation(true))
+        assertTrue(recreatedViewModel.uiState.value.useGlobalSegmentationParams)
+        assertNull(analysisRepo.customSegmentationParamsByMedia[item.id])
+        assertEquals(SegmentationParams(), recreatedViewModel.uiState.value.segmentationParams)
+
+        // 5. 「言語判定のみを行う」ボタンを押すと startLanguageDetectionOnly が呼ばれる
+        recreatedViewModel.onEvent(PlayerEvent.RunLanguageDetectionOnly)
+        assertEquals(listOf(item.id), analysisRepo.languageDetectionOnlyRequests)
+    }
+
+    @Test
+    fun `ファイル個別言語設定_言語設定に従うの括弧内エンジン解決が全体の言語設定値を返す`() {
+        val sttEngineByLanguage = mapOf(
+            LanguageTag("ja") to com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
+            LanguageTag("ko") to com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
+            resolveConfiguredDefaultEngineForLanguage("ja-JP", sttEngineByLanguage),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            resolveConfiguredDefaultEngineForLanguage("ko", sttEngineByLanguage),
+        )
+        // 未設定の言語は対応エンジン（ML Kit 等）のデフォルトにフォールバックする
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
+            resolveConfiguredDefaultEngineForLanguage("en", sttEngineByLanguage),
+        )
+    }
 }

@@ -707,6 +707,7 @@ data class PlayerUiState(
     val chunkSource: ChunkOrigin = ChunkOrigin.AUTO,
     val availableChunkOrigins: Set<ChunkOrigin> = emptySet(),
     val segmentationParams: SegmentationParams = SegmentationParams(),
+    val useGlobalSegmentationParams: Boolean = true,
     val transcriptImportBanner: TranscriptImportBannerState? = null,
     val transcriptExportBanner: TranscriptExportBannerState? = null,
     val transcriptOffsetMs: Int = 0,
@@ -714,6 +715,8 @@ data class PlayerUiState(
     val localTranscriptExported: Boolean = false,
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
     val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+    val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
     val enabledLanguages: List<LanguageTag> = UserSettings.DEFAULT_ENABLED_LANGUAGES.toList(),
     val nextMediaId: MediaId? = null,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
@@ -978,6 +981,12 @@ sealed interface PlayerEvent {
     /** 分割パラメータを変更して再分割を実行する（F5.2）。 */
     data class Resegment(val params: SegmentationParams) : PlayerEvent
 
+    /** チャンク分割パラメータで「全体設定に従う」の ON / OFF を切り替える。 */
+    data class SetUseGlobalSegmentation(val useGlobal: Boolean) : PlayerEvent
+
+    /** 未判定チャンクに対して文字起こしを行わず言語判定のみをバックグラウンドで実行する。 */
+    data object RunLanguageDetectionOnly : PlayerEvent
+
     /** チャンク 1 件の言語ラベルを手動で更新する（F7.3）。 */
     data class UpdateChunkLanguage(val chunkId: ChunkId, val language: LanguageTag?) : PlayerEvent
 
@@ -1149,7 +1158,9 @@ private data class LocalUiSnapshot(
     val translatingChunkId: ChunkId? = null,
     val failedTranslationChunkIds: Set<ChunkId> = emptySet(),
     val isTranscriptionProgressDismissed: Boolean = false,
+    val useGlobalSegmentationOverride: Boolean? = null,
     val customSegmentationParams: SegmentationParams? = null,
+    val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
     val transcriptImportBanner: TranscriptImportBannerState? = null,
     val transcriptExportBanner: TranscriptExportBannerState? = null,
     val transcriptOffsetMs: Int = 0,
@@ -1847,9 +1858,52 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.Resegment -> {
                 val id = resolveActiveMediaId() ?: return
-                localUiState.update { it.copy(customSegmentationParams = event.params) }
+                localUiState.update {
+                    it.copy(
+                        useGlobalSegmentationOverride = false,
+                        customSegmentationParams = event.params,
+                    )
+                }
                 viewModelScope.launch {
+                    analysisRepository.setCustomSegmentationParams(id, event.params)
                     analysisRepository.resegment(id, event.params)
+                }
+            }
+
+            is PlayerEvent.SetUseGlobalSegmentation -> {
+                val id = resolveActiveMediaId() ?: return
+                if (event.useGlobal) {
+                    localUiState.update {
+                        it.copy(
+                            useGlobalSegmentationOverride = true,
+                            customSegmentationParams = null,
+                        )
+                    }
+                    viewModelScope.launch {
+                        val defaultParams = userSettingsRepository.settings.firstOrNull()?.defaultSegmentationParams
+                            ?: SegmentationParams()
+                        analysisRepository.setCustomSegmentationParams(id, null)
+                        analysisRepository.resegment(id, defaultParams)
+                    }
+                } else {
+                    val currentParams = localUiState.value.customSegmentationParams ?: uiState.value.segmentationParams
+                    localUiState.update {
+                        it.copy(
+                            useGlobalSegmentationOverride = false,
+                            customSegmentationParams = currentParams,
+                        )
+                    }
+                    viewModelScope.launch {
+                        analysisRepository.setCustomSegmentationParams(id, currentParams)
+                    }
+                }
+            }
+
+            PlayerEvent.RunLanguageDetectionOnly -> {
+                val id = resolveActiveMediaId() ?: return
+                localUiState.update { it.copy(isTranscriptionProgressDismissed = false) }
+                viewModelScope.launch {
+                    analysisRepository.startLanguageDetectionOnly(id)
                 }
             }
 
@@ -3156,6 +3210,14 @@ class PlayerViewModel @Inject constructor(
             ?: status.speed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
             ?: PlayerUiState.DEFAULT_CUSTOM_SPEED
 
+        val persistedCustomSeg = itemState?.customSegmentationParams
+        val useGlobalSegmentation = local.useGlobalSegmentationOverride ?: (persistedCustomSeg == null)
+        val resolvedSegmentationParams = if (useGlobalSegmentation) {
+            settings.defaultSegmentationParams
+        } else {
+            local.customSegmentationParams ?: persistedCustomSeg ?: settings.defaultSegmentationParams
+        }
+
         return PlayerUiState(
             mediaId = mediaId ?: status.mediaId ?: item?.id,
             title = item?.title.orEmpty(),
@@ -3189,7 +3251,8 @@ class PlayerViewModel @Inject constructor(
             isTranscriptionProgressDismissed = local.isTranscriptionProgressDismissed,
             chunkSource = resolvedOrigin,
             availableChunkOrigins = analysis.availableOrigins,
-            segmentationParams = local.customSegmentationParams ?: settings.defaultSegmentationParams,
+            segmentationParams = resolvedSegmentationParams,
+            useGlobalSegmentationParams = useGlobalSegmentation,
             transcriptImportBanner = local.transcriptImportBanner,
             transcriptExportBanner = local.transcriptExportBanner,
             transcriptOffsetMs = local.transcriptOffsetMs,
@@ -3197,6 +3260,8 @@ class PlayerViewModel @Inject constructor(
             localTranscriptExported = local.localTranscriptExported,
             detailedTranscriptionDialog = local.detailedTranscriptionDialog,
             itemSttOverride = itemSttOverride,
+            sttEngineByLanguage = settings.sttEngineByLanguage,
+            languageModelInfos = local.languageModelInfos,
             enabledLanguages = settings.enabledLanguages.toList(),
             nextMediaId = nextMediaId,
             backgroundSpeechRecognizerWarning = local.backgroundSpeechRecognizerWarning,

@@ -10,6 +10,7 @@ import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.SegmentationParams
 
 /**
  * 教材ごとの再生位置・速度・学習モードの状態（§6.4 `item_state` テーブル）。
@@ -47,6 +48,14 @@ data class ItemStateEntity(
     val isListened: Boolean = false,
     @ColumnInfo(name = "max_position_ms", defaultValue = "0")
     val maxPositionMs: Long = 0L,
+    @ColumnInfo(name = "is_favorite", defaultValue = "0")
+    val isFavorite: Boolean = false,
+    @ColumnInfo(name = "queued_at", defaultValue = "0")
+    val queuedAt: Long = 0L,
+    @ColumnInfo(name = "access_count", defaultValue = "0")
+    val accessCount: Int = 0,
+    @ColumnInfo(name = "custom_segmentation")
+    val customSegmentation: String? = null,
 ) {
     companion object {
         internal const val AUTO_PAUSE_OFF = "OFF"
@@ -82,6 +91,37 @@ data class ItemStateEntity(
 
             else -> AutoPause.Off
         }
+
+        /** [SegmentationParams] を DB 保存用の文字列表現に変換する（`null` のときは `null`）。 */
+        fun encodeSegmentationParams(params: SegmentationParams?): String? = params?.let {
+            "${it.minSilenceMs}:${it.minSpeechMs}:${it.mergeGapMs}:${it.maxChunkMs}:" +
+                "${it.prePaddingMs}:${it.postPaddingMs}:${it.thresholdRatio}"
+        }
+
+        /** DB 保存用の文字列表現から [SegmentationParams] を復元する。不正・未設定は `null` を返す。 */
+        fun decodeSegmentationParams(raw: String?): SegmentationParams? {
+            if (raw.isNullOrBlank()) return null
+            val parts = raw.split(':')
+            if (parts.size < 7) return null
+            val minSilenceMs = parts[0].toIntOrNull() ?: return null
+            val minSpeechMs = parts[1].toIntOrNull() ?: return null
+            val mergeGapMs = parts[2].toIntOrNull() ?: return null
+            val maxChunkMs = parts[3].toIntOrNull() ?: return null
+            val prePaddingMs = parts[4].toIntOrNull() ?: return null
+            val postPaddingMs = parts[5].toIntOrNull() ?: return null
+            val thresholdRatio = parts[6].toFloatOrNull() ?: return null
+            return runCatching {
+                SegmentationParams(
+                    minSilenceMs = minSilenceMs,
+                    minSpeechMs = minSpeechMs,
+                    mergeGapMs = mergeGapMs,
+                    maxChunkMs = maxChunkMs,
+                    prePaddingMs = prePaddingMs,
+                    postPaddingMs = postPaddingMs,
+                    thresholdRatio = thresholdRatio.coerceIn(0f, 1f),
+                )
+            }.getOrNull()
+        }
     }
 }
 
@@ -102,6 +142,10 @@ fun ItemStateEntity.toExternalModel(): ItemState {
         updatedAtEpochMs = updatedAt,
         isListened = isListened,
         maxPositionMs = coercedMaxPos,
+        isFavorite = isFavorite,
+        queuedAtEpochMs = queuedAt.coerceAtLeast(0L),
+        accessCount = accessCount.coerceAtLeast(0),
+        customSegmentationParams = ItemStateEntity.decodeSegmentationParams(customSegmentation),
     )
 }
 
@@ -117,4 +161,8 @@ fun ItemState.toEntity(): ItemStateEntity = ItemStateEntity(
     updatedAt = updatedAtEpochMs,
     isListened = isListened,
     maxPositionMs = maxOf(maxPositionMs, positionMs),
+    isFavorite = isFavorite,
+    queuedAt = queuedAtEpochMs.coerceAtLeast(0L),
+    accessCount = accessCount.coerceAtLeast(0),
+    customSegmentation = ItemStateEntity.encodeSegmentationParams(customSegmentationParams),
 )

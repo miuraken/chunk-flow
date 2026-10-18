@@ -241,6 +241,8 @@ internal class FakeItemStateDao : ItemStateDao {
         }
         return updated
     }
+
+    override suspend fun getMaxQueuedAt(): Long = store.value.values.maxOfOrNull { it.queuedAt } ?: 0L
 }
 
 internal class FakeMediaItemDao : MediaItemDao {

@@ -363,6 +363,8 @@ class FakeLibraryRepository(
         }
     }
 
+    private var nextQueueSequence: Long = 1L
+
     override suspend fun markItemListened(
         id: MediaId,
         isListened: Boolean,
@@ -377,6 +379,59 @@ class FakeLibraryRepository(
                 mediaId = id,
                 isListened = isListened,
                 updatedAtEpochMs = updatedAtEpochMs,
+            )
+            current + (id to updated)
+        }
+    }
+
+    override suspend fun toggleFavorite(id: MediaId) {
+        itemStates.update { current ->
+            val existing = current[id]
+            val nextFavorite = !(existing?.isFavorite ?: false)
+            val updated = existing?.copy(
+                isFavorite = nextFavorite,
+            ) ?: ItemState(
+                mediaId = id,
+                isFavorite = nextFavorite,
+            )
+            current + (id to updated)
+        }
+    }
+
+    override suspend fun toggleQueueItem(
+        id: MediaId,
+        queuedAtEpochMs: Long,
+    ) {
+        itemStates.update { current ->
+            val existing = current[id]
+            val maxExistingQueue = current.values.maxOfOrNull { it.queuedAtEpochMs } ?: 0L
+            val nextSeq = maxOf(queuedAtEpochMs, maxExistingQueue + 1L, nextQueueSequence++)
+            val nextQueuedAt = if ((existing?.queuedAtEpochMs ?: 0L) > 0L) 0L else nextSeq
+            val updated = existing?.copy(
+                queuedAtEpochMs = nextQueuedAt,
+            ) ?: ItemState(
+                mediaId = id,
+                queuedAtEpochMs = nextQueuedAt,
+            )
+            current + (id to updated)
+        }
+    }
+
+    override suspend fun recordItemAccess(
+        id: MediaId,
+        accessedAtEpochMs: Long,
+    ) {
+        itemStates.update { current ->
+            val existing = current[id]
+            val nextCount = (existing?.accessCount ?: 0) + 1
+            val nextUpdatedAt = maxOf(existing?.updatedAtEpochMs ?: 0L, accessedAtEpochMs)
+            val updated = existing?.copy(
+                accessCount = nextCount,
+                updatedAtEpochMs = nextUpdatedAt,
+            ) ?: ItemState(
+                mediaId = id,
+                accessCount = nextCount,
+                updatedAtEpochMs = nextUpdatedAt,
             )
             current + (id to updated)
         }

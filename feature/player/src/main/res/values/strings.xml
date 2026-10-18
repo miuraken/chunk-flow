@@ -232,4 +232,16 @@
     <string name="player_transcription_progress_background_checkbox">バックグラウンドで文字起こしを行う</string>
     <string name="player_background_speech_recognizer_warning_title">バックグラウンド文字起こしの制限</string>
     <string name="player_background_speech_recognizer_warning_close">閉じる</string>
+    <string name="player_file_settings_title">ファイル個別設定</string>
+    <string name="player_file_settings_tab_language">言語</string>
+    <string name="player_file_settings_tab_transcript_file">文字起こしファイル</string>
+    <string name="player_file_settings_tab_segmentation">チャンク分割</string>
+    <string name="player_settings_stt_engine_default_with_name">言語設定に従う（%1$s）</string>
+    <string name="player_file_settings_section_export">エクスポート</string>
+    <string name="player_file_settings_section_import">インポート</string>
+    <string name="player_file_settings_section_reset">リセット</string>
+    <string name="player_file_settings_section_log">ログ</string>
+    <string name="player_segmentation_use_global">全体設定に従う</string>
+    <string name="player_segmentation_language_detection_only">言語判定のみを行う</string>
+    <string name="player_segmentation_language_detection_started">未判定チャンクの言語判定を開始しました（バックグラウンドでも継続します）</string>
 </resources>

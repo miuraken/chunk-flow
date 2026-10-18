@@ -167,6 +167,28 @@ interface LibraryRepository {
     ) = Unit
 
     /**
+     * 教材のお気に入り登録フラグ（`isFavorite`）を切り替えて永続化する。教材が削除済みなら何もしない。
+     */
+    suspend fun toggleFavorite(id: MediaId) = Unit
+
+    /**
+     * 教材の「次に再生するキュー」への登録状態（`queuedAtEpochMs`）を切り替えて永続化する。教材が削除済みなら何もしない。
+     */
+    suspend fun toggleQueueItem(
+        id: MediaId,
+        queuedAtEpochMs: Long = System.currentTimeMillis(),
+    ) = Unit
+
+    /**
+     * 教材を開いたときの累計アクセス回数（`accessCount`）と最終アクセス日時（`updatedAtEpochMs`）を更新して永続化する。
+     * 教材が削除済みなら何もしない。
+     */
+    suspend fun recordItemAccess(
+        id: MediaId,
+        accessedAtEpochMs: Long = System.currentTimeMillis(),
+    ) = Unit
+
+    /**
      * 教材の文字起こし（手動修正された言語ラベルを含む）を `.chunkflow.json` 形式でローカル原本ファイルへ書き出す（§7.2 書き戻し準備）。
      *
      * @return 書き出しに成功した場合は `true`、書き出す文字起こしがない場合は `false`。

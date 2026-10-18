@@ -300,12 +300,17 @@ class MediaControllerPlaybackController(
         tailPlayedMs = 0L
         isCurrentItemMarkedListened = savedState?.isListened ?: false
 
-        // ファイルを開いた時点で最終アクセス日時と再開位置を記録する
+        // ファイルを開いた時点で最終アクセス日時・累計アクセス回数・再開位置を記録する
+        val openedAtMs = clock()
         libraryRepository.updatePlaybackPosition(
             id = mediaId,
             positionMs = initialPositionMs,
             speed = initialSpeed,
-            updatedAtEpochMs = clock(),
+            updatedAtEpochMs = openedAtMs,
+        )
+        libraryRepository.recordItemAccess(
+            id = mediaId,
+            accessedAtEpochMs = openedAtMs,
         )
 
         // 保存済みの学習モード（言語フィルタ・チャンク種別）を復元する。
@@ -447,6 +452,9 @@ class MediaControllerPlaybackController(
                     autoPauseScope = updated.autoPauseScope,
                     languageFilter = updated.languageFilter,
                     isListened = isCurrentItemMarkedListened || (existingState?.isListened == true),
+                    isFavorite = existingState?.isFavorite ?: false,
+                    queuedAtEpochMs = existingState?.queuedAtEpochMs ?: 0L,
+                    accessCount = existingState?.accessCount ?: 0,
                     updatedAtEpochMs = clock(),
                 ),
             )
