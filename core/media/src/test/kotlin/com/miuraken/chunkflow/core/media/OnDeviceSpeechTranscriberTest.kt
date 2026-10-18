@@ -2060,6 +2060,103 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals(listOf("ja-JP"), recognizedLocales)
     }
 
+    @Test
+    fun `detectChunkLanguage_同一ファイル内で2言語の話者プロファイルが確立した後はWhisperLIDを高速スキップする`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        // 0..4s: 低い声の話者（120Hz 基音 + 低域倍音, ja）
+        // 4..8s: 高い声の話者（260Hz 基音 + 高域倍音, en）
+        val twoSpeakerDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val totalSec = 10
+                val samples = FloatArray(outputSampleRate * totalSec) { idx ->
+                    val timeSec = idx.toDouble() / outputSampleRate.toDouble()
+                    val isSecondSpeaker = (idx / outputSampleRate) % 2 == 1
+                    val f0 = if (isSecondSpeaker) 280.0 else 110.0
+                    val f1 = if (isSecondSpeaker) 560.0 else 220.0
+                    val f2 = if (isSecondSpeaker) 2_800.0 else 770.0
+                    (
+                        0.32 * kotlin.math.sin(2.0 * Math.PI * f0 * timeSec) +
+                            0.10 * kotlin.math.sin(2.0 * Math.PI * f1 * timeSec) +
+                            0.14 * kotlin.math.sin(2.0 * Math.PI * f2 * timeSec)
+                        ).toFloat()
+                }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = totalSec * 1_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/wav",
+                )
+            }
+        }
+
+        var lidCallCount = 0
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = twoSpeakerDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            languageDetector = { shorts, targetTag, baseTag ->
+                lidCallCount += 1
+                // ZCR（零交差率）で高低どちらの話者かをテスト用に返す
+                var zeroCrossings = 0
+                for (i in 1 until shorts.size) {
+                    if ((shorts[i] >= 0) != (shorts[i - 1] >= 0)) zeroCrossings += 1
+                }
+                val isHighPitch = zeroCrossings > 800
+                if (isHighPitch) {
+                    LanguagePairPrediction(
+                        selectedTag = targetTag,
+                        fallbackTag = baseTag,
+                        selectedProbability = 0.96f,
+                        targetProbability = 0.96f,
+                        baseProbability = 0.04f,
+                        inferenceTimeMs = 20L,
+                    )
+                } else {
+                    LanguagePairPrediction(
+                        selectedTag = baseTag,
+                        fallbackTag = targetTag,
+                        selectedProbability = 0.96f,
+                        targetProbability = 0.04f,
+                        baseProbability = 0.96f,
+                        inferenceTimeMs = 20L,
+                    )
+                }
+            },
+        )
+
+        val audioFile = tempFolder.newFile("bilingual_dialogue.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val pair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
+
+        // 最初の4チャンク（ja, en, ja, en）で両言語の話者クラスタ（各2観測以上）を確立する
+        assertEquals(LanguageTag("ja"), transcriber.detectChunkLanguage(audioFile, 0L, 1_000L, pair)?.language)
+        assertEquals(LanguageTag("en"), transcriber.detectChunkLanguage(audioFile, 1_000L, 2_000L, pair)?.language)
+        assertEquals(LanguageTag("ja"), transcriber.detectChunkLanguage(audioFile, 2_000L, 3_000L, pair)?.language)
+        assertEquals(LanguageTag("en"), transcriber.detectChunkLanguage(audioFile, 3_000L, 4_000L, pair)?.language)
+        val callsAfterWarmup = lidCallCount
+        assertTrue(callsAfterWarmup >= 2)
+
+        // 5チャンク目（4000..5000ms: ja話者）と6チャンク目（5000..6000ms: en話者）は話者プロファイル一致により Whisper LID をスキップして即座に判定できる
+        val fifth = transcriber.detectChunkLanguage(audioFile, 4_000L, 5_000L, pair)
+        val sixth = transcriber.detectChunkLanguage(audioFile, 5_000L, 6_000L, pair)
+        assertNotNull(fifth)
+        assertNotNull(sixth)
+        assertEquals(LanguageTag("ja"), fifth.language)
+        assertEquals(LanguageTag("en"), sixth.language)
+        assertEquals(callsAfterWarmup, lidCallCount, "話者プロファイルが高確信度で一致した場合は Whisper LID をスキップする")
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

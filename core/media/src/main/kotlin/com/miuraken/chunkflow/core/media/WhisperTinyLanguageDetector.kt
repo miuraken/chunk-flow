@@ -85,11 +85,17 @@ class WhisperTinyLanguageDetector @Inject constructor(
      * 16kHz モノラル 16-bit PCM（[pcm16kMono]）から `targetTag` と `baseTag` の 2 言語確率を算出する。
      *
      * 無音チャンク、極端に短いチャンク、非対応言語ペア、またはモデル未ロード時は `null` を返す。
+     *
+     * @param pcm16kMono 16kHz モノラル PCM サンプル列。
+     * @param targetTag 学習対象言語の BCP-47 タグ。
+     * @param baseTag 基準言語（母語・解説言語）の BCP-47 タグ。
+     * @param maxWindowSamples 発話開始位置から切り出す最大サンプル数（既定は 2.0 秒 = [DEFAULT_LID_WINDOW_SAMPLES]）。
      */
     internal fun detectLanguagePair(
         pcm16kMono: ShortArray,
         targetTag: String,
         baseTag: String,
+        maxWindowSamples: Int = DEFAULT_LID_WINDOW_SAMPLES,
     ): LanguagePairPrediction? {
         if (pcm16kMono.size < MIN_VALID_PCM_SAMPLES) return null
         val model = ensureModelLoaded() ?: return null
@@ -104,10 +110,14 @@ class WhisperTinyLanguageDetector @Inject constructor(
         val startRealtimeMs = elapsedMillis()
         val workspace = acquireWorkspace()
         return try {
-            val hasSpeech = preparePcm48kWindow(pcm16kMono, workspace.pcm48k)
-            if (!hasSpeech) return null
+            val copiedSamples = preparePcm48kWindow(
+                pcm16kMono = pcm16kMono,
+                out48k = workspace.pcm48k,
+                maxWindowSamples = maxWindowSamples,
+            )
+            if (copiedSamples <= 0) return null
 
-            val logits = runInference(model, workspace)
+            val logits = runInference(model, workspace, copiedSamples)
             val targetLogit = logits[targetIdx]
             val baseLogit = logits[baseIdx]
             val maxLogit = max(targetLogit, baseLogit)
@@ -150,8 +160,13 @@ class WhisperTinyLanguageDetector @Inject constructor(
         val model = ensureModelLoaded() ?: return null
         val workspace = acquireWorkspace()
         return try {
-            preparePcm48kWindow(pcm16kMono, workspace.pcm48k, allowSilentForTest = true)
-            val logits = runInference(model, workspace)
+            val copiedSamples = preparePcm48kWindow(
+                pcm16kMono = pcm16kMono,
+                out48k = workspace.pcm48k,
+                maxWindowSamples = TARGET_PCM_SAMPLES,
+                allowSilentForTest = true,
+            )
+            val logits = runInference(model, workspace, copiedSamples.coerceAtLeast(1))
             val result = LinkedHashMap<String, Float>(model.languageCodes.size)
             for (i in model.languageCodes.indices) {
                 result[model.languageCodes[i]] = logits[i]
@@ -230,6 +245,12 @@ class WhisperTinyLanguageDetector @Inject constructor(
         internal const val ASSET_FILE_NAME: String = "whisper_tiny_lid_q8q4.bin"
         internal const val SAMPLE_RATE_HZ: Int = 16_000
         internal const val TARGET_PCM_SAMPLES: Int = 48_000
+
+        /** 2 言語ペア LID の既定窓長（2.0 秒 = 32,000 サンプル @ 16kHz）。 */
+        internal const val DEFAULT_LID_WINDOW_SAMPLES: Int = 32_000
+
+        /** 話者プロファイルがある程度一致している場合の高速 LID 窓長（1.5 秒 = 24,000 サンプル @ 16kHz）。 */
+        internal const val FAST_LID_WINDOW_SAMPLES: Int = 24_000
         private const val MIN_VALID_PCM_SAMPLES: Int = 1_600
         private const val N_FFT: Int = 400
         private const val HOP_LENGTH: Int = 160
@@ -351,10 +372,11 @@ class WhisperTinyLanguageDetector @Inject constructor(
         private fun preparePcm48kWindow(
             pcm16kMono: ShortArray,
             out48k: FloatArray,
+            maxWindowSamples: Int = DEFAULT_LID_WINDOW_SAMPLES,
             allowSilentForTest: Boolean = false,
-        ): Boolean {
+        ): Int {
             out48k.fill(0f)
-            if (pcm16kMono.isEmpty()) return false
+            if (pcm16kMono.isEmpty()) return 0
 
             var maxAbs = 0
             for (s in pcm16kMono) {
@@ -362,11 +384,12 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 if (a > maxAbs) maxAbs = a
             }
             if (!allowSilentForTest && maxAbs < MIN_PEAK_AMPLITUDE) {
-                return false
+                return 0
             }
 
+            val effectiveWindowSamples = maxWindowSamples.coerceIn(MIN_VALID_PCM_SAMPLES, TARGET_PCM_SAMPLES)
             var startSample = 0
-            if (pcm16kMono.size > TARGET_PCM_SAMPLES) {
+            if (pcm16kMono.size > ONSET_RMS_FRAME_SAMPLES * 2) {
                 var offset = 0
                 while (offset + ONSET_RMS_FRAME_SAMPLES <= pcm16kMono.size) {
                     var sumSq = 0.0
@@ -383,20 +406,26 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 }
             }
 
-            val copyLen = min(TARGET_PCM_SAMPLES, pcm16kMono.size - startSample).coerceAtLeast(0)
+            val copyLen = min(effectiveWindowSamples, pcm16kMono.size - startSample).coerceAtLeast(0)
             val norm = 1.0f / 32768.0f
             for (i in 0 until copyLen) {
                 out48k[i] = pcm16kMono[startSample + i].toFloat() * norm
             }
-            return true
+            return copyLen
         }
 
         private fun runInference(
             model: QuantizedWhisperLidModel,
             ws: InferenceWorkspace,
+            copiedSamples: Int = TARGET_PCM_SAMPLES,
         ): FloatArray {
-            computeLogMelSpectrogram(ws.pcm48k, model.melFilters201x80, ws)
-            runAudioEncoder(model, ws)
+            val activeMelFrames = computeLogMelSpectrogram(
+                pcm48k = ws.pcm48k,
+                melFilters201x80 = model.melFilters201x80,
+                ws = ws,
+                copiedSamples = copiedSamples,
+            )
+            runAudioEncoder(model, ws, activeMelFrames)
             return runFusedDecoder(model, ws)
         }
 
@@ -404,7 +433,8 @@ class WhisperTinyLanguageDetector @Inject constructor(
             pcm48k: FloatArray,
             melFilters201x80: FloatArray,
             ws: InferenceWorkspace,
-        ) {
+            copiedSamples: Int = TARGET_PCM_SAMPLES,
+        ): Int {
             val padded = ws.paddedPcm48400
             val pad = N_FFT / 2 // 200
             for (i in 0 until pad) {
@@ -415,13 +445,19 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 padded[pad + TARGET_PCM_SAMPLES + i] = pcm48k[TARGET_PCM_SAMPLES - 2 - i]
             }
 
+            val safeCopied = copiedSamples.coerceIn(1, TARGET_PCM_SAMPLES)
+            val activeMelFrames = min(
+                N_FRAMES,
+                ((pad + safeCopied + HOP_LENGTH - 1) / HOP_LENGTH).coerceAtLeast(1),
+            )
+
             val aRe = ws.dftStage1Re
             val aIm = ws.dftStage1Im
             val mag = ws.magnitudes201
             val melOut = ws.mel300x80
             var globalMaxLog = Float.NEGATIVE_INFINITY
 
-            for (t in 0 until N_FRAMES) {
+            for (t in 0 until activeMelFrames) {
                 val baseIdx = t * HOP_LENGTH
                 // Stage 1: 20 x 20 (n = 20 * n1 + n0)
                 for (m in 0 until 20) {
@@ -479,11 +515,20 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 }
             }
 
+            if (activeMelFrames < N_FRAMES) {
+                if (-10.0f > globalMaxLog) {
+                    globalMaxLog = -10.0f
+                }
+                val startSilentIdx = activeMelFrames * N_MELS
+                melOut.fill(-10.0f, startSilentIdx, melOut.size)
+            }
+
             val minClamp = globalMaxLog - 8.0f
             for (i in melOut.indices) {
                 val clamped = max(melOut[i], minClamp)
                 melOut[i] = (clamped + 4.0f) * 0.25f
             }
+            return activeMelFrames
         }
 
         internal const val MAX_30S_FRAMES: Int = 3_000
@@ -601,6 +646,7 @@ class WhisperTinyLanguageDetector @Inject constructor(
         private fun runAudioEncoder(
             model: QuantizedWhisperLidModel,
             ws: InferenceWorkspace,
+            activeMelFrames: Int = N_FRAMES,
         ) {
             // Conv1: input mel300x80 (300 x 80), kernel=3, pad=1, stride=1 -> conv1Out (300 x 384)
             val mel = ws.mel300x80
@@ -608,6 +654,7 @@ class WhisperTinyLanguageDetector @Inject constructor(
             val conv1Scales = model.conv1Weight.scales
             val conv1Quants = model.conv1Weight.quants
             val conv1Bias = model.conv1Bias
+            val firstConstConv1Frame = (activeMelFrames + 1).coerceAtMost(N_FRAMES - 1)
             for (o in 0 until D_MODEL) {
                 val scale = conv1Scales[o]
                 val bias = conv1Bias[o]
@@ -615,13 +662,11 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 val w0Off = wBase
                 val w1Off = wBase + N_MELS
                 val w2Off = wBase + 2 * N_MELS
+                var constConv1Val = Float.NaN
                 for (t in 0 until N_FRAMES) {
-                    var sumInt = 0
-                    if (t > 0) {
-                        val inOff = (t - 1) * N_MELS
-                        for (c in 0 until N_MELS) {
-                            sumInt += 0 // float * int8 handled below
-                        }
+                    if (t in (firstConstConv1Frame + 1) until (N_FRAMES - 1) && !constConv1Val.isNaN()) {
+                        conv1Out[t * D_MODEL + o] = constConv1Val
+                        continue
                     }
                     var acc = 0f
                     if (t > 0) {
@@ -640,7 +685,11 @@ class WhisperTinyLanguageDetector @Inject constructor(
                             acc += mel[in2Off + c] * conv1Quants[w2Off + c].toInt()
                         }
                     }
-                    conv1Out[t * D_MODEL + o] = gelu(acc * scale + bias)
+                    val outVal = gelu(acc * scale + bias)
+                    conv1Out[t * D_MODEL + o] = outVal
+                    if (t == firstConstConv1Frame && t < N_FRAMES - 1) {
+                        constConv1Val = outVal
+                    }
                 }
             }
 
@@ -650,6 +699,7 @@ class WhisperTinyLanguageDetector @Inject constructor(
             val conv2Quants = model.conv2Weight.quants
             val conv2Bias = model.conv2Bias
             val encPos = model.encPos150x384
+            val firstConstConv2Out = ((firstConstConv1Frame + 2) / 2).coerceAtMost(N_AUDIO_CTX - 1)
             for (o in 0 until D_MODEL) {
                 val scale = conv2Scales[o]
                 val bias = conv2Bias[o]
@@ -657,8 +707,18 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 val w0Off = wBase
                 val w1Off = wBase + D_MODEL
                 val w2Off = wBase + 2 * D_MODEL
+                var constConv2Gelu = Float.NaN
                 for (tOut in 0 until N_AUDIO_CTX) {
                     val tIn = tOut * 2
+                    val idx = tOut * D_MODEL + o
+                    if (
+                        tOut > firstConstConv2Out &&
+                        tIn + 1 < N_FRAMES - 1 &&
+                        !constConv2Gelu.isNaN()
+                    ) {
+                        encX[idx] = constConv2Gelu + encPos[idx]
+                        continue
+                    }
                     var acc = 0f
                     if (tIn > 0) {
                         val in0Off = (tIn - 1) * D_MODEL
@@ -676,8 +736,11 @@ class WhisperTinyLanguageDetector @Inject constructor(
                             acc += conv1Out[in2Off + c] * conv2Quants[w2Off + c].toInt()
                         }
                     }
-                    val idx = tOut * D_MODEL + o
-                    encX[idx] = gelu(acc * scale + bias) + encPos[idx]
+                    val geluVal = gelu(acc * scale + bias)
+                    if (tOut == firstConstConv2Out && tIn - 1 >= firstConstConv1Frame && tIn + 1 < N_FRAMES - 1) {
+                        constConv2Gelu = geluVal
+                    }
+                    encX[idx] = geluVal + encPos[idx]
                 }
             }
 

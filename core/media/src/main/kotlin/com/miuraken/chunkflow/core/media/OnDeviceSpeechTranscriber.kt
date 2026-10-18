@@ -1285,7 +1285,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             runCatching { SpeechRecognizer.isRecognitionAvailable(context) }.getOrDefault(false)
         },
         attemptRunner = null,
-        languageDetector = whisperTinyLanguageDetector::detectLanguagePair,
+        languageDetector = { pcm, target, base ->
+            whisperTinyLanguageDetector.detectLanguagePair(pcm, target, base)
+        },
         modelGateway = null,
         sherpaModelManager = sherpaOnnxModelManager,
         sherpaTranscriber = { pcmBytes, sampleRate, lang ->
@@ -1315,8 +1317,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             runCatching { SpeechRecognizer.isRecognitionAvailable(context) }.getOrDefault(false)
         },
         attemptRunner = null,
-        languageDetector = WhisperTinyLanguageDetector(context)::detectLanguagePair,
+        languageDetector = createDefaultLanguageDetector(context),
     )
+
+    internal val voiceProfileTracker: VoiceProfileLanguageTracker = VoiceProfileLanguageTracker()
 
     private data class ChunkAudioCacheScope(
         val audioPath: String,
@@ -1427,6 +1431,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     override fun resetTranscriberState() {
         cancelActiveTranscription(onlyLowPriority = false)
         recognitionLock.forceResetLock()
+        voiceProfileTracker.clearAll()
         activeStepMutableState.value = null
         appendDiagnostic(
             stage = "RESET",
@@ -2340,10 +2345,16 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 startedAtEpochMs = startedAtEpochMs,
                 highPriority = false,
             )
-            val detector = languageDetector ?: return null
+            if (languageDetector == null) return null
             val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcmBytes)
             val prediction = try {
-                detector.invoke(shorts, targetLang.value, baseLang.value)
+                resolveLanguagePairPredictionWithVoiceProfile(
+                    shorts = shorts,
+                    sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+                    audioScopeKey = audioFile.absolutePath,
+                    targetLang = targetLang,
+                    baseLang = baseLang,
+                ).first
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
@@ -2475,17 +2486,33 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     activeTrialEngineOverride ?: runCatching { engineProvider() }.getOrDefault(OnDeviceTranscriptionEngine.AUTO)
 
                 val result = if (targetLang != null && baseLang != null) {
+                    val shorts by lazy(LazyThreadSafetyMode.NONE) {
+                        ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
+                    }
                     val precomputedPrediction = buildPrecomputedLanguagePairPrediction(
                         precomputedLanguage = precomputedLanguage,
                         precomputedConfidence = precomputedLanguageConfidence,
                         targetLang = targetLang,
                         baseLang = baseLang,
                     )
+                    var extractedVoiceProfile: FloatArray? = null
                     val lidPrediction = if (precomputedPrediction != null) {
                         logDebug(
                             "whisperLid skipped (reusing precomputed language=${precomputedPrediction.selectedTag} " +
                                 "prob=${precomputedPrediction.selectedProbability}) chunkDurationMs=$chunkDurationMs",
                         )
+                        if (isTrackableAudioScope(cacheScope.audioPath) &&
+                            precomputedPrediction.selectedProbability >= VOICE_PROFILE_UPDATE_CONFIDENCE_THRESHOLD
+                        ) {
+                            extractedVoiceProfile = voiceProfileTracker.extractVoiceProfile(shorts, sampleRateHz)
+                            if (extractedVoiceProfile != null) {
+                                voiceProfileTracker.recordSpeakerObservation(
+                                    audioScopeKey = cacheScope.audioPath,
+                                    languageTag = precomputedPrediction.selectedTag,
+                                    voiceProfile = extractedVoiceProfile,
+                                )
+                            }
+                        }
                         precomputedPrediction
                     } else if (languageDetector != null) {
                         updateActiveStep(
@@ -2494,10 +2521,17 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             startedAtEpochMs = startedAtEpochMs,
                             highPriority = highPriority,
                         )
-                        val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
-                        runCatching {
-                            languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
-                        }.getOrNull()
+                        val (resolvedPred, profile) = runCatching {
+                            resolveLanguagePairPredictionWithVoiceProfile(
+                                shorts = shorts,
+                                sampleRateHz = sampleRateHz,
+                                audioScopeKey = cacheScope.audioPath,
+                                targetLang = targetLang,
+                                baseLang = baseLang,
+                            )
+                        }.getOrNull() ?: (null to null)
+                        extractedVoiceProfile = profile
+                        resolvedPred
                     } else {
                         null
                     }
@@ -2516,7 +2550,24 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             selectedEngine = selectedEngine,
                             itemSttOverride = itemSttOverride,
                             engineByLanguage = engineByLanguage,
-                        )
+                        ).also { transcribed ->
+                            val finalLang = transcribed?.language
+                            if (transcribed != null &&
+                                !transcribed.isLanguageOnly &&
+                                finalLang != null &&
+                                isTrackableAudioScope(cacheScope.audioPath)
+                            ) {
+                                val profile = extractedVoiceProfile
+                                    ?: voiceProfileTracker.extractVoiceProfile(shorts, sampleRateHz)
+                                if (profile != null) {
+                                    voiceProfileTracker.recordSpeakerObservation(
+                                        audioScopeKey = cacheScope.audioPath,
+                                        languageTag = finalLang.value,
+                                        voiceProfile = profile,
+                                    )
+                                }
+                            }
+                        }
                     } else {
                         transcribeWithTwoSecondLanguageProbe(
                             pcm16LeBytes = pcm16LeBytes,
@@ -2556,6 +2607,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         logInfo(
                             "singleLang chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} chars=${attempt.text.trim().length}",
                         )
+                        if (singleLang != null && isTrackableAudioScope(cacheScope.audioPath)) {
+                            val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
+                            val profile = voiceProfileTracker.extractVoiceProfile(shorts, sampleRateHz)
+                            if (profile != null) {
+                                voiceProfileTracker.recordSpeakerObservation(
+                                    audioScopeKey = cacheScope.audioPath,
+                                    languageTag = singleLang.value,
+                                    voiceProfile = profile,
+                                    weight = 2,
+                                )
+                            }
+                        }
                         val res = OnDeviceChunkTranscriptionResult(
                             text = attempt.text.trim(),
                             language = singleLang,
@@ -2598,6 +2661,87 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 activeTrialEngineOverride = null
             }
         }
+    }
+
+    private fun isTrackableAudioScope(audioScopeKey: String): Boolean = audioScopeKey.isNotBlank() &&
+        !audioScopeKey.startsWith("pcm:") &&
+        !audioScopeKey.startsWith("trial:")
+
+    private fun resolveLanguagePairPredictionWithVoiceProfile(
+        shorts: ShortArray,
+        sampleRateHz: Int,
+        audioScopeKey: String,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): Pair<LanguagePairPrediction?, FloatArray?> {
+        val trackableScope = isTrackableAudioScope(audioScopeKey)
+        val voiceProfile = if (trackableScope) {
+            voiceProfileTracker.extractVoiceProfile(shorts, sampleRateHz)
+        } else {
+            null
+        }
+        val speakerPred = if (voiceProfile != null) {
+            voiceProfileTracker.predictLanguageFromVoiceProfile(
+                audioScopeKey = audioScopeKey,
+                voiceProfile = voiceProfile,
+                targetTag = targetLang.value,
+                baseTag = baseLang.value,
+            )
+        } else {
+            null
+        }
+
+        if (speakerPred != null && speakerPred.isHighConfidenceSpeakerMatch) {
+            val fastPrediction = if (speakerPred.baseProbability > speakerPred.targetProbability) {
+                LanguagePairPrediction(
+                    selectedTag = baseLang.value,
+                    fallbackTag = targetLang.value,
+                    selectedProbability = speakerPred.selectedProbability,
+                    targetProbability = speakerPred.targetProbability,
+                    baseProbability = speakerPred.baseProbability,
+                    inferenceTimeMs = 0L,
+                )
+            } else {
+                LanguagePairPrediction(
+                    selectedTag = targetLang.value,
+                    fallbackTag = baseLang.value,
+                    selectedProbability = speakerPred.selectedProbability,
+                    targetProbability = speakerPred.targetProbability,
+                    baseProbability = speakerPred.baseProbability,
+                    inferenceTimeMs = 0L,
+                )
+            }
+            logDebug(
+                "voiceProfileLid fast-skip Whisper LID selected=${fastPrediction.selectedTag} " +
+                    "prob=${fastPrediction.selectedProbability} targetSim=${speakerPred.targetSimilarity} " +
+                    "baseSim=${speakerPred.baseSimilarity}",
+            )
+            if (voiceProfile != null) {
+                voiceProfileTracker.recordSpeakerObservation(
+                    audioScopeKey = audioScopeKey,
+                    languageTag = fastPrediction.selectedTag,
+                    voiceProfile = voiceProfile,
+                )
+            }
+            return fastPrediction to voiceProfile
+        }
+
+        val whisperPred = languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
+            ?: return null to voiceProfile
+        val combined = voiceProfileTracker.combineWithWhisperPrediction(
+            whisperPrediction = whisperPred,
+            speakerPrediction = speakerPred,
+            targetTag = targetLang.value,
+            baseTag = baseLang.value,
+        )
+        if (voiceProfile != null && combined.selectedProbability >= VOICE_PROFILE_UPDATE_CONFIDENCE_THRESHOLD) {
+            voiceProfileTracker.recordSpeakerObservation(
+                audioScopeKey = audioScopeKey,
+                languageTag = combined.selectedTag,
+                voiceProfile = voiceProfile,
+            )
+        }
+        return combined to voiceProfile
     }
 
     private fun buildPrecomputedLanguagePairPrediction(
@@ -3636,9 +3780,17 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         private const val MAX_DIAGNOSTIC_ENTRIES: Int = 40
         private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.75f
         private const val DEFAULT_PRECOMPUTED_LID_CONFIDENCE: Float = 0.85f
+        private const val VOICE_PROFILE_UPDATE_CONFIDENCE_THRESHOLD: Float = 0.88f
         private const val LOW_STT_CONFIDENCE_THRESHOLD: Float = 0.68f
         private const val MODERATE_STT_CONFIDENCE_THRESHOLD: Float = 0.80f
         private const val MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS: Long = 15_000L
+
+        private fun createDefaultLanguageDetector(
+            context: Context,
+        ): (ShortArray, String, String) -> LanguagePairPrediction? {
+            val detector = WhisperTinyLanguageDetector(context)
+            return { pcm, target, base -> detector.detectLanguagePair(pcm, target, base) }
+        }
 
         private fun speechErrorName(error: Int): String = when (error) {
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"

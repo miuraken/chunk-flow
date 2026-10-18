@@ -87,6 +87,82 @@ class WhisperTinyLanguageDetectorTest {
         assertNull(detector.detectLanguagePair(koShorts, targetTag = "unknown_lang", baseTag = "ja"))
     }
 
+    @Test
+    fun `detectLanguagePair_短縮窓1500msでも実音声チャンクの日本語と韓国語を高精度に識別する`() {
+        val context = RuntimeEnvironment.getApplication()
+        val detector = WhisperTinyLanguageDetector(context)
+
+        val jaShorts = decodeGzipBase64Shorts(JA_SPEECH_GZIP_B64)
+        val koShorts = decodeGzipBase64Shorts(KO_SPEECH_GZIP_B64)
+
+        val jaFast = detector.detectLanguagePair(
+            pcm16kMono = jaShorts,
+            targetTag = "ko",
+            baseTag = "ja",
+            maxWindowSamples = WhisperTinyLanguageDetector.FAST_LID_WINDOW_SAMPLES,
+        )
+        assertNotNull(jaFast)
+        assertEquals("ja", jaFast.selectedTag)
+        assertTrue(jaFast.baseProbability > 0.95f)
+
+        val koFast = detector.detectLanguagePair(
+            pcm16kMono = koShorts,
+            targetTag = "ko-KR",
+            baseTag = "ja-JP",
+            maxWindowSamples = WhisperTinyLanguageDetector.FAST_LID_WINDOW_SAMPLES,
+        )
+        assertNotNull(koFast)
+        assertEquals("ko-KR", koFast.selectedTag)
+        assertTrue(koFast.targetProbability > 0.95f)
+    }
+
+    @Test
+    fun `VoiceProfileLanguageTracker_実音声チャンクの話者プロファイルを学習し言語判定と統合できる`() {
+        val tracker = VoiceProfileLanguageTracker()
+        val jaShorts = decodeGzipBase64Shorts(JA_SPEECH_GZIP_B64)
+        val koShorts = decodeGzipBase64Shorts(KO_SPEECH_GZIP_B64)
+
+        val jaProfile = tracker.extractVoiceProfile(jaShorts)
+        val koProfile = tracker.extractVoiceProfile(koShorts)
+        assertNotNull(jaProfile)
+        assertNotNull(koProfile)
+
+        val audioKey = "/test/korean_lesson_ja.mp3"
+        // 各話者の観測を3回記録してクラスタを確立する
+        repeat(3) {
+            tracker.recordSpeakerObservation(audioKey, "ja", jaProfile)
+            tracker.recordSpeakerObservation(audioKey, "ko", koProfile)
+        }
+
+        val predForKo = tracker.predictLanguageFromVoiceProfile(
+            audioScopeKey = audioKey,
+            voiceProfile = koProfile,
+            targetTag = "ko-KR",
+            baseTag = "ja-JP",
+        )
+        assertNotNull(predForKo)
+        assertTrue(predForKo.targetProbability > predForKo.baseProbability)
+        assertTrue(predForKo.targetSimilarity > predForKo.baseSimilarity)
+
+        // 曖昧な Whisper 判定（0.52 vs 0.48）でも話者プロファイルの一致で対象言語の確信度が補強される
+        val ambiguousWhisper = LanguagePairPrediction(
+            selectedTag = "ko-KR",
+            fallbackTag = "ja-JP",
+            selectedProbability = 0.52f,
+            targetProbability = 0.52f,
+            baseProbability = 0.48f,
+            inferenceTimeMs = 10L,
+        )
+        val combined = tracker.combineWithWhisperPrediction(
+            whisperPrediction = ambiguousWhisper,
+            speakerPrediction = predForKo,
+            targetTag = "ko-KR",
+            baseTag = "ja-JP",
+        )
+        assertEquals("ko-KR", combined.selectedTag)
+        assertTrue(combined.targetProbability > ambiguousWhisper.targetProbability)
+    }
+
     private fun decodeGzipBase64Shorts(b64: String): ShortArray {
         val compressed = Base64.getDecoder().decode(b64)
         val rawBytes = GZIPInputStream(ByteArrayInputStream(compressed)).use { it.readBytes() }
