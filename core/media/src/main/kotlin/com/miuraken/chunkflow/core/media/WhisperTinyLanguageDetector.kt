@@ -300,7 +300,9 @@ class WhisperTinyLanguageDetector @Inject constructor(
         private const val ONSET_PRE_ROLL_SAMPLES: Int = 960 // 60ms @ 16kHz
         private const val SPEECH_ONSET_RMS_THRESHOLD: Double = 120.0
         private const val MIN_PEAK_AMPLITUDE: Int = 64
-        private const val MAX_POOLED_WORKSPACES: Int = 2
+
+        /** 使い回す作業領域（1 つ約 3.5MB）の数。一括言語判定の同時推論数の上限（3）に合わせる。 */
+        private const val MAX_POOLED_WORKSPACES: Int = 3
 
         /** Whisper Tiny (v1/v2) 多言語モデルがサポートする 99 言語コード（トークン ID 50259..50357 の順）。 */
         internal val WHISPER_99_LANGUAGE_CODES: List<String> = listOf(

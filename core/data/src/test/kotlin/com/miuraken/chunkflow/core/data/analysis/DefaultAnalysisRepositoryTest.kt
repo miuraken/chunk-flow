@@ -14,6 +14,7 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
 import com.miuraken.chunkflow.core.media.AudioDecodeResult
 import com.miuraken.chunkflow.core.media.AudioStreamDecoder
+import com.miuraken.chunkflow.core.media.ChunkTimeRange
 import com.miuraken.chunkflow.core.media.DecodeProgress
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
@@ -45,6 +46,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -3589,5 +3591,110 @@ class DefaultAnalysisRepositoryTest {
         assertEquals("", transcriptDao.getByChunkId(4101L)?.text)
         assertEquals("en", transcriptDao.getByChunkId(4102L)?.language)
         assertEquals("Hello world", transcriptDao.getByChunkId(4102L)?.text)
+    }
+
+    @Test
+    fun `startLanguageDetectionOnly_一括判定の結果をチャンク順に保存し判定中に言語が入ったチャンクは上書きしない`() = runTest {
+        val requestedChunks = mutableListOf<List<ChunkTimeRange>>()
+        val requestedParallelism = mutableListOf<Int>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun detectChunkLanguages(
+                audioFile: File,
+                chunks: List<ChunkTimeRange>,
+                languagePair: LanguagePair,
+                parallelism: Int,
+                computeDispatcher: CoroutineDispatcher,
+                onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+            ) {
+                requestedChunks += chunks
+                requestedParallelism += parallelism
+                for (index in chunks.indices) {
+                    if (index == 1) {
+                        // 2 件目の判定中に、別の処理（利用者による言語の設定など）が 2 件目に言語を入れた
+                        transcriptDao.upsert(
+                            TranscriptEntity(
+                                chunkId = 5102L,
+                                text = "",
+                                language = "en",
+                                languageConfidence = null,
+                                engine = "manual",
+                                createdAt = currentEpochMs,
+                            ),
+                        )
+                    }
+                    val result = if (index == 2) {
+                        null
+                    } else {
+                        OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = LanguageTag("ja"),
+                            confidence = 0.9f,
+                            engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                        )
+                    }
+                    onResult(index, result)
+                }
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_batch_lid_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Batch LID Test",
+                durationMs = 3_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 2048L,
+                sha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 5101L, mediaId = mediaId.value, startMs = 0L, endMs = 1_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 5102L, mediaId = mediaId.value, startMs = 1_000L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 5103L, mediaId = mediaId.value, startMs = 2_000L, endMs = 3_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        repository.startLanguageDetectionOnly(mediaId)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(
+            listOf(
+                listOf(
+                    ChunkTimeRange(startMs = 0L, endMs = 1_000L),
+                    ChunkTimeRange(startMs = 1_000L, endMs = 2_000L),
+                    ChunkTimeRange(startMs = 2_000L, endMs = 3_000L),
+                ),
+            ),
+            requestedChunks,
+            "対象のチャンクをまとめて 1 回で依頼する",
+        )
+        assertTrue(requestedParallelism.single() in 1..OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM)
+        assertEquals("ja", transcriptDao.getByChunkId(5101L)?.language)
+        assertEquals("en", transcriptDao.getByChunkId(5102L)?.language, "判定中に入った言語は上書きしない")
+        assertNull(transcriptDao.getByChunkId(5103L), "判定できなかったチャンクには何も保存しない")
+        val status = repository.observeLookaheadStatus(mediaId).first()
+        assertNull(status.inFlightChunkId)
+        assertEquals(3, status.completedCount)
+        assertEquals(3, status.totalTargetCount)
     }
 }

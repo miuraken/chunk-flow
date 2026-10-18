@@ -39,6 +39,7 @@ import com.miuraken.chunkflow.core.database.entity.toStageAndStatus
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.media.AudioDecodeResult
 import com.miuraken.chunkflow.core.media.AudioStreamDecoder
+import com.miuraken.chunkflow.core.media.ChunkTimeRange
 import com.miuraken.chunkflow.core.media.MlKitOnDeviceTextTranslator
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
@@ -133,6 +134,8 @@ class DefaultAnalysisRepository(
     private val userSettingsRepository: UserSettingsRepository? = null,
     private val itemSttOverrideRepository: ItemSttOverrideRepository? = null,
     private val textTranslator: OnDeviceTextTranslator = MlKitOnDeviceTextTranslator(),
+    /** CPU を使う処理（一括言語判定の Whisper 推論など）の Dispatcher。 */
+    @Dispatcher(ChunkFlowDispatchers.Default) private val computeDispatcher: CoroutineDispatcher = ioDispatcher,
 ) : AnalysisRepository {
 
     @Inject
@@ -150,6 +153,7 @@ class DefaultAnalysisRepository(
         userSettingsRepository: UserSettingsRepository,
         itemSttOverrideRepository: ItemSttOverrideRepository,
         textTranslator: OnDeviceTextTranslator,
+        @Dispatcher(ChunkFlowDispatchers.Default) computeDispatcher: CoroutineDispatcher,
     ) : this(
         context = context,
         analysisStateDao = analysisStateDao,
@@ -165,6 +169,7 @@ class DefaultAnalysisRepository(
         userSettingsRepository = userSettingsRepository,
         itemSttOverrideRepository = itemSttOverrideRepository,
         textTranslator = textTranslator,
+        computeDispatcher = computeDispatcher,
     )
 
     private data class ChunkLangCacheKey(
@@ -828,61 +833,67 @@ class DefaultAnalysisRepository(
                 val totalTargets = targetChunks.size
                 var completed = 0
                 val remainingIds = targetChunks.map { ChunkId(it.id) }.toMutableSet()
+                val parallelism = OnDeviceChunkTranscriber.recommendedLanguageDetectionParallelism()
                 runCatching {
                     onDeviceChunkTranscriber.recordExternalDiagnostic(
                         stage = "LID_ONLY",
-                        message = "言語判定のみを開始 ($totalTargets チャンク)",
+                        message = "言語判定のみを開始 ($totalTargets チャンク、最大 $parallelism 並列)",
                     )
                 }
 
+                // 結果はチャンクの順に届くので、次に結果が届くチャンクを「実行中」として表示する
+                fun markInFlight(index: Int) {
+                    val chunk = targetChunks.getOrNull(index) ?: return
+                    val chunkId = ChunkId(chunk.id)
+                    remainingIds.remove(chunkId)
+                    val startedAt = clock()
+                    stateFlow.update { current ->
+                        current.copy(
+                            engineAvailable = true,
+                            inFlightChunkId = chunkId,
+                            inFlightStep = TranscriptionStep.DETECTING_LANGUAGE,
+                            inFlightDetail = "言語判定のみを実行中",
+                            inFlightStartedAtEpochMs = startedAt,
+                            queuedChunkIds = current.queuedChunkIds + remainingIds,
+                            completedCount = completed,
+                            totalTargetCount = totalTargets,
+                        )
+                    }
+                }
+
                 try {
-                    for (chunk in targetChunks) {
-                        val currentChunkId = ChunkId(chunk.id)
-                        remainingIds.remove(currentChunkId)
-                        // 直前に別の処理で既に言語または本文が入っていればスキップする
+                    markInFlight(0)
+                    onDeviceChunkTranscriber.detectChunkLanguages(
+                        audioFile = audioFile,
+                        chunks = targetChunks.map { ChunkTimeRange(startMs = it.startMs, endMs = it.endMs) },
+                        languagePair = languagePair,
+                        parallelism = parallelism,
+                        computeDispatcher = computeDispatcher,
+                    ) { index, detected ->
+                        val chunk = targetChunks[index]
+                        // 判定の間に別の処理で言語または本文が入っていれば、上書きしない
                         val latestTranscript = transcriptDao.getByChunkId(chunk.id)
                         val alreadyHasLanguage = latestTranscript != null && (
                             latestTranscript.text.isNotBlank() ||
                                 (!latestTranscript.language.isNullOrBlank() && !latestTranscript.language.equals("und", ignoreCase = true))
                             )
-                        if (alreadyHasLanguage) {
-                            completed += 1
-                            continue
-                        }
-
-                        val startedAt = clock()
-                        stateFlow.update { current ->
-                            current.copy(
-                                engineAvailable = true,
-                                inFlightChunkId = currentChunkId,
-                                inFlightStep = TranscriptionStep.DETECTING_LANGUAGE,
-                                inFlightDetail = "言語判定のみを実行中",
-                                inFlightStartedAtEpochMs = startedAt,
-                                queuedChunkIds = current.queuedChunkIds + remainingIds,
-                                completedCount = completed,
-                                totalTargetCount = totalTargets,
-                            )
-                        }
-
-                        val detected = try {
-                            onDeviceChunkTranscriber.detectChunkLanguage(
-                                audioFile = audioFile,
-                                startMs = chunk.startMs,
-                                endMs = chunk.endMs,
-                                languagePair = languagePair,
-                            )
-                        } catch (ce: CancellationException) {
-                            throw ce
-                        } catch (_: Exception) {
-                            null
-                        }
-
-                        if (detected != null && detected.language != null) {
+                        if (!alreadyHasLanguage && detected != null && detected.language != null) {
                             withContext(NonCancellable) {
                                 persistLanguageOnlyTranscript(chunk.id, detected)
                             }
                         }
                         completed += 1
+                        markInFlight(index + 1)
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    runCatching {
+                        onDeviceChunkTranscriber.recordExternalDiagnostic(
+                            stage = "LID_ONLY",
+                            message = "言語判定のみを中断 (${e.javaClass.simpleName})",
+                            isWarningOrError = true,
+                        )
                     }
                 } finally {
                     withContext(NonCancellable) {

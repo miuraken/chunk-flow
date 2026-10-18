@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.os.SystemClock
 import android.speech.ModelDownloadListener
 import android.speech.RecognitionListener
@@ -44,7 +45,10 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -86,6 +90,17 @@ data class OnDeviceChunkTranscriptionResult(
         val LANGUAGE_ID_ONLY_ENGINE_ID: EngineId = EngineId("whisper-tiny-lid")
     }
 }
+
+/**
+ * 音声ファイル内の 1 チャンクの時間範囲（[OnDeviceChunkTranscriber.detectChunkLanguages] に渡す）。
+ *
+ * @property startMs チャンクの開始位置（ミリ秒）。
+ * @property endMs チャンクの終了位置（ミリ秒、[startMs] より大きい）。
+ */
+data class ChunkTimeRange(
+    val startMs: Long,
+    val endMs: Long,
+)
 
 /**
  * チャンク単位（16kHz モノラル 16-bit PCM または音声ファイルの `[startMs, endMs]` 区間）で
@@ -334,8 +349,52 @@ interface OnDeviceChunkTranscriber {
         languagePair: LanguagePair,
     ): OnDeviceChunkTranscriptionResult? = null
 
+    /**
+     * 複数チャンクの言語判定（音声認識なし、[detectChunkLanguage] と同じ判定）をまとめて行い、
+     * 結果を [chunks] の順に [onResult]（`index` は [chunks] の位置）へ渡す。
+     *
+     * 実装は、音声の解析（Whisper Tiny の推論）を [computeDispatcher] 上で最大 [parallelism] 件まで同時に進めてよい。
+     * ファイル内の補正（[VoiceProfileLanguageTracker]）と [onResult] の呼び出しはチャンクの順に行うため、
+     * 判定結果は 1 件ずつ処理した場合と同じになる。既定の実装は [detectChunkLanguage] を順に呼ぶ。
+     * 1 チャンクの判定で例外が起きた場合は、そのチャンクの結果を `null` にして続ける。
+     *
+     * @param parallelism 同時に推論するチャンク数の上限（[recommendedLanguageDetectionParallelism] を参照）。
+     * @param computeDispatcher 推論に使う Dispatcher（CPU 向け）。呼び出し側が DI で受け取ったものを渡す。
+     */
+    suspend fun detectChunkLanguages(
+        audioFile: File,
+        chunks: List<ChunkTimeRange>,
+        languagePair: LanguagePair,
+        parallelism: Int,
+        computeDispatcher: CoroutineDispatcher,
+        onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        for ((index, chunk) in chunks.withIndex()) {
+            val result = try {
+                detectChunkLanguage(audioFile, chunk.startMs, chunk.endMs, languagePair)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                null
+            }
+            onResult(index, result)
+        }
+    }
+
     companion object {
         const val DEFAULT_SAMPLE_RATE_HZ: Int = 16_000
+
+        /** 一括言語判定で同時に推論するチャンク数の上限。 */
+        const val MAX_LANGUAGE_DETECTION_PARALLELISM: Int = 3
+
+        /**
+         * 端末の CPU コア数 [availableProcessors] から、一括言語判定で同時に推論するチャンク数を決める。
+         *
+         * 再生と UI のために半分以上のコアを残し、[MAX_LANGUAGE_DETECTION_PARALLELISM] を上限にする（8 コアなら 3、4 コアなら 2）。
+         */
+        fun recommendedLanguageDetectionParallelism(
+            availableProcessors: Int = Runtime.getRuntime().availableProcessors(),
+        ): Int = (availableProcessors / 2).coerceIn(1, MAX_LANGUAGE_DETECTION_PARALLELISM)
 
         private val NO_RECOGNITION_MODEL_ISSUES: StateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>> =
             MutableStateFlow<Map<LanguageTag, OnDeviceRecognitionModelState>>(emptyMap()).asStateFlow()
@@ -2590,44 +2649,23 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             return null
         }
         val targetLang = languagePair.target
-        val baseLang = languagePair.base?.takeIf {
-            !it.value.equals(targetLang.value, ignoreCase = true)
-        }
-        if (baseLang == null) {
-            return OnDeviceChunkTranscriptionResult(
+        val baseLang = distinctBaseLanguage(languagePair)
+            ?: return OnDeviceChunkTranscriptionResult(
                 text = "",
                 language = targetLang,
                 confidence = 1.0f,
                 engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
             )
-        }
+        if (languageDetector == null && languageAnalyzer == null) return null
         val startedAtEpochMs = System.currentTimeMillis()
         try {
-            val lidExtractEndMs = min(endMs, startMs + LID_ONLY_MAX_EXTRACT_DURATION_MS)
             updateActiveStep(
                 step = TranscriptionStep.EXTRACTING_PCM,
-                detail = "${startMs}ms..${lidExtractEndMs}ms",
+                detail = "${startMs}ms..${languageOnlyExtractEndMs(startMs, endMs)}ms",
                 startedAtEpochMs = startedAtEpochMs,
                 highPriority = false,
             )
-            val pcmBytes = try {
-                ChunkPcmExtractor.extractChunkPcm16LeBytes(
-                    decoder = audioStreamDecoder,
-                    audioFile = audioFile,
-                    startMs = startMs,
-                    endMs = lidExtractEndMs,
-                    sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
-                )
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (e: Exception) {
-                appendDiagnostic(
-                    stage = "LID_ONLY",
-                    message = "音声切り出しエラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
-                    isWarningOrError = true,
-                )
-                null
-            } ?: return null
+            val shorts = extractLanguageOnlyPcm(audioFile, startMs, endMs) ?: return null
 
             updateActiveStep(
                 step = TranscriptionStep.DETECTING_LANGUAGE,
@@ -2635,43 +2673,233 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 startedAtEpochMs = startedAtEpochMs,
                 highPriority = false,
             )
-            if (languageDetector == null && languageAnalyzer == null) return null
-            val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcmBytes)
-            val prediction = try {
-                resolveLanguagePairPrediction(
-                    shorts = shorts,
-                    sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
-                    audioScopeKey = audioFile.absolutePath,
-                    observationKey = startMs,
-                    targetLang = targetLang,
-                    baseLang = baseLang,
-                )
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (e: Exception) {
-                appendDiagnostic(
-                    stage = "LID_ONLY",
-                    message = "言語判定エラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
-                    isWarningOrError = true,
-                )
-                null
-            } ?: return null
-
-            val selectedLang = if (prediction.selectedTag.equals(baseLang.value, ignoreCase = true)) {
-                baseLang
-            } else {
-                targetLang
-            }
-            return OnDeviceChunkTranscriptionResult(
-                text = "",
-                language = selectedLang,
-                confidence = prediction.selectedProbability,
-                engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+            val analysis = analyzeWhisperLidSafely(shorts, startMs, endMs, targetLang, baseLang) ?: return null
+            return adaptLanguageOnlyResult(
+                analysis = analysis,
+                audioScopeKey = audioFile.absolutePath,
+                startMs = startMs,
+                endMs = endMs,
+                targetLang = targetLang,
+                baseLang = baseLang,
             )
         } finally {
             clearActiveStepIfMatches(startedAtEpochMs)
         }
     }
+
+    /**
+     * 複数チャンクの言語判定（[detectChunkLanguage] と同じ判定）を、Whisper Tiny の推論だけ並列にして行う。
+     *
+     * - 音声の切り出しは、チャンクの順に 1 件ずつ行う（デコーダは同時に 1 区間しか切り出せない）。
+     * - 推論は [computeDispatcher] 上で最大 `workers` 件まで同時に進め、さらに 1 件を切り出し済みで待たせて、CPU を遊ばせない。
+     * - ファイル内の補正（アンカーの登録を含む）と [onResult] はチャンクの順に行うため、結果は 1 件ずつ処理した場合と同じになる。
+     *
+     * 2 言語でない、判定器がない、同時に 1 件しか推論しない（端末が熱い・省電力モードを含む）場合は、1 件ずつ処理する。
+     */
+    override suspend fun detectChunkLanguages(
+        audioFile: File,
+        chunks: List<ChunkTimeRange>,
+        languagePair: LanguagePair,
+        parallelism: Int,
+        computeDispatcher: CoroutineDispatcher,
+        onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        val targetLang = languagePair.target
+        val baseLang = distinctBaseLanguage(languagePair)
+        val requestedWorkers = parallelism.coerceIn(1, OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM)
+        val canRunInParallel = baseLang != null &&
+            chunks.size > 1 &&
+            requestedWorkers > 1 &&
+            audioFile.isFile &&
+            (languageDetector != null || languageAnalyzer != null)
+        val workers = if (canRunInParallel && isDeviceConstrainedForParallelInference()) {
+            appendDiagnostic(
+                stage = "LID_ONLY",
+                message = "端末の温度が高いか省電力モードのため、言語判定を 1 件ずつ実行",
+            )
+            1
+        } else {
+            requestedWorkers
+        }
+        if (!canRunInParallel || baseLang == null || workers <= 1) {
+            super.detectChunkLanguages(audioFile, chunks, languagePair, parallelism, computeDispatcher, onResult)
+            return
+        }
+
+        val audioScopeKey = audioFile.absolutePath
+        val inferenceDispatcher = computeDispatcher.limitedParallelism(workers)
+        val startedAtEpochMs = System.currentTimeMillis()
+        updateActiveStep(
+            step = TranscriptionStep.DETECTING_LANGUAGE,
+            detail = "${targetLang.value} / ${baseLang.value}（$workers 並列）",
+            startedAtEpochMs = startedAtEpochMs,
+            highPriority = false,
+        )
+        try {
+            coroutineScope {
+                // 切り出せなかったチャンクは推論せず、null を入れておく
+                val pending = ArrayDeque<Deferred<WhisperLidAnalysis?>?>()
+                var nextToStart = 0
+                for ((index, chunk) in chunks.withIndex()) {
+                    // 推論中と推論待ちを合わせて (workers + 1) 件まで用意する
+                    while (nextToStart < chunks.size && pending.size <= workers) {
+                        val next = chunks[nextToStart]
+                        val shorts = if (next.startMs >= 0L && next.endMs > next.startMs) {
+                            extractLanguageOnlyPcm(audioFile, next.startMs, next.endMs)
+                        } else {
+                            null
+                        }
+                        pending.addLast(
+                            shorts?.let { pcm ->
+                                async(inferenceDispatcher) {
+                                    analyzeWhisperLidSafely(pcm, next.startMs, next.endMs, targetLang, baseLang)
+                                }
+                            },
+                        )
+                        nextToStart += 1
+                    }
+                    val analysis = pending.removeFirst()?.await()
+                    val result = analysis?.let {
+                        adaptLanguageOnlyResult(
+                            analysis = it,
+                            audioScopeKey = audioScopeKey,
+                            startMs = chunk.startMs,
+                            endMs = chunk.endMs,
+                            targetLang = targetLang,
+                            baseLang = baseLang,
+                        )
+                    }
+                    onResult(index, result)
+                }
+            }
+        } finally {
+            clearActiveStepIfMatches(startedAtEpochMs)
+        }
+    }
+
+    /** [languagePair] の解説言語が学習対象言語と異なる場合はそれを返し、1 言語だけの場合は `null` を返す。 */
+    private fun distinctBaseLanguage(languagePair: LanguagePair): LanguageTag? = languagePair.base?.takeIf {
+        !it.value.equals(languagePair.target.value, ignoreCase = true)
+    }
+
+    /** 言語判定のみの処理で切り出す区間の終わり（チャンクの先頭から最大 [LID_ONLY_MAX_EXTRACT_DURATION_MS]）。 */
+    private fun languageOnlyExtractEndMs(startMs: Long, endMs: Long): Long = min(endMs, startMs + LID_ONLY_MAX_EXTRACT_DURATION_MS)
+
+    /**
+     * 言語判定のみの処理のために、チャンクの先頭（[languageOnlyExtractEndMs] まで）を 16kHz モノラルの PCM に切り出す。
+     *
+     * @return 切り出した PCM。切り出せなかった場合は診断ログに残して `null`。
+     */
+    private suspend fun extractLanguageOnlyPcm(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+    ): ShortArray? {
+        val pcmBytes = try {
+            ChunkPcmExtractor.extractChunkPcm16LeBytes(
+                decoder = audioStreamDecoder,
+                audioFile = audioFile,
+                startMs = startMs,
+                endMs = languageOnlyExtractEndMs(startMs, endMs),
+                sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            appendDiagnostic(
+                stage = "LID_ONLY",
+                message = "音声切り出しエラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
+                isWarningOrError = true,
+            )
+            null
+        } ?: return null
+        return ChunkPcmExtractor.pcm16LeBytesToShorts(pcmBytes)
+    }
+
+    /**
+     * [analyzeWhisperLid] を呼び、失敗した場合は診断ログに残して `null` を返す。
+     *
+     * ファイル内の状態に触れないので、複数のチャンクを同時に呼んでよい。
+     */
+    private fun analyzeWhisperLidSafely(
+        shorts: ShortArray,
+        startMs: Long,
+        endMs: Long,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): WhisperLidAnalysis? = try {
+        analyzeWhisperLid(
+            shorts = shorts,
+            sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+            targetLang = targetLang,
+            baseLang = baseLang,
+        )
+    } catch (ce: CancellationException) {
+        throw ce
+    } catch (e: Exception) {
+        appendDiagnostic(
+            stage = "LID_ONLY",
+            message = "言語判定エラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
+            isWarningOrError = true,
+        )
+        null
+    }
+
+    /**
+     * Whisper の解析結果 [analysis] にファイル内の補正をかけ、言語判定のみの結果にする。
+     *
+     * 補正はファイル内の学習状態（アンカー）を更新するため、同じファイルのチャンクはチャンクの順に呼ぶ。
+     *
+     * @return 言語判定のみの結果。補正に失敗した場合は診断ログに残して `null`。
+     */
+    private fun adaptLanguageOnlyResult(
+        analysis: WhisperLidAnalysis,
+        audioScopeKey: String,
+        startMs: Long,
+        endMs: Long,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): OnDeviceChunkTranscriptionResult? {
+        val prediction = try {
+            applyFileAdaptation(
+                analysis = analysis,
+                audioScopeKey = audioScopeKey,
+                observationKey = startMs,
+                targetLang = targetLang,
+                baseLang = baseLang,
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            appendDiagnostic(
+                stage = "LID_ONLY",
+                message = "言語判定エラー ($startMs..${endMs}ms, ${e.javaClass.simpleName})",
+                isWarningOrError = true,
+            )
+            return null
+        }
+        val selectedLang = if (prediction.selectedTag.equals(baseLang.value, ignoreCase = true)) {
+            baseLang
+        } else {
+            targetLang
+        }
+        return OnDeviceChunkTranscriptionResult(
+            text = "",
+            language = selectedLang,
+            confidence = prediction.selectedProbability,
+            engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+        )
+    }
+
+    /**
+     * 端末が熱い（[PowerManager.THERMAL_STATUS_MODERATE] 以上）か省電力モードで、推論の並列化を控えるべきかどうか。
+     *
+     * 状態を取得できない場合は `false`（並列化してよい）とする。
+     */
+    private fun isDeviceConstrainedForParallelInference(): Boolean = runCatching {
+        val powerManager = context.getSystemService(PowerManager::class.java) ?: return@runCatching false
+        powerManager.isPowerSaveMode || powerManager.currentThermalStatus >= PowerManager.THERMAL_STATUS_MODERATE
+    }.getOrDefault(false)
 
     override suspend fun transcribePcm16Le(
         pcm16LeBytes: ByteArray,
@@ -2918,11 +3146,20 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         !audioScopeKey.startsWith("trial:")
 
     /**
-     * チャンクの音声 [shorts] の 2 言語判定を求める。
+     * Whisper Tiny による 1 チャンク分の解析結果（ファイル内の補正の前）。
      *
-     * Whisper の判定（同系の言語を合算した 2 言語確率と pairMass）に、[audioScopeKey] のファイル内で学習した
-     * 声と言語の特徴（[VoiceProfileLanguageTracker]）の判定を足す。Whisper 単体で高確信のチャンクは、
-     * [observationKey]（チャンクの開始時刻）をキーにしてファイル内のアンカーとして登録する。
+     * @property prediction Whisper 単体の 2 言語判定（同系の言語を合算した確率と pairMass）。
+     * @property embedding エンコーダ出力の平均ベクトル（[languageAnalyzer] がない場合は `null`）。
+     * @property analyzedDurationMs 解析した音声の長さ（ミリ秒、不明な場合は `null`）。
+     */
+    private class WhisperLidAnalysis(
+        val prediction: LanguagePairPrediction,
+        val embedding: FloatArray?,
+        val analyzedDurationMs: Long?,
+    )
+
+    /**
+     * チャンクの音声 [shorts] の 2 言語判定を求める（[analyzeWhisperLid] のあと [applyFileAdaptation]）。
      *
      * @return 判定結果。判定器がない、または無音などで判定できない場合は `null`。
      */
@@ -2934,6 +3171,29 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         targetLang: LanguageTag,
         baseLang: LanguageTag,
     ): LanguagePairPrediction? {
+        val analysis = analyzeWhisperLid(shorts, sampleRateHz, targetLang, baseLang) ?: return null
+        return applyFileAdaptation(
+            analysis = analysis,
+            audioScopeKey = audioScopeKey,
+            observationKey = observationKey,
+            targetLang = targetLang,
+            baseLang = baseLang,
+        )
+    }
+
+    /**
+     * チャンクの音声 [shorts] を Whisper Tiny で解析する（ファイル内の補正はしない）。
+     *
+     * ファイル内の状態に触れず、判定器（[WhisperTinyLanguageDetector]）もスレッドセーフなので、複数のチャンクを同時に解析してよい。
+     *
+     * @return 解析結果。判定器がない、または無音などで判定できない場合は `null`。
+     */
+    private fun analyzeWhisperLid(
+        shorts: ShortArray,
+        sampleRateHz: Int,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): WhisperLidAnalysis? {
         val analyzer = languageAnalyzer
         val analysis = analyzer?.invoke(shorts, targetLang.value, baseLang.value)
         val whisperPred = if (analyzer != null) {
@@ -2941,7 +3201,29 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         } else {
             languageDetector?.invoke(shorts, targetLang.value, baseLang.value)
         } ?: return null
-        val embedding = analysis?.encoderEmbedding?.takeIf { isTrackableAudioScope(audioScopeKey) }
+        return WhisperLidAnalysis(
+            prediction = whisperPred,
+            embedding = analysis?.encoderEmbedding,
+            analyzedDurationMs = if (sampleRateHz > 0) shorts.size.toLong() * 1_000L / sampleRateHz.toLong() else null,
+        )
+    }
+
+    /**
+     * Whisper の解析結果 [analysis] に、[audioScopeKey] のファイル内で学習した声と言語の特徴
+     * （[VoiceProfileLanguageTracker]）の判定を足す。Whisper 単体で高確信のチャンクは、
+     * [observationKey]（チャンクの開始時刻）をキーにしてファイル内のアンカーとして登録する。
+     *
+     * アンカーの登録は後のチャンクの判定に影響するため、同じファイルのチャンクはチャンクの順に呼ぶ。
+     */
+    private fun applyFileAdaptation(
+        analysis: WhisperLidAnalysis,
+        audioScopeKey: String,
+        observationKey: Long,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): LanguagePairPrediction {
+        val whisperPred = analysis.prediction
+        val embedding = analysis.embedding?.takeIf { isTrackableAudioScope(audioScopeKey) }
         val speakerPred = embedding?.let {
             voiceProfileTracker.predictLanguageFromVoiceProfile(
                 audioScopeKey = audioScopeKey,
@@ -2950,13 +3232,12 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 baseTag = baseLang.value,
             )
         }
-        val analyzedDurationMs = if (sampleRateHz > 0) shorts.size.toLong() * 1_000L / sampleRateHz.toLong() else null
         val combined = voiceProfileTracker.combineWithWhisperPrediction(
             whisperPrediction = whisperPred,
             speakerPrediction = speakerPred,
             targetTag = targetLang.value,
             baseTag = baseLang.value,
-            analyzedDurationMs = analyzedDurationMs,
+            analyzedDurationMs = analysis.analyzedDurationMs,
         )
         if (embedding != null && VoiceProfileLanguageTracker.isAnchorEligible(whisperPred)) {
             voiceProfileTracker.recordSpeakerObservation(
@@ -2969,7 +3250,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         logDebug(
             "lid whisper=${whisperPred.selectedTag}:${whisperPred.selectedProbability} mass=${whisperPred.pairMass} " +
                 "speakerLogOdds=${speakerPred?.logOdds} anchors=${speakerPred?.targetAnchorCount}/${speakerPred?.baseAnchorCount} " +
-                "combined=${combined.selectedTag}:${combined.selectedProbability} durationMs=$analyzedDurationMs",
+                "combined=${combined.selectedTag}:${combined.selectedProbability} durationMs=${analysis.analyzedDurationMs}",
         )
         return combined
     }

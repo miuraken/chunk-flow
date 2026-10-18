@@ -11,6 +11,9 @@ import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.roundToInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -19,6 +22,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -2159,6 +2163,132 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals(LanguageTag("en"), eighth.language)
         // Whisper は毎回実行する（話者の一致だけで判定を省略しない）
         assertEquals(8, analyzerCallCount)
+    }
+
+    @Test
+    fun `detectChunkLanguages_推論を並列にしても補正と結果の通知はチャンク順で1件ずつの判定と同じになる`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val totalSec = 12
+        // 偶数秒: 低い声の話者（ja）、奇数秒: 高い声の話者（en）。各秒の最初の 1 サンプルに秒数を埋め込む
+        val markedDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val samples = FloatArray(outputSampleRate * totalSec) { idx ->
+                    val second = idx / outputSampleRate
+                    if (idx % outputSampleRate == 0) {
+                        second / 100f
+                    } else {
+                        val timeSec = idx.toDouble() / outputSampleRate.toDouble()
+                        val f0 = if (second % 2 == 1) 280.0 else 110.0
+                        (0.4 * kotlin.math.sin(2.0 * Math.PI * f0 * timeSec)).toFloat()
+                    }
+                }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = totalSec * 1_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/wav",
+                )
+            }
+        }
+
+        val activeAnalyses = AtomicInteger(0)
+        val maxConcurrentAnalyses = AtomicInteger(0)
+        val createTranscriber = {
+            AndroidSpeechRecognizerChunkTranscriber(
+                context = context,
+                audioStreamDecoder = markedDecoder,
+                onDeviceAvailabilityChecker = { true },
+                standardAvailabilityChecker = { true },
+                languageAnalyzer = { shorts, targetTag, baseTag ->
+                    val running = activeAnalyses.incrementAndGet()
+                    maxConcurrentAnalyses.accumulateAndGet(running) { a, b -> maxOf(a, b) }
+                    try {
+                        // 推論に時間がかかる状況を作り、複数のチャンクの推論を重ねる
+                        Thread.sleep(40L)
+                        val second = (shorts[0] * 100f / Short.MAX_VALUE).roundToInt()
+                        var zeroCrossings = 0
+                        for (i in 1 until shorts.size) {
+                            if ((shorts[i] >= 0) != (shorts[i - 1] >= 0)) zeroCrossings += 1
+                        }
+                        val isHighPitch = zeroCrossings > 400
+                        val embedding = FloatArray(16) { d ->
+                            val speakerComponent = if ((d % 2 == 0) == isHighPitch) 1.0f else -1.0f
+                            3.0f + speakerComponent + 0.05f * ((second * 7 + d) % 5)
+                        }
+                        val warmUp = second < 6
+                        // 最初の 6 秒は Whisper が高確信、以降は確率の大半がペア外に流れ、しかも逆の言語に傾いた判定
+                        val targetProbability = when {
+                            warmUp && isHighPitch -> 0.97f
+                            warmUp -> 0.03f
+                            isHighPitch -> 0.15f
+                            else -> 0.80f
+                        }
+                        LanguagePairAnalysis(
+                            prediction = LanguagePairPrediction(
+                                selectedTag = if (targetProbability >= 0.5f) targetTag else baseTag,
+                                fallbackTag = if (targetProbability >= 0.5f) baseTag else targetTag,
+                                selectedProbability = maxOf(targetProbability, 1f - targetProbability),
+                                targetProbability = targetProbability,
+                                baseProbability = 1f - targetProbability,
+                                inferenceTimeMs = 40L,
+                                pairMass = if (warmUp) 0.9f else 0.1f,
+                            ),
+                            encoderEmbedding = embedding,
+                        )
+                    } finally {
+                        activeAnalyses.decrementAndGet()
+                    }
+                },
+            )
+        }
+
+        val audioFile = tempFolder.newFile("parallel_lid.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val pair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
+        // 最後の 1 件は長さ 0 の不正な区間（判定できず null になる）
+        val chunks = (0 until totalSec).map { second ->
+            ChunkTimeRange(startMs = second * 1_000L, endMs = second * 1_000L + 1_000L)
+        } + ChunkTimeRange(startMs = 5_000L, endMs = 5_000L)
+
+        val sequentialTranscriber = createTranscriber()
+        val sequentialResults = chunks.map { sequentialTranscriber.detectChunkLanguage(audioFile, it.startMs, it.endMs, pair) }
+        assertEquals(1, maxConcurrentAnalyses.get())
+        // ファイル内の補正が効いている: Whisper が逆の言語に傾いた 7 秒目以降も、声の特徴で正しく判定される
+        for (second in 0 until totalSec) {
+            val expected = if (second % 2 == 1) LanguageTag("en") else LanguageTag("ja")
+            assertEquals(expected, sequentialResults[second]?.language, "${second}秒目")
+        }
+        assertNull(sequentialResults.last())
+
+        val executor = Executors.newFixedThreadPool(OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM)
+        try {
+            val delivered = mutableListOf<Pair<Int, OnDeviceChunkTranscriptionResult?>>()
+            createTranscriber().detectChunkLanguages(
+                audioFile = audioFile,
+                chunks = chunks,
+                languagePair = pair,
+                parallelism = OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM,
+                computeDispatcher = executor.asCoroutineDispatcher(),
+            ) { index, result ->
+                delivered += index to result
+            }
+
+            assertEquals(chunks.indices.toList(), delivered.map { it.first }, "結果はチャンクの順に 1 回ずつ届く")
+            assertEquals(sequentialResults, delivered.map { it.second }, "並列でも 1 件ずつ処理した場合と同じ判定になる")
+            assertTrue(maxConcurrentAnalyses.get() >= 2, "推論が同時に複数件進む（最大 ${maxConcurrentAnalyses.get()} 件）")
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test
