@@ -23,6 +23,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -2516,6 +2517,111 @@ class OnDeviceSpeechTranscriberTest {
             tracker.predictLanguageFromVoiceProfile(scopeKey, floatArrayOf(1f, 0f, 0f, 0f), "hi", "en"),
             "0ms の誤った en アンカーが消去され、en アンカー数が 2 件（< 3 件）になって null になる",
         )
+    }
+
+    @Test
+    fun `detectChunkLanguagesFromPcmStream_音声ファイルを再デコードせずストリーム順に並列推論と話者適応を行う`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        var decoderCallCount = 0
+        val neverCalledDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                decoderCallCount += 1
+                error("detectChunkLanguagesFromPcmStream should not decode audioFile")
+            }
+        }
+
+        val activeAnalyses = AtomicInteger(0)
+        val maxConcurrentAnalyses = AtomicInteger(0)
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = neverCalledDecoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            languageAnalyzer = { shorts, targetTag, baseTag ->
+                val running = activeAnalyses.incrementAndGet()
+                maxConcurrentAnalyses.accumulateAndGet(running) { a, b -> maxOf(a, b) }
+                try {
+                    Thread.sleep(30L)
+                    val chunkIndex = shorts[0].toInt()
+                    val isTargetSpeaker = chunkIndex % 2 == 1
+                    val embedding = FloatArray(16) { d ->
+                        val speakerComponent = if ((d % 2 == 0) == isTargetSpeaker) 1.0f else -1.0f
+                        3.0f + speakerComponent + 0.03f * ((chunkIndex * 7 + d) % 5)
+                    }
+                    val warmUp = chunkIndex < 6
+                    val targetProbability = when {
+                        warmUp && isTargetSpeaker -> 0.96f
+
+                        warmUp -> 0.04f
+
+                        // 7件目以降はペア外へ確率が流れて逆の言語に傾くが、話者プロファイル適応で補正される
+                        isTargetSpeaker -> 0.20f
+
+                        else -> 0.78f
+                    }
+                    LanguagePairAnalysis(
+                        prediction = LanguagePairPrediction(
+                            selectedTag = if (targetProbability >= 0.5f) targetTag else baseTag,
+                            fallbackTag = if (targetProbability >= 0.5f) baseTag else targetTag,
+                            selectedProbability = maxOf(targetProbability, 1f - targetProbability),
+                            targetProbability = targetProbability,
+                            baseProbability = 1f - targetProbability,
+                            inferenceTimeMs = 30L,
+                            pairMass = if (warmUp) 0.92f else 0.10f,
+                        ),
+                        encoderEmbedding = embedding,
+                    )
+                } finally {
+                    activeAnalyses.decrementAndGet()
+                }
+            },
+        )
+
+        val executor = Executors.newFixedThreadPool(OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM)
+        try {
+            val channel = Channel<PcmChunkLanguageRequest>(capacity = Channel.UNLIMITED)
+            for (idx in 0 until 8) {
+                val pcm = ShortArray(1_600) { sampleIdx ->
+                    if (sampleIdx == 0) idx.toShort() else 1_000
+                }
+                channel.send(
+                    PcmChunkLanguageRequest(
+                        chunkId = (idx + 1).toLong(),
+                        startMs = idx * 1_000L,
+                        endMs = (idx + 1) * 1_000L,
+                        pcm16kMono = pcm,
+                    ),
+                )
+            }
+            channel.close()
+
+            val delivered = mutableListOf<Pair<Long, LanguageTag?>>()
+            transcriber.detectChunkLanguagesFromPcmStream(
+                audioScopeKey = "/virtual/stream_test.m4a",
+                requests = channel,
+                languagePair = LanguagePair(target = LanguageTag("hi"), base = LanguageTag("en")),
+                parallelism = OnDeviceChunkTranscriber.MAX_LANGUAGE_DETECTION_PARALLELISM,
+                computeDispatcher = executor.asCoroutineDispatcher(),
+            ) { req, result ->
+                delivered += req.chunkId to result?.language
+            }
+
+            assertEquals(0, decoderCallCount, "PCMストリームから直接判定するためデコーダは1回も呼ばれない")
+            assertEquals((1L..8L).toList(), delivered.map { it.first })
+            for (idx in 0 until 8) {
+                val expected = if (idx % 2 == 1) LanguageTag("hi") else LanguageTag("en")
+                assertEquals(expected, delivered[idx].second, "chunk index=$idx")
+            }
+            assertTrue(maxConcurrentAnalyses.get() >= 2, "推論が並列に実行される（最大 ${maxConcurrentAnalyses.get()} 並列）")
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */

@@ -230,6 +230,11 @@ class AnalysisWorker(
 
         return try {
             var decodedDurationMs: Long? = null
+            val segmentationParams = if (AnalysisStage.SEGMENTATION in requestedStages) {
+                readSegmentationParams()
+            } else {
+                null
+            }
 
             if (needDecode) {
                 val now = clock()
@@ -272,6 +277,9 @@ class AnalysisWorker(
                 var lastCheckpointMs = now
                 var lastProgressUpdateMs = now
                 var lastSavedDecodedBins = 0
+                var lastSegmentedBins = 0
+                var progressiveConfirmedCount = 0
+                var progressiveSegmentationRunning = false
 
                 val sampleSink = SampleSink { samples, count ->
                     if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
@@ -299,6 +307,59 @@ class AnalysisWorker(
                         )
                         lastCheckpointMs = currentMs
                         lastSavedDecodedBins = accumulator.size
+
+                        if (
+                            segmentationParams != null &&
+                            accumulator.size - lastSegmentedBins >= FeatureAccumulator.BINS_PER_30_SECONDS
+                        ) {
+                            lastSegmentedBins = accumulator.size
+                            if (!progressiveSegmentationRunning) {
+                                progressiveSegmentationRunning = true
+                                analysisStateDao.upsert(
+                                    StageStatus.Running(progress = progress.fraction).toEntity(
+                                        mediaId = mediaId,
+                                        stage = AnalysisStage.SEGMENTATION,
+                                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                        updatedAtEpochMs = currentMs,
+                                    ),
+                                )
+                            }
+                            val provisionalChunks = chunkSegmenter.segment(
+                                logEnergyDb = accumulator.logEnergyDb(),
+                                params = segmentationParams,
+                                binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                                durationMs = accumulator.size.toLong() * ChunkSegmenter.DEFAULT_BIN_MS,
+                            )
+                            val confirmedChunks = if (provisionalChunks.size > 1) {
+                                provisionalChunks.dropLast(1)
+                            } else {
+                                emptyList()
+                            }
+                            if (confirmedChunks.size > progressiveConfirmedCount) {
+                                val confirmedEntities = confirmedChunks.map {
+                                    it.toEntity(
+                                        mediaId = mediaId,
+                                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                    )
+                                }
+                                chunkDao.replaceChunksTransaction(
+                                    mediaId = mediaId.value,
+                                    origin = ChunkOrigin.AUTO.name,
+                                    newChunks = confirmedEntities,
+                                    newTranscriptsByIndex = emptyMap(),
+                                    preserveAllOldTranscripts = true,
+                                )
+                                progressiveConfirmedCount = confirmedChunks.size
+                                analysisStateDao.upsert(
+                                    StageStatus.Running(progress = progress.fraction).toEntity(
+                                        mediaId = mediaId,
+                                        stage = AnalysisStage.SEGMENTATION,
+                                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                        updatedAtEpochMs = currentMs,
+                                    ),
+                                )
+                            }
+                        }
                     }
 
                     if (shouldUpdateProgress || shouldSaveWaveform) {
@@ -403,7 +464,7 @@ class AnalysisWorker(
                     return Result.failure()
                 }
 
-                val params = readSegmentationParams()
+                val params = segmentationParams ?: readSegmentationParams()
                 val durationMs = decodedDurationMs?.takeIf { it > 0L }
                     ?: mediaItemDao.getById(mediaId.value)?.durationMs?.takeIf { it > 0L }
                     ?: storedFeatures.durationMs
