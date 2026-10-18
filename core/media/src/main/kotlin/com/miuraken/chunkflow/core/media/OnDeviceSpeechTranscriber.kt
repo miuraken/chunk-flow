@@ -1570,6 +1570,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             baseTag: String,
         ) -> LanguagePairAnalysis?
     )? = null,
+    /**
+     * 判定器の推論の累計（[WhisperTinyLanguageDetector.inferenceStats]）。
+     * 一括言語判定の終わりに、どの推論エンジン（onnxruntime / kotlin）で判定したかと推論時間を診断ログに出すために使う。
+     */
+    private val languageDetectionStats: (() -> LidInferenceStats)? = null,
 ) : OnDeviceChunkTranscriber {
 
     @Inject
@@ -1611,6 +1616,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         languageAnalyzer = { pcm, target, base ->
             whisperTinyLanguageDetector.analyzeLanguagePair(pcm, target, base)
         },
+        languageDetectionStats = { whisperTinyLanguageDetector.inferenceStats() },
     )
 
     internal constructor(
@@ -1638,6 +1644,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         attemptRunner = null,
         languageDetector = { pcm, target, base -> defaultLanguageDetector.detectLanguagePair(pcm, target, base) },
         languageAnalyzer = { pcm, target, base -> defaultLanguageDetector.analyzeLanguagePair(pcm, target, base) },
+        languageDetectionStats = { defaultLanguageDetector.inferenceStats() },
     )
 
     internal val voiceProfileTracker: VoiceProfileLanguageTracker = VoiceProfileLanguageTracker()
@@ -2695,8 +2702,43 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
      * - ファイル内の補正（アンカーの登録を含む）と [onResult] はチャンクの順に行うため、結果は 1 件ずつ処理した場合と同じになる。
      *
      * 2 言語でない、判定器がない、同時に 1 件しか推論しない（端末が熱い・省電力モードを含む）場合は、1 件ずつ処理する。
+     * 終わりに、推論エンジン（onnxruntime / kotlin）と推論時間を診断ログに残す（[describeLanguageDetectionEngine]）。
      */
     override suspend fun detectChunkLanguages(
+        audioFile: File,
+        chunks: List<ChunkTimeRange>,
+        languagePair: LanguagePair,
+        parallelism: Int,
+        computeDispatcher: CoroutineDispatcher,
+        onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+    ) {
+        val statsBefore = languageDetectionStats?.let { provider -> runCatching { provider() }.getOrNull() }
+        try {
+            detectChunkLanguagesInChunkOrder(audioFile, chunks, languagePair, parallelism, computeDispatcher, onResult)
+        } finally {
+            if (statsBefore != null) appendLanguageDetectionEngineDiagnostic(statsBefore)
+        }
+    }
+
+    /**
+     * 一括言語判定の推論エンジンと推論時間（[before] からの増分）を診断ログに残す。この間に推論しなかった場合は何もしない。
+     *
+     * 純 Kotlin で推論し、ONNX Runtime を使えない理由がある場合は警告にする。
+     */
+    private fun appendLanguageDetectionEngineDiagnostic(before: LidInferenceStats) {
+        val provider = languageDetectionStats ?: return
+        val after = runCatching { provider() }.getOrNull() ?: return
+        val delta = after.since(before)
+        if (delta.onnxRuns + delta.kotlinRuns <= 0L) return
+        appendDiagnostic(
+            stage = "LID_ONLY",
+            message = describeLanguageDetectionEngine(delta),
+            isWarningOrError = delta.kotlinRuns > 0L && delta.onnxUnavailableReason != null,
+        )
+    }
+
+    /** [detectChunkLanguages] の本体（推論だけを並列にし、補正と [onResult] はチャンクの順に行う）。 */
+    private suspend fun detectChunkLanguagesInChunkOrder(
         audioFile: File,
         chunks: List<ChunkTimeRange>,
         languagePair: LanguagePair,
@@ -4280,6 +4322,42 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     }
 
     companion object {
+        /**
+         * 一括言語判定の推論エンジンと推論時間（[delta] は 1 回の一括判定の間の増分）を、診断ログの 1 行にする。
+         *
+         * 例:
+         * - `推論エンジン: onnxruntime（58 件、推論 平均 31.2 ms/チャンク、log-mel 平均 4.8 ms、ONNX の読み込み 142 ms）`
+         * - `推論エンジン: kotlin（58 件、推論 平均 826.0 ms/チャンク、log-mel 平均 4.8 ms）。onnxruntime を使えない: ONNX のファイルがない`
+         */
+        internal fun describeLanguageDetectionEngine(delta: LidInferenceStats): String {
+            fun averageMs(nanos: Long, runs: Long): String = String.format(
+                Locale.ROOT,
+                "%.1f",
+                if (runs > 0L) nanos.toDouble() / runs.toDouble() / 1_000_000.0 else 0.0,
+            )
+            val engines = when {
+                delta.kotlinRuns == 0L ->
+                    "${OnnxWhisperLidEngine.ENGINE_NAME}（${delta.onnxRuns} 件、" +
+                        "推論 平均 ${averageMs(delta.onnxNanos, delta.onnxRuns)} ms/チャンク"
+
+                delta.onnxRuns == 0L ->
+                    "${WhisperTinyLanguageDetector.KOTLIN_ENGINE_NAME}（${delta.kotlinRuns} 件、" +
+                        "推論 平均 ${averageMs(delta.kotlinNanos, delta.kotlinRuns)} ms/チャンク"
+
+                else ->
+                    "${OnnxWhisperLidEngine.ENGINE_NAME} ${delta.onnxRuns} 件と" +
+                        "${WhisperTinyLanguageDetector.KOTLIN_ENGINE_NAME} ${delta.kotlinRuns} 件（" +
+                        "推論 平均 ${averageMs(delta.onnxNanos, delta.onnxRuns)} ms / " +
+                        "${averageMs(delta.kotlinNanos, delta.kotlinRuns)} ms/チャンク"
+            }
+            val mel = if (delta.melRuns > 0L) "、log-mel 平均 ${averageMs(delta.melNanos, delta.melRuns)} ms" else ""
+            val load = delta.onnxLoadTimeMs?.takeIf { delta.onnxRuns > 0L }?.let { "、ONNX の読み込み $it ms" }.orEmpty()
+            val reason = delta.onnxUnavailableReason?.takeIf { delta.kotlinRuns > 0L }
+                ?.let { "。${OnnxWhisperLidEngine.ENGINE_NAME} を使えない: $it" }
+                .orEmpty()
+            return "推論エンジン: $engines$mel$load）$reason"
+        }
+
         private const val LOG_TAG: String = "ChunkFlowSpeech"
         private const val PIPE_FRAME_DURATION_MS: Int = 20
         private const val MIN_PIPE_FRAME_BYTES: Int = 640

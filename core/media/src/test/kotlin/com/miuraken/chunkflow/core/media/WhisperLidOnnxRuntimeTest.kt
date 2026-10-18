@@ -1,5 +1,8 @@
 package com.miuraken.chunkflow.core.media
 
+import com.miuraken.chunkflow.core.audio.SampleSink
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import java.io.File
 import java.util.Random
 import java.util.concurrent.Callable
@@ -14,6 +17,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.test.runTest
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -25,6 +32,9 @@ import org.robolectric.RuntimeEnvironment
  */
 @RunWith(RobolectricTestRunner::class)
 class WhisperLidOnnxRuntimeTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     private val context get() = RuntimeEnvironment.getApplication()
 
@@ -204,6 +214,111 @@ class WhisperLidOnnxRuntimeTest {
         val stats = detector.inferenceStats()
         assertEquals(signals.size.toLong(), stats.onnxRuns)
         assertEquals(0L, stats.kotlinRuns, "読み込みの途中に純 Kotlin へ切り替えない")
+    }
+
+    @Test
+    fun `describeLanguageDetectionEngine_onnxruntimeだけで推論した場合は件数と平均時間と読み込み時間を出す`() {
+        val text = AndroidSpeechRecognizerChunkTranscriber.describeLanguageDetectionEngine(
+            LidInferenceStats(
+                onnxRuns = 4,
+                onnxNanos = 4 * 31_200_000L,
+                melRuns = 4,
+                melNanos = 4 * 4_800_000L,
+                onnxLoadTimeMs = 142,
+            ),
+        )
+        assertEquals("推論エンジン: onnxruntime（4 件、推論 平均 31.2 ms/チャンク、log-mel 平均 4.8 ms、ONNX の読み込み 142 ms）", text)
+    }
+
+    @Test
+    fun `describeLanguageDetectionEngine_純Kotlinに切り替えた場合はONNXRuntimeを使えない理由を出す`() {
+        val kotlinOnly = AndroidSpeechRecognizerChunkTranscriber.describeLanguageDetectionEngine(
+            LidInferenceStats(
+                kotlinRuns = 2,
+                kotlinNanos = 2 * 826_000_000L,
+                melRuns = 2,
+                melNanos = 2 * 4_800_000L,
+                onnxUnavailableReason = "ONNX のファイルがない",
+            ),
+        )
+        assertEquals(
+            "推論エンジン: kotlin（2 件、推論 平均 826.0 ms/チャンク、log-mel 平均 4.8 ms）。onnxruntime を使えない: ONNX のファイルがない",
+            kotlinOnly,
+        )
+        val mixed = AndroidSpeechRecognizerChunkTranscriber.describeLanguageDetectionEngine(
+            LidInferenceStats(
+                onnxRuns = 3,
+                onnxNanos = 3 * 30_000_000L,
+                kotlinRuns = 1,
+                kotlinNanos = 800_000_000L,
+                melRuns = 4,
+                melNanos = 4 * 5_000_000L,
+                onnxLoadTimeMs = 150,
+                onnxUnavailableReason = "推論に失敗 (OrtException)",
+            ),
+        )
+        assertEquals(
+            "推論エンジン: onnxruntime 3 件とkotlin 1 件（推論 平均 30.0 ms / 800.0 ms/チャンク、log-mel 平均 5.0 ms、" +
+                "ONNX の読み込み 150 ms）。onnxruntime を使えない: 推論に失敗 (OrtException)",
+            mixed,
+        )
+    }
+
+    @Test
+    fun `detectChunkLanguages_一括言語判定の終わりに推論エンジンと推論時間を診断ログに残す`() = runTest {
+        val detector = WhisperTinyLanguageDetector(context, LidEngineMode.AUTO)
+        val signal = synthSignals()[5]
+        val decoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val samples = FloatArray(outputSampleRate * 4) { idx -> signal[idx % signal.size] / 32768f }
+                sink.onSamples(samples, samples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = samples.size.toLong(),
+                    resampledSamples = samples.size.toLong(),
+                    durationMs = 4_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/wav",
+                )
+            }
+        }
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = decoder,
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            languageAnalyzer = { pcm, target, base -> detector.analyzeLanguagePair(pcm, target, base) },
+            languageDetectionStats = { detector.inferenceStats() },
+        )
+        val audioFile = tempFolder.newFile("engine_diag.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val chunks = listOf(ChunkTimeRange(0L, 1_500L), ChunkTimeRange(1_500L, 3_000L))
+        val executor = Executors.newFixedThreadPool(2)
+        val results = mutableListOf<OnDeviceChunkTranscriptionResult?>()
+        try {
+            transcriber.detectChunkLanguages(
+                audioFile = audioFile,
+                chunks = chunks,
+                languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+                parallelism = 2,
+                computeDispatcher = executor.asCoroutineDispatcher(),
+            ) { _, result -> results += result }
+        } finally {
+            executor.shutdownNow()
+        }
+
+        assertEquals(2, results.size)
+        val engineLine = transcriber.recentDiagnostics.value.lastOrNull { it.message.startsWith("推論エンジン:") }
+        assertNotNull(engineLine)
+        assertTrue(engineLine.message.startsWith("推論エンジン: onnxruntime（2 件、"), engineLine.message)
+        assertTrue(!engineLine.isWarningOrError)
     }
 
     private fun maxAbsDiff(a: FloatArray, b: FloatArray): Float {
