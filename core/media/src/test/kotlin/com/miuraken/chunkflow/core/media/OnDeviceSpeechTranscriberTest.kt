@@ -2157,6 +2157,108 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals(callsAfterWarmup, lidCallCount, "話者プロファイルが高確信度で一致した場合は Whisper LID をスキップする")
     }
 
+    @Test
+    fun `isUnnaturalOrTransliterationSuspected_韓国語やラテン文字言語での他言語音写を検知し自然な発話は除外する`() {
+        // 日本語: カタカナ比率が高い音写は疑わしい
+        assertTrue(isUnnaturalOrTransliterationSuspected("アンニョンハセヨ", "ja"))
+        assertTrue(!isUnnaturalOrTransliterationSuspected("おはようございます。今日もよろしくお願いします。", "ja"))
+
+        // 韓国語: 機能語・助詞を含まない1文字ハングル断片の羅列は音写の疑いあり
+        assertTrue(isUnnaturalOrTransliterationSuspected("오 하 요 고 자 이 마 스", "ko"))
+        assertTrue(!isUnnaturalOrTransliterationSuspected("안녕하세요 오늘 날씨가 정말 좋네요", "ko"))
+
+        // 英語・スペイン語: 対象言語の機能語が皆無で他言語の機能語や短音節断片が並ぶ場合は不自然
+        assertTrue(isUnnaturalOrTransliterationSuspected("el libro está en la mesa", "en"))
+        assertTrue(!isUnnaturalOrTransliterationSuspected("the book is on the table", "en"))
+        assertTrue(!isUnnaturalOrTransliterationSuspected("el libro está en la mesa", "es"))
+    }
+
+    @Test
+    fun `scoreProbeCandidateForLanguage_confidenceがnullのMLKit結果でも機能語と発音区別符号で正しいラテン文字言語を高く評価する`() {
+        val spanishSentence = SpeechRecognitionAttemptResult(
+            text = "buenos días dónde está la estación por favor",
+            confidence = null,
+        )
+        val englishSentence = SpeechRecognitionAttemptResult(
+            text = "good morning where is the station please",
+            confidence = null,
+        )
+
+        val esScoreForSpanish = scoreProbeCandidateForLanguage(spanishSentence, "es")
+        val enScoreForSpanish = scoreProbeCandidateForLanguage(spanishSentence, "en")
+        assertTrue(
+            esScoreForSpanish > enScoreForSpanish,
+            "スペイン語文は confidence == null でも es スコア ($esScoreForSpanish) > en スコア ($enScoreForSpanish) になる",
+        )
+
+        val enScoreForEnglish = scoreProbeCandidateForLanguage(englishSentence, "en")
+        val esScoreForEnglish = scoreProbeCandidateForLanguage(englishSentence, "es")
+        assertTrue(
+            enScoreForEnglish > esScoreForEnglish,
+            "英語文は confidence == null でも en スコア ($enScoreForEnglish) > es スコア ($esScoreForEnglish) になる",
+        )
+    }
+
+    @Test
+    fun `transcribeChunk_compareBothLanguagesがtrueのときLID確信度が高くても両言語を実行して自然度が高い言語を採用する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val executedLocales = mutableListOf<String>()
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47LocaleTag, _ ->
+                executedLocales += bcp47LocaleTag
+                when (bcp47LocaleTag) {
+                    // LID が高確信度 (0.95) で en と誤判定したが、英語 STT の結果は自然度が低い断片
+                    "en-US" -> SpeechRecognitionAttemptResult(
+                        text = "oh ha yo go za",
+                        confidence = null,
+                    )
+
+                    // 日本語 STT の結果は自然な日本語文
+                    "ja-JP" -> SpeechRecognitionAttemptResult(
+                        text = "おはようございます。今日もよろしくお願いします。",
+                        confidence = null,
+                    )
+
+                    else -> null
+                }
+            },
+            languageDetector = { _, _, _ ->
+                LanguagePairPrediction(
+                    selectedTag = "en",
+                    fallbackTag = "ja",
+                    selectedProbability = 0.95f,
+                    targetProbability = 0.95f,
+                    baseProbability = 0.05f,
+                    inferenceTimeMs = 10L,
+                )
+            },
+        )
+
+        val audioFile = tempFolder.newFile("compare_both.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val result = transcriber.transcribeChunk(
+            audioFile = audioFile,
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+            forceRefresh = true,
+            highPriority = true,
+            itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+            engineByLanguage = emptyMap(),
+            precomputedLanguage = null,
+            precomputedLanguageConfidence = null,
+            compareBothLanguages = true,
+        )
+
+        assertNotNull(result)
+        assertEquals(listOf("en-US", "ja-JP"), executedLocales)
+        assertEquals(LanguageTag("ja"), result.language)
+        assertEquals("おはようございます。今日もよろしくお願いします。", result.text)
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

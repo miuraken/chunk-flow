@@ -263,6 +263,38 @@ interface OnDeviceChunkTranscriber {
     )
 
     /**
+     * 音声ファイル [audioFile] の `[startMs, endMs]` 区間を 16kHz モノラル 16-bit PCM に切り出して端末内音声認識を行う。
+     *
+     * @param precomputedLanguage 先行する言語判定パス（`language-id-only` 等）で既に判定済みの言語タグ（未判定時は `null`）。
+     * @param precomputedLanguageConfidence [precomputedLanguage] の判定確率（0.0..1.0、不明時は `null`）。
+     * @param compareBothLanguages `true` の場合は LID の確信度にかかわらず `target` と `base` の両言語で STT を実行し、テキスト自然度スコアを比較して採用する。
+     */
+    suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+        precomputedLanguage: LanguageTag?,
+        precomputedLanguageConfidence: Float?,
+        compareBothLanguages: Boolean,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = forceRefresh,
+        highPriority = highPriority,
+        itemSttOverride = itemSttOverride,
+        engineByLanguage = engineByLanguage,
+        precomputedLanguage = precomputedLanguage,
+        precomputedLanguageConfidence = precomputedLanguageConfidence,
+    )
+
+    /**
      * 切り出し済みの 16kHz モノラル 16-bit リトルエンディアン PCM（[pcm16LeBytes]）に対して端末内音声認識を行う。
      */
     suspend fun transcribePcm16Le(
@@ -1072,8 +1104,10 @@ internal fun scoreProbeCandidateForLanguage(
             }
             if (hiraganaCount == 0 && katakanaCount == 0 && ZH_COMMON_CHARS.any { text.contains(it) }) {
                 score += 0.5f
+            } else if (kanjiCount >= 5 && ZH_COMMON_CHARS.none { text.contains(it) }) {
+                score -= 0.45f
             }
-            if (hiraganaCount > 0 || katakanaCount > 0) {
+            if (hiraganaCount > 0 || katakanaCount > 0 || hangulCount > 0) {
                 score -= 0.8f
             }
         }
@@ -1087,6 +1121,27 @@ internal fun scoreProbeCandidateForLanguage(
         else -> {
             if (totalLetterCount > 0) {
                 score += (latinCount.toFloat() / safeTotalLetters) * 0.95f
+            }
+            val targetFunctionWords = latinFunctionWordsFor(primaryLang)
+            if (targetFunctionWords != null && latinCount > 0) {
+                val words = extractLatinWordsLower(text)
+                val matchedCount = words.count { it in targetFunctionWords }
+                when {
+                    matchedCount >= 2 -> score += 0.55f
+                    matchedCount == 1 -> score += 0.30f
+                }
+                if (hasCharacteristicLatinDiacritics(text, primaryLang)) {
+                    score += 0.25f
+                }
+                if (words.size >= 4 && matchedCount == 0) {
+                    val foreignMatches = maxForeignLatinFunctionWordMatches(words, primaryLang)
+                    val avgWordLen = words.sumOf { it.length }.toFloat() / words.size.toFloat()
+                    if (foreignMatches >= 2) {
+                        score -= 0.90f
+                    } else if (foreignMatches == 1 || avgWordLen <= 2.7f) {
+                        score -= 0.50f
+                    }
+                }
             }
         }
     }
@@ -1136,12 +1191,185 @@ internal fun isKatakanaTransliterationSuspected(
     return katakanaRatio >= KATAKANA_SUSPECT_RATIO_THRESHOLD
 }
 
+/**
+ * 認識結果 [text] が指定言語 [langTag] の自然な発話ではなく、別言語の音写（外来語化・空耳当て字）である疑いが高いかを判定する。
+ *
+ * ML Kit GenAI Speech Recognition や `sherpa-onnx` のように `confidence == null` を返すエンジンでも、
+ * 誤った言語の認識器が別言語の音声を無理やり音写した結果（日本語のカタカナ音写、韓国語の短音節羅列、
+ * ラテン文字言語間の機能語欠落・他言語機能語混入など）を検出してもう一方の言語でのフォールバック検証を発火させる。
+ */
+internal fun isUnnaturalOrTransliterationSuspected(
+    text: String,
+    langTag: String,
+): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return false
+    val primaryLang = langTag.trim().replace('_', '-').substringBefore('-').lowercase(Locale.ROOT)
+    if (primaryLang == "ja") {
+        return isKatakanaTransliterationSuspected(trimmed, langTag)
+    }
+
+    var kanjiCount = 0
+    var hiraganaCount = 0
+    var katakanaCount = 0
+    var hangulCount = 0
+    var latinCount = 0
+    var totalLetterCount = 0
+    for (ch in trimmed) {
+        when {
+            ch in '\u4E00'..'\u9FFF' || ch in '\u3400'..'\u4DBF' -> {
+                kanjiCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u3040'..'\u309F' -> {
+                hiraganaCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u30A0'..'\u30FF' -> {
+                katakanaCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\uAC00'..'\uD7A3' || ch in '\u3130'..'\u318F' -> {
+                hangulCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in 'A'..'Z' || ch in 'a'..'z' || ch in '\u00C0'..'\u024F' -> {
+                latinCount += 1
+                totalLetterCount += 1
+            }
+
+            Character.isLetterOrDigit(ch) -> {
+                totalLetterCount += 1
+            }
+        }
+    }
+    if (totalLetterCount <= 0) return false
+
+    return when (primaryLang) {
+        "ko" -> {
+            if (hangulCount == 0) return true
+            val tokens = trimmed.split(WHITESPACE_REGEX).filter { it.isNotEmpty() }
+            if (tokens.size >= 3) {
+                val avgTokenLen = tokens.sumOf { it.length }.toFloat() / tokens.size.toFloat()
+                val hasPoliteEnding = KO_POLITE_ENDINGS.any { trimmed.contains(it) }
+                val hasKoGrammar = KO_GRAMMAR_PATTERNS.any { trimmed.contains(it) }
+                avgTokenLen <= 2.2f && !hasPoliteEnding && !hasKoGrammar
+            } else {
+                false
+            }
+        }
+
+        "zh", "yue" -> {
+            if (kanjiCount == 0 || hiraganaCount > 0 || katakanaCount > 0 || hangulCount > 0) {
+                true
+            } else {
+                kanjiCount >= 6 && ZH_COMMON_CHARS.none { trimmed.contains(it) }
+            }
+        }
+
+        else -> {
+            val targetWords = latinFunctionWordsFor(primaryLang)
+            if (targetWords != null) {
+                if (latinCount == 0) return true
+                val words = extractLatinWordsLower(trimmed)
+                if (words.size >= 4 && words.none { it in targetWords }) {
+                    val foreignMatches = maxForeignLatinFunctionWordMatches(words, primaryLang)
+                    val avgWordLen = words.sumOf { it.length }.toFloat() / words.size.toFloat()
+                    foreignMatches >= 2 || avgWordLen <= 2.5f
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+    }
+}
+
+private fun extractLatinWordsLower(text: String): List<String> = LATIN_WORD_REGEX.findAll(text.lowercase(Locale.ROOT))
+    .map { it.value }
+    .toList()
+
+private fun latinFunctionWordsFor(primaryLang: String): Set<String>? = LATIN_FUNCTION_WORDS_BY_LANG[primaryLang]
+
+private fun maxForeignLatinFunctionWordMatches(words: List<String>, currentLang: String): Int {
+    var maxMatches = 0
+    for ((lang, funcWords) in LATIN_FUNCTION_WORDS_BY_LANG) {
+        if (lang == currentLang) continue
+        val matches = words.count { it in funcWords && it !in (LATIN_FUNCTION_WORDS_BY_LANG[currentLang] ?: emptySet()) }
+        if (matches > maxMatches) {
+            maxMatches = matches
+        }
+    }
+    return maxMatches
+}
+
+private fun hasCharacteristicLatinDiacritics(text: String, primaryLang: String): Boolean = when (primaryLang) {
+    "es" -> text.any { it in "áéíóúñüÁÉÍÓÚÑÜ¿¡" }
+    "fr" -> text.any { it in "éèêëàâùûçœæÉÈÊËÀÂÙÛÇŒÆ" }
+    "de" -> text.any { it in "äöüßÄÖÜ" }
+    "it" -> text.any { it in "àèéìòóùÀÈÉÌÒÓÙ" }
+    "pt" -> text.any { it in "ãõçáéíóúâêôàÃÕÇÁÉÍÓÚÂÊÔÀ" }
+    "vi" -> text.any { it in "ăâđêôơưĂÂĐÊÔƠƯáàảãạéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵ" }
+    else -> false
+}
+
 private const val CONFIDENCE_SCORE_WEIGHT: Float = 3.0f
 private const val DEFAULT_PROBE_CONFIDENCE: Float = 0.55f
 private const val LOW_CONFIDENCE_PENALTY_THRESHOLD: Float = 0.60f
 private const val LOW_CONFIDENCE_PENALTY_WEIGHT: Float = 1.5f
 private const val KATAKANA_SUSPECT_RATIO_THRESHOLD: Float = 0.35f
 private val WHITESPACE_REGEX = Regex("\\s+")
+private val LATIN_WORD_REGEX = Regex("[a-z\\u00C0-\\u024F']+")
+
+private val LATIN_FUNCTION_WORDS_BY_LANG: Map<String, Set<String>> = mapOf(
+    "en" to setOf(
+        "the", "and", "to", "of", "in", "is", "it", "you", "that", "for", "on", "with", "as", "are", "this",
+        "was", "be", "at", "have", "from", "or", "by", "but", "not", "what", "all", "were", "we", "when",
+        "your", "can", "there", "use", "an", "each", "which", "she", "do", "how", "their", "if", "will",
+        "would", "like", "my", "name", "good", "morning", "hello", "please", "thank", "where", "could",
+    ),
+    "es" to setOf(
+        "de", "la", "que", "el", "en", "y", "los", "se", "del", "las", "un", "por", "con", "no", "una",
+        "su", "para", "es", "al", "lo", "como", "más", "mas", "pero", "sus", "le", "ha", "me", "si", "sin",
+        "sobre", "este", "ya", "entre", "cuando", "todo", "esta", "ser", "son", "dos", "también", "hola",
+        "gracias", "favor", "buenos", "días", "donde", "dónde", "está", "estoy", "quiero", "gustaría",
+    ),
+    "fr" to setOf(
+        "de", "la", "le", "et", "les", "des", "en", "un", "du", "une", "que", "est", "pour", "qui", "dans",
+        "ce", "il", "pas", "plus", "par", "sur", "se", "ne", "avec", "tout", "mais", "comme", "ou", "son",
+        "aux", "cette", "nous", "vous", "je", "suis", "bonjour", "merci", "s'il", "plaît", "voudrais", "où",
+    ),
+    "de" to setOf(
+        "der", "die", "und", "in", "den", "von", "zu", "das", "mit", "sich", "des", "auf", "für", "ist",
+        "im", "dem", "nicht", "ein", "eine", "als", "auch", "es", "an", "werden", "aus", "er", "hat", "dass",
+        "sie", "nach", "wird", "bei", "einer", "um", "am", "sind", "noch", "wie", "einem", "über", "ich",
+        "guten", "morgen", "tag", "danke", "bitte", "möchte", "haben", "wir", "ihnen",
+    ),
+    "it" to setOf(
+        "di", "che", "è", "e", "la", "il", "un", "a", "per", "in", "una", "mi", "sono", "ho", "ma", "non",
+        "le", "si", "lo", "ha", "cosa", "con", "ti", "se", "da", "come", "ci", "no", "questo", "qui", "bene",
+        "sei", "del", "della", "buongiorno", "grazie", "favore", "vorrei", "dove",
+    ),
+    "pt" to setOf(
+        "de", "a", "o", "que", "e", "do", "da", "em", "um", "para", "é", "com", "não", "uma", "os", "no",
+        "se", "na", "por", "mais", "as", "dos", "como", "mas", "foi", "ao", "ele", "das", "tem", "à", "seu",
+        "sua", "ou", "ser", "quando", "muito", "há", "nos", "já", "está", "eu", "bom", "dia", "obrigado",
+    ),
+    "id" to setOf(
+        "yang", "dan", "di", "ini", "untuk", "dengan", "tidak", "itu", "dari", "dalam", "akan", "pada",
+        "juga", "saya", "ke", "karena", "tersebut", "bisa", "ada", "mereka", "lebih", "sudah", "atau",
+        "oleh", "apa", "kita", "anda", "kami", "selamat", "terima", "kasih",
+    ),
+    "vi" to setOf(
+        "của", "và", "các", "có", "trong", "được", "cho", "là", "không", "người", "một", "những",
+        "này", "đã", "với", "để", "từ", "khi", "đến", "về", "như", "tôi", "bạn", "chúng", "xin", "chào", "cảm",
+    ),
+)
 
 private val JA_FUNCTION_PATTERNS: List<String> = listOf(
     "です",
@@ -1217,6 +1445,14 @@ private val ZH_COMMON_CHARS: List<String> = listOf(
     "有",
     "吗",
     "呢",
+    "个",
+    "和",
+    "到",
+    "说",
+    "要",
+    "会",
+    "可",
+    "以",
 )
 
 /**
@@ -2125,6 +2361,32 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
         precomputedLanguage: LanguageTag?,
         precomputedLanguageConfidence: Float?,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = forceRefresh,
+        highPriority = highPriority,
+        itemSttOverride = itemSttOverride,
+        engineByLanguage = engineByLanguage,
+        precomputedLanguage = precomputedLanguage,
+        precomputedLanguageConfidence = precomputedLanguageConfidence,
+        compareBothLanguages = false,
+    )
+
+    override suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+        precomputedLanguage: LanguageTag?,
+        precomputedLanguageConfidence: Float?,
+        compareBothLanguages: Boolean,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || startMs < 0L || endMs <= startMs || !audioFile.isFile) {
             return null
@@ -2231,6 +2493,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 engineByLanguage = engineByLanguage,
                 precomputedLanguage = precomputedLanguage,
                 precomputedLanguageConfidence = precomputedLanguageConfidence,
+                compareBothLanguages = compareBothLanguages,
             )
         } finally {
             if (jobHandle != null) {
@@ -2288,6 +2551,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             engineOverride = engineOverride,
             itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
             engineByLanguage = emptyMap(),
+            compareBothLanguages = true,
         )
     }
 
@@ -2422,6 +2686,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine> = emptyMap(),
         precomputedLanguage: LanguageTag? = null,
         precomputedLanguageConfidence: Float? = null,
+        compareBothLanguages: Boolean = false,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || pcm16LeBytes.isEmpty() || sampleRateHz <= 0) {
             return null
@@ -2550,6 +2815,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             selectedEngine = selectedEngine,
                             itemSttOverride = itemSttOverride,
                             engineByLanguage = engineByLanguage,
+                            compareBothLanguages = compareBothLanguages,
                         ).also { transcribed ->
                             val finalLang = transcribed?.language
                             if (transcribed != null &&
@@ -2795,6 +3061,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         selectedEngine: OnDeviceTranscriptionEngine,
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
         engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine> = emptyMap(),
+        compareBothLanguages: Boolean = false,
     ): OnDeviceChunkTranscriptionResult? {
         val selectedLang = if (prediction.selectedTag.equals(baseLang.value, ignoreCase = true)) {
             baseLang
@@ -2841,7 +3108,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
 
         val isLidConfident = prediction.selectedProbability >= AMBIGUOUS_LID_PROB_THRESHOLD
-        if (primaryResult == null && primaryModelUnavailable && isLidConfident) {
+        if (primaryResult == null && primaryModelUnavailable && isLidConfident && !compareBothLanguages) {
             // 選ばれた言語の音声認識モデルがない。もう一方の言語で認識するとカタカナ・ハングルの音写になり
             // 言語ラベルも誤るため、言語判定の結果だけを返す（モデルのダウンロード後に本文を認識し直す）
             logInfo(
@@ -2852,7 +3119,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
 
         val shouldVerifyFallback = primaryResult != null && (
-            isKatakanaTransliterationSuspected(primaryResult.text, selectedLang.value) ||
+            compareBothLanguages ||
+                isUnnaturalOrTransliterationSuspected(primaryResult.text, selectedLang.value) ||
                 (primaryResult.confidence != null && primaryResult.confidence < LOW_STT_CONFIDENCE_THRESHOLD) ||
                 (
                     prediction.selectedProbability < AMBIGUOUS_LID_PROB_THRESHOLD &&
@@ -2932,7 +3200,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     private fun isNaturalRecognitionFor(
         result: OnDeviceChunkTranscriptionResult,
         language: LanguageTag,
-    ): Boolean = !isKatakanaTransliterationSuspected(result.text, language.value) &&
+    ): Boolean = !isUnnaturalOrTransliterationSuspected(result.text, language.value) &&
         (result.confidence == null || result.confidence >= LOW_STT_CONFIDENCE_THRESHOLD)
 
     /** 本文なしで、言語判定の結果だけを持つ認識結果を作る。キャッシュには入れない。 */

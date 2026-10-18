@@ -1033,9 +1033,12 @@ class DefaultAnalysisRepository(
                                     endMs = targetChunk.endMs,
                                     languagePair = effectiveLanguagePair,
                                     forceRefresh = true,
+                                    highPriority = true,
                                     itemSttOverride = itemSttOverride,
                                     engineByLanguage = engineByLanguage,
-                                    highPriority = true,
+                                    precomputedLanguage = null,
+                                    precomputedLanguageConfidence = null,
+                                    compareBothLanguages = normalizedNewLang == null,
                                 )
                             } catch (ce: CancellationException) {
                                 throw ce
