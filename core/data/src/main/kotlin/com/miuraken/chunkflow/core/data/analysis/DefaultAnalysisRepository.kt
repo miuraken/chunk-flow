@@ -834,6 +834,7 @@ class DefaultAnalysisRepository(
                 var completed = 0
                 val remainingIds = targetChunks.map { ChunkId(it.id) }.toMutableSet()
                 val parallelism = OnDeviceChunkTranscriber.recommendedLanguageDetectionParallelism()
+                val languageDetectionStartedAt = clock()
                 runCatching {
                     onDeviceChunkTranscriber.recordExternalDiagnostic(
                         stage = "LID_ONLY",
@@ -911,6 +912,16 @@ class DefaultAnalysisRepository(
                         }
                         updateQueuedChunkIdsState(id)
                         persistTranscriptBackupFile(id)
+                        val elapsedMs = (clock() - languageDetectionStartedAt).coerceAtLeast(0L)
+                        val elapsedTenths = (elapsedMs + 50L) / 100L
+                        runCatching {
+                            onDeviceChunkTranscriber.recordExternalDiagnostic(
+                                stage = "LID_ONLY",
+                                message = "言語判定のみを終了 ($completed / $totalTargets チャンク、" +
+                                    "${elapsedTenths / 10}.${elapsedTenths % 10} 秒、" +
+                                    "平均 ${elapsedMs / completed.coerceAtLeast(1)} ms/チャンク)",
+                            )
+                        }
                     }
                 }
 
