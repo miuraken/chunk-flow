@@ -66,6 +66,58 @@ internal interface CodecSession : AutoCloseable {
     fun flush() {}
 }
 
+/** チャンク切り出し用に開いたままにする抽出器を特定するキー（パス・更新時刻・長さが同じなら同じファイルとみなす）。 */
+internal data class RangeSessionKey(
+    val absolutePath: String,
+    val lastModified: Long,
+    val length: Long,
+) {
+    companion object {
+        /** [file] の今のキー。 */
+        fun of(file: File): RangeSessionKey = RangeSessionKey(
+            absolutePath = file.absolutePath,
+            lastModified = file.lastModified(),
+            length = file.length(),
+        )
+    }
+}
+
+/**
+ * チャンク切り出し用の抽出器を 1 つ開いたままにする入れ物（[MediaCodecAudioStreamDecoder] の共有の 1 つと、[RangeDecodeLane]）。
+ *
+ * 抽出器はスレッドセーフではないので、[key] と [extractor] は [mutex] の中でだけ読み書きする。
+ */
+internal class RangeExtractorSlot {
+    /** 切り出しを直列にするロック。 */
+    val mutex = Mutex()
+
+    /** 開いている抽出器のファイル。 */
+    var key: RangeSessionKey? = null
+
+    /** 開いている抽出器。 */
+    var extractor: ExtractorSession? = null
+
+    /** 切り出しの途中で解放を求められたとき、その切り出しの終わりに解放するための印。 */
+    val releaseRequested = AtomicBoolean(false)
+}
+
+/**
+ * 並列の切り出し（[LidExtractionMethod.PARALLEL]）で 1 つのワーカーが使うレーン（[MediaCodecAudioStreamDecoder.openRangeDecodeLane]）。
+ *
+ * 共有の抽出器とは別の抽出器を 1 つ持つ（最初の切り出しで開く）。MediaCodec は切り出しごとに作る（今の方式と同じ）。
+ * 使い終わったら必ず [close] する（切り出しの途中なら、その切り出しの終わりに閉じる）。
+ */
+internal class RangeDecodeLane internal constructor(
+    private val release: (RangeExtractorSlot) -> Unit,
+) : AutoCloseable {
+    /** このレーンの抽出器の入れ物。 */
+    internal val slot = RangeExtractorSlot()
+
+    override fun close() {
+        release(slot)
+    }
+}
+
 /**
  * `media3-inspector` の [MediaExtractorCompat] と [MediaCodec]（同期モード）を使った
  * [AudioStreamDecoder] の本番実装（§7.3.1、ADR 0005、ADR 0006）。
@@ -102,33 +154,22 @@ class MediaCodecAudioStreamDecoder internal constructor(
         uriExtractorOpener = { uri -> openCompatExtractorSession(context, uri) },
     )
 
-    /** チャンク切り出し用に開いたままにする抽出器を特定するキー（パス・更新時刻・長さが同じなら同じファイルとみなす）。 */
-    private data class RangeSessionKey(
-        val absolutePath: String,
-        val lastModified: Long,
-        val length: Long,
-    )
-
-    /** チャンク切り出し用に開いたままにしている抽出器。 */
-    private class RangeExtractorSession(
-        val key: RangeSessionKey,
-        val extractor: ExtractorSession,
-    )
-
-    /** [rangeSession] を触るときに持つロック（抽出器はスレッドセーフではないため、切り出しを直列にする）。 */
-    private val rangeSessionMutex = Mutex()
-
-    /** [rangeSessionMutex] の中でだけ読み書きする。 */
-    private var rangeSession: RangeExtractorSession? = null
-
-    /** 切り出しの途中で解放を求められたとき、その切り出しの終わりに解放するための印。 */
-    private val rangeSessionReleaseRequested = AtomicBoolean(false)
+    /**
+     * チャンク切り出し用に開いたままにする共有の抽出器（第 2 段階の文字起こしと、一括言語判定の今の方式で使う）。
+     * 抽出器はスレッドセーフではないので、この入れ物の `mutex` で切り出しを直列にする。
+     */
+    private val sharedRangeSlot = RangeExtractorSlot()
 
     /** まとめて渡した MP3 の出力の長さがずれたことがあれば true（以後は 1 フレームずつ渡す）。 */
     private val mp3BatchingDisabled = AtomicBoolean(false)
 
     /** [codecName] のデコーダに MP3 のフレームをまとめて渡してよいか（[MP3_BATCH_CAPABLE_DECODERS] にあり、ずれたことがない）。 */
-    private fun isMp3BatchingSupported(codecName: String): Boolean = !mp3BatchingDisabled.get() && codecName in MP3_BATCH_CAPABLE_DECODERS
+    internal fun isMp3BatchingSupported(codecName: String): Boolean = !mp3BatchingDisabled.get() && codecName in MP3_BATCH_CAPABLE_DECODERS
+
+    /** まとめて渡した MP3 の出力の長さがずれたときに呼ぶ（以後このデコーダでは 1 フレームずつ渡す）。 */
+    internal fun disableMp3Batching() {
+        mp3BatchingDisabled.set(true)
+    }
 
     override suspend fun decode(
         file: File,
@@ -250,12 +291,17 @@ class MediaCodecAudioStreamDecoder internal constructor(
      *
      * @param onSeekLandingUs 最初にデコーダへ渡すサンプルの時刻（µs）を受け取る。
      *   出力サンプル数の累計にこの時刻を足したものが、全体をデコードしたときと同じ時間軸になる（ADR 0005）。
+     * @param lane 並列の切り出し（[openRangeDecodeLane]）のレーン。`null` なら共有の抽出器を使う（第 2 段階と今の方式）。
+     *   レーンを使っても、MediaCodec を作り直すこと・着地するフレーム・デコードする範囲は同じなので、切り出す PCM は同じ。
+     * @param timings 各段階の時間を足す先（言語判定の切り出しだけで渡す）。
      */
     internal suspend fun decodeFromPosition(
         file: File,
         startPositionMs: Long,
         sink: SampleSink,
         outputSampleRate: Int = StreamingResampler.DEFAULT_OUTPUT_RATE,
+        lane: RangeDecodeLane? = null,
+        timings: LidExtractionTimings? = null,
         onSeekLandingUs: (Long) -> Unit = {},
     ): AudioDecodeResult {
         require(outputSampleRate > 0) { "outputSampleRate must be > 0: $outputSampleRate" }
@@ -266,9 +312,10 @@ class MediaCodecAudioStreamDecoder internal constructor(
             return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
         }
 
-        return rangeSessionMutex.withLock {
+        val slot = lane?.slot ?: sharedRangeSlot
+        return slot.mutex.withLock {
             val extractor = try {
-                obtainRangeExtractorLocked(file)
+                obtainRangeExtractorLocked(slot, file, timings)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (_: FileNotFoundException) {
@@ -289,6 +336,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
                     onProgress = {},
                     startPositionUs = startPositionMs.coerceAtLeast(0L) * 1_000L,
                     onSeekLandingUs = onSeekLandingUs,
+                    timings = timings,
                 )
                 keepSession = result is AudioDecodeResult.Success
                 result
@@ -304,8 +352,8 @@ class MediaCodecAudioStreamDecoder internal constructor(
             } catch (_: Exception) {
                 AudioDecodeResult.Failure(AnalysisError.DECODE_FAILED)
             } finally {
-                if (!keepSession || rangeSessionReleaseRequested.getAndSet(false)) {
-                    closeRangeSessionLocked()
+                if (!keepSession || slot.releaseRequested.getAndSet(false)) {
+                    closeSlotLocked(slot)
                 }
             }
         }
@@ -316,41 +364,80 @@ class MediaCodecAudioStreamDecoder internal constructor(
      * 切り出しの途中なら、その切り出しが終わったときに解放する。次の切り出しでは開き直す。
      */
     internal fun releaseRangeSession() {
-        rangeSessionReleaseRequested.set(true)
-        if (rangeSessionMutex.tryLock()) {
+        releaseSlot(sharedRangeSlot)
+    }
+
+    /**
+     * 並列の切り出し（[LidExtractionMethod.PARALLEL]）で 1 つのワーカーが使うレーンを作る。
+     *
+     * 抽出器は最初の切り出しで開く（共有の抽出器とは別）。使い終わったら必ず [RangeDecodeLane.close] する。
+     */
+    internal fun openRangeDecodeLane(): RangeDecodeLane = RangeDecodeLane(release = ::releaseSlot)
+
+    /**
+     * 順に流す切り出し（[LidExtractionMethod.STREAMING]、言語判定だけで使う）。
+     *
+     * [windows]（開始位置の順）の窓を、run ごとに 1 つの MediaCodec で続けてデコードして切り出し、窓ごとにちょうど 1 回 [emit] に渡す
+     * （[LidStreamingExtractor]）。共有の抽出器とは別の抽出器を開き、終わったら（キャンセル・エラーでも）閉じる。
+     * 第 2 段階の切り出しと解析（波形・チャンク分割）の時間軸は変えない。
+     */
+    internal suspend fun streamLanguageWindows(
+        file: File,
+        windows: List<StreamWindowRequest>,
+        outputSampleRate: Int,
+        options: StreamingExtractionOptions,
+        timings: LidExtractionTimings?,
+        emit: suspend (StreamWindowResult) -> Unit,
+    ) {
+        require(outputSampleRate > 0) { "outputSampleRate must be > 0: $outputSampleRate" }
+        LidStreamingExtractor(
+            extractorOpener = extractorOpener,
+            codecCreator = codecCreator,
+            elapsedRealtimeMs = elapsedRealtimeMs,
+            isMp3BatchingSupported = ::isMp3BatchingSupported,
+            onMp3BatchMismatch = ::disableMp3Batching,
+            options = options,
+            timings = timings,
+        ).extract(file, windows, outputSampleRate, emit)
+    }
+
+    /** [slot] の抽出器を解放する。切り出しの途中なら、その切り出しが終わったときに解放する。 */
+    private fun releaseSlot(slot: RangeExtractorSlot) {
+        slot.releaseRequested.set(true)
+        if (slot.mutex.tryLock()) {
             try {
-                rangeSessionReleaseRequested.set(false)
-                closeRangeSessionLocked()
+                slot.releaseRequested.set(false)
+                closeSlotLocked(slot)
             } finally {
-                rangeSessionMutex.unlock()
+                slot.mutex.unlock()
             }
         }
     }
 
-    /** [rangeSessionMutex] の中で呼ぶ。同じファイルなら開いている抽出器を返し、違えば閉じて開き直す。 */
-    private fun obtainRangeExtractorLocked(file: File): ExtractorSession {
-        if (rangeSessionReleaseRequested.getAndSet(false)) {
-            closeRangeSessionLocked()
+    /** [slot] の `mutex` の中で呼ぶ。同じファイルなら開いている抽出器を返し、違えば閉じて開き直す。 */
+    private fun obtainRangeExtractorLocked(slot: RangeExtractorSlot, file: File, timings: LidExtractionTimings?): ExtractorSession {
+        if (slot.releaseRequested.getAndSet(false)) {
+            closeSlotLocked(slot)
         }
-        val key = RangeSessionKey(
-            absolutePath = file.absolutePath,
-            lastModified = file.lastModified(),
-            length = file.length(),
-        )
-        rangeSession?.let { current ->
-            if (current.key == key) return current.extractor
-        }
-        closeRangeSessionLocked()
+        val key = RangeSessionKey.of(file)
+        val current = slot.extractor
+        if (current != null && slot.key == key) return current
+        closeSlotLocked(slot)
+        val startNanos = timings.startNanos()
         val extractor = extractorOpener(file)
-        rangeSession = RangeExtractorSession(key = key, extractor = extractor)
+        timings.addSince(startNanos) { extractorOpenNanos }
+        timings?.extractorOpens?.incrementAndGet()
+        slot.key = key
+        slot.extractor = extractor
         return extractor
     }
 
-    /** [rangeSessionMutex] の中で呼ぶ。開いたままの抽出器があれば閉じる。 */
-    private fun closeRangeSessionLocked() {
-        val current = rangeSession ?: return
-        rangeSession = null
-        runCatching { current.extractor.close() }
+    /** [slot] の `mutex` の中で呼ぶ。開いたままの抽出器があれば閉じる。 */
+    private fun closeSlotLocked(slot: RangeExtractorSlot) {
+        val current = slot.extractor ?: return
+        slot.extractor = null
+        slot.key = null
+        runCatching { current.close() }
     }
 
     override suspend fun decodeCoarseOverviewWaveform(
@@ -615,6 +702,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
         onProgress: suspend (DecodeProgress) -> Unit,
         startPositionUs: Long? = null,
         onSeekLandingUs: (Long) -> Unit = {},
+        timings: LidExtractionTimings? = null,
     ): AudioDecodeResult {
         val trackIndex = (0 until extractor.trackCount).firstOrNull { idx ->
             val mime = extractor.getTrackFormat(idx).getString(MediaFormat.KEY_MIME)
@@ -628,7 +716,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
         extractor.selectTrack(trackIndex)
         if (startPositionUs != null) {
-            val landedUs = positionExtractorForRange(extractor, startPositionUs)
+            val positionStartNanos = timings.startNanos()
+            val landedUs = positionExtractorForRange(extractor, startPositionUs, timings)
+            timings.addSince(positionStartNanos) { positionNanos }
             onSeekLandingUs(if (landedUs == END_OF_INPUT_US) startPositionUs else landedUs)
         }
 
@@ -642,6 +732,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
         val totalDurationMs = expectedDurationMs?.takeIf { it > 0L }
             ?: formatDurationUs?.let { it / 1_000L }
 
+        val codecStartNanos = timings.startNanos()
         val codec = try {
             codecCreator(mime, trackFormat)
         } catch (ce: CancellationException) {
@@ -652,9 +743,12 @@ class MediaCodecAudioStreamDecoder internal constructor(
             return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
         } catch (_: Exception) {
             return AudioDecodeResult.Failure(AnalysisError.UNSUPPORTED_FORMAT)
+        } finally {
+            timings.addSince(codecStartNanos) { codecCreateNanos }
         }
+        timings?.codecCreates?.incrementAndGet()
 
-        codec.use { decoder ->
+        codec.useTimed(timings) { decoder ->
             val info = MediaCodec.BufferInfo()
             var inputEos = false
             var extractorDone = false
@@ -829,13 +923,16 @@ class MediaCodecAudioStreamDecoder internal constructor(
                                     (maxTotalFrames - decodedFrames).coerceAtLeast(0L),
                                 ).toInt()
                                 if (allowedFrames > 0) {
+                                    val mixStartNanos = timings.startNanos()
                                     val neededFloats = allowedFrames * channels
                                     if (floatBuf.size < neededFloats) floatBuf = FloatArray(neededFloats)
                                     outBuf.asFloatBuffer().get(floatBuf, 0, neededFloats)
                                     if (monoBuf.size < allowedFrames) monoBuf = FloatArray(allowedFrames)
                                     PcmDownmix.downmixFloat(floatBuf, allowedFrames, channels, monoBuf)
-                                    activeResampler.process(monoBuf, allowedFrames, sink)
+                                    timings.addSince(mixStartNanos) { mixNanos }
                                     decodedFrames += allowedFrames
+                                    timings?.decodedNativeSamples?.addAndGet(allowedFrames.toLong())
+                                    activeResampler.processTimed(monoBuf, allowedFrames, sink, timings)
                                 }
                             } else {
                                 val sampleCount = info.size / 2
@@ -845,13 +942,16 @@ class MediaCodecAudioStreamDecoder internal constructor(
                                     (maxTotalFrames - decodedFrames).coerceAtLeast(0L),
                                 ).toInt()
                                 if (allowedFrames > 0) {
+                                    val mixStartNanos = timings.startNanos()
                                     val neededShorts = allowedFrames * channels
                                     if (shortBuf.size < neededShorts) shortBuf = ShortArray(neededShorts)
                                     outBuf.asShortBuffer().get(shortBuf, 0, neededShorts)
                                     if (monoBuf.size < allowedFrames) monoBuf = FloatArray(allowedFrames)
                                     PcmDownmix.downmixS16(shortBuf, allowedFrames, channels, monoBuf)
-                                    activeResampler.process(monoBuf, allowedFrames, sink)
+                                    timings.addSince(mixStartNanos) { mixNanos }
                                     decodedFrames += allowedFrames
+                                    timings?.decodedNativeSamples?.addAndGet(allowedFrames.toLong())
+                                    activeResampler.processTimed(monoBuf, allowedFrames, sink, timings)
                                 }
                             }
 
@@ -925,9 +1025,9 @@ class MediaCodecAudioStreamDecoder internal constructor(
     }
 
     companion object {
-        private const val OUTPUT_TIMEOUT_US: Long = 5_000L
+        internal const val OUTPUT_TIMEOUT_US: Long = 5_000L
         private const val COARSE_TIMEOUT_US: Long = 2_500L
-        private const val STALL_TIMEOUT_MS: Long = 5_000L
+        internal const val STALL_TIMEOUT_MS: Long = 5_000L
         internal const val REPEATED_PTS_LIMIT: Int = 8
         private const val DEFAULT_PROGRESS_INTERVAL_MS: Long = 250L
 
@@ -964,7 +1064,7 @@ class MediaCodecAudioStreamDecoder internal constructor(
         private const val MP3_BATCH_INPUT_BUFFER_BYTES: Int = 256 * 1024
 
         /** MP3 の 1 フレームの最大バイト数の見込み（Media3 の Mp3Extractor の上限と同じ）。次のフレームを詰める前の空きの確認に使う。 */
-        private const val MAX_MP3_FRAME_BYTES: Int = 4_096
+        internal const val MAX_MP3_FRAME_BYTES: Int = 4_096
 
         /** まとめて渡したとき、入力したフレームから見込まれる出力の長さとのずれの許容（1 チャンネルあたり 2 フレームぶん）。 */
         private const val MP3_BATCH_TOLERANCE_SAMPLES: Long = 2_304L
@@ -1007,8 +1107,14 @@ class MediaCodecAudioStreamDecoder internal constructor(
          * - 返す時刻は抽出器が返すフレームの時刻なので、全体をデコードしたときの時間軸と同じ（ADR 0005、ADR 0006）。
          * - シークの着地が [startPositionUs] より後ろ（シーク表の誤差）か入力の終わりなら、先頭から読み飛ばし直す（遅いが正確）。
          * - 時刻が進まない読み出しが [REPEATED_PTS_LIMIT] 回続いたら入力の終わりとみなす（ADR 0005 決定 4 の FLAC 対策）。
+         *
+         * @param timings シークの回数と読み飛ばしたサンプルの数を足す先（言語判定の切り出しだけで渡す）。
          */
-        internal suspend fun positionExtractorForRange(extractor: ExtractorSession, startPositionUs: Long): Long {
+        internal suspend fun positionExtractorForRange(
+            extractor: ExtractorSession,
+            startPositionUs: Long,
+            timings: LidExtractionTimings? = null,
+        ): Long {
             val targetUs = (startPositionUs - SEEK_PRE_ROLL_MS * 1_000L).coerceAtLeast(0L)
             var currentUs = extractor.sampleTime
             val canSkipFromCurrent = currentUs != END_OF_INPUT_US &&
@@ -1016,9 +1122,11 @@ class MediaCodecAudioStreamDecoder internal constructor(
                 targetUs - currentUs <= MAX_FORWARD_SKIP_WITHOUT_SEEK_US
             if (!canSkipFromCurrent) {
                 runCatching { extractor.seekTo(targetUs) }
+                timings?.seeks?.incrementAndGet()
                 currentUs = extractor.sampleTime
                 if (currentUs == END_OF_INPUT_US || currentUs > startPositionUs) {
                     runCatching { extractor.seekTo(0L) }
+                    timings?.seeks?.incrementAndGet()
                     currentUs = extractor.sampleTime
                 }
             }
@@ -1026,20 +1134,24 @@ class MediaCodecAudioStreamDecoder internal constructor(
             var skippedSamples = 0
             var repeatedTimeCount = 0
             var lastTimeUs = currentUs
-            while (currentUs != END_OF_INPUT_US && currentUs < targetUs) {
-                if (!extractor.advance()) return END_OF_INPUT_US
-                currentUs = extractor.sampleTime
-                if (currentUs <= lastTimeUs) {
-                    repeatedTimeCount++
-                    if (repeatedTimeCount >= REPEATED_PTS_LIMIT) return END_OF_INPUT_US
-                } else {
-                    repeatedTimeCount = 0
-                    lastTimeUs = currentUs
+            try {
+                while (currentUs != END_OF_INPUT_US && currentUs < targetUs) {
+                    if (!extractor.advance()) return END_OF_INPUT_US
+                    currentUs = extractor.sampleTime
+                    if (currentUs <= lastTimeUs) {
+                        repeatedTimeCount++
+                        if (repeatedTimeCount >= REPEATED_PTS_LIMIT) return END_OF_INPUT_US
+                    } else {
+                        repeatedTimeCount = 0
+                        lastTimeUs = currentUs
+                    }
+                    skippedSamples++
+                    if (skippedSamples % SKIP_CANCELLATION_CHECK_INTERVAL == 0) {
+                        currentCoroutineContext().ensureActive()
+                    }
                 }
-                skippedSamples++
-                if (skippedSamples % SKIP_CANCELLATION_CHECK_INTERVAL == 0) {
-                    currentCoroutineContext().ensureActive()
-                }
+            } finally {
+                timings?.skippedSamples?.addAndGet(skippedSamples.toLong())
             }
             return currentUs
         }
@@ -1129,3 +1241,45 @@ class MediaCodecAudioStreamDecoder internal constructor(
 private fun MediaFormat.intOrZero(key: String): Int = intOr(key, 0)
 
 private fun MediaFormat.intOr(key: String, default: Int): Int = if (containsKey(key)) getInteger(key) else default
+
+/**
+ * [AutoCloseable.use] と同じく [block] のあとで必ず閉じる。[timings] があれば、[block] の時間を
+ * [LidExtractionTimings.decodeLoopNanos] に、閉じる（MediaCodec の stop・release）時間を [LidExtractionTimings.codecReleaseNanos] に足す。
+ */
+internal inline fun <T> CodecSession.useTimed(timings: LidExtractionTimings?, block: (CodecSession) -> T): T {
+    val loopStartNanos = timings.startNanos()
+    var failure: Throwable? = null
+    try {
+        return block(this)
+    } catch (e: Throwable) {
+        failure = e
+        throw e
+    } finally {
+        timings.addSince(loopStartNanos) { decodeLoopNanos }
+        val releaseStartNanos = timings.startNanos()
+        if (failure == null) {
+            close()
+        } else {
+            try {
+                close()
+            } catch (closeError: Throwable) {
+                failure.addSuppressed(closeError)
+            }
+        }
+        timings.addSince(releaseStartNanos) { codecReleaseNanos }
+    }
+}
+
+/** [StreamingResampler.process] を呼び、[timings] があればその時間（シンクの中の PCM への変換を含む）を足す。 */
+internal fun StreamingResampler.processTimed(input: FloatArray, length: Int, sink: SampleSink, timings: LidExtractionTimings?) {
+    if (timings == null) {
+        process(input, length, sink)
+        return
+    }
+    val startNanos = System.nanoTime()
+    try {
+        process(input, length, sink)
+    } finally {
+        timings.resampleNanos.addAndGet(System.nanoTime() - startNanos)
+    }
+}

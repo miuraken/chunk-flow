@@ -688,6 +688,31 @@ object ChunkPcmExtractor {
         startMs: Long,
         endMs: Long,
         sampleRateHz: Int = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
+    ): ByteArray? = extractChunkPcm16LeBytes(
+        decoder = decoder,
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        sampleRateHz = sampleRateHz,
+        lane = null,
+        timings = null,
+    )
+
+    /**
+     * [extractChunkPcm16LeBytes] の本体。
+     *
+     * @param lane 並列の切り出しのレーン（[MediaCodecAudioStreamDecoder.openRangeDecodeLane]）。`null` なら共有の抽出器を使う。
+     *   レーンを使っても切り出す PCM は同じ（[MediaCodecAudioStreamDecoder.decodeFromPosition]）。
+     * @param timings 各段階の時間を足す先（言語判定の切り出しだけで渡す）。
+     */
+    internal suspend fun extractChunkPcm16LeBytes(
+        decoder: AudioStreamDecoder,
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        sampleRateHz: Int,
+        lane: RangeDecodeLane?,
+        timings: LidExtractionTimings?,
     ): ByteArray? {
         if (startMs < 0L || endMs <= startMs || sampleRateHz <= 0 || !audioFile.isFile) {
             return null
@@ -720,6 +745,7 @@ object ChunkPcmExtractor {
 
         val sink = SampleSink { samples, count ->
             job?.ensureActive()
+            val pcmStartNanos = timings.startNanos()
             val blockStart = currentSampleIndex
             val blockEnd = currentSampleIndex + count
             currentSampleIndex = blockEnd
@@ -730,16 +756,14 @@ object ChunkPcmExtractor {
                 var idx = (sliceStart - blockStart).toInt()
                 val localTo = (sliceEnd - blockStart).toInt()
                 while (idx < localTo && writtenBytes + 2 <= out.size) {
-                    val clamped = samples[idx].coerceIn(-1.0f, 1.0f)
-                    val sampleInt = (clamped * Short.MAX_VALUE.toFloat())
-                        .roundToInt()
-                        .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                    val sampleInt = floatToPcm16(samples[idx])
                     out[writtenBytes] = (sampleInt and 0xFF).toByte()
                     out[writtenBytes + 1] = ((sampleInt ushr 8) and 0xFF).toByte()
                     writtenBytes += 2
                     idx++
                 }
             }
+            timings.addSince(pcmStartNanos) { pcmNanos }
             if (currentSampleIndex >= endSample || writtenBytes + 2 > out.size) {
                 throw ChunkExtractionCompletedException()
             }
@@ -757,6 +781,8 @@ object ChunkPcmExtractor {
                         // 最初にデコーダへ渡すサンプルの時刻を、出力（sampleRateHz）のサンプル位置に直す
                         currentSampleIndex = Math.floorDiv(landedUs * sampleRateHz, 1_000_000L)
                     },
+                    lane = lane,
+                    timings = timings,
                 )
             } else {
                 decoder.decode(
@@ -770,6 +796,7 @@ object ChunkPcmExtractor {
             null
         }
 
+        val handoffStartNanos = timings.startNanos()
         val extracted = if ((stoppedEarly || result is AudioDecodeResult.Success) && writtenBytes > 0) {
             if (writtenBytes == out.size) out else out.copyOf(writtenBytes)
         } else {
@@ -781,7 +808,20 @@ object ChunkPcmExtractor {
                 recentChunkCache[cacheKey] = extracted.copyOf()
             }
         }
+        timings.addSince(handoffStartNanos) { handoffNanos }
         return extracted
+    }
+
+    /**
+     * 正規化 Float サンプル（`-1.0..1.0` の外は丸める）を 16-bit 符号付き整数の値にする。
+     *
+     * チャンクの切り出し（[extractChunkPcm16LeBytes]）と、順に流す切り出し（[LidStreamingExtractor]）で同じ値にするために共有する。
+     */
+    internal fun floatToPcm16(sample: Float): Int {
+        val clamped = sample.coerceIn(-1.0f, 1.0f)
+        return (clamped * Short.MAX_VALUE.toFloat())
+            .roundToInt()
+            .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
     }
 
     internal const val LEADING_SILENCE_MS: Int = 150
