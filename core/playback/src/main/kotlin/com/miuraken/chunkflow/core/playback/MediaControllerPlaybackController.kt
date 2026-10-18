@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.core.playback
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import android.os.PowerManager
@@ -676,6 +677,7 @@ class MediaControllerPlaybackController(
         )
     }
 
+    @SuppressLint("UseKtx")
     internal fun resolvePlayableAudioUri(item: AudioItem): Uri? {
         val managedFile = mediaFileLocator.resolveAudioFile(item.id, item.mimeType)
             ?: File(context.filesDir, "media/${item.id.value}").takeIf { it.isFile }

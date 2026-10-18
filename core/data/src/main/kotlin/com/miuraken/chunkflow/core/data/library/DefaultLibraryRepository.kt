@@ -104,6 +104,7 @@ import kotlinx.coroutines.withContext
  * - 文字起こし（`.chunkflow.json` 等）は `audio.sha256` またはファイル名で教材と照合し、前後のパディング（前 150ms / 後 200ms、
  *   隣のチャンクとの無音の中点を越えない）を付けて [ChunkOrigin.IMPORTED] のチャンクとして保存する（§7.4.6）。
  */
+@SuppressLint("UseKtx")
 @Singleton
 class DefaultLibraryRepository(
     @ApplicationContext private val context: Context,
