@@ -2757,7 +2757,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val workers = if (canRunInParallel && isDeviceConstrainedForParallelInference()) {
             appendDiagnostic(
                 stage = "LID_ONLY",
-                message = "端末の温度が高いか省電力モードのため、言語判定を 1 件ずつ実行",
+                message = PARALLEL_LID_CONSTRAINED_MESSAGE,
             )
             1
         } else {
@@ -4322,6 +4322,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     }
 
     companion object {
+        /** 端末が熱いか省電力モードのため、一括言語判定を並列にせず 1 件ずつ行うときに診断ログに出す文（計測ツールもこれで見分ける）。 */
+        internal const val PARALLEL_LID_CONSTRAINED_MESSAGE: String = "端末の温度が高いか省電力モードのため、言語判定を 1 件ずつ実行"
+
         /**
          * 一括言語判定の推論エンジンと推論時間（[delta] は 1 回の一括判定の間の増分）を、診断ログの 1 行にする。
          *
