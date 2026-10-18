@@ -678,17 +678,20 @@ fun TranscriptList(
             val activeChunkNumber = lookaheadStatus.inFlightChunkId?.let { inFlightId ->
                 chunks.indexOfFirst { it.id == inFlightId }.takeIf { it >= 0 }?.plus(1)
             }
+            val transcribedChunkCount = chunks.count { !it.text.isNullOrBlank() }
             TranscriptionProgressOverlay(
                 lookaheadStatus = lookaheadStatus,
                 inFlightChunkNumber = activeChunkNumber,
                 onAbortTranscription = onResetTranscription,
-                onToggleBackgroundTranscription = onToggleBackgroundTranscription,
-                onRequestRecognitionModelDownload = onRequestRecognitionModelDownload,
-                onOpenFileSettings = onOpenFileSettings,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(horizontal = 12.dp, vertical = progressOverlayMargin)
                     .onSizeChanged { size -> progressOverlayHeightPx = size.height },
+                transcribedChunkCount = transcribedChunkCount,
+                totalChunkCount = chunks.size,
+                onToggleBackgroundTranscription = onToggleBackgroundTranscription,
+                onRequestRecognitionModelDownload = onRequestRecognitionModelDownload,
+                onOpenFileSettings = onOpenFileSettings,
             )
         }
 

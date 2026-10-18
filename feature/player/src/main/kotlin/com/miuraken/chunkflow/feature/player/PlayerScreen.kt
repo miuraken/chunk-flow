@@ -1055,8 +1055,11 @@ private fun ChunkDisplaySettingsStrip(
         if (state.isTranscriptionBadgeVisible) {
             val isRunning = state.isTranscriptionRunning
             val baseChipLabel = stringResource(R.string.player_chip_transcribe)
-            val chipLabel = if (!isRunning && state.lookaheadStatus.totalTargetCount > 0) {
-                "$baseChipLabel ${state.lookaheadStatus.completedCount}/${state.lookaheadStatus.totalTargetCount}"
+            val transcribedCount = state.chunks.count { !it.text.isNullOrBlank() }
+            val chipLabel = if (!isRunning && state.chunks.isNotEmpty() &&
+                (transcribedCount > 0 || state.lookaheadStatus.totalTargetCount > 0)
+            ) {
+                "$baseChipLabel $transcribedCount/${state.chunks.size}"
             } else {
                 baseChipLabel
             }

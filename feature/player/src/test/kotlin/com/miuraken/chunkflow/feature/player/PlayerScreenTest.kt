@@ -201,4 +201,25 @@ class PlayerScreenTest {
         assertTrue(withoutSherpa.contains("フランス語 (fr)では標準の音声認識（SpeechRecognizer）が使用されるため、バックグラウンドでは処理が進まない可能性があります。"))
         assertFalse(withoutSherpa.contains("sherpa-onnx"))
     }
+
+    @Test
+    fun `文字起こし進捗ペーンの集計_バッチの開始位置に関わらずファイル全体の文字起こし済みチャンク数と全チャンク数を算出する`() {
+        // 例: 全10チャンクのうち、すでに6チャンクが文字起こし済みで、残り4チャンクに対して新たに先読みを開始した直後（lookaheadStatus.completedCount = 0, totalTargetCount = 4）
+        val status = LookaheadTranscriptionStatus(
+            enabled = true,
+            inFlightChunkId = ChunkId(7L),
+            inFlightStep = com.miuraken.chunkflow.core.model.TranscriptionStep.RECOGNIZING_PRIMARY,
+            completedCount = 0,
+            totalTargetCount = 4,
+        )
+        val summary = computeTranscriptionProgressSummary(
+            lookaheadStatus = status,
+            transcribedChunkCount = 6,
+            totalChunkCount = 10,
+        )
+        assertEquals(6, summary.completedCount)
+        assertEquals(10, summary.totalCount)
+        assertEquals(60, summary.progressPercent)
+        assertEquals(0.675f, summary.overallProgress, 0.001f)
+    }
 }

@@ -675,6 +675,40 @@ internal fun transcriptionStepLabel(step: TranscriptionStep?): String = when (st
     null -> stringResource(R.string.player_chunk_transcription_active)
 }
 
+internal data class TranscriptionProgressSummary(
+    val completedCount: Int,
+    val totalCount: Int,
+    val progressPercent: Int,
+    val overallProgress: Float,
+)
+
+internal fun computeTranscriptionProgressSummary(
+    lookaheadStatus: LookaheadTranscriptionStatus,
+    transcribedChunkCount: Int = lookaheadStatus.completedCount,
+    totalChunkCount: Int = max(lookaheadStatus.totalTargetCount, lookaheadStatus.completedCount),
+): TranscriptionProgressSummary {
+    val totalCount = max(totalChunkCount, transcribedChunkCount)
+    val completedCount = transcribedChunkCount.coerceIn(0, totalCount)
+    val stepFraction = lookaheadStatus.inFlightStep?.progressFraction ?: 0.35f
+    val overallProgress = if (totalCount > 0) {
+        val activeBonus = if (lookaheadStatus.inFlightChunkId != null) stepFraction else 0f
+        ((completedCount.toFloat() + activeBonus) / totalCount.toFloat()).coerceIn(0f, 1f)
+    } else {
+        stepFraction
+    }
+    val progressPercent = if (totalCount > 0) {
+        ((completedCount * 100) / totalCount).coerceIn(0, 100)
+    } else {
+        0
+    }
+    return TranscriptionProgressSummary(
+        completedCount = completedCount,
+        totalCount = totalCount,
+        progressPercent = progressPercent,
+        overallProgress = overallProgress,
+    )
+}
+
 /**
  * 文字起こしの進捗を、チャンクリストの下部に重ねて表示するカード。
  *
@@ -691,6 +725,8 @@ internal fun TranscriptionProgressOverlay(
     inFlightChunkNumber: Int?,
     onAbortTranscription: () -> Unit,
     modifier: Modifier = Modifier,
+    transcribedChunkCount: Int = lookaheadStatus.completedCount,
+    totalChunkCount: Int = max(lookaheadStatus.totalTargetCount, lookaheadStatus.completedCount),
     onToggleBackgroundTranscription: (Boolean) -> Unit = {},
     onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
     onOpenFileSettings: () -> Unit = {},
@@ -726,31 +762,26 @@ internal fun TranscriptionProgressOverlay(
         else -> MaterialTheme.colorScheme.onSecondaryContainer
     }
 
-    val totalCount = max(lookaheadStatus.totalTargetCount, lookaheadStatus.completedCount)
-    val stepFraction = lookaheadStatus.inFlightStep?.progressFraction ?: 0.35f
-    val overallProgress = if (totalCount > 0) {
-        val activeBonus = if (lookaheadStatus.inFlightChunkId != null) stepFraction else 0f
-        ((lookaheadStatus.completedCount.toFloat() + activeBonus) / totalCount.toFloat()).coerceIn(0f, 1f)
-    } else {
-        stepFraction
-    }
-
-    val progressPercent = if (totalCount > 0) {
-        ((lookaheadStatus.completedCount * 100) / totalCount).coerceIn(0, 100)
-    } else {
-        0
-    }
+    val progressSummary = computeTranscriptionProgressSummary(
+        lookaheadStatus = lookaheadStatus,
+        transcribedChunkCount = transcribedChunkCount,
+        totalChunkCount = totalChunkCount,
+    )
+    val completedCount = progressSummary.completedCount
+    val totalCount = progressSummary.totalCount
+    val overallProgress = progressSummary.overallProgress
+    val progressPercent = progressSummary.progressPercent
     val summaryText = if (lookaheadStatus.isForcedChunkInFlight) {
         stringResource(
             R.string.player_transcription_progress_forced_summary,
-            lookaheadStatus.completedCount,
+            completedCount,
             totalCount,
         )
     } else {
         stringResource(
             R.string.player_transcription_progress_summary,
             progressPercent,
-            lookaheadStatus.completedCount,
+            completedCount,
             totalCount,
         )
     }
