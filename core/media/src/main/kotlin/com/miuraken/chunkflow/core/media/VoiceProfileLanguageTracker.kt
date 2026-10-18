@@ -1,90 +1,91 @@
 package com.miuraken.chunkflow.core.media
 
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * 音声ファイル内で言語ごとに話者（声のプロファイル）をオンライン学習し、
- * 言語判定（[WhisperTinyLanguageDetector]）の補助・曖昧チャンク補正・高速化を行うトラッカー（F6.2）。
+ * 音声ファイル内で言語が確定したチャンクの「声と言語の特徴ベクトル」を集めて、
+ * 言語判定（[WhisperTinyLanguageDetector]）をファイルごとに補正するトラッカー（F6.2）。
  *
- * 語学教材では対象言語（`target`）と解説言語（`base`）が別々の話者（例：日本語ナレーター＋外国語ネイティブ話者）で
- * 話されることが多い特性を利用する。
+ * 語学教材では、解説言語（`base`）を 1 人のナレーターが話し、対象言語（`target`）を複数のネイティブ話者が話すことが多い。
+ * 話者の声色と言語の音響的な違いは、Whisper エンコーダ出力の平均ベクトル（[LanguagePairAnalysis.encoderEmbedding]）に
+ * よく表れるため、これを特徴量に使う（言語判定と同じ推論の集計なので、追加の計算はほとんどない）。
  *
- * - 16kHz モノラル PCM の有声（発話）フレームから、声の高さ（基本周波数 $\log F_0$ の統計量）、
- *   スペクトル傾斜・重心、および低次 MFCC（声道包絡の統計量）からなる 32 次元の正規化声色ベクトルを 1ms 未満で抽出する。
- * - 高確証度で言語が確定したチャンク（または手動で言語指定されたチャンク）をアンカーとして、
- *   ファイル（`audioScopeKey`）ごとに `target` 話者クラスタと `base` 話者クラスタ（ダイアログ教材の男女ペアにも対応できるよう各言語最大 2 クラスタ）を更新する。
+ * - **アンカー**: Whisper 単体で高確信のチャンク（[isAnchorEligible]）。統合後の確率ではなく Whisper 単体の確信度で選び、
+ *   自分の予測で自分を学習する自己強化を防ぐ。同じチャンクを登録し直すと置き換える（二重登録しない）。
+ * - **予測**: 言語ごとに、類似度が上位 [KNN_K] 件のアンカーの平均類似度を求め、その差を対数オッズに校正する。
+ *   校正は、アンカー自身の Leave-One-Out の差に当てはめたロジスティック回帰（Platt スケーリング）で行う。
+ *   話者が言語で分かれていない教材（1 人が両言語を話すなど）では傾きがほぼ 0 になり、自動的に効かなくなる。
+ *   対象言語の話者が複数いても、近傍で判定するので話者ごとのクラスタを作る必要はない。
+ * - **統合**: Whisper の 2 言語の対数オッズは、ペア外の言語に確率が流れているとき（[LanguagePairPrediction.pairMass] が小さい）や
+ *   短いチャンクで過信しやすいため割り引き（[whisperReliability]）、校正済みの近傍の対数オッズを足す。
+ *
+ * スレッドセーフ。ファイルごとの学習内容はメモリ内だけに持ち、最近使った [MAX_TRACKED_FILES] 件まで保持する。
  */
 internal class VoiceProfileLanguageTracker {
 
     /**
-     * 声のプロファイルに基づく 2 言語ペアの事前確率予測。
+     * ファイル内で学習したアンカーから求めた 2 言語ペアの判定。
      *
-     * @property targetProbability `targetTag` 話者である事後確率（`0.0..1.0`）。
-     * @property baseProbability `baseTag` 話者である事後確率（`0.0..1.0`）。
-     * @property targetSimilarity `target` 話者プロトタイプとの最大コサイン類似度（`-1.0..1.0`）。
-     * @property baseSimilarity `base` 話者プロトタイプとの最大コサイン類似度（`-1.0..1.0`）。
-     * @property isHighConfidenceSpeakerMatch 音声 LID（Whisper Tiny）を省略して即決できるほど
-     *   両言語の話者クラスタが分離されており、かつ一方の話者に強く一致しているかどうか。
+     * @property targetProbability `targetTag` である確率（校正済み、`0.0..1.0`）。
+     * @property baseProbability `baseTag` である確率（校正済み、`0.0..1.0`）。
+     * @property logOdds `targetTag` の対数オッズ（校正済み）。Whisper の対数オッズに足して使う。
+     * @property targetAnchorCount 判定に使った `targetTag` のアンカー数。
+     * @property baseAnchorCount 判定に使った `baseTag` のアンカー数。
      */
     data class SpeakerLanguagePrediction(
         val targetProbability: Float,
         val baseProbability: Float,
-        val targetSimilarity: Float,
-        val baseSimilarity: Float,
-        val isHighConfidenceSpeakerMatch: Boolean,
+        val logOdds: Float,
+        val targetAnchorCount: Int,
+        val baseAnchorCount: Int,
     ) {
+        /** 選ばれた言語の確率（`0.5..1.0`）。 */
         val selectedProbability: Float
             get() = max(targetProbability, baseProbability)
     }
 
-    private class SpeakerCluster(
-        val centroid: FloatArray,
-        var sampleCount: Int,
+    private class Anchor(
+        val observationKey: Long?,
+        val embedding: FloatArray,
     )
 
-    private class FileSpeakerModel {
-        val clustersByLang = HashMap<String, MutableList<SpeakerCluster>>()
+    private class FileModel(val dimension: Int) {
+        val anchorsByLang = HashMap<String, ArrayDeque<Anchor>>()
+        var version = 0
+        var calibrationPairKey: String? = null
+        var calibrationVersion = 0
+        var calibrationSlope = 0.0
+        var calibrationBias = 0.0
     }
 
-    private val modelsByScope = ConcurrentHashMap<String, FileSpeakerModel>()
+    // 最近使った順（accessOrder = true）。古いファイルから捨てる。
+    private val modelsByScope = LinkedHashMap<String, FileModel>(16, 0.75f, true)
 
-    /**
-     * 指定した音声ファイル識別子 [audioScopeKey] の話者プロファイルをクリアする。
-     */
+    /** 指定した音声ファイル識別子 [audioScopeKey] の学習内容を消す。 */
     fun clearScope(audioScopeKey: String) {
-        modelsByScope.remove(audioScopeKey)
+        synchronized(modelsByScope) {
+            modelsByScope.remove(audioScopeKey)
+        }
     }
 
-    /**
-     * すべてのキャッシュ済み話者プロファイルをクリアする。
-     */
+    /** すべてのファイルの学習内容を消す。 */
     fun clearAll() {
-        modelsByScope.clear()
+        synchronized(modelsByScope) {
+            modelsByScope.clear()
+        }
     }
 
     /**
-     * 16kHz モノラル PCM [pcm16kMono] から声のプロファイル（32次元 L2 正規化ベクトル）を抽出する。
+     * 特徴ベクトル [voiceProfile]（[LanguagePairAnalysis.encoderEmbedding]）から、[audioScopeKey] のファイル内で学習した
+     * アンカーに基づく `targetTag` / `baseTag` の判定を返す。
      *
-     * 有声フレームが不足している極短・無音チャンクでは `null` を返す。
-     */
-    fun extractVoiceProfile(
-        pcm16kMono: ShortArray,
-        sampleRateHz: Int = DEFAULT_SAMPLE_RATE_HZ,
-    ): FloatArray? = Companion.extractVoiceProfileVector(pcm16kMono, sampleRateHz)
-
-    /**
-     * 声のプロファイル [voiceProfile] をもとに、[audioScopeKey] 内の `targetTag` / `baseTag` 話者との一致度を評価する。
-     *
-     * まだ両言語の話者サンプルが十分に溜まっていない場合は `null` を返す。
+     * 類似度は、2 言語のアンカーの平均を引いて（ファイル内で共通の成分を除いて）から測る。
+     * どちらかの言語のアンカーが [MIN_ANCHORS_PER_LANG] 件未満のときは `null` を返す。
      */
     fun predictLanguageFromVoiceProfile(
         audioScopeKey: String,
@@ -92,144 +93,117 @@ internal class VoiceProfileLanguageTracker {
         targetTag: String,
         baseTag: String,
     ): SpeakerLanguagePrediction? {
-        if (audioScopeKey.isBlank() || voiceProfile.size != PROFILE_DIM) return null
-        val model = modelsByScope[audioScopeKey] ?: return null
+        if (audioScopeKey.isBlank() || !isUsableVector(voiceProfile)) return null
         val targetKey = normalizeLangKey(targetTag)
         val baseKey = normalizeLangKey(baseTag)
-        if (targetKey == baseKey) return null
+        if (targetKey.isEmpty() || baseKey.isEmpty() || targetKey == baseKey) return null
+        val model = synchronized(modelsByScope) { modelsByScope[audioScopeKey] } ?: return null
+        if (model.dimension != voiceProfile.size) return null
 
         synchronized(model) {
-            val targetClusters = model.clustersByLang[targetKey]?.takeIf { it.isNotEmpty() } ?: return null
-            val baseClusters = model.clustersByLang[baseKey]?.takeIf { it.isNotEmpty() } ?: return null
+            val targetAnchors = model.anchorsByLang[targetKey] ?: return null
+            val baseAnchors = model.anchorsByLang[baseKey] ?: return null
+            if (targetAnchors.size < MIN_ANCHORS_PER_LANG || baseAnchors.size < MIN_ANCHORS_PER_LANG) return null
 
-            val targetTotalSamples = targetClusters.sumOf { it.sampleCount }
-            val baseTotalSamples = baseClusters.sumOf { it.sampleCount }
-            if (targetTotalSamples < MIN_ANCHOR_SAMPLES_PER_LANG || baseTotalSamples < MIN_ANCHOR_SAMPLES_PER_LANG) {
-                return null
+            val count = targetAnchors.size + baseAnchors.size
+            val raw = Array(count) { idx ->
+                if (idx < targetAnchors.size) targetAnchors[idx].embedding else baseAnchors[idx - targetAnchors.size].embedding
+            }
+            val mean = FloatArray(model.dimension)
+            for (vector in raw) {
+                for (i in mean.indices) {
+                    mean[i] += vector[i]
+                }
+            }
+            for (i in mean.indices) {
+                mean[i] /= count.toFloat()
+            }
+            val vectors = Array(count) { centeredUnitVector(raw[it], mean) }
+            val isTarget = BooleanArray(count) { it < targetAnchors.size }
+
+            val pairKey = "$targetKey|$baseKey"
+            if (model.calibrationPairKey != pairKey || model.version - model.calibrationVersion >= REFIT_INTERVAL_ANCHORS) {
+                val (slope, bias) = fitCalibration(vectors, isTarget)
+                model.calibrationSlope = slope
+                model.calibrationBias = bias
+                model.calibrationPairKey = pairKey
+                model.calibrationVersion = model.version
             }
 
-            // 同一人物が両言語を話している教材（自己対話等）で誤誘導しないよう、言語間の重心分離度を確認する
-            val maxInterLangSim = maxCrossClusterSimilarity(targetClusters, baseClusters)
-            if (maxInterLangSim > MAX_INTER_SPEAKER_SIMILARITY_FOR_PRIOR) {
-                return null
-            }
-
-            val simTarget = targetClusters.maxOf { cosineSimilarity(voiceProfile, it.centroid) }
-            val simBase = baseClusters.maxOf { cosineSimilarity(voiceProfile, it.centroid) }
-            val diff = simTarget - simBase
-            if (abs(diff) < MIN_SIMILARITY_MARGIN) {
-                return null
-            }
-
-            // コサイン類似度差を温度付きシグモイドで確率 [0, 1] に変換する
-            val logit = (diff * SIMILARITY_LOGIT_SCALE).coerceIn(-8.0f, 8.0f)
-            val targetProb = (1.0f / (1.0f + exp(-logit.toDouble()).toFloat())).coerceIn(0.05f, 0.95f)
-            val baseProb = (1.0f - targetProb).coerceIn(0.05f, 0.95f)
-
-            val bestSim = max(simTarget, simBase)
-            val isFastSkipEligible =
-                targetTotalSamples >= MIN_SAMPLES_FOR_FAST_SKIP &&
-                    baseTotalSamples >= MIN_SAMPLES_FOR_FAST_SKIP &&
-                    maxInterLangSim <= MAX_INTER_SPEAKER_SIMILARITY_FOR_FAST_SKIP &&
-                    bestSim >= MIN_BEST_SIMILARITY_FOR_FAST_SKIP &&
-                    abs(diff) >= MIN_MARGIN_FOR_FAST_SKIP
-
+            val query = centeredUnitVector(voiceProfile, mean)
+            val similarities = FloatArray(count) { dot(query, vectors[it]) }
+            val score = classKnnScore(similarities, isTarget, excludeIndex = -1) ?: return null
+            val logOdds = (model.calibrationSlope * score + model.calibrationBias)
+                .coerceIn(-MAX_SPEAKER_LOG_ODDS, MAX_SPEAKER_LOG_ODDS)
+            val targetProb = sigmoid(logOdds).toFloat()
             return SpeakerLanguagePrediction(
                 targetProbability = targetProb,
-                baseProbability = baseProb,
-                targetSimilarity = simTarget,
-                baseSimilarity = simBase,
-                isHighConfidenceSpeakerMatch = isFastSkipEligible,
+                baseProbability = 1.0f - targetProb,
+                logOdds = logOdds.toFloat(),
+                targetAnchorCount = targetAnchors.size,
+                baseAnchorCount = baseAnchors.size,
             )
         }
     }
 
     /**
-     * 言語が確定したチャンクの声プロファイル [voiceProfile] を [audioScopeKey] の [languageTag] 話者モデルへ登録する。
+     * 言語が確定したチャンクの特徴ベクトル [voiceProfile] を、[audioScopeKey] のファイルの [languageTag] のアンカーとして登録する。
      *
-     * @param weight 更新の重み（通常チャンクは `1`、ユーザーの手動言語指定など強い教師データは `2`）。
+     * 自動判定の結果を登録するときは、Whisper 単体の判定が [isAnchorEligible] を満たす場合に限ること。
+     *
+     * @param observationKey チャンクを識別するキー（チャンクの開始時刻など）。同じキーで登録し直すと、
+     *   言語が変わっていても前の登録を置き換える（二重登録しない）。`null` なら置き換えない。
      */
     fun recordSpeakerObservation(
         audioScopeKey: String,
+        observationKey: Long?,
         languageTag: String,
         voiceProfile: FloatArray,
-        weight: Int = 1,
     ) {
-        if (audioScopeKey.isBlank() || voiceProfile.size != PROFILE_DIM || weight <= 0) return
+        if (audioScopeKey.isBlank() || !isUsableVector(voiceProfile)) return
         val langKey = normalizeLangKey(languageTag)
         if (langKey.isEmpty() || langKey == "und") return
-
-        if (modelsByScope.size >= MAX_TRACKED_FILES && !modelsByScope.containsKey(audioScopeKey)) {
-            modelsByScope.keys.firstOrNull()?.let { modelsByScope.remove(it) }
-        }
-        val model = modelsByScope.computeIfAbsent(audioScopeKey) { FileSpeakerModel() }
+        val model = obtainModel(audioScopeKey, voiceProfile.size) ?: return
 
         synchronized(model) {
-            val clusters = model.clustersByLang.getOrPut(langKey) { mutableListOf() }
-            if (clusters.isEmpty()) {
-                clusters.add(SpeakerCluster(centroid = voiceProfile.copyOf(), sampleCount = weight))
-                return
-            }
-
-            var bestIdx = 0
-            var bestSim = Float.NEGATIVE_INFINITY
-            for (i in clusters.indices) {
-                val sim = cosineSimilarity(voiceProfile, clusters[i].centroid)
-                if (sim > bestSim) {
-                    bestSim = sim
-                    bestIdx = i
+            if (observationKey != null) {
+                for (anchors in model.anchorsByLang.values) {
+                    anchors.removeAll { it.observationKey == observationKey }
                 }
             }
-
-            // 既存のクラスタと声が大きく異なり（例：男女ペアのダイアログ）、まだ上限クラスタ数未満なら第2話者クラスタを作る
-            if (bestSim < NEW_SPEAKER_CLUSTER_SIMILARITY_THRESHOLD && clusters.size < MAX_CLUSTERS_PER_LANG) {
-                clusters.add(SpeakerCluster(centroid = voiceProfile.copyOf(), sampleCount = weight))
-                return
+            val anchors = model.anchorsByLang.getOrPut(langKey) { ArrayDeque() }
+            anchors.addLast(Anchor(observationKey = observationKey, embedding = voiceProfile.copyOf()))
+            while (anchors.size > MAX_ANCHORS_PER_LANG) {
+                anchors.removeFirst()
             }
-
-            val targetCluster = clusters[bestIdx]
-            val oldCount = targetCluster.sampleCount.coerceAtMost(MAX_EFFECTIVE_CLUSTER_COUNT)
-            val newCount = oldCount + weight
-            val alpha = weight.toFloat() / newCount.toFloat()
-            val oneMinusAlpha = 1.0f - alpha
-            val c = targetCluster.centroid
-            for (i in 0 until PROFILE_DIM) {
-                c[i] = c[i] * oneMinusAlpha + voiceProfile[i] * alpha
-            }
-            l2NormalizeInPlace(c)
-            targetCluster.sampleCount += weight
+            model.version += 1
         }
     }
 
     /**
-     * Whisper Tiny LID の予測 [whisperPrediction] と、話者プロファイルの予測 [speakerPrediction] を
-     * 対数オッズ空間（ベイズ更新）で統合した [LanguagePairPrediction] を返す。
+     * Whisper の判定 [whisperPrediction] と、ファイル内で学習した判定 [speakerPrediction] を対数オッズで統合する。
+     *
+     * Whisper の対数オッズは [whisperReliability] で割り引いてから足す。[speakerPrediction] が `null` でも割り引きは行う
+     * （確率が過信にならないようにし、後段の文字起こしで両言語を比べるかどうかの判断に使えるようにする）。
+     *
+     * @param analyzedDurationMs 言語判定に渡した音声の長さ（ミリ秒）。不明なら `null`（長さによる割り引きをしない）。
      */
     fun combineWithWhisperPrediction(
         whisperPrediction: LanguagePairPrediction,
         speakerPrediction: SpeakerLanguagePrediction?,
         targetTag: String,
         baseTag: String,
+        analyzedDurationMs: Long? = null,
     ): LanguagePairPrediction {
-        if (speakerPrediction == null) return whisperPrediction
-
         val eps = 1e-4f
         val wTarget = whisperPrediction.targetProbability.coerceIn(eps, 1.0f - eps)
         val wBase = whisperPrediction.baseProbability.coerceIn(eps, 1.0f - eps)
-        val whisperLogOdds = ln((wTarget / wBase).toDouble()).toFloat()
-
-        val sTarget = speakerPrediction.targetProbability.coerceIn(eps, 1.0f - eps)
-        val sBase = speakerPrediction.baseProbability.coerceIn(eps, 1.0f - eps)
-        val speakerLogOdds = ln((sTarget / sBase).toDouble()).toFloat()
-
-        // Whisper LID の確信度が低い（0.82 未満）ほど、声のプロファイルの重みを強く効かせる
-        val speakerWeight = if (whisperPrediction.selectedProbability < 0.82f) {
-            SPEAKER_WEIGHT_WHEN_WHISPER_AMBIGUOUS
-        } else {
-            SPEAKER_WEIGHT_WHEN_WHISPER_CONFIDENT
-        }
-        val combinedLogOdds = (whisperLogOdds + speakerWeight * speakerLogOdds).coerceIn(-10.0f, 10.0f)
-        val targetProb = (1.0f / (1.0f + exp(-combinedLogOdds.toDouble()).toFloat())).coerceIn(0.0f, 1.0f)
+        val whisperLogOdds = ln((wTarget / wBase).toDouble()).coerceIn(-MAX_WHISPER_LOG_ODDS, MAX_WHISPER_LOG_ODDS)
+        val reliability = whisperReliability(whisperPrediction.pairMass, analyzedDurationMs).toDouble()
+        val speakerLogOdds = speakerPrediction?.logOdds?.toDouble() ?: 0.0
+        val combinedLogOdds = (whisperLogOdds * reliability + speakerLogOdds)
+            .coerceIn(-MAX_COMBINED_LOG_ODDS, MAX_COMBINED_LOG_ODDS)
+        val targetProb = sigmoid(combinedLogOdds).toFloat().coerceIn(0.0f, 1.0f)
         val baseProb = (1.0f - targetProb).coerceIn(0.0f, 1.0f)
 
         return if (targetProb >= baseProb) {
@@ -240,6 +214,7 @@ internal class VoiceProfileLanguageTracker {
                 targetProbability = targetProb,
                 baseProbability = baseProb,
                 inferenceTimeMs = whisperPrediction.inferenceTimeMs,
+                pairMass = whisperPrediction.pairMass,
             )
         } else {
             LanguagePairPrediction(
@@ -249,335 +224,206 @@ internal class VoiceProfileLanguageTracker {
                 targetProbability = targetProb,
                 baseProbability = baseProb,
                 inferenceTimeMs = whisperPrediction.inferenceTimeMs,
+                pairMass = whisperPrediction.pairMass,
             )
         }
     }
 
-    companion object {
-        const val PROFILE_DIM: Int = 32
-        private const val DEFAULT_SAMPLE_RATE_HZ: Int = 16_000
-        private const val FRAME_SAMPLES: Int = 400 // 25ms @ 16kHz
-        private const val HOP_SAMPLES: Int = 320 // 20ms @ 16kHz
-        private const val MAX_ANALYZED_SAMPLES: Int = 40_000 // 冒頭 2.5 秒で十分に声色を取得可能
-        private const val MIN_VOICED_FRAMES: Int = 4
-        private const val VOICED_RMS_THRESHOLD: Float = 0.008f
-        private const val N_FILTER_BANKS: Int = 20
-        private const val N_MFCC: Int = 12
-        private const val PITCH_SUBSAMPLE_STEP: Int = 2 // 8kHz 相当で自己相関ピッチ推定
-
-        private const val MIN_ANCHOR_SAMPLES_PER_LANG: Int = 1
-        private const val MIN_SAMPLES_FOR_FAST_SKIP: Int = 2
-        private const val MAX_CLUSTERS_PER_LANG: Int = 2
-        private const val MAX_EFFECTIVE_CLUSTER_COUNT: Int = 16
-        private const val MAX_TRACKED_FILES: Int = 32
-
-        private const val NEW_SPEAKER_CLUSTER_SIMILARITY_THRESHOLD: Float = 0.55f
-        private const val MAX_INTER_SPEAKER_SIMILARITY_FOR_PRIOR: Float = 0.92f
-        private const val MAX_INTER_SPEAKER_SIMILARITY_FOR_FAST_SKIP: Float = 0.78f
-        private const val MIN_SIMILARITY_MARGIN: Float = 0.06f
-        private const val MIN_BEST_SIMILARITY_FOR_FAST_SKIP: Float = 0.78f
-        private const val MIN_MARGIN_FOR_FAST_SKIP: Float = 0.20f
-        private const val SIMILARITY_LOGIT_SCALE: Float = 6.0f
-        private const val SPEAKER_WEIGHT_WHEN_WHISPER_AMBIGUOUS: Float = 0.80f
-        private const val SPEAKER_WEIGHT_WHEN_WHISPER_CONFIDENT: Float = 0.35f
-
-        // 1..12 次 MFCC 用の DCT-II テーブル (12 x 20)
-        private val DCT_12_BY_20: FloatArray = FloatArray(N_MFCC * N_FILTER_BANKS).apply {
-            val scale = sqrt(2.0 / N_FILTER_BANKS.toDouble()).toFloat()
-            for (c in 0 until N_MFCC) {
-                val m = c + 1
-                for (b in 0 until N_FILTER_BANKS) {
-                    this[c * N_FILTER_BANKS + b] =
-                        (scale * cos(PI * m * (b + 0.5) / N_FILTER_BANKS.toDouble())).toFloat()
-                }
+    private fun obtainModel(audioScopeKey: String, dimension: Int): FileModel? {
+        synchronized(modelsByScope) {
+            val existing = modelsByScope[audioScopeKey]
+            if (existing != null) {
+                return if (existing.dimension == dimension) existing else null
             }
+            while (modelsByScope.size >= MAX_TRACKED_FILES) {
+                val eldestKey = modelsByScope.keys.firstOrNull() ?: break
+                modelsByScope.remove(eldestKey)
+            }
+            return FileModel(dimension).also { modelsByScope[audioScopeKey] = it }
         }
+    }
 
-        // 各特徴量次元のスケール差（MFCC 平均・標準偏差・ピッチ・スペクトル特徴）を揃える重み
-        private val FEATURE_DIM_WEIGHTS: FloatArray = FloatArray(PROFILE_DIM) { idx ->
-            when (idx) {
-                0 -> 0.05f
+    companion object {
+        /** 近傍の数（言語ごとに、類似度が上位何件のアンカーの平均を使うか）。 */
+        internal const val KNN_K: Int = 7
 
-                // MFCC 1次（全体の単調スロープは録音環境に依存しやすいため抑制）
-                in 1 until N_MFCC -> 0.35f
+        /** 判定に必要な言語ごとの最小アンカー数。 */
+        internal const val MIN_ANCHORS_PER_LANG: Int = 3
 
-                // MFCC 2..12次平均（声道フォルマント形状の主成分）
-                in N_MFCC until (N_MFCC * 2) -> 0.25f
+        /** 言語ごとに保持するアンカーの上限（古いものから捨てる）。 */
+        internal const val MAX_ANCHORS_PER_LANG: Int = 160
 
-                // MFCC 標準偏差
-                24, 25 -> 2.00f
+        /** 保持するファイル数の上限（最近使ったものを残す）。 */
+        internal const val MAX_TRACKED_FILES: Int = 8
 
-                // log(F0) 平均・標準偏差（声の高さ：話者差が最も顕著）
-                26, 27 -> 1.20f
+        /** 校正をやり直すまでに追加・変更されるアンカー数。 */
+        private const val REFIT_INTERVAL_ANCHORS: Int = 4
 
-                // 周期性（ハーモニクス強度）・ゼロ交差率
-                else -> 0.80f // サブバンドエネルギー比・スペクトル傾斜
+        /** アンカーにする Whisper 単体の 2 言語確率の下限。 */
+        internal const val ANCHOR_MIN_WHISPER_PROBABILITY: Float = 0.95f
+
+        /** アンカーにする Whisper の [LanguagePairPrediction.pairMass] の下限。 */
+        internal const val ANCHOR_MIN_PAIR_MASS: Float = 0.70f
+
+        private const val CALIBRATION_L2_SLOPE: Double = 0.5
+        private const val CALIBRATION_L2_BIAS: Double = 0.05
+        private const val CALIBRATION_MAX_ITERATIONS: Int = 30
+        private const val MAX_SPEAKER_LOG_ODDS: Double = 8.0
+        private const val MAX_WHISPER_LOG_ODDS: Double = 10.0
+        private const val MAX_COMBINED_LOG_ODDS: Double = 10.0
+
+        // Whisper の割り引き: pairMass が小さいほど、音声が短いほど、2 言語の対数オッズを小さくする
+        private const val RELIABILITY_MASS_LOW: Float = 0.05f
+        private const val RELIABILITY_MASS_HIGH: Float = 0.70f
+        private const val RELIABILITY_MASS_FLOOR: Float = 0.15f
+        private const val RELIABILITY_DURATION_LOW_MS: Float = 800f
+        private const val RELIABILITY_DURATION_HIGH_MS: Float = 1_600f
+        private const val RELIABILITY_DURATION_FLOOR: Float = 0.5f
+
+        /**
+         * Whisper 単体の判定 [whisperPrediction] が、アンカー（ファイル内で学習する教師）にできるほど確かかどうか。
+         *
+         * 2 言語確率が [ANCHOR_MIN_WHISPER_PROBABILITY] 以上で、かつ 99 言語の確率の [ANCHOR_MIN_PAIR_MASS] 以上が 2 言語に集まっていること。
+         */
+        internal fun isAnchorEligible(whisperPrediction: LanguagePairPrediction): Boolean = whisperPrediction.selectedProbability >= ANCHOR_MIN_WHISPER_PROBABILITY &&
+            whisperPrediction.pairMass >= ANCHOR_MIN_PAIR_MASS
+
+        /**
+         * Whisper の 2 言語の対数オッズに掛ける信頼度（`0.075..1.0`）。
+         *
+         * 実教材での検証では、[LanguagePairPrediction.pairMass] が 0.5 未満のときや 1.5 秒未満の短いチャンクで、
+         * 2 言語確率が 0.9 を超えていても誤りが多かった。
+         */
+        internal fun whisperReliability(pairMass: Float, analyzedDurationMs: Long?): Float {
+            val massWeight = ((pairMass - RELIABILITY_MASS_LOW) / (RELIABILITY_MASS_HIGH - RELIABILITY_MASS_LOW))
+                .coerceIn(RELIABILITY_MASS_FLOOR, 1.0f)
+            val durationWeight = if (analyzedDurationMs == null) {
+                1.0f
+            } else {
+                val ratio = (analyzedDurationMs - RELIABILITY_DURATION_LOW_MS) /
+                    (RELIABILITY_DURATION_HIGH_MS - RELIABILITY_DURATION_LOW_MS)
+                (RELIABILITY_DURATION_FLOOR + (1.0f - RELIABILITY_DURATION_FLOOR) * ratio)
+                    .coerceIn(RELIABILITY_DURATION_FLOOR, 1.0f)
             }
+            return massWeight * durationWeight
         }
 
         internal fun normalizeLangKey(rawTag: String): String = rawTag.trim().replace('_', '-').lowercase(Locale.ROOT).substringBefore('-')
 
-        internal fun cosineSimilarity(a: FloatArray, b: FloatArray): Float {
-            val len = min(a.size, b.size)
-            var dot = 0f
-            for (i in 0 until len) {
-                dot += a[i] * b[i]
+        private fun isUsableVector(vector: FloatArray): Boolean = vector.isNotEmpty() && vector.all { it.isFinite() }
+
+        private fun sigmoid(x: Double): Double = 1.0 / (1.0 + exp(-x))
+
+        private fun dot(a: FloatArray, b: FloatArray): Float {
+            var sum = 0f
+            for (i in a.indices) {
+                sum += a[i] * b[i]
             }
-            return dot.coerceIn(-1.0f, 1.0f)
+            return sum
         }
 
-        private fun maxCrossClusterSimilarity(
-            clustersA: List<SpeakerCluster>,
-            clustersB: List<SpeakerCluster>,
-        ): Float {
-            var maxSim = Float.NEGATIVE_INFINITY
-            for (a in clustersA) {
-                for (b in clustersB) {
-                    val sim = cosineSimilarity(a.centroid, b.centroid)
-                    if (sim > maxSim) maxSim = sim
-                }
-            }
-            return maxSim
-        }
-
-        private fun l2NormalizeInPlace(vec: FloatArray): Boolean {
+        /** [vector] からファイル内の平均 [mean] を引き、長さ 1 に正規化したベクトル（長さ 0 なら零ベクトル）。 */
+        private fun centeredUnitVector(vector: FloatArray, mean: FloatArray): FloatArray {
+            val out = FloatArray(vector.size) { vector[it] - mean[it] }
             var normSq = 0f
-            for (v in vec) {
+            for (v in out) {
                 normSq += v * v
             }
-            if (normSq < 1e-12f) return false
-            val invNorm = 1.0f / sqrt(normSq)
-            for (i in vec.indices) {
-                vec[i] *= invNorm
+            if (normSq < 1e-12f) return FloatArray(vector.size)
+            val inv = 1.0f / sqrt(normSq)
+            for (i in out.indices) {
+                out[i] *= inv
             }
-            return true
+            return out
         }
 
         /**
-         * 16kHz モノラル PCM から 32 次元の正規化声色プロファイルベクトルを抽出する。
+         * 言語ごとに類似度 [similarities] の上位 [KNN_K] 件を平均し、`target - base` の差を返す（正なら `target` 寄り）。
          *
-         * 構成（計 32 次元）:
-         * - `0..11`: 12 次元 MFCC の有声フレーム平均（ケプストラム平均正規化前後の声道形状）
-         * - `12..23`: 12 次元 MFCC の有声フレーム標準偏差
-         * - `24`: 有声フレームの正規化 $\log(F_0)$ 平均（ピッチ：男女・個人差）
-         * - `25`: 有声フレームの正規化 $\log(F_0)$ 標準偏差（抑揚レンジ）
-         * - `26`: 平均ハーモニクス周期性（声の張りと倍音明瞭度）
-         * - `27`: 有声フレームの平均ゼロ交差率（ZCR）
-         * - `28..31`: 低域・中低域・中高域・高域の 4 サブバンド対数エネルギー比（スペクトル傾斜）
+         * [excludeIndex] のアンカーは除く（Leave-One-Out 用）。どちらかの言語に候補がなければ `null`。
          */
-        internal fun extractVoiceProfileVector(
-            pcm16kMono: ShortArray,
-            sampleRateHz: Int = DEFAULT_SAMPLE_RATE_HZ,
-        ): FloatArray? {
-            if (pcm16kMono.size < FRAME_SAMPLES || sampleRateHz <= 0) return null
-
-            // 発話開始位置の探索（先頭の長い無音をスキップ）
-            var startOffset = 0
-            val norm = 1.0f / 32768.0f
-            while (startOffset + FRAME_SAMPLES <= pcm16kMono.size) {
-                var sumSq = 0f
-                for (i in startOffset until startOffset + FRAME_SAMPLES) {
-                    val v = pcm16kMono[i] * norm
-                    sumSq += v * v
+        private fun classKnnScore(similarities: FloatArray, isTarget: BooleanArray, excludeIndex: Int): Double? {
+            val topTarget = FloatArray(KNN_K) { Float.NEGATIVE_INFINITY }
+            val topBase = FloatArray(KNN_K) { Float.NEGATIVE_INFINITY }
+            var targetCount = 0
+            var baseCount = 0
+            for (i in similarities.indices) {
+                if (i == excludeIndex) continue
+                if (isTarget[i]) {
+                    insertTopK(topTarget, similarities[i])
+                    targetCount += 1
+                } else {
+                    insertTopK(topBase, similarities[i])
+                    baseCount += 1
                 }
-                if (sqrt(sumSq / FRAME_SAMPLES) >= VOICED_RMS_THRESHOLD) {
-                    break
+            }
+            if (targetCount == 0 || baseCount == 0) return null
+            return meanOfTop(topTarget, targetCount) - meanOfTop(topBase, baseCount)
+        }
+
+        /** 降順に並んだ [top] に [value] を挿入する（上位 k 件だけを残す）。 */
+        private fun insertTopK(top: FloatArray, value: Float) {
+            if (value <= top[top.size - 1]) return
+            var pos = top.size - 1
+            while (pos > 0 && top[pos - 1] < value) {
+                top[pos] = top[pos - 1]
+                pos -= 1
+            }
+            top[pos] = value
+        }
+
+        private fun meanOfTop(top: FloatArray, available: Int): Double {
+            val n = minOf(top.size, available)
+            var sum = 0.0
+            for (i in 0 until n) {
+                sum += top[i]
+            }
+            return sum / n
+        }
+
+        /**
+         * アンカー自身の Leave-One-Out スコアから、スコアを対数オッズに変換する傾きと切片を求める（L2 正則化つきのニュートン法）。
+         *
+         * 言語で声が分かれていない（Leave-One-Out で当たらない）ときは、傾きが 0 に近くなる。
+         */
+        private fun fitCalibration(vectors: Array<FloatArray>, isTarget: BooleanArray): Pair<Double, Double> {
+            val n = vectors.size
+            val looScores = DoubleArray(n)
+            val similarities = FloatArray(n)
+            for (j in 0 until n) {
+                for (m in 0 until n) {
+                    similarities[m] = if (m == j) 0f else dot(vectors[j], vectors[m])
                 }
-                startOffset += HOP_SAMPLES
+                looScores[j] = classKnnScore(similarities, isTarget, excludeIndex = j) ?: 0.0
             }
-            if (startOffset + FRAME_SAMPLES > pcm16kMono.size) {
-                startOffset = 0
-            }
-
-            val endSample = min(pcm16kMono.size, startOffset + MAX_ANALYZED_SAMPLES)
-            if (endSample - startOffset < FRAME_SAMPLES) return null
-
-            val mfccSum = FloatArray(N_MFCC)
-            val mfccSqSum = FloatArray(N_MFCC)
-            val bandSum = FloatArray(4)
-            var voicedCount = 0
-            var pitchedCount = 0
-            var logF0Sum = 0f
-            var logF0SqSum = 0f
-            var periodicitySum = 0f
-            var zcrSum = 0f
-
-            val framePreemph = FloatArray(FRAME_SAMPLES)
-            val subsampled = FloatArray(FRAME_SAMPLES / PITCH_SUBSAMPLE_STEP)
-            val filterEnergies = FloatArray(N_FILTER_BANKS)
-
-            // 80Hz .. 380Hz に対応するラグ範囲（8kHz サブサンプル空間）
-            val subSampleRate = (sampleRateHz / PITCH_SUBSAMPLE_STEP).coerceAtLeast(2_000)
-            val minLag = (subSampleRate / 380).coerceAtLeast(4)
-            val maxLag = (subSampleRate / 75).coerceAtMost(subsampled.size / 2)
-            val corrByLag = FloatArray(maxLag + 2)
-
-            var offset = startOffset
-            while (offset + FRAME_SAMPLES <= endSample) {
-                var sumSq = 0f
-                var zcr = 0
-                var prevRaw = pcm16kMono[offset] * norm
-                for (i in 0 until FRAME_SAMPLES) {
-                    val curRaw = pcm16kMono[offset + i] * norm
-                    sumSq += curRaw * curRaw
-                    if (i > 0 && ((curRaw >= 0f && prevRaw < 0f) || (curRaw < 0f && prevRaw >= 0f))) {
-                        zcr += 1
-                    }
-                    // プリエンファシス (1 - 0.97 z^-1)
-                    framePreemph[i] = curRaw - 0.97f * prevRaw
-                    if (i % PITCH_SUBSAMPLE_STEP == 0) {
-                        subsampled[i / PITCH_SUBSAMPLE_STEP] = curRaw
-                    }
-                    prevRaw = curRaw
+            var slope = 0.0
+            var bias = 0.0
+            repeat(CALIBRATION_MAX_ITERATIONS) {
+                var gradSlope = CALIBRATION_L2_SLOPE * slope
+                var gradBias = CALIBRATION_L2_BIAS * bias
+                var hSlope = CALIBRATION_L2_SLOPE
+                var hBias = CALIBRATION_L2_BIAS
+                var hCross = 0.0
+                for (j in 0 until n) {
+                    val x = looScores[j]
+                    val y = if (isTarget[j]) 1.0 else 0.0
+                    val p = sigmoid(slope * x + bias)
+                    val w = p * (1.0 - p)
+                    gradSlope += (p - y) * x
+                    gradBias += p - y
+                    hSlope += w * x * x
+                    hBias += w
+                    hCross += w * x
                 }
-
-                val rms = sqrt(sumSq / FRAME_SAMPLES)
-                if (rms >= VOICED_RMS_THRESHOLD) {
-                    voicedCount += 1
-                    zcrSum += zcr.toFloat() / FRAME_SAMPLES.toFloat()
-
-                    // 1. 自己相関による基本周波数 (F0) と周期性の推定
-                    if (maxLag > minLag) {
-                        var energy0 = 0f
-                        val corrLen = subsampled.size - maxLag
-                        for (i in 0 until corrLen) {
-                            energy0 += subsampled[i] * subsampled[i]
-                        }
-                        if (energy0 > 1e-7f) {
-                            var bestLag = minLag
-                            var bestCorr = -1.0f
-                            for (lag in minLag..maxLag) {
-                                var corr = 0f
-                                var energyLag = 0f
-                                for (i in 0 until corrLen) {
-                                    val a = subsampled[i]
-                                    val b = subsampled[i + lag]
-                                    corr += a * b
-                                    energyLag += b * b
-                                }
-                                val denom = sqrt(energy0 * max(energyLag, 1e-7f))
-                                val normCorr = if (denom > 0f) corr / denom else 0f
-                                corrByLag[lag] = normCorr
-                                if (normCorr > bestCorr) {
-                                    bestCorr = normCorr
-                                    bestLag = lag
-                                }
-                            }
-                            if (bestCorr >= 0.35f) {
-                                // サブハーモニック（2*T0, 3*T0）への誤ロックを防ぐため、
-                                // 0ラグからの初期下降区間を過ぎて最初に現れる真の局所ピーク（最小ラグ = 基本周期 T0）を採用する
-                                val peakThreshold = bestCorr * 0.80f
-                                for (lag in (minLag + 1) until maxLag) {
-                                    val cur = corrByLag[lag]
-                                    val prev = corrByLag[lag - 1]
-                                    val next = corrByLag[lag + 1]
-                                    if (cur >= peakThreshold && cur > prev && cur >= next) {
-                                        bestLag = lag
-                                        break
-                                    }
-                                }
-                                val f0Hz = subSampleRate.toFloat() / bestLag.toFloat()
-                                // log(F0) を概ね [-1, +1] スケール（基準 160Hz）に正規化
-                                val normLogF0 = (ln(f0Hz.toDouble()) - ln(160.0)).toFloat()
-                                logF0Sum += normLogF0
-                                logF0SqSum += normLogF0 * normLogF0
-                                periodicitySum += bestCorr
-                                pitchedCount += 1
-                            }
-                        }
-                    }
-
-                    // 2. マルチスケール・タイムドメイン/自己相関フィルタバンクによる 20 バンド対数スペクトル包絡
-                    // （各ラグ k = 1..20 の正規化自己相関と差分エネルギーから声道共振特性を高速近似）
-                    var eTotal = 1e-8f
-                    for (i in 0 until FRAME_SAMPLES) {
-                        eTotal += framePreemph[i] * framePreemph[i]
-                    }
-                    val logTotal = ln(eTotal.toDouble()).toFloat()
-                    for (b in 0 until N_FILTER_BANKS) {
-                        val lag = b + 1
-                        var diffSq = 0f
-                        val limit = FRAME_SAMPLES - lag
-                        for (i in 0 until limit) {
-                            val d = framePreemph[i] - framePreemph[i + lag]
-                            diffSq += d * d
-                        }
-                        val bandRatio = (diffSq / (limit.toFloat() * (eTotal / FRAME_SAMPLES))).coerceAtLeast(1e-6f)
-                        filterEnergies[b] = ln(bandRatio.toDouble()).toFloat() + 0.1f * logTotal
-                    }
-
-                    // 4 サブバンドのエネルギー分布（スペクトル傾斜）
-                    for (sb in 0 until 4) {
-                        var sbAcc = 0f
-                        val startB = sb * 5
-                        for (b in startB until (startB + 5)) {
-                            sbAcc += filterEnergies[b]
-                        }
-                        bandSum[sb] += sbAcc * 0.2f
-                    }
-
-                    // DCT-II による 12 次元 MFCC 算出
-                    for (c in 0 until N_MFCC) {
-                        val dctRow = c * N_FILTER_BANKS
-                        var mfccVal = 0f
-                        for (b in 0 until N_FILTER_BANKS) {
-                            mfccVal += filterEnergies[b] * DCT_12_BY_20[dctRow + b]
-                        }
-                        mfccSum[c] += mfccVal
-                        mfccSqSum[c] += mfccVal * mfccVal
-                    }
-                }
-
-                offset += HOP_SAMPLES
+                val det = hSlope * hBias - hCross * hCross
+                if (det <= 1e-12) return slope to bias
+                val stepSlope = (hBias * gradSlope - hCross * gradBias) / det
+                val stepBias = (hSlope * gradBias - hCross * gradSlope) / det
+                slope -= stepSlope
+                bias -= stepBias
+                if (abs(stepSlope) + abs(stepBias) < 1e-6) return slope to bias
             }
-
-            if (voicedCount < MIN_VOICED_FRAMES) return null
-
-            val invVoiced = 1.0f / voicedCount.toFloat()
-            val out = FloatArray(PROFILE_DIM)
-
-            var mfccMeanAvg = 0f
-            var mfccStdAvg = 0f
-            for (c in 0 until N_MFCC) {
-                val mean = mfccSum[c] * invVoiced
-                val variance = max(0f, mfccSqSum[c] * invVoiced - mean * mean)
-                val std = sqrt(variance)
-                out[c] = mean
-                out[N_MFCC + c] = std
-                mfccMeanAvg += mean
-                mfccStdAvg += std
-            }
-            mfccMeanAvg /= N_MFCC.toFloat()
-            mfccStdAvg /= N_MFCC.toFloat()
-            for (c in 0 until N_MFCC) {
-                out[c] -= mfccMeanAvg
-                out[N_MFCC + c] -= mfccStdAvg
-            }
-
-            if (pitchedCount > 0) {
-                val invPitched = 1.0f / pitchedCount.toFloat()
-                val f0Mean = logF0Sum * invPitched
-                val f0Var = max(0f, logF0SqSum * invPitched - f0Mean * f0Mean)
-                out[24] = f0Mean
-                out[25] = sqrt(f0Var) - 0.12f
-                out[26] = (periodicitySum * invPitched) - 0.65f
-            } else {
-                out[24] = 0f
-                out[25] = 0f
-                out[26] = 0f
-            }
-
-            out[27] = (zcrSum * invVoiced) - 0.15f
-
-            val bandMeanAll = (bandSum[0] + bandSum[1] + bandSum[2] + bandSum[3]) * 0.25f * invVoiced
-            for (sb in 0 until 4) {
-                out[28 + sb] = (bandSum[sb] * invVoiced) - bandMeanAll
-            }
-
-            for (i in 0 until PROFILE_DIM) {
-                out[i] *= FEATURE_DIM_WEIGHTS[i]
-            }
-            return if (l2NormalizeInPlace(out)) out else null
+            return slope to bias
         }
     }
 }

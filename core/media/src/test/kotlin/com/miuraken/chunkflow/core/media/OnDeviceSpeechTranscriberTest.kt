@@ -2061,10 +2061,9 @@ class OnDeviceSpeechTranscriberTest {
     }
 
     @Test
-    fun `detectChunkLanguage_同一ファイル内で2言語の話者プロファイルが確立した後はWhisperLIDを高速スキップする`() = runTest {
+    fun `detectChunkLanguage_ファイル内で学習した声の特徴でペア外に確率が流れた曖昧なWhisper判定を補正する`() = runTest {
         val context = RuntimeEnvironment.getApplication()
-        // 0..4s: 低い声の話者（120Hz 基音 + 低域倍音, ja）
-        // 4..8s: 高い声の話者（260Hz 基音 + 高域倍音, en）
+        // 偶数秒: 低い声の話者（ja）、奇数秒: 高い声の話者（en）
         val twoSpeakerDecoder = object : AudioStreamDecoder {
             override suspend fun decode(
                 file: File,
@@ -2100,61 +2099,66 @@ class OnDeviceSpeechTranscriberTest {
             }
         }
 
-        var lidCallCount = 0
+        var analyzerCallCount = 0
         val transcriber = AndroidSpeechRecognizerChunkTranscriber(
             context = context,
             audioStreamDecoder = twoSpeakerDecoder,
             onDeviceAvailabilityChecker = { true },
             standardAvailabilityChecker = { true },
-            languageDetector = { shorts, targetTag, baseTag ->
-                lidCallCount += 1
-                // ZCR（零交差率）で高低どちらの話者かをテスト用に返す
+            languageAnalyzer = { shorts, targetTag, baseTag ->
+                analyzerCallCount += 1
+                // ZCR（零交差率）で高低どちらの話者かを判別し、話者ごとの特徴ベクトルを返す
                 var zeroCrossings = 0
                 for (i in 1 until shorts.size) {
                     if ((shorts[i] >= 0) != (shorts[i - 1] >= 0)) zeroCrossings += 1
                 }
                 val isHighPitch = zeroCrossings > 800
-                if (isHighPitch) {
-                    LanguagePairPrediction(
-                        selectedTag = targetTag,
-                        fallbackTag = baseTag,
-                        selectedProbability = 0.96f,
-                        targetProbability = 0.96f,
-                        baseProbability = 0.04f,
-                        inferenceTimeMs = 20L,
-                    )
-                } else {
-                    LanguagePairPrediction(
-                        selectedTag = baseTag,
-                        fallbackTag = targetTag,
-                        selectedProbability = 0.96f,
-                        targetProbability = 0.04f,
-                        baseProbability = 0.96f,
-                        inferenceTimeMs = 20L,
-                    )
+                val embedding = FloatArray(16) { d ->
+                    val speakerComponent = if ((d % 2 == 0) == isHighPitch) 1.0f else -1.0f
+                    3.0f + speakerComponent + 0.05f * ((analyzerCallCount * 7 + d) % 5)
                 }
+                val warmUp = analyzerCallCount <= 6
+                // 最初の 6 チャンクは Whisper が高確信、以降は確率の大半がペア外に流れ、しかも逆の言語に傾いた判定
+                val targetProbability = when {
+                    warmUp && isHighPitch -> 0.97f
+                    warmUp -> 0.03f
+                    isHighPitch -> 0.15f
+                    else -> 0.80f
+                }
+                LanguagePairAnalysis(
+                    prediction = LanguagePairPrediction(
+                        selectedTag = if (targetProbability >= 0.5f) targetTag else baseTag,
+                        fallbackTag = if (targetProbability >= 0.5f) baseTag else targetTag,
+                        selectedProbability = maxOf(targetProbability, 1f - targetProbability),
+                        targetProbability = targetProbability,
+                        baseProbability = 1f - targetProbability,
+                        inferenceTimeMs = 20L,
+                        pairMass = if (warmUp) 0.9f else 0.1f,
+                    ),
+                    encoderEmbedding = embedding,
+                )
             },
         )
 
         val audioFile = tempFolder.newFile("bilingual_dialogue.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
         val pair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
 
-        // 最初の4チャンク（ja, en, ja, en）で両言語の話者クラスタ（各2観測以上）を確立する
-        assertEquals(LanguageTag("ja"), transcriber.detectChunkLanguage(audioFile, 0L, 1_000L, pair)?.language)
-        assertEquals(LanguageTag("en"), transcriber.detectChunkLanguage(audioFile, 1_000L, 2_000L, pair)?.language)
-        assertEquals(LanguageTag("ja"), transcriber.detectChunkLanguage(audioFile, 2_000L, 3_000L, pair)?.language)
-        assertEquals(LanguageTag("en"), transcriber.detectChunkLanguage(audioFile, 3_000L, 4_000L, pair)?.language)
-        val callsAfterWarmup = lidCallCount
-        assertTrue(callsAfterWarmup >= 2)
+        // 最初の 6 チャンク（ja, en, ja, en, ja, en）は Whisper 単体の高確信な判定がそのまま使われ、アンカーになる
+        for (second in 0 until 6) {
+            val expected = if (second % 2 == 1) LanguageTag("en") else LanguageTag("ja")
+            val startMs = second * 1_000L
+            assertEquals(expected, transcriber.detectChunkLanguage(audioFile, startMs, startMs + 1_000L, pair)?.language)
+        }
 
-        // 5チャンク目（4000..5000ms: ja話者）と6チャンク目（5000..6000ms: en話者）は話者プロファイル一致により Whisper LID をスキップして即座に判定できる
-        val fifth = transcriber.detectChunkLanguage(audioFile, 4_000L, 5_000L, pair)
-        val sixth = transcriber.detectChunkLanguage(audioFile, 5_000L, 6_000L, pair)
-        assertNotNull(fifth)
-        assertNotNull(sixth)
-        assertEquals(LanguageTag("ja"), fifth.language)
-        assertEquals(LanguageTag("en"), sixth.language)
-        assertEquals(callsAfterWarmup, lidCallCount, "話者プロファイルが高確信度で一致した場合は Whisper LID をスキップする")
+        // 7 チャンク目（ja の話者）と 8 チャンク目（en の話者）は、Whisper が逆の言語に傾いていても声の特徴で正しく判定する
+        val seventh = transcriber.detectChunkLanguage(audioFile, 6_000L, 7_000L, pair)
+        val eighth = transcriber.detectChunkLanguage(audioFile, 7_000L, 8_000L, pair)
+        assertNotNull(seventh)
+        assertNotNull(eighth)
+        assertEquals(LanguageTag("ja"), seventh.language)
+        assertEquals(LanguageTag("en"), eighth.language)
+        // Whisper は毎回実行する（話者の一致だけで判定を省略しない）
+        assertEquals(8, analyzerCallCount)
     }
 
     @Test

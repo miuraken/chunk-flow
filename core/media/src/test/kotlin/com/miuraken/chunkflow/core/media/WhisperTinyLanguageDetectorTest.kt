@@ -117,34 +117,43 @@ class WhisperTinyLanguageDetectorTest {
     }
 
     @Test
-    fun `VoiceProfileLanguageTracker_実音声チャンクの話者プロファイルを学習し言語判定と統合できる`() {
+    fun `VoiceProfileLanguageTracker_実音声チャンクのWhisper埋め込みを学習し言語判定と統合できる`() {
+        val context = RuntimeEnvironment.getApplication()
+        val detector = WhisperTinyLanguageDetector(context)
         val tracker = VoiceProfileLanguageTracker()
         val jaShorts = decodeGzipBase64Shorts(JA_SPEECH_GZIP_B64)
         val koShorts = decodeGzipBase64Shorts(KO_SPEECH_GZIP_B64)
-
-        val jaProfile = tracker.extractVoiceProfile(jaShorts)
-        val koProfile = tracker.extractVoiceProfile(koShorts)
-        assertNotNull(jaProfile)
-        assertNotNull(koProfile)
-
         val audioKey = "/test/korean_lesson_ja.mp3"
-        // 各話者の観測を3回記録してクラスタを確立する
-        repeat(3) {
-            tracker.recordSpeakerObservation(audioKey, "ja", jaProfile)
-            tracker.recordSpeakerObservation(audioKey, "ko", koProfile)
+
+        // 同じ発話の開始位置を少しずつずらした部分音声を、各言語 3 件ずつアンカーとして登録する
+        fun windows(shorts: ShortArray): List<ShortArray> = (0 until 3).map { k ->
+            shorts.copyOfRange(shorts.size * k / 10, shorts.size)
+        }
+        var observationKey = 0L
+        for (window in windows(jaShorts)) {
+            val analysis = assertNotNull(detector.analyzeLanguagePair(window, targetTag = "ko", baseTag = "ja"))
+            assertEquals(384, analysis.encoderEmbedding.size)
+            assertTrue(analysis.prediction.pairMass in 0.0f..1.0f)
+            tracker.recordSpeakerObservation(audioKey, observationKey++, "ja", analysis.encoderEmbedding)
+        }
+        for (window in windows(koShorts)) {
+            val analysis = assertNotNull(detector.analyzeLanguagePair(window, targetTag = "ko", baseTag = "ja"))
+            tracker.recordSpeakerObservation(audioKey, observationKey++, "ko", analysis.encoderEmbedding)
         }
 
-        val predForKo = tracker.predictLanguageFromVoiceProfile(
-            audioScopeKey = audioKey,
-            voiceProfile = koProfile,
-            targetTag = "ko-KR",
-            baseTag = "ja-JP",
+        val koQuery = assertNotNull(detector.analyzeLanguagePair(koShorts, targetTag = "ko-KR", baseTag = "ja-JP"))
+        val predForKo = assertNotNull(
+            tracker.predictLanguageFromVoiceProfile(
+                audioScopeKey = audioKey,
+                voiceProfile = koQuery.encoderEmbedding,
+                targetTag = "ko-KR",
+                baseTag = "ja-JP",
+            ),
         )
-        assertNotNull(predForKo)
         assertTrue(predForKo.targetProbability > predForKo.baseProbability)
-        assertTrue(predForKo.targetSimilarity > predForKo.baseSimilarity)
+        assertTrue(predForKo.logOdds > 0f, "logOdds=${predForKo.logOdds}")
 
-        // 曖昧な Whisper 判定（0.52 vs 0.48）でも話者プロファイルの一致で対象言語の確信度が補強される
+        // ペア外に確率が流れた曖昧な Whisper 判定（0.52 vs 0.48）でも、ファイル内の判定で対象言語が補強される
         val ambiguousWhisper = LanguagePairPrediction(
             selectedTag = "ko-KR",
             fallbackTag = "ja-JP",
@@ -152,15 +161,57 @@ class WhisperTinyLanguageDetectorTest {
             targetProbability = 0.52f,
             baseProbability = 0.48f,
             inferenceTimeMs = 10L,
+            pairMass = 0.3f,
         )
         val combined = tracker.combineWithWhisperPrediction(
             whisperPrediction = ambiguousWhisper,
             speakerPrediction = predForKo,
             targetTag = "ko-KR",
             baseTag = "ja-JP",
+            analyzedDurationMs = 1_200L,
         )
         assertEquals("ko-KR", combined.selectedTag)
         assertTrue(combined.targetProbability > ambiguousWhisper.targetProbability)
+    }
+
+    @Test
+    fun `languageFamilyIndices_ヒンディー語にはウルドゥー語を合算し相手側の言語は含めない`() {
+        val index = WhisperTinyLanguageDetector.WHISPER_99_LANGUAGE_CODES.withIndex().associate { it.value to it.index }
+        val hiWithEn = WhisperTinyLanguageDetector.languageFamilyIndices("hi", "en", index).toSet()
+        assertEquals(setOf(index.getValue("hi"), index.getValue("ur")), hiWithEn)
+        // ヒンディー語とウルドゥー語のペアでは合算しない
+        val hiWithUr = WhisperTinyLanguageDetector.languageFamilyIndices("hi", "ur", index).toSet()
+        assertEquals(setOf(index.getValue("hi")), hiWithUr)
+        val jaWithKo = WhisperTinyLanguageDetector.languageFamilyIndices("ja", "ko", index).toSet()
+        assertEquals(setOf(index.getValue("ja")), jaWithKo)
+    }
+
+    @Test
+    fun `buildFamilyPairPrediction_同系言語の確率を合算しペア外の確率をpairMassに反映する`() {
+        val codes = WhisperTinyLanguageDetector.WHISPER_99_LANGUAGE_CODES
+        val index = codes.withIndex().associate { it.value to it.index }
+        val logits = FloatArray(codes.size) { -20f }
+        // ヒンディー語の発話にウルドゥー語の確率が多く割り当てられた状態（en > hi だが hi + ur > en）
+        logits[index.getValue("ur")] = 2.0f
+        logits[index.getValue("en")] = 1.0f
+        logits[index.getValue("hi")] = 0.5f
+        logits[index.getValue("pt")] = 1.0f
+        val prediction = WhisperTinyLanguageDetector.buildFamilyPairPrediction(
+            logits = logits,
+            targetIndices = WhisperTinyLanguageDetector.languageFamilyIndices("hi", "en", index),
+            baseIndices = WhisperTinyLanguageDetector.languageFamilyIndices("en", "hi", index),
+            targetTag = "hi",
+            baseTag = "en",
+            inferenceTimeMs = 0L,
+        )
+        assertEquals("hi", prediction.selectedTag)
+        val expTarget = kotlin.math.exp(2.0) + kotlin.math.exp(0.5)
+        val expBase = kotlin.math.exp(1.0)
+        val expectedTarget = (expTarget / (expTarget + expBase)).toFloat()
+        assertEquals(expectedTarget, prediction.targetProbability, 1e-4f)
+        // pt に流れた分だけ pairMass は 1 より小さい
+        val expectedMass = ((expTarget + expBase) / (expTarget + expBase + kotlin.math.exp(1.0))).toFloat()
+        assertEquals(expectedMass, prediction.pairMass, 1e-3f)
     }
 
     private fun decodeGzipBase64Shorts(b64: String): ShortArray {

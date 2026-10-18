@@ -22,12 +22,18 @@ import kotlin.math.sqrt
 /**
  * 量子化 Whisper Tiny Encoder + 1-Step Fused Language Head による 2 言語ペア判定結果（F6.2）。
  *
+ * 確率は、それぞれの言語に同系の言語（例: ヒンディー語に対するウルドゥー語）の確率を合算してから 2 言語で正規化する
+ * （[WhisperTinyLanguageDetector.languageFamilyIndices]）。
+ *
  * @property selectedTag 判定された優先言語タグ（呼び出し元の `targetTag` または `baseTag`）。
  * @property fallbackTag もう一方の言語タグ。
  * @property selectedProbability 選択された言語の 2 クラス softmax 確率（`0.5..1.0`）。
  * @property targetProbability `targetTag` の 2 クラス softmax 確率（`0.0..1.0`）。
  * @property baseProbability `baseTag` の 2 クラス softmax 確率（`0.0..1.0`）。
  * @property inferenceTimeMs 言語判定にかかった推論時間（ミリ秒）。
+ * @property pairMass 99 言語の確率のうち、2 言語（同系の言語を含む）に集まった割合（`0.0..1.0`）。
+ *   小さいときはモデルがどちらの言語とも判断できておらず、2 言語で正規化した確率は過信になりやすい。
+ *   Whisper 以外から作った判定（保存済みの判定結果など）では `1.0`。
  */
 internal data class LanguagePairPrediction(
     val selectedTag: String,
@@ -36,6 +42,19 @@ internal data class LanguagePairPrediction(
     val targetProbability: Float,
     val baseProbability: Float,
     val inferenceTimeMs: Long,
+    val pairMass: Float = 1.0f,
+)
+
+/**
+ * 2 言語ペアの判定結果と、同じ推論で得たエンコーダ出力の平均ベクトル（[WhisperTinyLanguageDetector.analyzeLanguagePair]）。
+ *
+ * @property prediction 2 言語ペアの判定結果。
+ * @property encoderEmbedding 発話を含む位置のエンコーダ出力（LayerNorm 後）の平均（384 次元）。
+ *   話者の声色と言語の音響的な特徴を含み、ファイル内での判定の補正（[VoiceProfileLanguageTracker]）に使う。
+ */
+internal class LanguagePairAnalysis(
+    val prediction: LanguagePairPrediction,
+    val encoderEmbedding: FloatArray,
 )
 
 /**
@@ -96,7 +115,30 @@ class WhisperTinyLanguageDetector @Inject constructor(
         targetTag: String,
         baseTag: String,
         maxWindowSamples: Int = DEFAULT_LID_WINDOW_SAMPLES,
-    ): LanguagePairPrediction? {
+    ): LanguagePairPrediction? = analyzeLanguagePair(
+        pcm16kMono = pcm16kMono,
+        targetTag = targetTag,
+        baseTag = baseTag,
+        maxWindowSamples = maxWindowSamples,
+    )?.prediction
+
+    /**
+     * [detectLanguagePair] と同じ判定に加えて、同じ推論で得たエンコーダ出力の平均ベクトルを返す。
+     *
+     * 平均ベクトルは推論結果を集計するだけで、追加の推論はしない。
+     * 無音チャンク、極端に短いチャンク、非対応言語ペア、またはモデル未ロード時は `null` を返す。
+     *
+     * @param pcm16kMono 16kHz モノラル PCM サンプル列。
+     * @param targetTag 学習対象言語の BCP-47 タグ。
+     * @param baseTag 基準言語（母語・解説言語）の BCP-47 タグ。
+     * @param maxWindowSamples 発話開始位置から切り出す最大サンプル数（既定は 2.0 秒 = [DEFAULT_LID_WINDOW_SAMPLES]）。
+     */
+    internal fun analyzeLanguagePair(
+        pcm16kMono: ShortArray,
+        targetTag: String,
+        baseTag: String,
+        maxWindowSamples: Int = DEFAULT_LID_WINDOW_SAMPLES,
+    ): LanguagePairAnalysis? {
         if (pcm16kMono.size < MIN_VALID_PCM_SAMPLES) return null
         val model = ensureModelLoaded() ?: return null
 
@@ -104,8 +146,9 @@ class WhisperTinyLanguageDetector @Inject constructor(
         val baseCode = resolveWhisperLanguageCode(baseTag, model.languageIndexByCode) ?: return null
         if (targetCode == baseCode) return null
 
-        val targetIdx = model.languageIndexByCode[targetCode] ?: return null
-        val baseIdx = model.languageIndexByCode[baseCode] ?: return null
+        val targetIndices = languageFamilyIndices(targetCode, baseCode, model.languageIndexByCode)
+        val baseIndices = languageFamilyIndices(baseCode, targetCode, model.languageIndexByCode)
+        if (targetIndices.isEmpty() || baseIndices.isEmpty()) return null
 
         val startRealtimeMs = elapsedMillis()
         val workspace = acquireWorkspace()
@@ -118,35 +161,19 @@ class WhisperTinyLanguageDetector @Inject constructor(
             if (copiedSamples <= 0) return null
 
             val logits = runInference(model, workspace, copiedSamples)
-            val targetLogit = logits[targetIdx]
-            val baseLogit = logits[baseIdx]
-            val maxLogit = max(targetLogit, baseLogit)
-            val expTarget = exp((targetLogit - maxLogit).toDouble()).toFloat()
-            val expBase = exp((baseLogit - maxLogit).toDouble()).toFloat()
-            val sumExp = (expTarget + expBase).coerceAtLeast(1e-12f)
-            val targetProb = (expTarget / sumExp).coerceIn(0.0f, 1.0f)
-            val baseProb = (expBase / sumExp).coerceIn(0.0f, 1.0f)
-
+            val embedding = meanPoolEncoderOutput(workspace.audioFeatures150x384, copiedSamples)
             val elapsedMs = (elapsedMillis() - startRealtimeMs).coerceAtLeast(0L)
-            if (targetProb >= baseProb) {
-                LanguagePairPrediction(
-                    selectedTag = targetTag,
-                    fallbackTag = baseTag,
-                    selectedProbability = targetProb,
-                    targetProbability = targetProb,
-                    baseProbability = baseProb,
+            LanguagePairAnalysis(
+                prediction = buildFamilyPairPrediction(
+                    logits = logits,
+                    targetIndices = targetIndices,
+                    baseIndices = baseIndices,
+                    targetTag = targetTag,
+                    baseTag = baseTag,
                     inferenceTimeMs = elapsedMs,
-                )
-            } else {
-                LanguagePairPrediction(
-                    selectedTag = baseTag,
-                    fallbackTag = targetTag,
-                    selectedProbability = baseProb,
-                    targetProbability = targetProb,
-                    baseProbability = baseProb,
-                    inferenceTimeMs = elapsedMs,
-                )
-            }
+                ),
+                encoderEmbedding = embedding,
+            )
         } finally {
             releaseWorkspace(workspace)
         }
@@ -300,6 +327,132 @@ class WhisperTinyLanguageDetector @Inject constructor(
             return WHISPER_LANGUAGE_INDEX_MAP[code]
         }
 
+        /**
+         * 話し言葉ではほぼ同じで、Whisper が確率を分け合いやすい言語の組（同系の言語）。
+         *
+         * 例: 話し言葉のヒンディー語はウルドゥー語と区別しにくく、Whisper はヒンディー語の発話にも
+         * ウルドゥー語の確率を大きく割り当てる。2 言語ペアの判定では、これらの確率を合算して扱う。
+         */
+        private val LANGUAGE_FAMILY_ALIASES: Map<String, List<String>> = mapOf(
+            "hi" to listOf("ur"),
+            "ur" to listOf("hi"),
+            "no" to listOf("nn"),
+            "nn" to listOf("no"),
+            "ms" to listOf("id"),
+            "id" to listOf("ms"),
+            "sr" to listOf("hr", "bs"),
+            "hr" to listOf("sr", "bs"),
+            "bs" to listOf("sr", "hr"),
+        )
+
+        /**
+         * 言語 [code] の確率として合算する Whisper 言語インデックス（[code] 自身と同系の言語）を返す。
+         *
+         * もう一方の言語 [otherCode] とその同系の言語は含めない（例: ヒンディー語とウルドゥー語のペアでは合算しない）。
+         */
+        internal fun languageFamilyIndices(
+            code: String,
+            otherCode: String,
+            languageIndexByCode: Map<String, Int>,
+        ): IntArray {
+            val otherFamily = HashSet<String>().apply {
+                add(otherCode)
+                addAll(LANGUAGE_FAMILY_ALIASES[otherCode].orEmpty())
+            }
+            val codes = LinkedHashSet<String>()
+            codes.add(code)
+            for (alias in LANGUAGE_FAMILY_ALIASES[code].orEmpty()) {
+                if (alias !in otherFamily) codes.add(alias)
+            }
+            return codes.mapNotNull { languageIndexByCode[it] }.toIntArray()
+        }
+
+        /**
+         * 99 言語のロジット [logits] から、同系の言語を合算した 2 言語の確率と [LanguagePairPrediction.pairMass] を求める。
+         *
+         * @param targetIndices `targetTag` として合算する言語インデックス（[languageFamilyIndices]）。
+         * @param baseIndices `baseTag` として合算する言語インデックス。
+         */
+        internal fun buildFamilyPairPrediction(
+            logits: FloatArray,
+            targetIndices: IntArray,
+            baseIndices: IntArray,
+            targetTag: String,
+            baseTag: String,
+            inferenceTimeMs: Long,
+        ): LanguagePairPrediction {
+            val targetLse = logSumExp(logits, targetIndices)
+            val baseLse = logSumExp(logits, baseIndices)
+            val allLse = logSumExp(logits, null)
+            val diff = (targetLse - baseLse).coerceIn(-60.0, 60.0)
+            val targetProb = (1.0 / (1.0 + exp(-diff))).toFloat().coerceIn(0.0f, 1.0f)
+            val baseProb = (1.0f - targetProb).coerceIn(0.0f, 1.0f)
+            val pairLse = max(targetLse, baseLse) + ln(1.0 + exp(-abs(targetLse - baseLse)))
+            val pairMass = exp((pairLse - allLse).coerceAtMost(0.0)).toFloat().coerceIn(0.0f, 1.0f)
+            return if (targetProb >= baseProb) {
+                LanguagePairPrediction(
+                    selectedTag = targetTag,
+                    fallbackTag = baseTag,
+                    selectedProbability = targetProb,
+                    targetProbability = targetProb,
+                    baseProbability = baseProb,
+                    inferenceTimeMs = inferenceTimeMs,
+                    pairMass = pairMass,
+                )
+            } else {
+                LanguagePairPrediction(
+                    selectedTag = baseTag,
+                    fallbackTag = targetTag,
+                    selectedProbability = baseProb,
+                    targetProbability = targetProb,
+                    baseProbability = baseProb,
+                    inferenceTimeMs = inferenceTimeMs,
+                    pairMass = pairMass,
+                )
+            }
+        }
+
+        /** [indices] のロジット（`null` なら全ロジット）の log-sum-exp。 */
+        private fun logSumExp(logits: FloatArray, indices: IntArray?): Double {
+            var maxLogit = Double.NEGATIVE_INFINITY
+            if (indices == null) {
+                for (v in logits) if (v > maxLogit) maxLogit = v.toDouble()
+            } else {
+                for (i in indices) if (logits[i] > maxLogit) maxLogit = logits[i].toDouble()
+            }
+            if (maxLogit == Double.NEGATIVE_INFINITY) return maxLogit
+            var sum = 0.0
+            if (indices == null) {
+                for (v in logits) sum += exp(v - maxLogit)
+            } else {
+                for (i in indices) sum += exp(logits[i] - maxLogit)
+            }
+            return maxLogit + ln(sum)
+        }
+
+        /** PCM の有効サンプル数 [copiedSamples] に対応する、音声を含む Log-Mel フレーム数（最大 300）。 */
+        private fun activeMelFrameCount(copiedSamples: Int): Int {
+            val safeCopied = copiedSamples.coerceIn(1, TARGET_PCM_SAMPLES)
+            return min(N_FRAMES, ((N_FFT / 2 + safeCopied + HOP_LENGTH - 1) / HOP_LENGTH).coerceAtLeast(1))
+        }
+
+        /** エンコーダ出力 [audioFeatures]（150 x 384）のうち、音声を含む位置の平均ベクトルを返す。 */
+        private fun meanPoolEncoderOutput(audioFeatures: FloatArray, copiedSamples: Int): FloatArray {
+            val positions = ((activeMelFrameCount(copiedSamples) + 1) / 2).coerceIn(1, N_AUDIO_CTX)
+            val embedding = FloatArray(D_MODEL)
+            for (t in 0 until positions) {
+                val off = t * D_MODEL
+                for (c in 0 until D_MODEL) {
+                    embedding[c] += audioFeatures[off + c]
+                }
+            }
+            val inv = 1.0f / positions.toFloat()
+            for (c in 0 until D_MODEL) {
+                embedding[c] *= inv
+            }
+            return embedding
+        }
+
         @Volatile
         private var sharedLoadedModel: QuantizedWhisperLidModel? = null
 
@@ -445,11 +598,7 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 padded[pad + TARGET_PCM_SAMPLES + i] = pcm48k[TARGET_PCM_SAMPLES - 2 - i]
             }
 
-            val safeCopied = copiedSamples.coerceIn(1, TARGET_PCM_SAMPLES)
-            val activeMelFrames = min(
-                N_FRAMES,
-                ((pad + safeCopied + HOP_LENGTH - 1) / HOP_LENGTH).coerceAtLeast(1),
-            )
+            val activeMelFrames = activeMelFrameCount(copiedSamples)
 
             val aRe = ws.dftStage1Re
             val aIm = ws.dftStage1Im
