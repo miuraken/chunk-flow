@@ -1,6 +1,7 @@
 package com.miuraken.chunkflow.core.playback
 
 import android.annotation.SuppressLint
+import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import android.os.PowerManager
@@ -12,7 +13,10 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
@@ -77,6 +81,7 @@ class MediaControllerPlaybackController(
     private val analysisRepository: AnalysisRepository = NoOpAnalysisRepository,
     private val rawPlayerFactory: () -> Player = { PlaybackPlayerFactory.createExoPlayer(context) },
     private val clock: () -> Long = System::currentTimeMillis,
+    private val bindPlaybackService: Boolean = false,
 ) : PlaybackController {
 
     @Inject
@@ -98,11 +103,13 @@ class MediaControllerPlaybackController(
         analysisRepository = analysisRepository,
         rawPlayerFactory = { PlaybackPlayerFactory.createExoPlayer(context) },
         clock = System::currentTimeMillis,
+        bindPlaybackService = true,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
     private var periodicSaveJob: Job? = null
     private var chunkObservationJob: Job? = null
+    private var sessionControllerFuture: ListenableFuture<MediaController>? = null
 
     private var currentChunks: List<Chunk> = emptyList()
     private var lastLookaheadTarget: Pair<MediaId, ChunkId?>? = null
@@ -186,7 +193,22 @@ class MediaControllerPlaybackController(
         }
 
         _player.value = learning
+        ensurePlaybackServiceBound()
         return learning
+    }
+
+    /**
+     * [PlaybackService]（[MediaSessionService]）を起動・接続し、システム UI（クイック設定パネル・ロック画面のメディアコントロール）と
+     * バックグラウンド再生を有効化する（§7.2.1、§7.2.6）。
+     */
+    private fun ensurePlaybackServiceBound() {
+        if (!bindPlaybackService) return
+        val existing = sessionControllerFuture
+        if (existing != null && !existing.isCancelled) return
+        runCatching {
+            val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+            sessionControllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+        }
     }
 
     override suspend fun open(mediaId: MediaId) {
@@ -536,6 +558,8 @@ class MediaControllerPlaybackController(
         periodicSaveJob = null
         chunkObservationJob?.cancel()
         chunkObservationJob = null
+        sessionControllerFuture?.let { MediaController.releaseFuture(it) }
+        sessionControllerFuture = null
         chunkScheduler?.release()
         chunkScheduler = null
         learningPlayerInstance?.release()
@@ -701,11 +725,15 @@ class MediaControllerPlaybackController(
         return null
     }
 
-    private fun buildMediaItem(item: AudioItem, playableUri: Uri): MediaItem {
+    internal fun buildMediaItem(item: AudioItem, playableUri: Uri): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(item.title)
             .apply {
-                item.course?.let { setAlbumTitle(it) }
+                item.course?.takeIf { it.isNotBlank() }?.let { course ->
+                    setArtist(course)
+                    setAlbumTitle(course)
+                    setSubtitle(course)
+                }
             }
             .build()
         return MediaItem.Builder()

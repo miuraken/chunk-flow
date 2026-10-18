@@ -681,6 +681,34 @@ class PlaybackControllerTest {
         controller.release()
     }
 
+    @Test
+    fun `buildMediaItem_タイトルとコース名がMediaMetadataのtitle_artist_albumTitle_subtitleに設定される`() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val controller = MediaControllerPlaybackController(
+            context = context,
+            libraryRepository = libraryRepository,
+            userSettingsRepository = settingsRepository,
+            practiceController = practiceController,
+            mediaFileLocator = mediaFileLocator,
+            mainDispatcher = dispatcher,
+            analysisRepository = analysisRepository,
+            rawPlayerFactory = { stubPlayer },
+            clock = { nowEpochMs },
+        )
+        val item = sampleAudioItem(mediaId1, durationMs = 60_000L).copy(
+            title = "ピンズラー韓国語 2・第01課",
+            course = "ピンズラー 韓国語 II",
+        )
+        val mediaItem = controller.buildMediaItem(item, Uri.parse("file:///tmp/sample.mp3"))
+
+        assertEquals("ピンズラー韓国語 2・第01課", mediaItem.mediaMetadata.title?.toString())
+        assertEquals("ピンズラー 韓国語 II", mediaItem.mediaMetadata.artist?.toString())
+        assertEquals("ピンズラー 韓国語 II", mediaItem.mediaMetadata.albumTitle?.toString())
+        assertEquals("ピンズラー 韓国語 II", mediaItem.mediaMetadata.subtitle?.toString())
+
+        controller.release()
+    }
+
     private fun sampleAudioItem(
         id: MediaId,
         durationMs: Long,

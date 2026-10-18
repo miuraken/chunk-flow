@@ -1,5 +1,7 @@
 package com.miuraken.chunkflow.core.playback
 
+import android.app.PendingIntent
+import android.content.Intent
 import android.os.Bundle
 import android.os.Process
 import androidx.annotation.OptIn
@@ -48,6 +50,9 @@ class PlaybackService : MediaSessionService() {
         serviceScope = CoroutineScope(SupervisorJob() + mainDispatcher)
         val learningPlayer = playbackController.getOrCreateLearningPlayer()
         mediaSession = MediaSession.Builder(this, learningPlayer)
+            .apply {
+                createSessionActivityPendingIntent()?.let { setSessionActivity(it) }
+            }
             .setCallback(PlaybackSessionCallback())
             .build()
     }
@@ -60,6 +65,18 @@ class PlaybackService : MediaSessionService() {
         serviceScope?.cancel()
         serviceScope = null
         super.onDestroy()
+    }
+
+    internal fun createSessionActivityPendingIntent(): PendingIntent? {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        } ?: return null
+        return PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     /**
