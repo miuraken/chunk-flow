@@ -425,6 +425,7 @@ fun LibraryScreen(
                 )
             } else {
                 val hasRecentItems = state.recentItems.isNotEmpty()
+                var isRecentFilesExpanded by rememberSaveable { mutableStateOf(true) }
                 LibraryActionToolbar(
                     onSelectDirectory = { onEvent(LibraryEvent.RequestImportDirectory) },
                     onImportFiles = { onEvent(LibraryEvent.RequestImport) },
@@ -435,7 +436,7 @@ fun LibraryScreen(
                 )
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.weight(if (hasRecentItems) 2f else 1f),
+                    modifier = Modifier.weight(if (hasRecentItems && isRecentFilesExpanded) 2f else 1f),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 ) {
                     items(
@@ -528,8 +529,14 @@ fun LibraryScreen(
                 if (hasRecentItems) {
                     RecentFilesSection(
                         recentItems = state.recentItems,
+                        isExpanded = isRecentFilesExpanded,
+                        onToggleExpanded = { isRecentFilesExpanded = !isRecentFilesExpanded },
                         onOpenItem = { id -> onEvent(LibraryEvent.OpenItem(id)) },
-                        modifier = Modifier.weight(1f),
+                        modifier = if (isRecentFilesExpanded) {
+                            Modifier.weight(1f)
+                        } else {
+                            Modifier
+                        },
                     )
                 }
             }
@@ -1543,6 +1550,8 @@ private fun LanguagePairBadge(
 @Composable
 private fun RecentFilesSection(
     recentItems: List<LibraryItemUiModel>,
+    isExpanded: Boolean,
+    onToggleExpanded: () -> Unit,
     onOpenItem: (MediaId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1550,43 +1559,69 @@ private fun RecentFilesSection(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = if (isExpanded) {
+                Modifier.fillMaxSize()
+            } else {
+                Modifier.fillMaxWidth()
+            },
+        ) {
             HorizontalDivider()
-            Text(
-                text = stringResource(R.string.library_recent_files_title),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-            )
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleExpanded)
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                itemsIndexed(
-                    items = recentItems,
-                    key = { _, itemModel -> "recent_${itemModel.item.id.value}" },
-                ) { index, itemModel ->
-                    val isFirst = index == 0
-                    val isLast = index == recentItems.lastIndex
-                    val shape = when {
-                        isFirst && isLast -> RoundedCornerShape(10.dp)
-                        isFirst -> RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
-                        isLast -> RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp)
-                        else -> RectangleShape
-                    }
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        shape = shape,
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            RecentFileCompactRow(
-                                itemModel = itemModel,
-                                onClick = { onOpenItem(itemModel.item.id) },
-                            )
-                            if (!isLast) {
-                                HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp))
+                Text(
+                    text = stringResource(R.string.library_recent_files_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector = if (isExpanded) {
+                        ChunkFlowIcons.ExpandMore
+                    } else {
+                        ChunkFlowIcons.ExpandLess
+                    },
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            if (isExpanded) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    itemsIndexed(
+                        items = recentItems,
+                        key = { _, itemModel -> "recent_${itemModel.item.id.value}" },
+                    ) { index, itemModel ->
+                        val isFirst = index == 0
+                        val isLast = index == recentItems.lastIndex
+                        val shape = when {
+                            isFirst && isLast -> RoundedCornerShape(10.dp)
+                            isFirst -> RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
+                            isLast -> RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp)
+                            else -> RectangleShape
+                        }
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            shape = shape,
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                RecentFileCompactRow(
+                                    itemModel = itemModel,
+                                    onClick = { onOpenItem(itemModel.item.id) },
+                                )
+                                if (!isLast) {
+                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp))
+                                }
                             }
                         }
                     }
@@ -1606,16 +1641,7 @@ private fun RecentFileCompactRow(
     val langPalette = chunkFlowLanguagePalette()
     val maxPercent = itemModel.maxProgressPercent
     val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
-    val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
-    val timeText = if (hasProgress) {
-        stringResource(
-            R.string.library_item_duration_progress,
-            formatDurationMs(itemModel.positionMs),
-            formatDurationMs(item.durationMs),
-        )
-    } else {
-        formatDurationMs(item.durationMs)
-    }
+    val targetUpper = item.languagePair.target.value.uppercase(Locale.ROOT)
 
     Column(
         modifier = modifier
@@ -1634,6 +1660,18 @@ private fun RecentFileCompactRow(
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(16.dp),
             )
+            Surface(
+                color = langPalette.targetBadgeContainer,
+                contentColor = langPalette.onTargetBadgeContainer,
+                shape = MaterialTheme.shapes.extraSmall,
+            ) {
+                Text(
+                    text = targetUpper,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
             Text(
                 text = item.title,
                 style = MaterialTheme.typography.bodyMedium,
@@ -1651,16 +1689,6 @@ private fun RecentFileCompactRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            LanguagePairBadge(pair = item.languagePair)
-            Text(
-                text = timeText,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isCompleted) {
-                    langPalette.completedProgressText
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
         }
         Spacer(modifier = Modifier.height(4.dp))
         LinearProgressIndicator(
