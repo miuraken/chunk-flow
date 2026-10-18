@@ -4704,9 +4704,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         internal const val PARALLEL_LID_CONSTRAINED_MESSAGE: String = "端末の温度が高いか省電力モードのため、言語判定を 1 件ずつ実行"
 
         /**
-         * 一括言語判定の音声の切り出しの方式の本番の既定。実機の計測（docs/spikes/S3-onnx-whisper-lid.md §10）を見て lead が決めるまで、今の方式のままにする。
+         * 一括言語判定の音声の切り出しの方式の本番の既定（ADR 0010 §2.7、docs/spikes/S3-onnx-whisper-lid.md §10）。
+         * Pixel 11 実機で 30 分教材全体が 23.4〜28.9 秒 → 4.9〜6.9 秒（4.2〜4.8 倍）になり、全チャンクで判定が一致した `STREAMING` を既定にする。
          */
-        internal val DEFAULT_LID_EXTRACTION_METHOD: LidExtractionMethod = LidExtractionMethod.CURRENT
+        internal val DEFAULT_LID_EXTRACTION_METHOD: LidExtractionMethod = LidExtractionMethod.STREAMING
 
         /** 順に流す切り出しを指定されたが、チャンクが開始位置の順に並んでいないので並列の切り出しにしたときの診断ログの文。 */
         internal const val STREAMING_UNSORTED_MESSAGE: String = "チャンクが時刻の順に並んでいないため、順に流す切り出しの代わりに並列の切り出しを使う"
