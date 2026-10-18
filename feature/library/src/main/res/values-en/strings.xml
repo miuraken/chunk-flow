@@ -34,6 +34,7 @@
     <string name="library_item_analyzing">Analyzing…</string>
     <string name="library_item_transcript_none">文字起こしなし</string>
     <string name="library_item_transcript_partial">文字起こし %1$d%%</string>
+    <string name="library_item_transcript_in_progress">文字起こし中 %1$d%%</string>
     <string name="library_item_transcript_completed">文字起こし済み</string>
     <string name="library_selection_count">%1$d selected</string>
     <string name="library_selection_clear">Clear selection</string>

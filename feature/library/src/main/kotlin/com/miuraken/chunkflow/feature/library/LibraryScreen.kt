@@ -33,6 +33,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
@@ -1325,31 +1326,52 @@ private fun LibraryItemRow(
                     color = MaterialTheme.colorScheme.tertiary,
                 )
             }
-            val transcriptStatusText: String
-            val transcriptStatusColor = when (itemModel.transcriptStatus) {
-                LibraryTranscriptStatus.NONE -> {
-                    transcriptStatusText = stringResource(R.string.library_item_transcript_none)
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
-
-                LibraryTranscriptStatus.PARTIAL -> {
-                    transcriptStatusText = stringResource(
-                        R.string.library_item_transcript_partial,
-                        itemModel.transcriptProgressPercent,
+            if (itemModel.isTranscribing && itemModel.transcriptStatus != LibraryTranscriptStatus.COMPLETED) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(10.dp),
+                        strokeWidth = 1.5.dp,
+                        color = MaterialTheme.colorScheme.secondary,
                     )
-                    MaterialTheme.colorScheme.secondary
+                    Text(
+                        text = stringResource(
+                            R.string.library_item_transcript_in_progress,
+                            itemModel.transcriptProgressPercent,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
                 }
+            } else {
+                val transcriptStatusText: String
+                val transcriptStatusColor = when (itemModel.transcriptStatus) {
+                    LibraryTranscriptStatus.NONE -> {
+                        transcriptStatusText = stringResource(R.string.library_item_transcript_none)
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
 
-                LibraryTranscriptStatus.COMPLETED -> {
-                    transcriptStatusText = stringResource(R.string.library_item_transcript_completed)
-                    MaterialTheme.colorScheme.primary
+                    LibraryTranscriptStatus.PARTIAL -> {
+                        transcriptStatusText = stringResource(
+                            R.string.library_item_transcript_partial,
+                            itemModel.transcriptProgressPercent,
+                        )
+                        MaterialTheme.colorScheme.secondary
+                    }
+
+                    LibraryTranscriptStatus.COMPLETED -> {
+                        transcriptStatusText = stringResource(R.string.library_item_transcript_completed)
+                        MaterialTheme.colorScheme.primary
+                    }
                 }
+                Text(
+                    text = transcriptStatusText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = transcriptStatusColor,
+                )
             }
-            Text(
-                text = transcriptStatusText,
-                style = MaterialTheme.typography.labelSmall,
-                color = transcriptStatusColor,
-            )
             if (item.isRemoteOnly) {
                 Surface(
                     color = MaterialTheme.colorScheme.tertiaryContainer,

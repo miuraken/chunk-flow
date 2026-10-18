@@ -107,6 +107,7 @@ enum class LibraryTranscriptStatus {
  * @property transcriptStatus 文字起こしの付与状態（なし・一部・済み）。
  * @property transcriptProgressPercent 文字起こししたチャンクの割合（0..100）。
  * @property isAnalyzing 端末内解析を実行中かどうか。
+ * @property isTranscribing バックグラウンドまたは先読みで文字起こしを実行中かどうか。
  * @property isAudioMissing バックアップ復元後などで音声ファイルが未取り込みかどうか（F2.4）。
  * @property isListened ファイルの 95%〜100% の位置を 1 秒以上聴取した完了フラグ。
  * @property lastAccessedAtEpochMs 最終アクセス日時（ミリ秒、未アクセスの場合は `null`）。
@@ -126,6 +127,7 @@ data class LibraryItemUiModel(
         LibraryTranscriptStatus.PARTIAL -> 50
     },
     val isAnalyzing: Boolean = false,
+    val isTranscribing: Boolean = false,
     val isAudioMissing: Boolean = false,
     val isListened: Boolean = false,
     val lastAccessedAtEpochMs: Long? = null,
@@ -784,6 +786,7 @@ private data class ItemAnalysisSummary(
     val transcriptStatus: LibraryTranscriptStatus = LibraryTranscriptStatus.NONE,
     val transcriptProgressPercent: Int = 0,
     val isAnalyzing: Boolean = false,
+    val isTranscribing: Boolean = false,
 )
 
 private data class LibraryRepositorySnapshot(
@@ -899,7 +902,8 @@ class LibraryViewModel @Inject constructor(
                         analysisRepository.observeChunks(item.id),
                         analysisRepository.observeTranscripts(item.id),
                         analysisRepository.observeStatus(item.id),
-                    ) { chunks, transcripts, statusMap ->
+                        analysisRepository.observeLookaheadStatus(item.id),
+                    ) { chunks, transcripts, statusMap, lookaheadStatus ->
                         val transcribedCount = chunks.count { chunk ->
                             transcripts[chunk.id]?.text?.isNotBlank() == true
                         }
@@ -939,12 +943,19 @@ class LibraryViewModel @Inject constructor(
                                 }
                             }
                         }
+                        val isTranscribing = transcriptStatus != LibraryTranscriptStatus.COMPLETED &&
+                            (
+                                lookaheadStatus.inFlightChunkId != null ||
+                                    lookaheadStatus.queuedChunkIds.isNotEmpty() ||
+                                    (lookaheadStatus.backgroundEnabled && lookaheadStatus.enabled && chunks.isNotEmpty())
+                                )
                         item.id to ItemAnalysisSummary(
                             chunkCount = chunks.size,
                             hasTranscript = transcriptStatus != LibraryTranscriptStatus.NONE,
                             transcriptStatus = transcriptStatus,
                             transcriptProgressPercent = transcriptProgressPercent,
                             isAnalyzing = statusMap.values.any { it is StageStatus.Running },
+                            isTranscribing = isTranscribing,
                         )
                     }
                 }
@@ -1658,6 +1669,7 @@ class LibraryViewModel @Inject constructor(
                     LibraryTranscriptStatus.PARTIAL -> 50
                 },
                 isAnalyzing = summary?.isAnalyzing ?: false,
+                isTranscribing = summary?.isTranscribing ?: false,
                 isAudioMissing = audioItem.id in missingAudioIds,
                 isListened = state?.isListened ?: false,
                 lastAccessedAtEpochMs = state?.updatedAtEpochMs?.takeIf { it > 0L },

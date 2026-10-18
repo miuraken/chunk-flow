@@ -922,4 +922,50 @@ class LibraryViewModelTest {
             recent.map { it.item.title },
         )
     }
+
+    @Test
+    fun `バックグラウンド文字起こし中の教材_isTranscribingがtrueになり完了後はfalseになる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val chunks = sample.chunks.map { it.copy(origin = com.miuraken.chunkflow.core.model.ChunkOrigin.AUTO) }
+        val firstChunk = chunks.first()
+        val partialTranscripts = mapOf(firstChunk.id to sample.transcripts.getValue(firstChunk.id))
+        val repo = FakeLibraryRepository(initialItems = listOf(sample.item))
+        val analysis = FakeAnalysisRepository().apply {
+            update(sample.item.id) {
+                FakeAnalysisRepository.Entry(
+                    chunks = chunks,
+                    transcripts = partialTranscripts,
+                    lookaheadStatus = com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(
+                        enabled = true,
+                        engineAvailable = true,
+                        backgroundEnabled = true,
+                        inFlightChunkId = chunks[1].id,
+                        queuedChunkIds = chunks.drop(2).map { it.id }.toSet(),
+                    ),
+                )
+            }
+        }
+        val viewModel = LibraryViewModel(repo, FakePlaybackController(), analysis)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val partialItem = viewModel.uiState.value.items.single()
+        assertEquals(LibraryTranscriptStatus.PARTIAL, partialItem.transcriptStatus)
+        assertTrue(partialItem.isTranscribing)
+        assertTrue(partialItem.transcriptProgressPercent in 1..99)
+
+        // 全チャンクの文字起こしが完了したら isTranscribing = false になる
+        analysis.update(sample.item.id) { entry ->
+            entry.copy(
+                transcripts = sample.transcripts,
+                lookaheadStatus = entry.lookaheadStatus.copy(
+                    inFlightChunkId = null,
+                    queuedChunkIds = emptySet(),
+                ),
+            )
+        }
+        val completedItem = viewModel.uiState.value.items.single()
+        assertEquals(LibraryTranscriptStatus.COMPLETED, completedItem.transcriptStatus)
+        assertEquals(100, completedItem.transcriptProgressPercent)
+        assertFalse(completedItem.isTranscribing)
+    }
 }
