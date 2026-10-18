@@ -888,6 +888,62 @@ object ChunkFlowIcons {
         }
     }
 
+    /** ドラッグ並び替え用のハンドルアイコン（2 本の横線）。 */
+    val DragHandle: ImageVector by lazy {
+        materialIcon(name = "DragHandle") {
+            moveTo(20f, 9f)
+            lineTo(4f, 9f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(16f)
+            lineTo(20f, 9f)
+            close()
+            moveTo(4f, 15f)
+            horizontalLineToRelative(16f)
+            verticalLineToRelative(-2f)
+            lineTo(4f, 13f)
+            verticalLineToRelative(2f)
+            close()
+        }
+    }
+
+    /** プレイリストに追加（PlaylistAdd）アイコン。 */
+    val PlaylistAdd: ImageVector by lazy {
+        materialIcon(name = "PlaylistAdd") {
+            moveTo(14f, 10f)
+            lineTo(2f, 10f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(12f)
+            verticalLineToRelative(-2f)
+            close()
+            moveTo(14f, 6f)
+            lineTo(2f, 6f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(12f)
+            lineTo(14f, 6f)
+            close()
+            moveTo(18f, 14f)
+            verticalLineToRelative(-4f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(4f)
+            horizontalLineToRelative(-4f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(4f)
+            verticalLineToRelative(4f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(-4f)
+            horizontalLineToRelative(4f)
+            verticalLineToRelative(-2f)
+            horizontalLineToRelative(-4f)
+            close()
+            moveTo(2f, 16f)
+            horizontalLineToRelative(8f)
+            verticalLineToRelative(-2f)
+            lineTo(2f, 14f)
+            verticalLineToRelative(2f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

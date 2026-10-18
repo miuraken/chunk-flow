@@ -109,4 +109,14 @@
     <string name="library_favorite_remove_cd">お気に入りを解除</string>
     <string name="library_queue_add_cd">次に再生するキューに追加</string>
     <string name="library_queue_remove_cd">キューから削除</string>
+    <string name="library_selection_playlist_badge">プレイリスト</string>
+    <string name="library_playlist_create_fab_cd">新しいプレイリストを作成</string>
+    <string name="library_playlist_create_dialog_title">新しいプレイリスト</string>
+    <string name="library_playlist_create_name_label">プレイリスト名</string>
+    <string name="library_playlist_create_confirm">作成</string>
+    <string name="library_playlist_add_dialog_title">プレイリストに追加</string>
+    <string name="library_playlist_add_new_button">＋ 新しいプレイリストを作成して追加</string>
+    <string name="library_playlist_delete_cd">%1$s を削除</string>
+    <string name="library_playlist_remove_item_cd">プレイリストから外す</string>
+    <string name="library_drag_handle_cd">ドラッグして並び替え</string>
 </resources>

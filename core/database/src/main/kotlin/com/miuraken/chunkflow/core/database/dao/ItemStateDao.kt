@@ -220,4 +220,22 @@ interface ItemStateDao {
         upsert(updated)
         return true
     }
+
+    /**
+     * 「ファイル」タブでの教材のカスタム並び順（`file_sort_order`）を一括更新する。
+     *
+     * まだ `item_state` の行がない教材については既定値で行を作成する。削除済みの教材は無視する。
+     */
+    @Transaction
+    suspend fun updateFileSortOrders(orderedMediaIds: List<String>) {
+        orderedMediaIds.distinct().forEachIndexed { index, mediaId ->
+            val existing = getByMediaId(mediaId)
+            if (existing == null && !mediaItemExists(mediaId)) return@forEachIndexed
+            val updated = existing?.copy(fileSortOrder = index) ?: ItemStateEntity(
+                mediaId = mediaId,
+                fileSortOrder = index,
+            )
+            upsert(updated)
+        }
+    }
 }

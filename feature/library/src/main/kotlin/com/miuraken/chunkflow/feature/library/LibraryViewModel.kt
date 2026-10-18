@@ -21,7 +21,9 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryPlaylist
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
@@ -114,6 +116,7 @@ enum class LibraryTranscriptStatus {
  * @property isFavorite お気に入り（「お気に入り」プレイリスト）に登録されているかどうか。
  * @property queuedAtEpochMs 「次に再生するキュー」に追加された時刻（ミリ秒、未登録なら `0L`）。
  * @property accessCount 教材を開いた累計アクセス回数（0 以上）。
+ * @property fileSortOrder 「ファイル」タブでのカスタム並び順（未設定なら `null`）。
  */
 data class LibraryItemUiModel(
     val item: AudioItem,
@@ -137,6 +140,7 @@ data class LibraryItemUiModel(
     val isFavorite: Boolean = false,
     val queuedAtEpochMs: Long = 0L,
     val accessCount: Int = 0,
+    val fileSortOrder: Int? = null,
 ) {
     /** 前回の再生位置（ミリ秒）。 */
     val lastPositionMs: Long
@@ -394,25 +398,59 @@ enum class LibraryViewTab {
     /** 登録されているすべてのファイルを一覧・フィルタするファイルビュー。 */
     FILES,
 
-    /** 最近開いたファイル・よくアクセスするファイル・お気に入り・次に再生するキューの再生リストビュー。 */
+    /** 最近開いたファイル・よくアクセスするファイル・お気に入り・ユーザー作成プレイリストの再生リストビュー。 */
     PLAYLISTS,
 }
 
 /**
- * 再生リストビュータブのカテゴリ種別。
+ * 再生リストビュータブの組み込みスマートリスト種別。
  */
-enum class LibraryPlaylistCategory {
+enum class LibraryPlaylistCategory(val playlistId: PlaylistId) {
     /** 最近開いたファイル。 */
-    RECENTLY_OPENED,
+    RECENTLY_OPENED(PlaylistId.RECENTLY_OPENED),
 
     /** よくアクセスするファイル。 */
-    FREQUENTLY_ACCESSED,
+    FREQUENTLY_ACCESSED(PlaylistId.FREQUENTLY_ACCESSED),
 
     /** お気に入り。 */
-    FAVORITES,
+    FAVORITES(PlaylistId.FAVORITES),
 
-    /** 次に再生するキュー。 */
-    UP_NEXT_QUEUE,
+    /** 次に再生するキュー（互換用）。 */
+    UP_NEXT_QUEUE(PlaylistId("builtin:up_next_queue")),
+    ;
+
+    companion object {
+        /** 既定で表示する組み込みスマートリスト（上から順）。 */
+        val BUILT_IN_CATEGORIES: List<LibraryPlaylistCategory> = listOf(
+            RECENTLY_OPENED,
+            FREQUENTLY_ACCESSED,
+            FAVORITES,
+        )
+
+        /** [PlaylistId] に対応する組み込みカテゴリがあれば返す。 */
+        fun fromPlaylistId(id: PlaylistId): LibraryPlaylistCategory? = entries.firstOrNull { it.playlistId == id }
+    }
+}
+
+/**
+ * 「再生リスト」タブに表示するプレイリスト 1 件分の UI モデル。
+ *
+ * @property id プレイリストの一意な識別子。
+ * @property name ユーザー作成プレイリストの表示名（組み込みスマートリストの場合は空文字列でもよく、UI で [builtInCategory] から表示名を解決する）。
+ * @property builtInCategory 組み込みスマートリストの場合はその種別、ユーザー作成プレイリストなら `null`。
+ * @property sortOrder プレイリスト一覧での並び順（小さいほど上）。
+ * @property items このプレイリストに含まれる教材一覧（並び順反映済み）。
+ */
+data class LibraryPlaylistEntryUiModel(
+    val id: PlaylistId,
+    val name: String,
+    val builtInCategory: LibraryPlaylistCategory? = null,
+    val sortOrder: Int = 0,
+    val items: List<LibraryItemUiModel> = emptyList(),
+) {
+    /** 組み込みスマートプレイリストかどうか。 */
+    val isBuiltIn: Boolean
+        get() = builtInCategory != null
 }
 
 /**
@@ -438,7 +476,9 @@ enum class LibraryPlaylistCategory {
  * @property selectedTab 現在選択されているビュータブ（フォルダ / ファイル / 再生リスト）。
  * @property fileSearchQuery ファイルビュータブのファイル名検索キーワード。
  * @property fileTargetLanguageFilter ファイルビュータブの対象言語フィルタ（`null` なら全言語）。
- * @property selectedPlaylistCategory 再生リストビュータブで展開中のスマートリスト種別（一覧表示時は `null`）。
+ * @property selectedPlaylistId 再生リストビュータブで展開中のプレイリスト ID（一覧表示時は `null`）。
+ * @property selectedPlaylistCategory 再生リストビュータブで展開中のスマートリスト種別（互換用・一覧表示時は `null`）。
+ * @property playlists DB に保存されているプレイリスト一覧（ユーザー作成プレイリスト＋並び順・アイテム順が上書きされた組み込みプレイリスト）。
  * @property favoriteItemIds お気に入りに登録されている教材 ID の集合。
  * @property queuedItemIds 次に再生するキューに登録されている教材 ID の順序付き一覧。
  */
@@ -465,7 +505,9 @@ data class LibraryUiState(
     val selectedTab: LibraryViewTab = LibraryViewTab.FOLDERS,
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
-    val selectedPlaylistCategory: LibraryPlaylistCategory? = null,
+    val selectedPlaylistId: PlaylistId? = null,
+    val selectedPlaylistCategory: LibraryPlaylistCategory? = selectedPlaylistId?.let(LibraryPlaylistCategory::fromPlaylistId),
+    val playlists: List<LibraryPlaylist> = emptyList(),
     val favoriteItemIds: Set<MediaId> = items
         .filter { it.isFavorite }
         .mapTo(linkedSetOf()) { it.item.id },
@@ -504,7 +546,7 @@ data class LibraryUiState(
             .sortedBy { it.value }
 
     /**
-     * ファイルビュータブでファイル名キーワードと対象言語でフィルタし、ファイル名自然昇順で並べた全ファイル一覧。
+     * ファイルビュータブでファイル名キーワードと対象言語でフィルタし、カスタム並び順（未設定ならファイル名自然昇順）で並べた全ファイル一覧。
      */
     val filteredAllFiles: List<LibraryItemUiModel>
         get() {
@@ -520,53 +562,148 @@ data class LibraryUiState(
                     matchesQuery && matchesLang
                 }
                 .sortedWith { a, b ->
+                    val orderA = a.fileSortOrder
+                    val orderB = b.fileSortOrder
+                    if (orderA != null && orderB != null && orderA != orderB) {
+                        return@sortedWith orderA.compareTo(orderB)
+                    }
+                    if (orderA != null && orderB == null) return@sortedWith -1
+                    if (orderA == null && orderB != null) return@sortedWith 1
                     val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                     if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
                 }
         }
 
     /**
-     * 指定された再生リストカテゴリ [category] に該当する教材一覧を返す。
+     * カスタム順序 [customOrderIds] が指定されていればそれを優先し、未指定の残りのアイテムは元の順序で後ろに並べる。
      */
-    fun playlistItemsFor(category: LibraryPlaylistCategory): List<LibraryItemUiModel> = when (category) {
-        LibraryPlaylistCategory.RECENTLY_OPENED ->
-            items
-                .filter { it.lastAccessedAtEpochMs != null }
-                .sortedWith(
-                    compareByDescending<LibraryItemUiModel> { it.lastAccessedAtEpochMs ?: 0L }
-                        .thenBy { it.item.id.value },
-                )
+    private fun applyCustomOrder(
+        defaultOrdered: List<LibraryItemUiModel>,
+        customOrderIds: List<MediaId>,
+    ): List<LibraryItemUiModel> {
+        if (customOrderIds.isEmpty()) return defaultOrdered
+        val indexMap = customOrderIds.withIndex().associate { (idx, id) -> id to idx }
+        val customPart = defaultOrdered
+            .filter { it.item.id in indexMap }
+            .sortedBy { indexMap.getValue(it.item.id) }
+        val remainingPart = defaultOrdered.filterNot { it.item.id in indexMap }
+        return customPart + remainingPart
+    }
 
-        LibraryPlaylistCategory.FREQUENTLY_ACCESSED ->
-            items
-                .filter {
-                    it.accessCount > 0 ||
-                        it.isListened ||
-                        it.maxPositionMs > 0L ||
-                        it.positionMs > 0L ||
-                        it.lastAccessedAtEpochMs != null
-                }
-                .sortedWith(
-                    compareByDescending<LibraryItemUiModel> { it.accessCount }
-                        .thenByDescending { it.isListened }
-                        .thenByDescending { it.maxProgressFraction }
-                        .thenByDescending { it.lastAccessedAtEpochMs ?: 0L }
-                        .thenBy { it.item.id.value },
-                )
+    /**
+     * 指定された再生リストカテゴリ [category] に該当する教材一覧を返す（カスタム並び替えがあれば反映する）。
+     */
+    fun playlistItemsFor(category: LibraryPlaylistCategory): List<LibraryItemUiModel> {
+        val rawList = when (category) {
+            LibraryPlaylistCategory.RECENTLY_OPENED ->
+                items
+                    .filter { it.lastAccessedAtEpochMs != null }
+                    .sortedWith(
+                        compareByDescending<LibraryItemUiModel> { it.lastAccessedAtEpochMs ?: 0L }
+                            .thenBy { it.item.id.value },
+                    )
 
-        LibraryPlaylistCategory.FAVORITES ->
-            items
-                .filter { it.isFavorite || it.item.id in favoriteItemIds }
-                .sortedWith { a, b ->
-                    val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                    if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
-                }
+            LibraryPlaylistCategory.FREQUENTLY_ACCESSED ->
+                items
+                    .filter {
+                        it.accessCount > 0 ||
+                            it.isListened ||
+                            it.maxPositionMs > 0L ||
+                            it.positionMs > 0L ||
+                            it.lastAccessedAtEpochMs != null
+                    }
+                    .sortedWith(
+                        compareByDescending<LibraryItemUiModel> { it.accessCount }
+                            .thenByDescending { it.isListened }
+                            .thenByDescending { it.maxProgressFraction }
+                            .thenByDescending { it.lastAccessedAtEpochMs ?: 0L }
+                            .thenBy { it.item.id.value },
+                    )
 
-        LibraryPlaylistCategory.UP_NEXT_QUEUE -> {
-            val byId = items.associateBy { it.item.id }
-            queuedItemIds.mapNotNull { byId[it] }
+            LibraryPlaylistCategory.FAVORITES ->
+                items
+                    .filter { it.isFavorite || it.item.id in favoriteItemIds }
+                    .sortedWith { a, b ->
+                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                    }
+
+            LibraryPlaylistCategory.UP_NEXT_QUEUE -> {
+                val byId = items.associateBy { it.item.id }
+                queuedItemIds.mapNotNull { byId[it] }
+            }
+        }
+        val persisted = playlists.firstOrNull { it.id == category.playlistId }
+        return if (persisted != null && persisted.itemIds.isNotEmpty()) {
+            applyCustomOrder(rawList, persisted.itemIds)
+        } else {
+            rawList
         }
     }
+
+    /**
+     * 指定された [playlistId] に属する教材一覧を返す。
+     */
+    fun playlistItemsFor(playlistId: PlaylistId): List<LibraryItemUiModel> {
+        val builtIn = LibraryPlaylistCategory.fromPlaylistId(playlistId)
+        if (builtIn != null) {
+            return playlistItemsFor(builtIn)
+        }
+        val playlist = playlists.firstOrNull { it.id == playlistId } ?: return emptyList()
+        val byId = items.associateBy { it.item.id }
+        return playlist.itemIds.mapNotNull { byId[it] }
+    }
+
+    /**
+     * 「再生リスト」タブに表示するすべてのプレイリスト（組み込みスマートリスト＋ユーザー作成プレイリスト、並び順反映済み）。
+     */
+    val playlistEntries: List<LibraryPlaylistEntryUiModel>
+        get() {
+            val persistedById = playlists.associateBy { it.id }
+            val builtInEntries = LibraryPlaylistCategory.BUILT_IN_CATEGORIES.mapIndexed { defaultIdx, category ->
+                val persisted = persistedById[category.playlistId]
+                LibraryPlaylistEntryUiModel(
+                    id = category.playlistId,
+                    name = persisted?.name.orEmpty(),
+                    builtInCategory = category,
+                    sortOrder = persisted?.sortOrder ?: defaultIdx,
+                    items = playlistItemsFor(category),
+                )
+            }
+            val byId = items.associateBy { it.item.id }
+            val userEntries = playlists
+                .filterNot { it.isBuiltIn || LibraryPlaylistCategory.fromPlaylistId(it.id) != null }
+                .mapIndexed { idx, playlist ->
+                    LibraryPlaylistEntryUiModel(
+                        id = playlist.id,
+                        name = playlist.name,
+                        builtInCategory = null,
+                        sortOrder = playlist.sortOrder.takeIf { it >= 0 }
+                            ?: (LibraryPlaylistCategory.BUILT_IN_CATEGORIES.size + idx),
+                        items = playlist.itemIds.mapNotNull { byId[it] },
+                    )
+                }
+            return (builtInEntries + userEntries).sortedWith(
+                compareBy<LibraryPlaylistEntryUiModel> { it.sortOrder }
+                    .thenBy { !it.isBuiltIn }
+                    .thenBy { it.id.value },
+            )
+        }
+
+    /**
+     * ユーザーが作成したプレイリストのみの一覧（プレイリスト追加ダイアログ用）。
+     */
+    val userPlaylists: List<LibraryPlaylistEntryUiModel>
+        get() = playlistEntries.filterNot { it.isBuiltIn }
+
+    /**
+     * 現在「再生リスト」タブで開いているプレイリスト（一覧表示時は `null`）。
+     */
+    val activePlaylist: LibraryPlaylistEntryUiModel?
+        get() {
+            val targetId = selectedPlaylistId ?: selectedPlaylistCategory?.playlistId ?: return null
+            return playlistEntries.firstOrNull { it.id == targetId }
+        }
 
     /** 複数選択モード中かどうか。 */
     val isSelectionMode: Boolean
@@ -942,6 +1079,33 @@ sealed interface LibraryEvent {
     /** 再生リストビューで開くスマートプレイリストカテゴリを選択する（`null` で一覧へ戻る）。 */
     data class SelectPlaylistCategory(val category: LibraryPlaylistCategory?) : LibraryEvent
 
+    /** 再生リストビューで開くプレイリストを選択する（`null` で一覧へ戻る）。 */
+    data class SelectPlaylist(val playlistId: PlaylistId?) : LibraryEvent
+
+    /** 新しいユーザー作成プレイリストを作成する。 */
+    data class CreatePlaylist(val name: String) : LibraryEvent
+
+    /** 新しいユーザー作成プレイリストを作成し、現在選択されている教材を追加する。 */
+    data class CreatePlaylistAndAddSelected(val name: String) : LibraryEvent
+
+    /** ユーザー作成プレイリストを削除する。 */
+    data class DeletePlaylist(val playlistId: PlaylistId) : LibraryEvent
+
+    /** 現在選択されている教材を指定したプレイリストに追加し、選択モードを終了する。 */
+    data class AddSelectedItemsToPlaylist(val playlistId: PlaylistId) : LibraryEvent
+
+    /** 指定したプレイリストから教材を除外する。 */
+    data class RemoveItemFromPlaylist(val playlistId: PlaylistId, val mediaId: MediaId) : LibraryEvent
+
+    /** 再生リストタブ内のプレイリスト一覧の並び順を変更する。 */
+    data class MovePlaylist(val fromIndex: Int, val toIndex: Int) : LibraryEvent
+
+    /** 指定したプレイリスト内の教材アイテムの並び順を変更する。 */
+    data class MovePlaylistItem(val playlistId: PlaylistId, val fromIndex: Int, val toIndex: Int) : LibraryEvent
+
+    /** ファイルタブ内の教材アイテムの並び順を変更する。 */
+    data class MoveFileTabItem(val fromIndex: Int, val toIndex: Int) : LibraryEvent
+
     /** 教材 [id] のお気に入り登録状態を切り替える。 */
     data class ToggleFavorite(val id: MediaId) : LibraryEvent
 
@@ -964,6 +1128,7 @@ private data class ItemAnalysisSummary(
 private data class LibraryRepositorySnapshot(
     val items: List<AudioItem> = emptyList(),
     val courseFolders: List<LibraryCourseFolder> = emptyList(),
+    val playlists: List<LibraryPlaylist> = emptyList(),
     val itemStates: Map<MediaId, ItemState> = emptyMap(),
     val summaries: Map<MediaId, ItemAnalysisSummary> = emptyMap(),
     val missingAudioIds: Set<MediaId> = emptySet(),
@@ -992,7 +1157,7 @@ private data class NavigationAndSelectionSnapshot(
     val selectedTab: LibraryViewTab = LibraryViewTab.FOLDERS,
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
-    val selectedPlaylistCategory: LibraryPlaylistCategory? = null,
+    val selectedPlaylistId: PlaylistId? = null,
 )
 
 private object EmptyAnalysisRepository : AnalysisRepository {
@@ -1056,7 +1221,7 @@ class LibraryViewModel @Inject constructor(
     private val selectedTab = MutableStateFlow(LibraryViewTab.FOLDERS)
     private val fileSearchQuery = MutableStateFlow("")
     private val fileTargetLanguageFilter = MutableStateFlow<LanguageTag?>(null)
-    private val selectedPlaylistCategory = MutableStateFlow<LibraryPlaylistCategory?>(null)
+    private val selectedPlaylistId = MutableStateFlow<PlaylistId?>(null)
     private var defaultLanguagePair: LanguagePair = LanguagePair(
         target = LanguageTag("en"),
         base = LanguageTag("ja"),
@@ -1199,13 +1364,13 @@ class LibraryViewModel @Inject constructor(
             selectedTab,
             fileSearchQuery,
             fileTargetLanguageFilter,
-            selectedPlaylistCategory,
-        ) { tab, query, langFilter, playlistCategory ->
+            selectedPlaylistId,
+        ) { tab, query, langFilter, playlistId ->
             NavigationTabAndFilterSnapshot(
                 selectedTab = tab,
                 fileSearchQuery = query,
                 fileTargetLanguageFilter = langFilter,
-                selectedPlaylistCategory = playlistCategory,
+                selectedPlaylistId = playlistId,
             )
         },
     ) { baseNav, tabAndFilter ->
@@ -1213,7 +1378,7 @@ class LibraryViewModel @Inject constructor(
             selectedTab = tabAndFilter.selectedTab,
             fileSearchQuery = tabAndFilter.fileSearchQuery,
             fileTargetLanguageFilter = tabAndFilter.fileTargetLanguageFilter,
-            selectedPlaylistCategory = tabAndFilter.selectedPlaylistCategory,
+            selectedPlaylistId = tabAndFilter.selectedPlaylistId,
         )
     }
 
@@ -1223,15 +1388,17 @@ class LibraryViewModel @Inject constructor(
             combine(
                 libraryRepository.observeItems(),
                 libraryRepository.observeCourseFolders(),
-            ) { items, courseFolders -> items to courseFolders },
+                libraryRepository.observePlaylists(),
+            ) { items, courseFolders, playlists -> Triple(items, courseFolders, playlists) },
             libraryRepository.observeItemStates(),
             analysisSummaries,
             libraryRepository.observeMissingAudioIds(),
             userSettingsRepository.settings,
-        ) { (items, courseFolders), itemStates, summaries, missingAudioIds, userSettings ->
+        ) { (items, courseFolders, playlists), itemStates, summaries, missingAudioIds, userSettings ->
             LibraryRepositorySnapshot(
                 items = items,
                 courseFolders = courseFolders,
+                playlists = playlists,
                 itemStates = itemStates,
                 summaries = summaries,
                 missingAudioIds = missingAudioIds,
@@ -1246,6 +1413,7 @@ class LibraryViewModel @Inject constructor(
         buildUiState(
             items = repoSnapshot.items,
             courseFolders = repoSnapshot.courseFolders,
+            playlists = repoSnapshot.playlists,
             itemStates = repoSnapshot.itemStates,
             summaries = repoSnapshot.summaries,
             missingAudioIds = repoSnapshot.missingAudioIds,
@@ -1390,8 +1558,8 @@ class LibraryViewModel @Inject constructor(
             LibraryEvent.NavigateUp -> {
                 if (selectedDirectoryPaths.value.isNotEmpty() || selectedItemIds.value.isNotEmpty()) {
                     clearSelectionInternal()
-                } else if (selectedTab.value == LibraryViewTab.PLAYLISTS && selectedPlaylistCategory.value != null) {
-                    selectedPlaylistCategory.value = null
+                } else if (selectedTab.value == LibraryViewTab.PLAYLISTS && selectedPlaylistId.value != null) {
+                    selectedPlaylistId.value = null
                 } else {
                     val current = currentDirectoryPath.value?.trim('/')?.takeIf { it.isNotBlank() }
                     currentDirectoryPath.value = if (current != null && '/' in current) {
@@ -1419,7 +1587,125 @@ class LibraryViewModel @Inject constructor(
 
             is LibraryEvent.SelectPlaylistCategory -> {
                 clearSelectionInternal()
-                selectedPlaylistCategory.value = event.category
+                selectedPlaylistId.value = event.category?.playlistId
+            }
+
+            is LibraryEvent.SelectPlaylist -> {
+                clearSelectionInternal()
+                selectedPlaylistId.value = event.playlistId
+            }
+
+            is LibraryEvent.CreatePlaylist -> {
+                val trimmed = event.name.trim()
+                if (trimmed.isNotEmpty()) {
+                    viewModelScope.launch {
+                        libraryRepository.createPlaylist(name = trimmed)
+                    }
+                }
+            }
+
+            is LibraryEvent.CreatePlaylistAndAddSelected -> {
+                val trimmed = event.name.trim()
+                if (trimmed.isNotEmpty()) {
+                    val stateSnapshot = uiState.value
+                    val dirSnapshot = selectedDirectoryPaths.value
+                    val itemSnapshot = selectedItemIds.value
+                    clearSelectionInternal()
+                    viewModelScope.launch {
+                        val targetIds = resolveTargetMediaIds(stateSnapshot, dirSnapshot, itemSnapshot)
+                        libraryRepository.createPlaylist(
+                            name = trimmed,
+                            initialMediaIds = targetIds,
+                        )
+                    }
+                }
+            }
+
+            is LibraryEvent.DeletePlaylist -> {
+                if (selectedPlaylistId.value == event.playlistId) {
+                    selectedPlaylistId.value = null
+                }
+                viewModelScope.launch {
+                    libraryRepository.deletePlaylist(event.playlistId)
+                }
+            }
+
+            is LibraryEvent.AddSelectedItemsToPlaylist -> {
+                val stateSnapshot = uiState.value
+                val dirSnapshot = selectedDirectoryPaths.value
+                val itemSnapshot = selectedItemIds.value
+                clearSelectionInternal()
+                viewModelScope.launch {
+                    val targetIds = resolveTargetMediaIds(stateSnapshot, dirSnapshot, itemSnapshot)
+                    if (targetIds.isEmpty()) return@launch
+                    if (event.playlistId == PlaylistId.FAVORITES) {
+                        val latestStates = libraryRepository.observeItemStates().firstOrNull().orEmpty()
+                        for (id in targetIds) {
+                            if (latestStates[id]?.isFavorite != true) {
+                                libraryRepository.toggleFavorite(id)
+                            }
+                        }
+                    } else {
+                        libraryRepository.addItemsToPlaylist(event.playlistId, targetIds)
+                    }
+                }
+            }
+
+            is LibraryEvent.RemoveItemFromPlaylist -> {
+                viewModelScope.launch {
+                    if (event.playlistId == PlaylistId.FAVORITES) {
+                        val latestState = libraryRepository.observeItemState(event.mediaId).firstOrNull()
+                        if (latestState?.isFavorite == true) {
+                            libraryRepository.toggleFavorite(event.mediaId)
+                        }
+                    } else {
+                        libraryRepository.removeItemFromPlaylist(event.playlistId, event.mediaId)
+                    }
+                }
+            }
+
+            is LibraryEvent.MovePlaylist -> {
+                val entries = uiState.value.playlistEntries.map { it.id }.toMutableList()
+                if (event.fromIndex in entries.indices &&
+                    event.toIndex in entries.indices &&
+                    event.fromIndex != event.toIndex
+                ) {
+                    val moved = entries.removeAt(event.fromIndex)
+                    entries.add(event.toIndex, moved)
+                    viewModelScope.launch {
+                        libraryRepository.reorderPlaylists(entries)
+                    }
+                }
+            }
+
+            is LibraryEvent.MovePlaylistItem -> {
+                val currentItems = uiState.value.playlistItemsFor(event.playlistId).map { it.item.id }.toMutableList()
+                if (event.fromIndex in currentItems.indices &&
+                    event.toIndex in currentItems.indices &&
+                    event.fromIndex != event.toIndex
+                ) {
+                    val moved = currentItems.removeAt(event.fromIndex)
+                    currentItems.add(event.toIndex, moved)
+                    viewModelScope.launch {
+                        libraryRepository.reorderPlaylistItems(event.playlistId, currentItems)
+                    }
+                }
+            }
+
+            is LibraryEvent.MoveFileTabItem -> {
+                val currentFiltered = uiState.value.filteredAllFiles.map { it.item.id }.toMutableList()
+                if (event.fromIndex in currentFiltered.indices &&
+                    event.toIndex in currentFiltered.indices &&
+                    event.fromIndex != event.toIndex
+                ) {
+                    val moved = currentFiltered.removeAt(event.fromIndex)
+                    currentFiltered.add(event.toIndex, moved)
+                    // フィルタ外のファイルがあれば、現在の全体順序を保ったまま対象の位置を入れ替える
+                    val allOrdered = buildUpdatedAllFileOrder(uiState.value, currentFiltered)
+                    viewModelScope.launch {
+                        libraryRepository.reorderAllFiles(allOrdered)
+                    }
+                }
             }
 
             is LibraryEvent.ToggleFavorite -> {
@@ -1434,19 +1720,7 @@ class LibraryViewModel @Inject constructor(
                 val itemSnapshot = selectedItemIds.value
                 if (dirSnapshot.isNotEmpty() || itemSnapshot.isNotEmpty()) {
                     viewModelScope.launch {
-                        val targetIds = stateSnapshot.selectedTargetItemIds.ifEmpty {
-                            val dirItemIds = if (dirSnapshot.isNotEmpty()) {
-                                val allItems = libraryRepository.observeItems().firstOrNull().orEmpty()
-                                allItems.filter { item ->
-                                    val c = item.course?.trim('/')?.takeIf { it.isNotBlank() }
-                                        ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
-                                    dirSnapshot.any { dir -> c == dir || c.startsWith("$dir/") }
-                                }.map { it.id }
-                            } else {
-                                emptyList()
-                            }
-                            (dirItemIds + itemSnapshot).distinct()
-                        }
+                        val targetIds = resolveTargetMediaIds(stateSnapshot, dirSnapshot, itemSnapshot)
                         if (targetIds.isEmpty()) return@launch
                         val latestStates = libraryRepository.observeItemStates().firstOrNull().orEmpty()
                         val currentFavoriteIds = latestStates
@@ -1710,6 +1984,38 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    private suspend fun resolveTargetMediaIds(
+        stateSnapshot: LibraryUiState,
+        dirSnapshot: Set<String>,
+        itemSnapshot: Set<MediaId>,
+    ): List<MediaId> = stateSnapshot.selectedTargetItemIds.ifEmpty {
+        val dirItemIds = if (dirSnapshot.isNotEmpty()) {
+            val allItems = libraryRepository.observeItems().firstOrNull().orEmpty()
+            allItems.filter { item ->
+                val c = item.course?.trim('/')?.takeIf { it.isNotBlank() }
+                    ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+                dirSnapshot.any { dir -> c == dir || c.startsWith("$dir/") }
+            }.map { it.id }
+        } else {
+            emptyList()
+        }
+        (dirItemIds + itemSnapshot).distinct()
+    }
+
+    private fun buildUpdatedAllFileOrder(
+        state: LibraryUiState,
+        reorderedFilteredIds: List<MediaId>,
+    ): List<MediaId> {
+        val fullSorted = state.copy(fileSearchQuery = "", fileTargetLanguageFilter = null)
+            .filteredAllFiles
+            .map { it.item.id }
+        val filteredSet = reorderedFilteredIds.toSet()
+        val iterator = reorderedFilteredIds.iterator()
+        return fullSorted.map { id ->
+            if (id in filteredSet && iterator.hasNext()) iterator.next() else id
+        }
+    }
+
     private fun clearSelectionInternal() {
         selectedDirectoryPaths.value = emptySet()
         selectedItemIds.value = emptySet()
@@ -1918,6 +2224,7 @@ class LibraryViewModel @Inject constructor(
     private fun buildUiState(
         items: List<AudioItem>,
         courseFolders: List<LibraryCourseFolder>,
+        playlists: List<LibraryPlaylist>,
         itemStates: Map<MediaId, ItemState>,
         summaries: Map<MediaId, ItemAnalysisSummary>,
         missingAudioIds: Set<MediaId>,
@@ -1954,6 +2261,7 @@ class LibraryViewModel @Inject constructor(
                 isFavorite = state?.isFavorite ?: false,
                 queuedAtEpochMs = state?.queuedAtEpochMs ?: 0L,
                 accessCount = state?.accessCount ?: 0,
+                fileSortOrder = state?.fileSortOrder,
             )
         }
         val activeMediaId = playbackStatus.mediaId
@@ -2029,7 +2337,9 @@ class LibraryViewModel @Inject constructor(
             selectedTab = navAndSelection.selectedTab,
             fileSearchQuery = navAndSelection.fileSearchQuery,
             fileTargetLanguageFilter = navAndSelection.fileTargetLanguageFilter,
-            selectedPlaylistCategory = navAndSelection.selectedPlaylistCategory,
+            selectedPlaylistId = navAndSelection.selectedPlaylistId,
+            selectedPlaylistCategory = navAndSelection.selectedPlaylistId?.let(LibraryPlaylistCategory::fromPlaylistId),
+            playlists = playlists,
             favoriteItemIds = favoriteIds,
             queuedItemIds = queuedIds,
         )
@@ -2040,5 +2350,5 @@ private data class NavigationTabAndFilterSnapshot(
     val selectedTab: LibraryViewTab = LibraryViewTab.FOLDERS,
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
-    val selectedPlaylistCategory: LibraryPlaylistCategory? = null,
+    val selectedPlaylistId: PlaylistId? = null,
 )

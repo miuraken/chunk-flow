@@ -5,7 +5,9 @@ import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryPlaylist
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import kotlinx.coroutines.flow.Flow
@@ -187,6 +189,60 @@ interface LibraryRepository {
         id: MediaId,
         accessedAtEpochMs: Long = System.currentTimeMillis(),
     ) = Unit
+
+    /**
+     * プレイリスト一覧（ユーザー作成プレイリストおよび並び順・カスタムアイテム順が記録された組み込みプレイリスト）を購読する。
+     */
+    fun observePlaylists(): Flow<List<LibraryPlaylist>> = flowOf(emptyList())
+
+    /**
+     * 新しいユーザープレイリストを末尾に作成し、必要であれば初期アイテム [initialMediaIds] を登録する。
+     *
+     * @return 作成されたプレイリストの [PlaylistId]（名前が空白の場合は `null`）。
+     */
+    suspend fun createPlaylist(
+        name: String,
+        initialMediaIds: List<MediaId> = emptyList(),
+    ): PlaylistId? = null
+
+    /**
+     * ユーザープレイリストを削除する（組み込みプレイリストは削除しない）。
+     */
+    suspend fun deletePlaylist(id: PlaylistId) = Unit
+
+    /**
+     * 指定したプレイリストに複数の教材を追加する。
+     */
+    suspend fun addItemsToPlaylist(
+        playlistId: PlaylistId,
+        mediaIds: List<MediaId>,
+    ) = Unit
+
+    /**
+     * 指定したプレイリストから特定の教材を除外する。
+     */
+    suspend fun removeItemFromPlaylist(
+        playlistId: PlaylistId,
+        mediaId: MediaId,
+    ) = Unit
+
+    /**
+     * 「再生リスト」タブ内のプレイリスト一覧（組み込み＋ユーザー作成）の並び順を永続化する。
+     */
+    suspend fun reorderPlaylists(orderedIds: List<PlaylistId>) = Unit
+
+    /**
+     * 指定したプレイリスト内の教材アイテムの並び順を永続化する。
+     */
+    suspend fun reorderPlaylistItems(
+        playlistId: PlaylistId,
+        orderedMediaIds: List<MediaId>,
+    ) = Unit
+
+    /**
+     * 「ファイル」タブにおける教材のカスタム並び順を永続化する。
+     */
+    suspend fun reorderAllFiles(orderedMediaIds: List<MediaId>) = Unit
 
     /**
      * 教材の文字起こし（手動修正された言語ラベルを含む）を `.chunkflow.json` 形式でローカル原本ファイルへ書き出す（§7.2 書き戻し準備）。

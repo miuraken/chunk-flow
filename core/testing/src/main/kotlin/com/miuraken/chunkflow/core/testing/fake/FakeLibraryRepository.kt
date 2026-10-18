@@ -12,7 +12,9 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
+import com.miuraken.chunkflow.core.model.LibraryPlaylist
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +31,7 @@ class FakeLibraryRepository(
     initialItems: List<AudioItem> = emptyList(),
     initialItemStates: Map<MediaId, ItemState> = emptyMap(),
     initialCourseFolders: List<LibraryCourseFolder> = emptyList(),
+    initialPlaylists: List<LibraryPlaylist> = emptyList(),
 ) : LibraryRepository {
     /** 教材の一覧。テストから直接書き換えられる。 */
     val items: MutableStateFlow<List<AudioItem>> = MutableStateFlow(initialItems)
@@ -38,6 +41,9 @@ class FakeLibraryRepository(
 
     /** 教材ごとの再生・学習状態。テストから直接書き換えられる。 */
     val itemStates: MutableStateFlow<Map<MediaId, ItemState>> = MutableStateFlow(initialItemStates)
+
+    /** プレイリストの一覧。テストから直接書き換えられる。 */
+    val playlists: MutableStateFlow<List<LibraryPlaylist>> = MutableStateFlow(initialPlaylists)
 
     /** [import] に渡された URI（呼ばれた順）。 */
     val importedUris: MutableList<List<Uri>> = mutableListOf()
@@ -109,6 +115,8 @@ class FakeLibraryRepository(
     override fun observeItems(): Flow<List<AudioItem>> = items
 
     override fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = courseFolders
+
+    override fun observePlaylists(): Flow<List<LibraryPlaylist>> = playlists
 
     override fun observeItem(id: MediaId): Flow<AudioItem?> = items.map { list -> list.firstOrNull { it.id == id } }
 
@@ -364,6 +372,7 @@ class FakeLibraryRepository(
     }
 
     private var nextQueueSequence: Long = 1L
+    private var nextPlaylistSequence: Long = 1L
 
     override suspend fun markItemListened(
         id: MediaId,
@@ -437,6 +446,135 @@ class FakeLibraryRepository(
         }
     }
 
+    override suspend fun createPlaylist(
+        name: String,
+        initialMediaIds: List<MediaId>,
+    ): PlaylistId? {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return null
+        val seq = nextPlaylistSequence++
+        val id = PlaylistId("user:$seq")
+        playlists.update { current ->
+            val maxSortOrder = maxOf(
+                current.maxOfOrNull { it.sortOrder } ?: -1,
+                PlaylistId.BUILT_IN_IDS.size - 1,
+            )
+            val newPlaylist = LibraryPlaylist(
+                id = id,
+                name = trimmed,
+                isBuiltIn = false,
+                sortOrder = maxSortOrder + 1,
+                createdAtEpochMs = seq,
+                itemIds = initialMediaIds.distinct(),
+            )
+            (current + newPlaylist).sortedWith(compareBy({ it.sortOrder }, { it.createdAtEpochMs }, { it.id.value }))
+        }
+        return id
+    }
+
+    override suspend fun deletePlaylist(id: PlaylistId) {
+        if (id in PlaylistId.BUILT_IN_IDS) return
+        playlists.update { current -> current.filterNot { it.id == id } }
+    }
+
+    override suspend fun addItemsToPlaylist(
+        playlistId: PlaylistId,
+        mediaIds: List<MediaId>,
+    ) {
+        if (mediaIds.isEmpty()) return
+        playlists.update { current ->
+            current.map { playlist ->
+                if (playlist.id == playlistId) {
+                    val existingSet = playlist.itemIds.toSet()
+                    val added = mediaIds.distinct().filter { it !in existingSet }
+                    playlist.copy(itemIds = playlist.itemIds + added)
+                } else {
+                    playlist
+                }
+            }
+        }
+    }
+
+    override suspend fun removeItemFromPlaylist(
+        playlistId: PlaylistId,
+        mediaId: MediaId,
+    ) {
+        playlists.update { current ->
+            current.map { playlist ->
+                if (playlist.id == playlistId) {
+                    playlist.copy(itemIds = playlist.itemIds.filterNot { it == mediaId })
+                } else {
+                    playlist
+                }
+            }
+        }
+    }
+
+    override suspend fun reorderPlaylists(orderedIds: List<PlaylistId>) {
+        if (orderedIds.isEmpty()) return
+        playlists.update { current ->
+            val byId = current.associateBy { it.id }
+            val updated = orderedIds.distinct().mapIndexedNotNull { index, playlistId ->
+                val existing = byId[playlistId]
+                when {
+                    existing != null -> existing.copy(sortOrder = index)
+
+                    playlistId in PlaylistId.BUILT_IN_IDS -> LibraryPlaylist(
+                        id = playlistId,
+                        name = "",
+                        isBuiltIn = true,
+                        sortOrder = index,
+                    )
+
+                    else -> null
+                }
+            }
+            val updatedIds = updated.map { it.id }.toSet()
+            val remaining = current.filterNot { it.id in updatedIds }
+            (updated + remaining).sortedWith(compareBy({ it.sortOrder }, { it.createdAtEpochMs }, { it.id.value }))
+        }
+    }
+
+    override suspend fun reorderPlaylistItems(
+        playlistId: PlaylistId,
+        orderedMediaIds: List<MediaId>,
+    ) {
+        playlists.update { current ->
+            val existing = current.firstOrNull { it.id == playlistId }
+            val distinctIds = orderedMediaIds.distinct()
+            if (existing != null) {
+                current.map { playlist ->
+                    if (playlist.id == playlistId) playlist.copy(itemIds = distinctIds) else playlist
+                }
+            } else if (playlistId in PlaylistId.BUILT_IN_IDS) {
+                val created = LibraryPlaylist(
+                    id = playlistId,
+                    name = "",
+                    isBuiltIn = true,
+                    sortOrder = PlaylistId.BUILT_IN_IDS.indexOf(playlistId).coerceAtLeast(0),
+                    itemIds = distinctIds,
+                )
+                (current + created).sortedWith(compareBy({ it.sortOrder }, { it.createdAtEpochMs }, { it.id.value }))
+            } else {
+                current
+            }
+        }
+    }
+
+    override suspend fun reorderAllFiles(orderedMediaIds: List<MediaId>) {
+        itemStates.update { current ->
+            val next = current.toMutableMap()
+            orderedMediaIds.distinct().forEachIndexed { index, mediaId ->
+                val existing = next[mediaId]
+                next[mediaId] = existing?.copy(fileSortOrder = index) ?: ItemState(
+                    mediaId = mediaId,
+                    fileSortOrder = index,
+                )
+            }
+            next
+        }
+    }
+
     override suspend fun exportLocalTranscriptJson(id: MediaId): Boolean {
         exportedTranscriptIds += id
         return exportTranscriptResult
@@ -459,5 +597,10 @@ class FakeLibraryRepository(
         items.update { list -> list.filterNot { it.id == id } }
         itemStates.update { current -> current - id }
         missingAudioIds.update { current -> current - id }
+        playlists.update { current ->
+            current.map { playlist ->
+                playlist.copy(itemIds = playlist.itemIds.filterNot { it == id })
+            }
+        }
     }
 }

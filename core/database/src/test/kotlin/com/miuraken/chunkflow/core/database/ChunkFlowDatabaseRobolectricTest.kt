@@ -345,6 +345,26 @@ class ChunkFlowDatabaseRobolectricTest {
                 SttEngine.ML_KIT.name,
                 migratedDb.itemSttOverrideDao().getByMediaId(mediaId)?.targetEngine,
             )
+
+            migratedDb.playlistDao().addItemsToPlaylist(
+                playlist = com.miuraken.chunkflow.core.database.entity.PlaylistEntity(
+                    id = "user:1",
+                    name = "朝リスト",
+                    isBuiltIn = false,
+                    sortOrder = 3,
+                    createdAt = 500L,
+                ),
+                mediaIds = listOf(mediaId),
+                addedAt = 600L,
+            )
+            val playlists = migratedDb.playlistDao().getPlaylists()
+            assertEquals(1, playlists.size)
+            assertEquals("朝リスト", playlists.single().name)
+            val playlistItems = migratedDb.playlistDao().getItemsByPlaylistId("user:1")
+            assertEquals(listOf(mediaId), playlistItems.map { it.mediaId })
+
+            migratedDb.itemStateDao().updateFileSortOrders(listOf(mediaId))
+            assertEquals(0, migratedDb.itemStateDao().getByMediaId(mediaId)?.fileSortOrder)
         } finally {
             migratedDb.close()
             context.deleteDatabase(dbName)

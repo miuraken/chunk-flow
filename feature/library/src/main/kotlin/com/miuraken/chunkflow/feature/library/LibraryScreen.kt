@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,6 +46,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -63,8 +66,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -72,7 +77,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -101,6 +108,7 @@ import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.testing.fixture.SampleLibraryPreviewParameterProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
 import java.time.Instant
@@ -297,13 +305,15 @@ fun LibraryScreen(
     val listState = rememberLazyListState()
     var lastScrolledDirectoryPath by remember { mutableStateOf<String?>("__uninitialized__") }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var showCreatePlaylistDialog by rememberSaveable { mutableStateOf(false) }
+    var showAddToPlaylistDialog by rememberSaveable { mutableStateOf(false) }
 
     val currentDirs = state.currentDirectories
     val currentFiles = state.currentFiles
 
     val canNavigateBack = state.isSelectionMode ||
         (state.selectedTab == LibraryViewTab.FOLDERS && state.currentDirectoryPath != null) ||
-        (state.selectedTab == LibraryViewTab.PLAYLISTS && state.selectedPlaylistCategory != null)
+        (state.selectedTab == LibraryViewTab.PLAYLISTS && state.activePlaylist != null)
 
     BackHandler(enabled = canNavigateBack) {
         onEvent(LibraryEvent.NavigateUp)
@@ -353,6 +363,23 @@ fun LibraryScreen(
                         val hasSelectedFiles = state.selectedItemIds.isNotEmpty() ||
                             state.selectedTargetItemIds.isNotEmpty()
                         if (hasSelectedFiles) {
+                            FilledTonalButton(
+                                onClick = { showAddToPlaylistDialog = true },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.PlaylistAdd,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = stringResource(R.string.library_selection_playlist_badge),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
                             val allFavorite = state.areAllSelectedFavorite
                             FilledTonalButton(
                                 onClick = { onEvent(LibraryEvent.ToggleFavoriteSelected) },
@@ -431,6 +458,21 @@ fun LibraryScreen(
                 },
             )
         },
+        floatingActionButton = {
+            if (state.selectedTab == LibraryViewTab.PLAYLISTS &&
+                state.activePlaylist == null &&
+                !state.isSelectionMode
+            ) {
+                FloatingActionButton(
+                    onClick = { showCreatePlaylistDialog = true },
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Add,
+                        contentDescription = stringResource(R.string.library_playlist_create_fab_cd),
+                    )
+                }
+            }
+        },
         bottomBar = {
             state.miniPlayer?.let { miniPlayer ->
                 MiniPlayerBar(
@@ -495,6 +537,31 @@ fun LibraryScreen(
                 }
             }
         }
+    }
+
+    if (showCreatePlaylistDialog) {
+        CreatePlaylistDialog(
+            onConfirm = { name ->
+                showCreatePlaylistDialog = false
+                onEvent(LibraryEvent.CreatePlaylist(name))
+            },
+            onDismiss = { showCreatePlaylistDialog = false },
+        )
+    }
+
+    if (showAddToPlaylistDialog) {
+        AddToPlaylistDialog(
+            userPlaylists = state.userPlaylists,
+            onSelectPlaylist = { playlistId ->
+                showAddToPlaylistDialog = false
+                onEvent(LibraryEvent.AddSelectedItemsToPlaylist(playlistId))
+            },
+            onCreateAndAdd = { name ->
+                showAddToPlaylistDialog = false
+                onEvent(LibraryEvent.CreatePlaylistAndAddSelected(name))
+            },
+            onDismiss = { showAddToPlaylistDialog = false },
+        )
     }
 
     if (state.showLanguageOnboardingDialog) {
@@ -781,10 +848,6 @@ private fun LibraryFoldersTabContent(
                             onToggleFavoriteClick = {
                                 onEvent(LibraryEvent.ToggleFavorite(itemModel.item.id))
                             },
-                            isQueued = itemModel.item.id in state.queuedItemIds,
-                            onToggleQueueClick = {
-                                onEvent(LibraryEvent.ToggleQueueItem(itemModel.item.id))
-                            },
                         )
                         if (!isLastFile) {
                             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -1034,9 +1097,18 @@ private fun LibraryFilesTabContent(
                                 onToggleFavoriteClick = {
                                     onEvent(LibraryEvent.ToggleFavorite(itemModel.item.id))
                                 },
-                                isQueued = itemModel.item.id in state.queuedItemIds,
-                                onToggleQueueClick = {
-                                    onEvent(LibraryEvent.ToggleQueueItem(itemModel.item.id))
+                                dragHandle = if (!state.isSelectionMode && filteredFiles.size > 1) {
+                                    {
+                                        ReorderDragHandle(
+                                            currentIndex = index,
+                                            totalCount = filteredFiles.size,
+                                            onMove = { from, to ->
+                                                onEvent(LibraryEvent.MoveFileTabItem(from, to))
+                                            },
+                                        )
+                                    }
+                                } else {
+                                    null
                                 },
                             )
                             if (!isLastFile) {
@@ -1056,30 +1128,39 @@ private fun LibraryPlaylistsTabContent(
     onEvent: (LibraryEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val activeCategory = state.selectedPlaylistCategory
+    val activePlaylist = state.activePlaylist
+    val playlistEntries = state.playlistEntries
 
-    if (activeCategory == null) {
+    if (activePlaylist == null) {
         LazyColumn(
             modifier = modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 88.dp),
         ) {
             itemsIndexed(
-                items = LibraryPlaylistCategory.entries,
-                key = { _, category -> "playlist_${category.name}" },
-            ) { index, category ->
-                val count = state.playlistItemsFor(category).size
-                LibraryPlaylistCategoryRow(
-                    category = category,
-                    itemCount = count,
-                    onClick = { onEvent(LibraryEvent.SelectPlaylistCategory(category)) },
+                items = playlistEntries,
+                key = { _, entry -> "playlist_${entry.id.value}" },
+            ) { index, entry ->
+                LibraryPlaylistEntryRow(
+                    entry = entry,
+                    index = index,
+                    totalCount = playlistEntries.size,
+                    onClick = { onEvent(LibraryEvent.SelectPlaylist(entry.id)) },
+                    onMove = { from, to -> onEvent(LibraryEvent.MovePlaylist(from, to)) },
+                    onDeleteClick = if (!entry.isBuiltIn) {
+                        { onEvent(LibraryEvent.DeletePlaylist(entry.id)) }
+                    } else {
+                        null
+                    },
                 )
-                if (index < LibraryPlaylistCategory.entries.lastIndex) {
+                if (index < playlistEntries.lastIndex) {
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                 }
             }
         }
     } else {
-        val playlistItems = state.playlistItemsFor(activeCategory)
+        val playlistItems = activePlaylist.items
+        val activeTitle = playlistEntryTitle(activePlaylist)
+        val activeIcon = playlistEntryIcon(activePlaylist)
         Column(modifier = modifier.fillMaxSize()) {
             Surface(
                 modifier = Modifier
@@ -1091,20 +1172,20 @@ private fun LibraryPlaylistsTabContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onEvent(LibraryEvent.SelectPlaylistCategory(null)) }
+                        .clickable { onEvent(LibraryEvent.SelectPlaylist(null)) }
                         .padding(start = 8.dp, top = 8.dp, bottom = 8.dp, end = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = { onEvent(LibraryEvent.SelectPlaylistCategory(null)) }) {
+                    IconButton(onClick = { onEvent(LibraryEvent.SelectPlaylist(null)) }) {
                         Icon(
                             imageVector = ChunkFlowIcons.ArrowBack,
                             contentDescription = stringResource(R.string.library_navigate_up),
                         )
                     }
                     Icon(
-                        imageVector = playlistCategoryIcon(activeCategory),
+                        imageVector = activeIcon,
                         contentDescription = null,
-                        tint = if (activeCategory == LibraryPlaylistCategory.FAVORITES) {
+                        tint = if (activePlaylist.builtInCategory == LibraryPlaylistCategory.FAVORITES) {
                             FavoriteStarColor
                         } else {
                             MaterialTheme.colorScheme.primary
@@ -1113,7 +1194,7 @@ private fun LibraryPlaylistsTabContent(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = playlistCategoryTitle(activeCategory),
+                        text = activeTitle,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f),
@@ -1195,9 +1276,36 @@ private fun LibraryPlaylistsTabContent(
                                     onToggleFavoriteClick = {
                                         onEvent(LibraryEvent.ToggleFavorite(itemModel.item.id))
                                     },
-                                    isQueued = itemModel.item.id in state.queuedItemIds,
-                                    onToggleQueueClick = {
-                                        onEvent(LibraryEvent.ToggleQueueItem(itemModel.item.id))
+                                    onRemoveFromPlaylistClick = if (!activePlaylist.isBuiltIn && !state.isSelectionMode) {
+                                        {
+                                            onEvent(
+                                                LibraryEvent.RemoveItemFromPlaylist(
+                                                    playlistId = activePlaylist.id,
+                                                    mediaId = itemModel.item.id,
+                                                ),
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    dragHandle = if (!state.isSelectionMode && playlistItems.size > 1) {
+                                        {
+                                            ReorderDragHandle(
+                                                currentIndex = index,
+                                                totalCount = playlistItems.size,
+                                                onMove = { from, to ->
+                                                    onEvent(
+                                                        LibraryEvent.MovePlaylistItem(
+                                                            playlistId = activePlaylist.id,
+                                                            fromIndex = from,
+                                                            toIndex = to,
+                                                        ),
+                                                    )
+                                                },
+                                            )
+                                        }
+                                    } else {
+                                        null
                                     },
                                 )
                                 if (!isLastFile) {
@@ -1213,21 +1321,31 @@ private fun LibraryPlaylistsTabContent(
 }
 
 @Composable
-private fun LibraryPlaylistCategoryRow(
-    category: LibraryPlaylistCategory,
-    itemCount: Int,
+private fun LibraryPlaylistEntryRow(
+    entry: LibraryPlaylistEntryUiModel,
+    index: Int,
+    totalCount: Int,
     onClick: () -> Unit,
+    onMove: (fromIndex: Int, toIndex: Int) -> Unit,
     modifier: Modifier = Modifier,
+    onDeleteClick: (() -> Unit)? = null,
 ) {
+    val title = playlistEntryTitle(entry)
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(start = 8.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        ReorderDragHandle(
+            currentIndex = index,
+            totalCount = totalCount,
+            onMove = onMove,
+        )
+        Spacer(modifier = Modifier.width(6.dp))
         Surface(
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(52.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             shape = RoundedCornerShape(14.dp),
         ) {
@@ -1236,21 +1354,21 @@ private fun LibraryPlaylistCategoryRow(
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = playlistCategoryIcon(category),
+                    imageVector = playlistEntryIcon(entry),
                     contentDescription = null,
-                    tint = if (category == LibraryPlaylistCategory.FAVORITES) {
+                    tint = if (entry.builtInCategory == LibraryPlaylistCategory.FAVORITES) {
                         FavoriteStarColor
                     } else {
                         MaterialTheme.colorScheme.primary
                     },
-                    modifier = Modifier.size(26.dp),
+                    modifier = Modifier.size(24.dp),
                 )
             }
         }
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = playlistCategoryTitle(category),
+                text = title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -1258,17 +1376,50 @@ private fun LibraryPlaylistCategoryRow(
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = stringResource(R.string.library_directory_item_count, itemCount),
+                text = stringResource(R.string.library_directory_item_count, entry.items.size),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Icon(
-            imageVector = ChunkFlowIcons.MoreHoriz,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(22.dp),
-        )
+        if (onDeleteClick != null) {
+            IconButton(
+                onClick = onDeleteClick,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Delete,
+                    contentDescription = stringResource(R.string.library_playlist_delete_cd, title),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        } else {
+            Icon(
+                imageVector = ChunkFlowIcons.MoreHoriz,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun playlistEntryTitle(entry: LibraryPlaylistEntryUiModel): String {
+    val category = entry.builtInCategory
+    return if (category != null) {
+        playlistCategoryTitle(category)
+    } else {
+        entry.name
+    }
+}
+
+private fun playlistEntryIcon(entry: LibraryPlaylistEntryUiModel): ImageVector {
+    val category = entry.builtInCategory
+    return if (category != null) {
+        playlistCategoryIcon(category)
+    } else {
+        ChunkFlowIcons.QueueMusic
     }
 }
 
@@ -1285,6 +1436,209 @@ private fun playlistCategoryIcon(category: LibraryPlaylistCategory): ImageVector
     LibraryPlaylistCategory.FREQUENTLY_ACCESSED -> ChunkFlowIcons.TrendingUp
     LibraryPlaylistCategory.FAVORITES -> ChunkFlowIcons.Favorite
     LibraryPlaylistCategory.UP_NEXT_QUEUE -> ChunkFlowIcons.QueueMusic
+}
+
+/**
+ * 左端のドラッグハンドル。上下へのドラッグ量を検知して 1 行分の高さごとに [onMove] を発火する。
+ */
+@Composable
+private fun ReorderDragHandle(
+    currentIndex: Int,
+    totalCount: Int,
+    onMove: (fromIndex: Int, toIndex: Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    val stepPx = with(density) { 56.dp.toPx() }
+    val updatedIndex by rememberUpdatedState(currentIndex)
+    val updatedTotalCount by rememberUpdatedState(totalCount)
+    val updatedOnMove by rememberUpdatedState(onMove)
+    var accumulatedDragY by remember { mutableFloatStateOf(0f) }
+    val dragHandleCd = stringResource(R.string.library_drag_handle_cd)
+
+    Box(
+        modifier = modifier
+            .size(32.dp)
+            .semantics { contentDescription = dragHandleCd }
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragStart = { accumulatedDragY = 0f },
+                    onDragEnd = { accumulatedDragY = 0f },
+                    onDragCancel = { accumulatedDragY = 0f },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        accumulatedDragY += dragAmount
+                        val steps = (accumulatedDragY / stepPx).toInt()
+                        if (steps != 0) {
+                            val from = updatedIndex
+                            val to = (from + steps).coerceIn(0, (updatedTotalCount - 1).coerceAtLeast(0))
+                            if (to != from) {
+                                updatedOnMove(from, to)
+                                accumulatedDragY -= (to - from) * stepPx
+                            } else {
+                                accumulatedDragY = 0f
+                            }
+                        }
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.DragHandle,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
+@Composable
+private fun CreatePlaylistDialog(
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResource(R.string.library_playlist_create_dialog_title))
+        },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = {
+                    Text(text = stringResource(R.string.library_playlist_create_name_label))
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name.trim()) },
+                enabled = name.isNotBlank(),
+            ) {
+                Text(text = stringResource(R.string.library_playlist_create_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.library_edit_cancel))
+            }
+        },
+    )
+}
+
+@Composable
+private fun AddToPlaylistDialog(
+    userPlaylists: List<LibraryPlaylistEntryUiModel>,
+    onSelectPlaylist: (PlaylistId) -> Unit,
+    onCreateAndAdd: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var isCreatingNew by rememberSaveable { mutableStateOf(userPlaylists.isEmpty()) }
+    var newPlaylistName by rememberSaveable { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = stringResource(
+                    if (isCreatingNew) {
+                        R.string.library_playlist_create_dialog_title
+                    } else {
+                        R.string.library_playlist_add_dialog_title
+                    },
+                ),
+            )
+        },
+        text = {
+            if (isCreatingNew) {
+                OutlinedTextField(
+                    value = newPlaylistName,
+                    onValueChange = { newPlaylistName = it },
+                    label = {
+                        Text(text = stringResource(R.string.library_playlist_create_name_label))
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    userPlaylists.forEach { playlist ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectPlaylist(playlist.id) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.QueueMusic,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = playlist.name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = stringResource(
+                                        R.string.library_directory_item_count,
+                                        playlist.items.size,
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = { isCreatingNew = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(text = stringResource(R.string.library_playlist_add_new_button))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (isCreatingNew) {
+                TextButton(
+                    onClick = { onCreateAndAdd(newPlaylistName.trim()) },
+                    enabled = newPlaylistName.isNotBlank(),
+                ) {
+                    Text(text = stringResource(R.string.library_playlist_create_confirm))
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.library_edit_cancel))
+            }
+        },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1731,8 +2085,8 @@ private fun LibraryItemRow(
     onDownloadDriveAudioClick: () -> Unit = {},
     isFavorite: Boolean = false,
     onToggleFavoriteClick: (() -> Unit)? = null,
-    isQueued: Boolean = false,
-    onToggleQueueClick: (() -> Unit)? = null,
+    onRemoveFromPlaylistClick: (() -> Unit)? = null,
+    dragHandle: (@Composable () -> Unit)? = null,
 ) {
     val item = itemModel.item
     val formattedDuration = formatDurationMs(item.durationMs)
@@ -1740,9 +2094,7 @@ private fun LibraryItemRow(
     val favoriteCd = stringResource(
         if (isFavorite) R.string.library_favorite_remove_cd else R.string.library_favorite_add_cd,
     )
-    val queueCd = stringResource(
-        if (isQueued) R.string.library_queue_remove_cd else R.string.library_queue_add_cd,
-    )
+    val removeFromPlaylistCd = stringResource(R.string.library_playlist_remove_item_cd)
 
     Column(
         modifier = modifier
@@ -1751,7 +2103,12 @@ private fun LibraryItemRow(
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(
+                start = if (dragHandle != null && !isSelectionMode) 8.dp else 16.dp,
+                end = 16.dp,
+                top = 12.dp,
+                bottom = 12.dp,
+            ),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1763,6 +2120,8 @@ private fun LibraryItemRow(
                     checked = isSelected,
                     onCheckedChange = { onClick() },
                 )
+            } else if (dragHandle != null) {
+                dragHandle()
             }
             Icon(
                 imageVector = ChunkFlowIcons.AudioFile,
@@ -1799,23 +2158,6 @@ private fun LibraryItemRow(
                 }
             }
             if (!isSelectionMode) {
-                if (onToggleQueueClick != null) {
-                    IconButton(
-                        onClick = onToggleQueueClick,
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.QueueMusic,
-                            contentDescription = queueCd,
-                            tint = if (isQueued) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
                 IconButton(
                     onClick = onEditMetadataClick,
                     modifier = Modifier.size(32.dp),
@@ -1826,6 +2168,19 @@ private fun LibraryItemRow(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )
+                }
+                if (onRemoveFromPlaylistClick != null) {
+                    IconButton(
+                        onClick = onRemoveFromPlaylistClick,
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Close,
+                            contentDescription = removeFromPlaylistCd,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
         }
@@ -2448,7 +2803,6 @@ private fun LibraryScreenPlaylistsTabPreview() {
                 items = uiItems,
                 selectedTab = LibraryViewTab.PLAYLISTS,
                 favoriteItemIds = setOf(first.id),
-                queuedItemIds = listOf(first.id),
                 miniPlayer = MiniPlayerUiState(
                     mediaId = first.id,
                     title = first.title,

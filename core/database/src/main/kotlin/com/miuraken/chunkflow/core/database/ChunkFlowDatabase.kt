@@ -12,6 +12,7 @@ import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
+import com.miuraken.chunkflow.core.database.dao.PlaylistDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
@@ -21,6 +22,8 @@ import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
+import com.miuraken.chunkflow.core.database.entity.PlaylistEntity
+import com.miuraken.chunkflow.core.database.entity.PlaylistItemEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 
 /**
@@ -39,6 +42,8 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         DriveFileEntity::class,
         ItemSttOverrideEntity::class,
         CourseFolderEntity::class,
+        PlaylistEntity::class,
+        PlaylistItemEntity::class,
     ],
     version = 6,
     exportSchema = true,
@@ -70,6 +75,9 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
 
     /** `course_folder` テーブルの DAO。 */
     abstract fun courseFolderDao(): CourseFolderDao
+
+    /** `library_playlist` / `library_playlist_item` テーブルの DAO。 */
+    abstract fun playlistDao(): PlaylistDao
 
     companion object {
         /** データベースファイル名（`data_extraction_rules.xml` の `database` ドメイン対象）。 */
@@ -120,13 +128,39 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             }
         }
 
-        /** バージョン 5 から 6 へのマイグレーション（`item_state` に `is_favorite`、`queued_at`、`access_count`、`custom_segmentation` 列を追加）。 */
+        /** バージョン 5 から 6 へのマイグレーション（`item_state` にプレイリスト・個別分割・並び順列、`library_playlist` / `library_playlist_item` テーブルを追加）。 */
         val MIGRATION_5_6: Migration = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `item_state` ADD COLUMN `is_favorite` INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE `item_state` ADD COLUMN `queued_at` INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE `item_state` ADD COLUMN `access_count` INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE `item_state` ADD COLUMN `custom_segmentation` TEXT")
+                db.execSQL("ALTER TABLE `item_state` ADD COLUMN `file_sort_order` INTEGER")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `library_playlist` (" +
+                        "`id` TEXT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`is_builtin` INTEGER NOT NULL DEFAULT 0, " +
+                        "`sort_order` INTEGER NOT NULL DEFAULT 0, " +
+                        "`created_at` INTEGER NOT NULL DEFAULT 0, " +
+                        "PRIMARY KEY(`id`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `library_playlist_item` (" +
+                        "`playlist_id` TEXT NOT NULL, `media_id` TEXT NOT NULL, " +
+                        "`sort_order` INTEGER NOT NULL DEFAULT 0, " +
+                        "`added_at` INTEGER NOT NULL DEFAULT 0, " +
+                        "PRIMARY KEY(`playlist_id`, `media_id`), " +
+                        "FOREIGN KEY(`playlist_id`) REFERENCES `library_playlist`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , " +
+                        "FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_library_playlist_item_playlist_id_sort_order` " +
+                        "ON `library_playlist_item` (`playlist_id`, `sort_order`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_library_playlist_item_media_id` " +
+                        "ON `library_playlist_item` (`media_id`)",
+                )
             }
         }
 

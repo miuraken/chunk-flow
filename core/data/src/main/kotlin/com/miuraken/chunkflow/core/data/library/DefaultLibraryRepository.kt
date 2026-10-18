@@ -17,12 +17,15 @@ import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
 import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
+import com.miuraken.chunkflow.core.database.dao.PlaylistDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
+import com.miuraken.chunkflow.core.database.entity.PlaylistEntity
+import com.miuraken.chunkflow.core.database.entity.PlaylistItemEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
 import com.miuraken.chunkflow.core.database.entity.toExternalModel
@@ -46,7 +49,9 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
+import com.miuraken.chunkflow.core.model.LibraryPlaylist
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.Transcript
@@ -118,6 +123,7 @@ class DefaultLibraryRepository(
     private val transcriptDao: TranscriptDao? = null,
     private val driveFileDao: DriveFileDao? = null,
     private val courseFolderDao: CourseFolderDao = NoOpCourseFolderDao,
+    private val playlistDao: PlaylistDao = NoOpPlaylistDao,
     private val driveSyncClient: DriveSyncClient = NoOpDriveSyncClient,
     private val analysisRepository: AnalysisRepository = NoOpAnalysisRepository,
     private val transcriptParser: TranscriptParser = NoOpTranscriptParser,
@@ -138,6 +144,7 @@ class DefaultLibraryRepository(
         transcriptDao: TranscriptDao,
         driveFileDao: DriveFileDao,
         courseFolderDao: CourseFolderDao,
+        playlistDao: PlaylistDao,
         driveSyncClient: DriveSyncClient,
         userSettingsRepository: UserSettingsRepository,
         analysisRepository: AnalysisRepository,
@@ -157,6 +164,7 @@ class DefaultLibraryRepository(
         transcriptDao = transcriptDao,
         driveFileDao = driveFileDao,
         courseFolderDao = courseFolderDao,
+        playlistDao = playlistDao,
         driveSyncClient = driveSyncClient,
         analysisRepository = analysisRepository,
         transcriptParser = transcriptParser,
@@ -173,6 +181,19 @@ class DefaultLibraryRepository(
 
     override fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = courseFolderDao.observeAll().map { entities ->
         entities.map(CourseFolderEntity::toExternalModel)
+    }
+
+    override fun observePlaylists(): Flow<List<LibraryPlaylist>> = combine(
+        playlistDao.observePlaylists(),
+        playlistDao.observeAllPlaylistItems(),
+    ) { playlists, items ->
+        val itemsByPlaylist = items.groupBy(
+            keySelector = { it.playlistId },
+            valueTransform = { MediaId(it.mediaId) },
+        )
+        playlists.map { entity ->
+            entity.toExternalModel(itemIds = itemsByPlaylist[entity.id].orEmpty())
+        }
     }
 
     override fun observeItem(id: MediaId): Flow<AudioItem?> = mediaItemDao.observeById(id.value).map { entity ->
@@ -1070,6 +1091,127 @@ class DefaultLibraryRepository(
                 val course = mediaItemDao.getById(id.value)?.course
                 scheduleCourseAnalysisUpToLimit(course)
             }
+        }
+    }
+
+    override suspend fun createPlaylist(
+        name: String,
+        initialMediaIds: List<MediaId>,
+    ): PlaylistId? = withContext(ioDispatcher) {
+        val trimmedName = sanitizeCourseName(name).ifBlank { return@withContext null }
+        val existing = playlistDao.getPlaylists()
+        val maxSortOrder = maxOf(
+            existing.maxOfOrNull { it.sortOrder } ?: -1,
+            PlaylistId.BUILT_IN_IDS.size - 1,
+        )
+        val playlistId = PlaylistId("user:${UUID.randomUUID()}")
+        val now = clock()
+        val entity = PlaylistEntity(
+            id = playlistId.value,
+            name = trimmedName,
+            isBuiltIn = false,
+            sortOrder = maxSortOrder + 1,
+            createdAt = now,
+        )
+        playlistDao.upsertPlaylist(entity)
+        if (initialMediaIds.isNotEmpty()) {
+            playlistDao.addItemsToPlaylist(
+                playlist = entity,
+                mediaIds = initialMediaIds.map { it.value },
+                addedAt = now,
+            )
+        }
+        playlistId
+    }
+
+    override suspend fun deletePlaylist(id: PlaylistId) {
+        if (id in PlaylistId.BUILT_IN_IDS) return
+        withContext(ioDispatcher) {
+            playlistDao.deleteUserPlaylist(id.value)
+        }
+    }
+
+    override suspend fun addItemsToPlaylist(
+        playlistId: PlaylistId,
+        mediaIds: List<MediaId>,
+    ) {
+        if (mediaIds.isEmpty()) return
+        withContext(ioDispatcher) {
+            val existing = playlistDao.getPlaylistById(playlistId.value) ?: return@withContext
+            playlistDao.addItemsToPlaylist(
+                playlist = existing,
+                mediaIds = mediaIds.map { it.value },
+                addedAt = clock(),
+            )
+        }
+    }
+
+    override suspend fun removeItemFromPlaylist(
+        playlistId: PlaylistId,
+        mediaId: MediaId,
+    ) {
+        withContext(ioDispatcher) {
+            playlistDao.deletePlaylistItem(playlistId.value, mediaId.value)
+        }
+    }
+
+    override suspend fun reorderPlaylists(orderedIds: List<PlaylistId>) {
+        if (orderedIds.isEmpty()) return
+        withContext(ioDispatcher) {
+            val existingById = playlistDao.getPlaylists().associateBy { it.id }
+            val now = clock()
+            val updatedEntities = orderedIds.distinct().mapIndexedNotNull { index, playlistId ->
+                val existing = existingById[playlistId.value]
+                when {
+                    existing != null -> existing.copy(sortOrder = index)
+
+                    playlistId in PlaylistId.BUILT_IN_IDS -> PlaylistEntity(
+                        id = playlistId.value,
+                        name = "",
+                        isBuiltIn = true,
+                        sortOrder = index,
+                        createdAt = now,
+                    )
+
+                    else -> null
+                }
+            }
+            if (updatedEntities.isNotEmpty()) {
+                playlistDao.upsertPlaylists(updatedEntities)
+            }
+        }
+    }
+
+    override suspend fun reorderPlaylistItems(
+        playlistId: PlaylistId,
+        orderedMediaIds: List<MediaId>,
+    ) {
+        withContext(ioDispatcher) {
+            val now = clock()
+            val fallbackBuiltIn = if (playlistId in PlaylistId.BUILT_IN_IDS) {
+                PlaylistEntity(
+                    id = playlistId.value,
+                    name = "",
+                    isBuiltIn = true,
+                    sortOrder = PlaylistId.BUILT_IN_IDS.indexOf(playlistId).coerceAtLeast(0),
+                    createdAt = now,
+                )
+            } else {
+                null
+            }
+            playlistDao.replacePlaylistItemsOrder(
+                playlistId = playlistId.value,
+                orderedMediaIds = orderedMediaIds.map { it.value },
+                updatedAt = now,
+                playlistIfMissing = fallbackBuiltIn,
+            )
+        }
+    }
+
+    override suspend fun reorderAllFiles(orderedMediaIds: List<MediaId>) {
+        if (orderedMediaIds.isEmpty()) return
+        withContext(ioDispatcher) {
+            itemStateDao.updateFileSortOrders(orderedMediaIds.map { it.value })
         }
     }
 
@@ -3563,6 +3705,21 @@ class DefaultLibraryRepository(
         override suspend fun getByTreeUri(treeUri: String): CourseFolderEntity? = null
         override suspend fun upsert(folder: CourseFolderEntity) = Unit
         override suspend fun deleteByPath(coursePath: String) = Unit
+    }
+
+    private object NoOpPlaylistDao : PlaylistDao {
+        override fun observePlaylists(): Flow<List<PlaylistEntity>> = flowOf(emptyList())
+        override fun observeAllPlaylistItems(): Flow<List<PlaylistItemEntity>> = flowOf(emptyList())
+        override suspend fun getPlaylists(): List<PlaylistEntity> = emptyList()
+        override suspend fun getPlaylistById(playlistId: String): PlaylistEntity? = null
+        override suspend fun getItemsByPlaylistId(playlistId: String): List<PlaylistItemEntity> = emptyList()
+        override suspend fun upsertPlaylist(playlist: PlaylistEntity) = Unit
+        override suspend fun upsertPlaylists(playlists: List<PlaylistEntity>) = Unit
+        override suspend fun upsertPlaylistItems(items: List<PlaylistItemEntity>) = Unit
+        override suspend fun deleteUserPlaylist(playlistId: String): Int = 0
+        override suspend fun deletePlaylistItem(playlistId: String, mediaId: String): Int = 0
+        override suspend fun deleteAllItemsInPlaylist(playlistId: String) = Unit
+        override suspend fun mediaItemExists(mediaId: String): Boolean = false
     }
 
     private object NoOpTranscriptParser : TranscriptParser {

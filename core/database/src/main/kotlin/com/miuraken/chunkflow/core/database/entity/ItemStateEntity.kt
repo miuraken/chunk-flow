@@ -56,6 +56,8 @@ data class ItemStateEntity(
     val accessCount: Int = 0,
     @ColumnInfo(name = "custom_segmentation")
     val customSegmentation: String? = null,
+    @ColumnInfo(name = "file_sort_order")
+    val fileSortOrder: Int? = null,
 ) {
     companion object {
         internal const val AUTO_PAUSE_OFF = "OFF"
@@ -146,6 +148,7 @@ fun ItemStateEntity.toExternalModel(): ItemState {
         queuedAtEpochMs = queuedAt.coerceAtLeast(0L),
         accessCount = accessCount.coerceAtLeast(0),
         customSegmentationParams = ItemStateEntity.decodeSegmentationParams(customSegmentation),
+        fileSortOrder = fileSortOrder,
     )
 }
 
@@ -165,4 +168,5 @@ fun ItemState.toEntity(): ItemStateEntity = ItemStateEntity(
     queuedAt = queuedAtEpochMs.coerceAtLeast(0L),
     accessCount = accessCount.coerceAtLeast(0),
     customSegmentation = ItemStateEntity.encodeSegmentationParams(customSegmentationParams),
+    fileSortOrder = fileSortOrder,
 )

@@ -11,6 +11,7 @@ import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
+import com.miuraken.chunkflow.core.database.dao.PlaylistDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import dagger.Module
 import dagger.Provides
@@ -71,4 +72,8 @@ object DatabaseModule {
     /** [CourseFolderDao] を提供する。 */
     @Provides
     fun providesCourseFolderDao(database: ChunkFlowDatabase): CourseFolderDao = database.courseFolderDao()
+
+    /** [PlaylistDao] を提供する。 */
+    @Provides
+    fun providesPlaylistDao(database: ChunkFlowDatabase): PlaylistDao = database.playlistDao()
 }

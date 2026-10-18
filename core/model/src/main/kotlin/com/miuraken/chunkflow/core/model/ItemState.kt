@@ -19,6 +19,7 @@ package com.miuraken.chunkflow.core.model
  * @property queuedAtEpochMs 「次に再生するキュー」に追加された時刻（UNIX エポックからのミリ秒。未登録なら `0L`）。
  * @property accessCount 教材を開いた累計アクセス回数（0 以上）。
  * @property customSegmentationParams 教材ごとの自動チャンク分割パラメータの上書き（`null` のときは「全体設定に従う」）。
+ * @property fileSortOrder 「ファイル」タブでのカスタム並び順（`null` のときは既定のファイル名順）。
  */
 data class ItemState(
     val mediaId: MediaId,
@@ -35,6 +36,7 @@ data class ItemState(
     val queuedAtEpochMs: Long = 0L,
     val accessCount: Int = 0,
     val customSegmentationParams: SegmentationParams? = null,
+    val fileSortOrder: Int? = null,
 ) {
     init {
         require(positionMs >= 0L) { "positionMs must be >= 0: $positionMs" }

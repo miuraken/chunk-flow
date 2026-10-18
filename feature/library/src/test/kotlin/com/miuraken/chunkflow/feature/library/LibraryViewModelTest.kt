@@ -1157,4 +1157,117 @@ class LibraryViewModelTest {
         assertEquals(setOf(item1.id, item2.id), viewModel.uiState.value.favoriteItemIds)
         assertTrue(viewModel.uiState.value.areAllSelectedFavorite)
     }
+
+    @Test
+    fun `複数プレイリスト作成と選択ファイルのプレイリスト追加_およびプレイリストとアイテムとファイルタブのドラッグ並び替えが動作する`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val item1 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-1"),
+            title = "Lesson 1",
+            course = "韓国語 I",
+        )
+        val item2 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-2"),
+            title = "Lesson 2",
+            course = "韓国語 I",
+        )
+        val item3 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-3"),
+            title = "Lesson 3",
+            course = "韓国語 I",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2, item3))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. デフォルトでは組み込みの 3 つのスマートリストが上から順に並ぶ
+        assertEquals(
+            listOf(
+                com.miuraken.chunkflow.core.model.PlaylistId.RECENTLY_OPENED,
+                com.miuraken.chunkflow.core.model.PlaylistId.FREQUENTLY_ACCESSED,
+                com.miuraken.chunkflow.core.model.PlaylistId.FAVORITES,
+            ),
+            viewModel.uiState.value.playlistEntries.map { it.id },
+        )
+
+        // 2. 新しいプレイリストを作成するとデフォルトで一番下に配置される
+        viewModel.onEvent(LibraryEvent.CreatePlaylist("通勤リスニング"))
+        viewModel.onEvent(LibraryEvent.CreatePlaylist("復習リスト"))
+        val entriesAfterCreate = viewModel.uiState.value.playlistEntries
+        assertEquals(5, entriesAfterCreate.size)
+        assertEquals("通勤リスニング", entriesAfterCreate[3].name)
+        assertEquals("復習リスト", entriesAfterCreate[4].name)
+        val commutePlaylistId = entriesAfterCreate[3].id
+        val reviewPlaylistId = entriesAfterCreate[4].id
+
+        // 3. ファイルを選択してプレイリストに追加すると、対象プレイリストに入り選択モードが解除される
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item1.id))
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item3.id))
+        assertTrue(viewModel.uiState.value.isSelectionMode)
+        viewModel.onEvent(LibraryEvent.AddSelectedItemsToPlaylist(commutePlaylistId))
+        assertFalse(viewModel.uiState.value.isSelectionMode)
+
+        viewModel.onEvent(LibraryEvent.SelectPlaylist(commutePlaylistId))
+        assertEquals(
+            listOf(item1.id, item3.id),
+            viewModel.uiState.value.activePlaylist?.items?.map { it.item.id },
+        )
+
+        // 4. プレイリスト内のアイテムをドラッグ並び替え（index 0 -> 1）
+        viewModel.onEvent(
+            LibraryEvent.MovePlaylistItem(
+                playlistId = commutePlaylistId,
+                fromIndex = 0,
+                toIndex = 1,
+            ),
+        )
+        assertEquals(
+            listOf(item3.id, item1.id),
+            viewModel.uiState.value.activePlaylist?.items?.map { it.item.id },
+        )
+
+        // 5. 再生リストタブ内でプレイリスト自体（組み込みスマートリスト・ユーザープлейリスト共通）をドラッグ並び替え
+        // 「通勤リスニング」(index 3) を一番上 (index 0) へ移動
+        viewModel.onEvent(LibraryEvent.SelectPlaylist(null))
+        viewModel.onEvent(LibraryEvent.MovePlaylist(fromIndex = 3, toIndex = 0))
+        assertEquals(
+            listOf(
+                commutePlaylistId,
+                com.miuraken.chunkflow.core.model.PlaylistId.RECENTLY_OPENED,
+                com.miuraken.chunkflow.core.model.PlaylistId.FREQUENTLY_ACCESSED,
+                com.miuraken.chunkflow.core.model.PlaylistId.FAVORITES,
+                reviewPlaylistId,
+            ),
+            viewModel.uiState.value.playlistEntries.map { it.id },
+        )
+
+        // 6. ファイルタブでのドラッグ並び替え（Lesson 1, Lesson 2, Lesson 3 -> Lesson 3 を先頭へ移動）
+        assertEquals(
+            listOf(item1.id, item2.id, item3.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+        viewModel.onEvent(LibraryEvent.MoveFileTabItem(fromIndex = 2, toIndex = 0))
+        assertEquals(
+            listOf(item3.id, item1.id, item2.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+
+        // 7. ViewModel を再生成しても並び順がすべて保持されている
+        val recreated = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { recreated.uiState.collect() }
+        assertEquals(
+            listOf(
+                commutePlaylistId,
+                com.miuraken.chunkflow.core.model.PlaylistId.RECENTLY_OPENED,
+                com.miuraken.chunkflow.core.model.PlaylistId.FREQUENTLY_ACCESSED,
+                com.miuraken.chunkflow.core.model.PlaylistId.FAVORITES,
+                reviewPlaylistId,
+            ),
+            recreated.uiState.value.playlistEntries.map { it.id },
+        )
+        assertEquals(
+            listOf(item3.id, item1.id, item2.id),
+            recreated.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+    }
 }
