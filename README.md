@@ -2,7 +2,7 @@
 
 ## 概要（仕様の要約）
 
-Chunk Flow は、語学学習のリスニング・リピーティング・シャドーイングに特化した Android 向けオーディオプレイヤーです。教材音声を発話単位の「チャンク」に分割し、全体波形と拡大波形の表示、チャンク単位や複数選択でのリピート再生、発話後の自動ポーズ（瞬間作文モードを含む）、学習言語／母語の言語別フィルタ再生、ブラインド表示や発音ガイド（ピンイン・粤拼・ローマ字・IAST 等）を提供します。文字起こしと2言語判定は、PC ツール（Whisper）で生成した JSON や字幕の取り込みに加え、端末内の先読み音声認識にも対応し、取り込み直後から再生を止めずに学習を始められます。
+Chunk Flow は、語学学習のリスニング・リピーティング・シャドーイングに特化した Android 向けオーディオプレイヤーです。教材音声を発話単位の「チャンク」に分割し、全体波形と拡大波形の表示、チャンク単位や複数選択でのリピート再生、発話後の自動ポーズ（瞬間作文モードを含む）、学習言語／母語の言語別フィルタ再生、ブラインド表示、端末内翻訳（ML Kit Translation）、発音ガイド（ピンイン・粤拼・ローマ字・IAST 等）を提供します。文字起こしと2言語判定は、PC ツール（Whisper）で生成した JSON や字幕の取り込みに加え、端末内の先読み・ファイル単位バックグラウンド音声認識（ML Kit GenAI Speech Recognition / Android SpeechRecognizer / sherpa-onnx）にも対応し、取り込み直後から再生を止めずに学習を始められます。
 
 詳細な設計は [`design_doc.md`](design_doc.md)、アーキテクチャ上の意思決定は [`docs/adr/`](docs/adr/)、開発ルールは [`AGENTS.md`](AGENTS.md) を参照してください。
 
@@ -19,8 +19,8 @@ Chunk Flow は、語学学習のリスニング・リピーティング・シャ
 | UI | Jetpack Compose（Compose BOM 2026.09）、Material 3、Material 3 Adaptive |
 | 画面遷移 | AndroidX Navigation 3 |
 | 音声再生・セッション | AndroidX Media3（ExoPlayer、`MediaSessionService`、`ForwardingSimpleBasePlayer`、`PlayerMessage`） |
-| 音声解析・端末内認識 | `MediaExtractorCompat` + `MediaCodec`（ストリーミング PCM デコード）、純 Kotlin 量子化 Whisper Tiny（2言語判定）、Android `SpeechRecognizer`（チャンク先読み文字起こし） |
-| 永続化・バックグラウンド | Room、DataStore Preferences、WorkManager、アプリ内部ストレージ（`filesDir/media/`） |
+| 音声解析・端末内認識・翻訳 | `MediaExtractorCompat` + `MediaCodec`（ストリーミング PCM デコード）、純 Kotlin 量子化 Whisper Tiny（2言語判定）、ML Kit GenAI Speech Recognition / Android `SpeechRecognizer` / `sherpa-onnx`（3エンジン切り替え・言語別設定対応の端末内文字起こし）、ML Kit On-Device Translation（端末内翻訳） |
+| 永続化・バックグラウンド | Room、DataStore Preferences、WorkManager、ゼロコピーローカル参照および `.chunkflow/` メタデータ保存（フォールバック時は `filesDir/media/`） |
 | DI | Dagger Hilt + KSP |
 | ビルド・品質管理 | Gradle 9.8（Kotlin DSL、Version Catalog、`build-logic` convention plugins）、AGP 9.4、Spotless + ktlint、Android Lint、JUnit 4、Robolectric、Compose Preview Screenshot Testing |
 
@@ -42,20 +42,20 @@ Chunk Flow は、語学学習のリスニング・リピーティング・シャ
 .
 ├── app/                    # アプリのエントリポイント（Application、MainActivity、Navigation 3、DI 組み立て）
 ├── feature/                # 画面単位の UI モジュール（Compose Screen + ViewModel）
-│   ├── library/            #   教材ライブラリ一覧、フォルダ階層表示、取り込み、コース・言語ペア設定
-│   ├── player/             #   プレイヤー画面（全体/拡大波形、再生制御、チャンク一覧・編集・スクリプト表示）
-│   └── settings/           #   アプリ設定画面（再生・自動ポーズ・チャンク分割・Drive 同期・バックアップ）
+│   ├── library/            #   教材ライブラリ一覧、フォルダ階層・最近開いたファイル表示、取り込み、コース・言語設定
+│   ├── player/             #   プレイヤー画面（全体/拡大波形、再生制御、チャンク一覧・編集・スクリプト・翻訳表示）
+│   └── settings/           #   アプリ設定画面（再生・自動ポーズ・音声認識エンジン・モデル管理・Drive 同期・バックアップ）
 ├── core/                   # 共通基盤モジュール群
 │   ├── model/              #   ドメインモデル（純 Kotlin / JVM、Android 非依存）
 │   ├── audio/              #   波形縮約、特徴量計算、適応型無音検出（VAD）、チャンク分割、リサンプラ（純 Kotlin / JVM）
 │   ├── transcript/         #   文字起こし（Chunk Flow JSON / SRT / WebVTT / LRC）の解析・検証・発音ガイド変換（純 Kotlin / JVM）
-│   ├── media/              #   MediaCodec デコード、メタデータ取得、端末内音声認識・Whisper Tiny 2言語判定
+│   ├── media/              #   MediaCodec デコード、メタデータ取得、端末内音声認識（ML Kit / SpeechRecognizer / sherpa-onnx）・Whisper Tiny 2言語判定・ML Kit 翻訳
 │   ├── playback/           #   PlaybackService、LearningPlayer、ChunkScheduler、PlaybackController
-│   ├── drive/              #   Google Drive 手動同期（OAuth 認可、Drive API 読み取り専用クライアント）
+│   ├── drive/              #   Google Drive 同期（OAuth 認可、Drive API クライアント、オンデマンド取得・文字起こし書き戻し）
 │   ├── database/           #   Room データベース（Entity / DAO / Migration）
 │   ├── datastore/          #   DataStore Preferences によるユーザー設定の永続化
-│   ├── data/               #   Repository 実装（Library / Analysis）、ファイル取り込み、AnalysisWorker
-│   ├── designsystem/       #   Material 3 テーマ、言語役割別カラーパレット、アイコン、プレビューアノテーション
+│   ├── data/               #   Repository 実装（Library / Analysis / Transcript / Translation）、ファイル取り込み、Worker 群
+│   ├── designsystem/       #   Material 3 テーマ、言語役割別カラーパレット、アイコン、共通モーダル、プレビューアノテーション
 │   └── testing/            #   テストおよび Compose Preview 用の Fake 実装・フィクスチャ・合成音源生成
 ├── build-logic/            # Gradle Convention Plugins（モジュール種別ごとの共通ビルド・Lint・Hilt・Room 設定）
 ├── gradle/                 # Gradle Wrapper と Version Catalog（libs.versions.toml）
