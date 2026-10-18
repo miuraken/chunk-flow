@@ -1641,7 +1641,7 @@ private fun RecentFileCompactRow(
     val langPalette = chunkFlowLanguagePalette()
     val maxPercent = itemModel.maxProgressPercent
     val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
-    val targetUpper = item.languagePair.target.value.uppercase(Locale.ROOT)
+    val targetCode = item.languagePair.target.value.lowercase(Locale.ROOT)
 
     Column(
         modifier = modifier
@@ -1666,7 +1666,7 @@ private fun RecentFileCompactRow(
                 shape = MaterialTheme.shapes.extraSmall,
             ) {
                 Text(
-                    text = targetUpper,
+                    text = targetCode,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
