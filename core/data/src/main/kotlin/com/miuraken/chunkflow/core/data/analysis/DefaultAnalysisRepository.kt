@@ -816,11 +816,13 @@ class DefaultAnalysisRepository(
                 val transcriptsByChunkId = transcriptDao.observeByMediaId(id.value).first().associateBy { it.chunkId }
                 val targetChunks = activeChunks.filter { chunk ->
                     val existing = transcriptsByChunkId[chunk.id]
-                    existing == null || (
-                        existing.text.isBlank() &&
-                            (existing.language.isNullOrBlank() || existing.language.equals("und", ignoreCase = true)) &&
-                            !(existing.userEdited && existing.language == null)
-                        )
+                    existing == null ||
+                        (existing.isLanguageIdOnly() && !existing.userEdited) ||
+                        (
+                            existing.text.isBlank() &&
+                                (existing.language.isNullOrBlank() || existing.language.equals("und", ignoreCase = true)) &&
+                                !(existing.userEdited && existing.language == null)
+                            )
                 }
                 if (targetChunks.isEmpty()) return@withTrackedTranscriptionJob
 
@@ -872,15 +874,24 @@ class DefaultAnalysisRepository(
                         computeDispatcher = computeDispatcher,
                     ) { index, detected ->
                         val chunk = targetChunks[index]
-                        // 判定の間に別の処理で言語または本文が入っていれば、上書きしない
+                        // 判定の間に別の処理で本文または手動設定言語が入っていれば、上書きしない。既存の仮判定（LIDのみ）は再判定結果で更新または消去する
                         val latestTranscript = transcriptDao.getByChunkId(chunk.id)
-                        val alreadyHasLanguage = latestTranscript != null && (
-                            latestTranscript.text.isNotBlank() ||
-                                (!latestTranscript.language.isNullOrBlank() && !latestTranscript.language.equals("und", ignoreCase = true))
-                            )
-                        if (!alreadyHasLanguage && detected != null && detected.language != null) {
+                        val isOverwritableLidOnly = latestTranscript != null &&
+                            latestTranscript.isLanguageIdOnly() &&
+                            !latestTranscript.userEdited
+                        val alreadyHasProtectedLanguageOrText = latestTranscript != null &&
+                            !isOverwritableLidOnly && (
+                                latestTranscript.text.isNotBlank() ||
+                                    latestTranscript.userEdited ||
+                                    (!latestTranscript.language.isNullOrBlank() && !latestTranscript.language.equals("und", ignoreCase = true))
+                                )
+                        if (!alreadyHasProtectedLanguageOrText) {
                             withContext(NonCancellable) {
-                                persistLanguageOnlyTranscript(chunk.id, detected)
+                                if (detected?.language != null) {
+                                    persistLanguageOnlyTranscript(chunk.id, detected)
+                                } else if (isOverwritableLidOnly) {
+                                    transcriptDao.deleteByChunkId(chunk.id)
+                                }
                             }
                         }
                         completed += 1
@@ -1893,7 +1904,13 @@ class DefaultAnalysisRepository(
                     null
                 }
                 val baseExisting = existing ?: overlappingImported
-                val assignedLang = baseExisting?.language?.trim()?.takeIf {
+                val isBaseLidOnly = baseExisting != null && baseExisting.isLanguageIdOnly() && !baseExisting.userEdited
+                val assignedLang = baseExisting
+                    ?.takeUnless { isBaseLidOnly }
+                    ?.language?.trim()?.takeIf {
+                        it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+                    }
+                val initialDisplayLang = baseExisting?.language?.trim()?.takeIf {
                     it.isNotEmpty() && !it.equals("und", ignoreCase = true)
                 }
                 val wasUserEdited = baseExisting?.userEdited ?: false
@@ -1915,7 +1932,7 @@ class DefaultAnalysisRepository(
                         chunkId = chunkId.value,
                         text = "",
                         textVariants = "{}",
-                        language = assignedLang,
+                        language = initialDisplayLang,
                         languageConfidence = baseExisting?.languageConfidence,
                         words = "[]",
                         engine = baseExisting?.engine ?: MANUAL_LANGUAGE_ENGINE_ID,
@@ -1961,9 +1978,23 @@ class DefaultAnalysisRepository(
                         )
 
                         val currentBeforeRecognize = transcriptDao.getByChunkId(chunkId.value) ?: baseExisting
-                        val effectiveAssignedLang = currentBeforeRecognize?.language?.trim()?.takeIf {
-                            it.isNotEmpty() && !it.equals("und", ignoreCase = true)
-                        } ?: assignedLang
+                        val isCurrentLidOnly = currentBeforeRecognize != null &&
+                            currentBeforeRecognize.isLanguageIdOnly() &&
+                            !currentBeforeRecognize.userEdited
+                        val effectiveAssignedLang = currentBeforeRecognize
+                            ?.takeUnless { isCurrentLidOnly }
+                            ?.language?.trim()?.takeIf {
+                                it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+                            } ?: assignedLang
+                        val precomputedLidLang = currentBeforeRecognize
+                            ?.takeIf { isCurrentLidOnly }
+                            ?.language?.trim()?.takeIf {
+                                it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+                            }
+                            ?.let(::LanguageTag)
+                        val precomputedLidConfidence = currentBeforeRecognize
+                            ?.takeIf { isCurrentLidOnly }
+                            ?.languageConfidence
                         val mediaLanguagePair = mediaItem?.let { item ->
                             val target = item.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
                             val base = item.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
@@ -2000,6 +2031,8 @@ class DefaultAnalysisRepository(
                                 itemSttOverride = itemSttOverride,
                                 engineByLanguage = engineByLanguage,
                                 highPriority = true,
+                                precomputedLanguage = precomputedLidLang,
+                                precomputedLanguageConfidence = precomputedLidConfidence,
                             )
                         } catch (ce: CancellationException) {
                             throw ce
@@ -2030,6 +2063,9 @@ class DefaultAnalysisRepository(
                                 val currentEntity = transcriptDao.getByChunkId(chunkId.value) ?: baseExisting
                                 val resolvedLanguage = effectiveAssignedLang
                                     ?: recognized.language?.value?.takeIf {
+                                        it.isNotBlank() && !it.equals("und", ignoreCase = true)
+                                    }
+                                    ?: currentEntity?.language?.takeIf {
                                         it.isNotBlank() && !it.equals("und", ignoreCase = true)
                                     }
                                     ?: effectiveLanguagePair?.target?.value
@@ -2609,8 +2645,12 @@ class DefaultAnalysisRepository(
                                         skippedEmptyIds.remove(targetChunk.id)
                                         backgroundDeferredEmptyChunkIds[id]?.remove(targetChunk.id)
                                         val existing = transcriptDao.getByChunkId(targetChunk.id)
-                                        val resolvedLanguage = existing?.language?.takeIf { it.isNotBlank() && it != "und" }
-                                            ?: result.language?.value
+                                        val manualExistingLanguage = existing
+                                            ?.takeIf { !it.isLanguageIdOnly() && (it.userEdited || it.engine == MANUAL_LANGUAGE_ENGINE_ID) }
+                                            ?.language?.takeIf { it.isNotBlank() && !it.equals("und", ignoreCase = true) }
+                                        val resolvedLanguage = manualExistingLanguage
+                                            ?: result.language?.value?.takeIf { it.isNotBlank() && !it.equals("und", ignoreCase = true) }
+                                            ?: existing?.language?.takeIf { it.isNotBlank() && !it.equals("und", ignoreCase = true) }
                                             ?: effectiveLanguagePair?.target?.value
                                         val resolvedConfidence = if (existing?.userEdited == true) {
                                             existing.languageConfidence ?: 1.0f

@@ -181,6 +181,25 @@ internal class VoiceProfileLanguageTracker {
     }
 
     /**
+     * 指定した音声ファイル識別子 [audioScopeKey] から、指定した [observationKey] のアンカーを消去する。
+     */
+    fun removeObservation(audioScopeKey: String, observationKey: Long) {
+        if (audioScopeKey.isBlank()) return
+        val model = synchronized(modelsByScope) { modelsByScope[audioScopeKey] } ?: return
+        synchronized(model) {
+            var removed = false
+            for (anchors in model.anchorsByLang.values) {
+                if (anchors.removeAll { it.observationKey == observationKey }) {
+                    removed = true
+                }
+            }
+            if (removed) {
+                model.version += 1
+            }
+        }
+    }
+
+    /**
      * Whisper の判定 [whisperPrediction] と、ファイル内で学習した判定 [speakerPrediction] を対数オッズで統合する。
      *
      * Whisper の対数オッズは [whisperReliability] で割り引いてから足す。[speakerPrediction] が `null` でも割り引きは行う

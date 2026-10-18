@@ -208,4 +208,18 @@ class VoiceProfileLanguageTrackerTest {
         assertFalse(VoiceProfileLanguageTracker.isAnchorEligible(whisper(targetProbability = 0.9f, pairMass = 0.9f)))
         assertFalse(VoiceProfileLanguageTracker.isAnchorEligible(whisper(targetProbability = 0.99f, pairMass = 0.3f)))
     }
+
+    @Test
+    fun `removeObservation_指定したobservationKeyのアンカーのみを消去する`() {
+        val tracker = VoiceProfileLanguageTracker()
+        val narrator = randomUnitVector()
+        val native = randomUnitVector()
+        for (key in 1L..3L) tracker.recordSpeakerObservation("/a.mp3", key, "hi", sample(native))
+        for (key in 4L..6L) tracker.recordSpeakerObservation("/a.mp3", key, "en", sample(narrator))
+
+        assertNotNull(tracker.predictLanguageFromVoiceProfile("/a.mp3", sample(native), "hi", "en"))
+
+        tracker.removeObservation("/a.mp3", 1L)
+        assertNull(tracker.predictLanguageFromVoiceProfile("/a.mp3", sample(native), "hi", "en"))
+    }
 }

@@ -3697,4 +3697,248 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(3, status.completedCount)
         assertEquals(3, status.totalTargetCount)
     }
+
+    @Test
+    fun `startLanguageDetectionOnly_既存の仮判定レコードは再判定で更新またはnull時に削除し手動設定や本文ありは保護する`() = runTest {
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun detectChunkLanguages(
+                audioFile: File,
+                chunks: List<ChunkTimeRange>,
+                languagePair: LanguagePair,
+                parallelism: Int,
+                computeDispatcher: CoroutineDispatcher,
+                onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+            ) {
+                for ((index, chunk) in chunks.withIndex()) {
+                    val result = when (chunk.startMs) {
+                        0L -> OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = LanguageTag("hi"),
+                            confidence = 0.85f,
+                            engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                        )
+
+                        1_000L -> null
+
+                        else -> null
+                    }
+                    onResult(index, result)
+                }
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_relid_overwrite_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Re-LID Overwrite Test",
+                durationMs = 4_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 2048L,
+                sha256 = "1122334455667788112233445566778811223344556677881122334455667788",
+                course = null,
+                targetLang = "hi",
+                baseLang = "en",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 6101L, mediaId = mediaId.value, startMs = 0L, endMs = 1_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 6102L, mediaId = mediaId.value, startMs = 1_000L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 6103L, mediaId = mediaId.value, startMs = 2_000L, endMs = 3_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 6104L, mediaId = mediaId.value, startMs = 3_000L, endMs = 4_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+        // 6101L: 古い仮判定 (en) -> 再判定で hi に更新されるべき
+        transcriptDao.upsert(
+            TranscriptEntity(
+                chunkId = 6101L,
+                text = "",
+                language = "en",
+                languageConfidence = 0.6f,
+                engine = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID.value,
+                userEdited = false,
+                createdAt = currentEpochMs,
+            ),
+        )
+        // 6102L: 古い仮判定 (en) -> 再判定で null が返り削除されて "-" に戻るべき
+        transcriptDao.upsert(
+            TranscriptEntity(
+                chunkId = 6102L,
+                text = "",
+                language = "en",
+                languageConfidence = 0.52f,
+                engine = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID.value,
+                userEdited = false,
+                createdAt = currentEpochMs,
+            ),
+        )
+        // 6103L: 手動設定言語 (en) -> 保護されて触られないべき
+        transcriptDao.upsert(
+            TranscriptEntity(
+                chunkId = 6103L,
+                text = "",
+                language = "en",
+                languageConfidence = 1.0f,
+                engine = "manual-lang",
+                userEdited = true,
+                createdAt = currentEpochMs,
+            ),
+        )
+        // 6104L: 本文あり (en) -> 保護されて触られないべき
+        transcriptDao.upsert(
+            TranscriptEntity(
+                chunkId = 6104L,
+                text = "Hello",
+                language = "en",
+                languageConfidence = 0.9f,
+                engine = "android-speech-recognizer",
+                userEdited = false,
+                createdAt = currentEpochMs,
+            ),
+        )
+
+        repository.startLanguageDetectionOnly(mediaId)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("hi", transcriptDao.getByChunkId(6101L)?.language, "古い仮判定が新しい判定結果 hi で上書きされる")
+        assertNull(transcriptDao.getByChunkId(6102L), "再判定で確定しなかった古い仮判定は削除されて null (UI上の -) に戻る")
+        assertEquals("en", transcriptDao.getByChunkId(6103L)?.language, "手動設定された言語は保護される")
+        assertEquals("Hello", transcriptDao.getByChunkId(6104L)?.text, "本文があるレコードは保護される")
+    }
+
+    @Test
+    fun `先読みと強制再文字起こし_仮判定の言語と逆の言語がSTTから返った場合にチャンクの言語を訂正する`() = runTest {
+        val capturedPairs = mutableListOf<LanguagePair?>()
+        val capturedPrecomputed = mutableListOf<LanguageTag?>()
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                forceRefresh: Boolean,
+                highPriority: Boolean,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+                precomputedLanguage: LanguageTag?,
+                precomputedLanguageConfidence: Float?,
+            ): OnDeviceChunkTranscriptionResult {
+                capturedPairs += languagePair
+                capturedPrecomputed += precomputedLanguage
+                // 仮判定は en だったが、STT の結果として hi ("सोनिए") が返ったケース
+                return OnDeviceChunkTranscriptionResult(
+                    text = "सोनिए",
+                    language = LanguageTag("hi"),
+                    confidence = 0.91f,
+                )
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_stt_lang_correction_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "STT Lang Correction Test",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 2048L,
+                sha256 = "9988776655443322998877665544332299887766554433229988776655443322",
+                course = null,
+                targetLang = "hi",
+                baseLang = "en",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 7101L, mediaId = mediaId.value, startMs = 0L, endMs = 1_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 7102L, mediaId = mediaId.value, startMs = 1_000L, endMs = 2_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+        // 両チャンクとも LID のみで誤って "en" と仮判定されている
+        for (cid in listOf(7101L, 7102L)) {
+            transcriptDao.upsert(
+                TranscriptEntity(
+                    chunkId = cid,
+                    text = "",
+                    language = "en",
+                    languageConfidence = 0.72f,
+                    engine = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID.value,
+                    userEdited = false,
+                    createdAt = currentEpochMs,
+                ),
+            )
+        }
+
+        // 1. 先読み文字起こしで 7101L の言語が en -> hi に訂正されることを確認
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        repository.setLookaheadEnabled(mediaId, true)
+        repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(7101L))
+        testScheduler.advanceUntilIdle()
+
+        val afterLookahead = transcriptDao.getByChunkId(7101L)
+        assertNotNull(afterLookahead)
+        assertEquals("सोनिए", afterLookahead.text)
+        assertEquals("hi", afterLookahead.language, "先読み文字起こし後に仮判定の en から STT 結果の hi に訂正される")
+
+        // 2. 7102L を仮判定 (en) に戻し、retranscribeChunk でも 2 言語ペア維持 & hi に訂正されることを確認
+        transcriptDao.upsert(
+            TranscriptEntity(
+                chunkId = 7102L,
+                text = "",
+                language = "en",
+                languageConfidence = 0.70f,
+                engine = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID.value,
+                userEdited = false,
+                createdAt = currentEpochMs,
+            ),
+        )
+        capturedPairs.clear()
+        capturedPrecomputed.clear()
+
+        repository.retranscribeChunk(mediaId, ChunkId(7102L))
+        testScheduler.advanceUntilIdle()
+
+        val afterRetranscribe = transcriptDao.getByChunkId(7102L)
+        assertNotNull(afterRetranscribe)
+        assertEquals("सोनिए", afterRetranscribe.text)
+        assertEquals("hi", afterRetranscribe.language, "retranscribeChunk でも仮判定の en から STT 結果の hi に訂正される")
+        assertEquals(
+            LanguagePair(target = LanguageTag("hi"), base = LanguageTag("en")),
+            capturedPairs.last(),
+            "仮判定レコードの再文字起こしでは 2 言語ペアを維持して渡す",
+        )
+        assertEquals(LanguageTag("en"), capturedPrecomputed.last())
+    }
 }

@@ -2393,6 +2393,131 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals("おはようございます。今日もよろしくお願いします。", result.text)
     }
 
+    @Test
+    fun `detectChunkLanguage_selectedProbabilityがMIN_DETERMINED_LID_PROBABILITY未満のときはnullを返す`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        var currentProb = 0.52f
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            languageDetector = { _, targetTag, baseTag ->
+                LanguagePairPrediction(
+                    selectedTag = targetTag,
+                    fallbackTag = baseTag,
+                    selectedProbability = currentProb,
+                    targetProbability = currentProb,
+                    baseProbability = 1f - currentProb,
+                    inferenceTimeMs = 10L,
+                    pairMass = 0.95f,
+                )
+            },
+        )
+        val audioFile = tempFolder.newFile("ambiguous_lid.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val pair = LanguagePair(target = LanguageTag("hi"), base = LanguageTag("en"))
+
+        val belowThreshold = transcriber.detectChunkLanguage(audioFile, 0L, 2_000L, pair)
+        assertNull(belowThreshold, "最小確信度 0.54 未満のときは null を返して言語未確定にする")
+
+        currentProb = 0.55f
+        val aboveThreshold = transcriber.detectChunkLanguage(audioFile, 0L, 2_000L, pair)
+        assertNotNull(aboveThreshold)
+        assertEquals(LanguageTag("hi"), aboveThreshold.language)
+    }
+
+    @Test
+    fun `isUnnaturalOrTransliterationSuspected_デーヴァナーガリーやアラビアやキリルやタイ文字言語で該当文字が0文字ならtrueを返す`() {
+        assertTrue(isUnnaturalOrTransliterationSuspected("Soniye", "hi"))
+        assertFalse(isUnnaturalOrTransliterationSuspected("सोनिए", "hi"))
+
+        assertTrue(isUnnaturalOrTransliterationSuspected("Salam", "ar"))
+        assertFalse(isUnnaturalOrTransliterationSuspected("مرحبا", "ar"))
+
+        assertTrue(isUnnaturalOrTransliterationSuspected("Privet", "ru"))
+        assertFalse(isUnnaturalOrTransliterationSuspected("Привет", "ru"))
+
+        assertTrue(isUnnaturalOrTransliterationSuspected("Sawasdee", "th"))
+        assertFalse(isUnnaturalOrTransliterationSuspected("สวัสดี", "th"))
+    }
+
+    @Test
+    fun `resolveLanguageByRecognizedScript_文字体系がもう一方の言語のものである場合に言語を訂正する`() {
+        assertEquals(
+            LanguageTag("hi"),
+            resolveLanguageByRecognizedScript("सोनिए", currentLang = LanguageTag("en"), otherLang = LanguageTag("hi")),
+        )
+        assertEquals(
+            LanguageTag("hi"),
+            resolveLanguageByRecognizedScript("मैं", currentLang = LanguageTag("en"), otherLang = LanguageTag("hi")),
+        )
+        assertEquals(
+            LanguageTag("en"),
+            resolveLanguageByRecognizedScript("Hello world", currentLang = LanguageTag("en"), otherLang = LanguageTag("hi")),
+        )
+        assertEquals(
+            LanguageTag("ko"),
+            resolveLanguageByRecognizedScript("안녕하세요", currentLang = LanguageTag("en"), otherLang = LanguageTag("ko")),
+        )
+        assertEquals(
+            LanguageTag("ja"),
+            resolveLanguageByRecognizedScript("こんにちは", currentLang = LanguageTag("en"), otherLang = LanguageTag("ja")),
+        )
+    }
+
+    @Test
+    fun `transcribeChunk_英語選択でもデーヴァナーガリー文字が返った場合はヒンディー語に訂正し誤アンカーを消去する`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val audioFile = tempFolder.newFile("en_hi_script_fix.wav").apply { writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        val scopeKey = audioFile.absolutePath
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 2),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            attemptRunner = { _, _, bcp47LocaleTag, _ ->
+                if (bcp47LocaleTag.startsWith("en")) {
+                    // 英語として呼び出したがデーヴァナーガリー文字が返り、hi 側は空だったケース
+                    SpeechRecognitionAttemptResult(text = "सोनिए", confidence = 0.90f)
+                } else {
+                    null
+                }
+            },
+        )
+        val tracker = transcriber.voiceProfileTracker
+
+        // 事前にチャンク 0ms が誤って en アンカーとして登録されていた状況を再現
+        for (k in listOf(0L, 1_000L, 2_000L)) {
+            tracker.recordSpeakerObservation(scopeKey, k, "en", floatArrayOf(1f, 0f, 0f, 0f))
+        }
+        for (k in listOf(3_000L, 4_000L, 5_000L)) {
+            tracker.recordSpeakerObservation(scopeKey, k, "hi", floatArrayOf(0f, 1f, 0f, 0f))
+        }
+        assertNotNull(tracker.predictLanguageFromVoiceProfile(scopeKey, floatArrayOf(1f, 0f, 0f, 0f), "hi", "en"))
+
+        val result = transcriber.transcribeChunk(
+            audioFile = audioFile,
+            startMs = 0L,
+            endMs = 2_000L,
+            languagePair = LanguagePair(target = LanguageTag("hi"), base = LanguageTag("en")),
+            forceRefresh = true,
+            highPriority = false,
+            itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+            engineByLanguage = emptyMap(),
+            precomputedLanguage = LanguageTag("en"),
+            precomputedLanguageConfidence = 0.95f,
+        )
+
+        assertNotNull(result)
+        assertEquals("सोनिए", result.text)
+        assertEquals(LanguageTag("hi"), result.language, "デーヴァナーガリー文字の結果から言語が hi に訂正される")
+        assertNull(
+            tracker.predictLanguageFromVoiceProfile(scopeKey, floatArrayOf(1f, 0f, 0f, 0f), "hi", "en"),
+            "0ms の誤った en アンカーが消去され、en アンカー数が 2 件（< 3 件）になって null になる",
+        )
+    }
+
     /** [durationSec] 秒の一定振幅の音声を返すデコーダ。 */
     private fun constantDecoder(durationSec: Int): AudioStreamDecoder = object : AudioStreamDecoder {
         override suspend fun decode(

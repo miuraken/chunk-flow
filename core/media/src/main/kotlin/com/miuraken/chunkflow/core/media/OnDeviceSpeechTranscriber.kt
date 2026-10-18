@@ -1313,6 +1313,10 @@ internal fun isUnnaturalOrTransliterationSuspected(
     var hiraganaCount = 0
     var katakanaCount = 0
     var hangulCount = 0
+    var devanagariCount = 0
+    var arabicCount = 0
+    var cyrillicCount = 0
+    var thaiCount = 0
     var latinCount = 0
     var totalLetterCount = 0
     for (ch in trimmed) {
@@ -1334,6 +1338,26 @@ internal fun isUnnaturalOrTransliterationSuspected(
 
             ch in '\uAC00'..'\uD7A3' || ch in '\u3130'..'\u318F' -> {
                 hangulCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u0900'..'\u097F' -> {
+                devanagariCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u0600'..'\u06FF' -> {
+                arabicCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u0400'..'\u04FF' -> {
+                cyrillicCount += 1
+                totalLetterCount += 1
+            }
+
+            ch in '\u0E00'..'\u0E7F' -> {
+                thaiCount += 1
                 totalLetterCount += 1
             }
 
@@ -1371,6 +1395,14 @@ internal fun isUnnaturalOrTransliterationSuspected(
             }
         }
 
+        "hi", "mr", "ne", "sa" -> devanagariCount == 0
+
+        "ar", "fa", "ur" -> arabicCount == 0
+
+        "ru", "uk", "bg", "sr" -> cyrillicCount == 0
+
+        "th" -> thaiCount == 0
+
         else -> {
             val targetWords = latinFunctionWordsFor(primaryLang)
             if (targetWords != null) {
@@ -1388,6 +1420,77 @@ internal fun isUnnaturalOrTransliterationSuspected(
             }
         }
     }
+}
+
+private enum class RecognizedScript {
+    HAN,
+    KANA,
+    HANGUL,
+    DEVANAGARI,
+    ARABIC,
+    CYRILLIC,
+    THAI,
+    GREEK,
+    HEBREW,
+    LATIN,
+}
+
+private fun expectedScriptsForLanguage(langTag: String): Set<RecognizedScript> = when (langTag.trim().replace('_', '-').substringBefore('-').lowercase(Locale.ROOT)) {
+    "ja" -> setOf(RecognizedScript.HAN, RecognizedScript.KANA)
+    "zh", "yue" -> setOf(RecognizedScript.HAN)
+    "ko" -> setOf(RecognizedScript.HANGUL)
+    "hi", "mr", "ne", "sa" -> setOf(RecognizedScript.DEVANAGARI)
+    "ar", "fa", "ur" -> setOf(RecognizedScript.ARABIC)
+    "ru", "uk", "bg", "sr", "mk", "be", "kk", "ky", "mn" -> setOf(RecognizedScript.CYRILLIC)
+    "th" -> setOf(RecognizedScript.THAI)
+    "el" -> setOf(RecognizedScript.GREEK)
+    "he", "iw", "yi" -> setOf(RecognizedScript.HEBREW)
+    else -> setOf(RecognizedScript.LATIN)
+}
+
+private fun scriptOfChar(ch: Char): RecognizedScript? = when {
+    ch in '\u3040'..'\u309F' || ch in '\u30A0'..'\u30FF' -> RecognizedScript.KANA
+    ch in '\u4E00'..'\u9FFF' || ch in '\u3400'..'\u4DBF' -> RecognizedScript.HAN
+    ch in '\uAC00'..'\uD7A3' || ch in '\u3130'..'\u318F' -> RecognizedScript.HANGUL
+    ch in '\u0900'..'\u097F' -> RecognizedScript.DEVANAGARI
+    ch in '\u0600'..'\u06FF' -> RecognizedScript.ARABIC
+    ch in '\u0400'..'\u04FF' -> RecognizedScript.CYRILLIC
+    ch in '\u0E00'..'\u0E7F' -> RecognizedScript.THAI
+    ch in '\u0370'..'\u03FF' -> RecognizedScript.GREEK
+    ch in '\u0590'..'\u05FF' -> RecognizedScript.HEBREW
+    ch in 'A'..'Z' || ch in 'a'..'z' || ch in '\u00C0'..'\u024F' || ch in '\u1E00'..'\u1EFF' -> RecognizedScript.LATIN
+    else -> null
+}
+
+/**
+ * 認識された [text] の文字体系を検査し、[currentLang] には使われず [otherLang] で使われる文字体系が
+ * 全文字数の過半数（> 50%）を占める場合は [otherLang] に訂正して返す。
+ */
+internal fun resolveLanguageByRecognizedScript(
+    text: String,
+    currentLang: LanguageTag,
+    otherLang: LanguageTag,
+): LanguageTag {
+    if (currentLang.value.equals(otherLang.value, ignoreCase = true)) return currentLang
+    val currentScripts = expectedScriptsForLanguage(currentLang.value)
+    val otherScripts = expectedScriptsForLanguage(otherLang.value)
+    if (currentScripts == otherScripts) return currentLang
+
+    var totalLetters = 0
+    var otherOnlyCount = 0
+    for (ch in text) {
+        val script = scriptOfChar(ch)
+        if (script != null) {
+            totalLetters += 1
+            if (script in otherScripts && script !in currentScripts) {
+                otherOnlyCount += 1
+            }
+        } else if (Character.isLetter(ch)) {
+            totalLetters += 1
+        }
+    }
+    if (totalLetters <= 0) return currentLang
+    return if (otherOnlyCount * 2 > totalLetters) otherLang else currentLang
 }
 
 private fun extractLatinWordsLower(text: String): List<String> = LATIN_WORD_REGEX.findAll(text.lowercase(Locale.ROOT))
@@ -3298,6 +3401,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             )
             return null
         }
+        if (prediction.selectedProbability < MIN_DETERMINED_LID_PROBABILITY) {
+            return null
+        }
         val selectedLang = if (prediction.selectedTag.equals(baseLang.value, ignoreCase = true)) {
             baseLang
         } else {
@@ -3461,7 +3567,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     } else {
                         null
                     }
-                    if (lidPrediction != null) {
+                    val rawResult = if (lidPrediction != null) {
                         transcribeWithWhisperLidPrediction(
                             pcm16LeBytes = pcm16LeBytes,
                             sampleRateHz = sampleRateHz,
@@ -3494,6 +3600,21 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             engineByLanguage = engineByLanguage,
                         )
                     }
+                    val adjustedResult = adjustBilingualResultScriptLanguage(rawResult, targetLang, baseLang)
+                    val preLang = precomputedLanguage?.value?.trim()?.takeIf {
+                        it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+                    }
+                    val finalLang = adjustedResult?.language?.value?.trim()?.takeIf {
+                        it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+                    }
+                    if (preLang != null &&
+                        finalLang != null &&
+                        !preLang.equals(finalLang, ignoreCase = true) &&
+                        isTrackableAudioScope(cacheScope.audioPath)
+                    ) {
+                        voiceProfileTracker.removeObservation(cacheScope.audioPath, cacheScope.startMs)
+                    }
+                    adjustedResult
                 } else {
                     val singleLang = targetLang ?: baseLang
                     val bcp47Tag = singleLang?.value?.let(::toBcp47LocaleTag)
@@ -3786,6 +3907,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         val shouldVerifyFallback = primaryResult != null && (
             compareBothLanguages ||
                 isUnnaturalOrTransliterationSuspected(primaryResult.text, selectedLang.value) ||
+                resolveLanguageByRecognizedScript(primaryResult.text, selectedLang, fallbackLang) != selectedLang ||
                 (primaryResult.confidence != null && primaryResult.confidence < LOW_STT_CONFIDENCE_THRESHOLD) ||
                 (
                     prediction.selectedProbability < AMBIGUOUS_LID_PROB_THRESHOLD &&
@@ -3794,7 +3916,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             )
 
         if (primaryResult != null && !shouldVerifyFallback) {
-            return primaryResult
+            return adjustBilingualResultScriptLanguage(primaryResult, targetLang, baseLang)
         }
 
         val fallbackResult = getCachedSttResult(cacheScope, fallbackLang) ?: run {
@@ -3834,7 +3956,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     (!isLidConfident && !primaryModelUnavailable)
                 )
             if (acceptFallback) {
-                return fallbackResult
+                return adjustBilingualResultScriptLanguage(fallbackResult, targetLang, baseLang)
             }
             if (primaryModelUnavailable || fallbackResult != null) {
                 logInfo(
@@ -3847,7 +3969,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             return null
         }
         if (fallbackResult == null) {
-            return primaryResult
+            return adjustBilingualResultScriptLanguage(primaryResult, targetLang, baseLang)
         }
 
         val primaryScore = scoreProbeCandidateForLanguage(
@@ -3858,7 +3980,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             SpeechRecognitionAttemptResult(text = fallbackResult.text, confidence = fallbackResult.confidence),
             fallbackLang.value,
         )
-        return if (fallbackScore > primaryScore) fallbackResult else primaryResult
+        val chosen = if (fallbackScore > primaryScore) fallbackResult else primaryResult
+        return adjustBilingualResultScriptLanguage(chosen, targetLang, baseLang)
     }
 
     /** 認識結果 [result] が言語 [language] の自然な発話に見える（音写の疑いがなく、信頼度が低すぎない）かどうか。 */
@@ -3879,6 +4002,26 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
     )
 
+    private fun adjustBilingualResultScriptLanguage(
+        result: OnDeviceChunkTranscriptionResult?,
+        targetLang: LanguageTag,
+        baseLang: LanguageTag,
+    ): OnDeviceChunkTranscriptionResult? {
+        if (result == null || result.isLanguageOnly || result.text.isBlank()) return result
+        val currentLang = result.language ?: return result
+        val otherLang = if (currentLang.value.equals(baseLang.value, ignoreCase = true)) {
+            targetLang
+        } else {
+            baseLang
+        }
+        val correctedLang = resolveLanguageByRecognizedScript(result.text, currentLang, otherLang)
+        return if (correctedLang != currentLang) {
+            result.copy(language = correctedLang)
+        } else {
+            result
+        }
+    }
+
     private fun getCachedBilingualResultIfBothPresent(
         cacheScope: ChunkAudioCacheScope,
         targetLang: LanguageTag,
@@ -3894,7 +4037,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             SpeechRecognitionAttemptResult(text = cachedBase.text, confidence = cachedBase.confidence),
             baseLang.value,
         )
-        return if (baseScore > targetScore) cachedBase else cachedTarget
+        val chosen = if (baseScore > targetScore) cachedBase else cachedTarget
+        return adjustBilingualResultScriptLanguage(chosen, targetLang, baseLang)
     }
 
     private suspend fun transcribeWithTwoSecondLanguageProbe(
@@ -4801,6 +4945,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         private const val RECOGNITION_TIMEOUT_MS: Long = 12_000L
         private const val MAX_STT_CACHE_ENTRIES: Int = 2_048
         private const val MAX_DIAGNOSTIC_ENTRIES: Int = 40
+        internal const val MIN_DETERMINED_LID_PROBABILITY: Float = 0.54f
         private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.75f
         private const val DEFAULT_PRECOMPUTED_LID_CONFIDENCE: Float = 0.85f
         internal const val LID_ONLY_MAX_EXTRACT_DURATION_MS: Long = 2_800L
