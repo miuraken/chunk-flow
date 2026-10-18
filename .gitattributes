@@ -3,3 +3,5 @@
 *.jar binary
 *.png binary
 *.webp binary
+*.onnx binary
+*.bin binary
