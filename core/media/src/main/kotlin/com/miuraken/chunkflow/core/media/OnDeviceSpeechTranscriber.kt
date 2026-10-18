@@ -4728,12 +4728,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             val count = if (method == LidExtractionMethod.STREAMING) delta.streamWindows + delta.extractions else delta.extractions
             val divisor = count.coerceAtLeast(1L).toDouble() * 1_000_000.0
             fun ms(nanos: Long): String = String.format(Locale.ROOT, "%.1f", nanos / divisor)
-            val busyNanos = (delta.extractNanos - delta.queueWaitNanos).coerceAtLeast(0L)
             return buildString {
                 append("切り出し: 方式 ").append(method.label)
                 append("（").append(count).append(" 件、全体 ")
                 append(String.format(Locale.ROOT, "%.1f", elapsedNanos / 1_000_000_000.0)).append(" 秒。1 件あたり ")
-                append(ms(busyNanos)).append(" ms = ")
+                append(ms(delta.busyNanos)).append(" ms = ")
                 append("抽出器 ").append(ms(delta.extractorOpenNanos))
                 append(" + 位置合わせ ").append(ms(delta.positionNanos))
                 append(" + MediaCodec 作成 ").append(ms(delta.codecCreateNanos))

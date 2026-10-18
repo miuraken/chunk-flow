@@ -7,12 +7,14 @@ import android.os.Process
 import com.miuraken.chunkflow.core.media.AndroidSpeechRecognizerChunkTranscriber
 import com.miuraken.chunkflow.core.media.AudioStreamDecoder
 import com.miuraken.chunkflow.core.media.LidEngineMode
+import com.miuraken.chunkflow.core.media.LidExtractionMethod
 import com.miuraken.chunkflow.core.media.MediaCodecAudioStreamDecoder
 import com.miuraken.chunkflow.core.media.WhisperTinyLanguageDetector
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
@@ -55,12 +57,15 @@ internal class AndroidLidBenchDeviceState(context: Context) : LidBenchDeviceStat
 
 /**
  * 一括言語判定の速度を、純 Kotlin と ONNX Runtime の両方で測る（debug ビルドの計測ツール。手順は
- * `docs/spikes/S3-onnx-whisper-lid.md` §9）。
+ * `docs/spikes/S3-onnx-whisper-lid.md` §9・§10）。
  *
- * 1. エンジンごとにウォームアップ（[LidBenchConfig.warmupChunks] 件）。ONNX Runtime を読み込めなければ、その計測は行わない。
- * 2. エンジン × 進め方の順に、クールダウンしてから [AndroidSpeechRecognizerChunkTranscriber.detectChunkLanguages] を通して測る。
- *    回ごとに、新しいデコーダ（本番と同じ [MediaCodecAudioStreamDecoder]）と新しい文字起こし器（ファイル内の補正の状態を持つ）を作る。
- * 3. 最後に、各回の結果（`RESULT` 行）、表、純 Kotlin と ONNX Runtime の比、判定が違うチャンクを出す。
+ * 1. エンジンごとにウォームアップ（[LidBenchConfig.warmupChunks] 件。今の方式で切り出す）。ONNX Runtime を読み込めなければ、その計測は行わない。
+ * 2. エンジン × 進め方 × 音声の切り出しの方式（[LidBenchConfig.extractions]）の順に、クールダウンしてから
+ *    [AndroidSpeechRecognizerChunkTranscriber.detectChunkLanguages] を通して測る。回ごとに、新しいデコーダ（本番と同じ
+ *    [MediaCodecAudioStreamDecoder]）と新しい文字起こし器（ファイル内の補正の状態を持つ）を作る。
+ *    切り出しの各段階の時間と、切り出した PCM の指紋（[LidBenchPcmPrint]）も記録する。
+ * 3. 最後に、各回の結果（`RESULT` 行）、判定が違うチャンク（`DIFF`）、PCM が今の方式と違うチャンク（`PCMDIFF`）、表、
+ *    純 Kotlin と ONNX Runtime の比（`SUMMARY`）、切り出しの方式ごとの今の方式との比（`SUMMARY_EXT`）を出す。
  *
  * エンジンは判定器の [LidEngineMode] で選ぶ（本番の動作は変えない）。ONNX Runtime の回で純 Kotlin に切り替わった推論があれば、
  * その回は [LidBenchStatus.FALLBACK] にし、ONNX Runtime の結果として扱わない。
@@ -107,15 +112,17 @@ internal class LidBenchRunner(
         val results = ArrayList<LidBenchRunResult>()
         for (engine in config.engines) {
             for (mode in config.modes) {
-                val reason = unavailable[engine]
-                val result = if (reason != null) {
-                    skippedResult(engine, mode, reason)
-                } else {
-                    coolDown()
-                    measure(engine, mode, detectors.getValue(engine))
+                for (extraction in config.extractions) {
+                    val reason = unavailable[engine]
+                    val result = if (reason != null) {
+                        skippedResult(engine, mode, extraction, reason)
+                    } else {
+                        coolDown()
+                        measure(engine, mode, extraction, detectors.getValue(engine))
+                    }
+                    results += result
+                    output.emit(levelOf(result), LidBenchReport.runLine("RUN_DONE", config.name, result, null, withAgreement = false))
                 }
-                results += result
-                output.emit(levelOf(result), LidBenchReport.runLine("RUN_DONE", config.name, result, null, withAgreement = false))
             }
         }
         report(results)
@@ -138,6 +145,11 @@ internal class LidBenchRunner(
         append(" thermalWaitSec=").append(config.thermalWaitSec)
         append(" engines=").append(config.engines.joinToString(",") { it.label })
         append(" modes=").append(config.modes.joinToString(",") { it.label })
+        append(" extractions=").append(config.extractions.joinToString(",") { it.label })
+        append(" streamGapMs=").append(config.streaming.maxGapMs)
+        append(" streamRunWindows=").append(config.streaming.maxRunWindows)
+        append(" streamRunMs=").append(config.streaming.maxRunDurationMs)
+        append(" streamQueue=").append(config.streaming.queueCapacity)
         append(" audio=").append(input.audioFile.name)
         append(" audioBytes=").append(input.audioFile.length())
         append(" device=").append(token(Build.MANUFACTURER)).append('/').append(token(Build.MODEL))
@@ -215,20 +227,31 @@ internal class LidBenchRunner(
         }
     }
 
-    /** [engine] × [mode] を 1 回測る。 */
-    private suspend fun measure(engine: LidBenchEngine, mode: LidBenchMode, detector: WhisperTinyLanguageDetector): LidBenchRunResult {
+    /** [engine] × [mode] × [extraction] を 1 回測る。 */
+    private suspend fun measure(
+        engine: LidBenchEngine,
+        mode: LidBenchMode,
+        extraction: LidExtractionMethod,
+        detector: WhisperTinyLanguageDetector,
+    ): LidBenchRunResult {
         val recorder = InferenceRecorder()
-        val transcriber = newTranscriber(detector, decoderFactory(), recorder)
-        val languages = arrayOfNulls<String>(input.chunks.size)
+        val chunkCount = input.chunks.size
+        val prints = AtomicReferenceArray<LidBenchPcmPrint?>(chunkCount)
+        val transcriber = newTranscriber(detector, decoderFactory(), recorder, extraction) { index, pcm ->
+            if (index in 0 until chunkCount) prints.set(index, LidBenchPcmPrint.of(pcm))
+        }
+        val languages = arrayOfNulls<String>(chunkCount)
         val powerSave = deviceState.isPowerSaveMode()
         val thermalStart = deviceState.thermalStatus()
         val headroomStart = deviceState.thermalHeadroom()
         var backgrounded = !isForeground()
         output.emit(
             LidBenchLevel.INFO,
-            "RUN_START engine=${engine.label} mode=${mode.label} chunks=${input.chunks.size} thermal=$thermalStart powerSave=$powerSave",
+            "RUN_START engine=${engine.label} mode=${mode.label} ext=${extraction.label} chunks=$chunkCount " +
+                "thermal=$thermalStart powerSave=$powerSave",
         )
         val statsBefore = detector.inferenceStats()
+        val extractBefore = transcriber.languageOnlyExtractionTimings()
         val cpuStartMs = cpuTimeMs()
         val startNanos = System.nanoTime()
         var error: Exception? = null
@@ -252,6 +275,8 @@ internal class LidBenchRunner(
         val cpuMs = cpuTimeMs() - cpuStartMs
         val statsAfter = detector.inferenceStats()
         val delta = statsAfter.since(statsBefore)
+        val extractDelta = transcriber.languageOnlyExtractionTimings().since(extractBefore)
+        val extractionUsed = transcriber.lastLanguageOnlyExtractionMethod
         val thermalEnd = deviceState.thermalStatus()
         val headroomEnd = deviceState.thermalHeadroom()
         if (!isForeground()) backgrounded = true
@@ -260,7 +285,7 @@ internal class LidBenchRunner(
         for (entry in diagnostics) {
             output.emit(
                 if (entry.isWarningOrError) LidBenchLevel.WARN else LidBenchLevel.INFO,
-                "DIAG engine=${engine.label} mode=${mode.label} ${entry.stage}: ${entry.message}",
+                "DIAG engine=${engine.label} mode=${mode.label} ext=${extraction.label} ${entry.stage}: ${entry.message}",
             )
         }
 
@@ -305,15 +330,26 @@ internal class LidBenchRunner(
             headroomEnd = headroomEnd,
             powerSave = powerSave,
             backgrounded = backgrounded,
+            extraction = extraction,
+            extractionUsed = extractionUsed,
+            extract = extractDelta,
+            pcm = List(chunkCount) { prints.get(it) },
             note = note,
         )
     }
 
-    /** 本番と同じ一括言語判定を、[detector] で行う文字起こし器（音声認識は使わない）。 */
+    /**
+     * 本番と同じ一括言語判定を、[detector] で行う文字起こし器（音声認識は使わない）。
+     *
+     * @param extraction 一括言語判定の音声の切り出しの方式。
+     * @param pcmObserver 切り出した PCM をチャンクの番号と一緒に受け取る（複数のスレッドから呼ばれる）。
+     */
     private fun newTranscriber(
         detector: WhisperTinyLanguageDetector,
         decoder: AudioStreamDecoder,
         recorder: InferenceRecorder?,
+        extraction: LidExtractionMethod = LidExtractionMethod.CURRENT,
+        pcmObserver: ((index: Int, pcm: ShortArray) -> Unit)? = null,
     ): AndroidSpeechRecognizerChunkTranscriber = AndroidSpeechRecognizerChunkTranscriber(
         context = context,
         audioStreamDecoder = decoder,
@@ -332,9 +368,17 @@ internal class LidBenchRunner(
             analysis
         },
         languageDetectionStats = { detector.inferenceStats() },
+        languageOnlyExtractionMethod = extraction,
+        streamingExtractionOptions = config.streaming,
+        languageOnlyPcmObserver = pcmObserver,
     )
 
-    private fun skippedResult(engine: LidBenchEngine, mode: LidBenchMode, reason: String): LidBenchRunResult = LidBenchRunResult(
+    private fun skippedResult(
+        engine: LidBenchEngine,
+        mode: LidBenchMode,
+        extraction: LidExtractionMethod,
+        reason: String,
+    ): LidBenchRunResult = LidBenchRunResult(
         engine = engine,
         mode = mode,
         status = LidBenchStatus.SKIPPED,
@@ -355,22 +399,33 @@ internal class LidBenchRunner(
         headroomEnd = Float.NaN,
         powerSave = deviceState.isPowerSaveMode(),
         backgrounded = false,
+        extraction = extraction,
         note = "${engine.label} を使えないため計測しなかった: $reason",
     )
 
-    /** 最後に、各回の結果（一致を含む）、判定が違うチャンク、表、比を出す。 */
+    /** 最後に、各回の結果（判定と PCM の一致を含む）、判定や PCM が違うチャンク、表、比を出す。 */
     private fun report(results: List<LidBenchRunResult>) {
         val references = results.map { LidBenchReport.referenceFor(it, results) }
         val agreements = results.mapIndexed { index, run -> LidBenchReport.agreement(run, references[index]) }
+        val pcmReferences = results.map { LidBenchReport.pcmReferenceFor(it, results) }
+        val pcmAgreements = results.mapIndexed { index, run -> LidBenchReport.pcmAgreement(run, pcmReferences[index]) }
         results.forEachIndexed { index, run ->
-            output.emit(levelOf(run), LidBenchReport.runLine("RESULT", config.name, run, agreements[index], withAgreement = true))
+            output.emit(
+                levelOf(run),
+                LidBenchReport.runLine("RESULT", config.name, run, agreements[index], withAgreement = true, pcmAgreement = pcmAgreements[index]),
+            )
         }
         results.forEachIndexed { index, run ->
             val reference = references[index] ?: return@forEachIndexed
             LidBenchReport.diffLine(run, reference, input.chunks)?.let { output.emit(LidBenchLevel.WARN, it) }
         }
-        LidBenchReport.tableLines(results, agreements).forEach { output.emit(LidBenchLevel.INFO, it) }
+        results.forEachIndexed { index, run ->
+            val reference = pcmReferences[index] ?: return@forEachIndexed
+            LidBenchReport.pcmDiffLine(run, reference, input.chunks)?.let { output.emit(LidBenchLevel.WARN, it) }
+        }
+        LidBenchReport.tableLines(results, agreements, pcmAgreements).forEach { output.emit(LidBenchLevel.INFO, it) }
         LidBenchReport.summaryLines(results).forEach { output.emit(LidBenchLevel.INFO, it) }
+        LidBenchReport.extractionSummaryLines(results).forEach { output.emit(LidBenchLevel.INFO, it) }
     }
 
     private fun levelOf(result: LidBenchRunResult): LidBenchLevel = when (result.status) {

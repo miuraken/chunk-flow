@@ -1,6 +1,8 @@
 package com.miuraken.chunkflow.core.media.bench
 
 import com.miuraken.chunkflow.core.media.ChunkTimeRange
+import com.miuraken.chunkflow.core.media.LidExtractionMethod
+import com.miuraken.chunkflow.core.media.StreamingExtractionOptions
 import java.io.File
 import java.util.Locale
 
@@ -65,6 +67,8 @@ internal sealed interface LidBenchParsed<out T> {
  * @property thermalWaitSec クールダウンのあと、端末の温度の状態が MODERATE 未満に下がるまで追加で待つ上限の秒数。
  * @property engines 計測するエンジン（この順に計測する）。
  * @property modes 各エンジンで計測する進め方（この順に計測する）。
+ * @property extractions 各エンジン・進め方で計測する音声の切り出しの方式（この順に計測する）。
+ * @property streaming 順に流す切り出しの設定（間の読み飛ばし・run の上限・待ち行列の長さ）。
  */
 internal data class LidBenchConfig(
     val name: String,
@@ -77,6 +81,8 @@ internal data class LidBenchConfig(
     val thermalWaitSec: Int = DEFAULT_THERMAL_WAIT_SEC,
     val engines: List<LidBenchEngine> = DEFAULT_ENGINES,
     val modes: List<LidBenchMode> = DEFAULT_MODES,
+    val extractions: List<LidExtractionMethod> = DEFAULT_EXTRACTIONS,
+    val streaming: StreamingExtractionOptions = StreamingExtractionOptions(),
 ) {
     /** チャンク境界の JSON のファイル名。 */
     val chunksFileName: String
@@ -95,15 +101,22 @@ internal data class LidBenchConfig(
         const val DEFAULT_THERMAL_WAIT_SEC: Int = 300
         val DEFAULT_ENGINES: List<LidBenchEngine> = listOf(LidBenchEngine.KOTLIN, LidBenchEngine.ONNX)
         val DEFAULT_MODES: List<LidBenchMode> = listOf(LidBenchMode.SEQUENTIAL, LidBenchMode.PARALLEL3)
+        val DEFAULT_EXTRACTIONS: List<LidExtractionMethod> = listOf(LidExtractionMethod.CURRENT)
 
         /** 起動の引数の一覧（画面とログに出す使い方）。 */
-        const val USAGE: String = "USAGE --es name <教材名> --es target <言語> --es base <言語> [--ei maxChunks 60] " +
+        const val USAGE: String = "USAGE --es name <教材名> --es target <言語> --es base <言語> [--ei maxChunks 60（0 ですべて）] " +
             "[--ei warmupChunks 6] [--ei cooldownSec 30] [--ei thermalWaitSec 300] [--es engines kotlin,onnx] " +
-            "[--es modes seq,par3] [--es audio <音声のファイル名>]"
+            "[--es modes seq,par3] [--es extraction cur,par,str] [--ei streamGapMs 10000] [--ei streamRunWindows 16] " +
+            "[--ei streamRunMs 120000] [--ei streamQueue 4] [--es audio <音声のファイル名>]"
 
         private const val MAX_CHUNKS_LIMIT: Int = LidBenchChunkList.MAX_CHUNKS
         private const val MAX_WARMUP_CHUNKS: Int = 50
         private const val MAX_WAIT_SEC: Int = 3_600
+        private const val MAX_STREAM_GAP_MS: Int = 600_000
+        private const val MAX_STREAM_RUN_WINDOWS: Int = 1_000
+        private const val MIN_STREAM_RUN_MS: Int = 1_000
+        private const val MAX_STREAM_RUN_MS: Int = 3_600_000
+        private const val MAX_STREAM_QUEUE: Int = 64
 
         /** ファイル名に使ってよい文字（ディレクトリの区切りを含めない）。 */
         private val FILE_NAME_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
@@ -151,6 +164,27 @@ internal data class LidBenchConfig(
                 is LidBenchParsed.Ok -> v.value
                 is LidBenchParsed.Invalid -> return v
             }
+            val extractions = when (val v = args.list("extraction", DEFAULT_EXTRACTIONS, LidExtractionMethod::fromLabel)) {
+                is LidBenchParsed.Ok -> v.value
+                is LidBenchParsed.Invalid -> return v
+            }
+            val defaults = StreamingExtractionOptions()
+            val streamGapMs = when (val v = args.int("streamGapMs", defaults.maxGapMs.toInt(), 0..MAX_STREAM_GAP_MS)) {
+                is LidBenchParsed.Ok -> v.value
+                is LidBenchParsed.Invalid -> return v
+            }
+            val streamRunWindows = when (val v = args.int("streamRunWindows", defaults.maxRunWindows, 1..MAX_STREAM_RUN_WINDOWS)) {
+                is LidBenchParsed.Ok -> v.value
+                is LidBenchParsed.Invalid -> return v
+            }
+            val streamRunMs = when (val v = args.int("streamRunMs", defaults.maxRunDurationMs.toInt(), MIN_STREAM_RUN_MS..MAX_STREAM_RUN_MS)) {
+                is LidBenchParsed.Ok -> v.value
+                is LidBenchParsed.Invalid -> return v
+            }
+            val streamQueue = when (val v = args.int("streamQueue", defaults.queueCapacity, 1..MAX_STREAM_QUEUE)) {
+                is LidBenchParsed.Ok -> v.value
+                is LidBenchParsed.Invalid -> return v
+            }
             return LidBenchParsed.Ok(
                 LidBenchConfig(
                     name = name,
@@ -163,6 +197,13 @@ internal data class LidBenchConfig(
                     thermalWaitSec = thermalWaitSec,
                     engines = engines,
                     modes = modes,
+                    extractions = extractions,
+                    streaming = defaults.copy(
+                        maxGapMs = streamGapMs.toLong(),
+                        maxRunWindows = streamRunWindows,
+                        maxRunDurationMs = streamRunMs.toLong(),
+                        queueCapacity = streamQueue,
+                    ),
                 ),
             )
         }

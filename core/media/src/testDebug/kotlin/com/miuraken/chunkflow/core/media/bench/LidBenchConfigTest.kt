@@ -1,6 +1,8 @@
 package com.miuraken.chunkflow.core.media.bench
 
 import com.miuraken.chunkflow.core.media.ChunkTimeRange
+import com.miuraken.chunkflow.core.media.LidExtractionMethod
+import com.miuraken.chunkflow.core.media.StreamingExtractionOptions
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,6 +30,31 @@ class LidBenchConfigTest {
         assertEquals(300, config.thermalWaitSec)
         assertEquals(listOf(LidBenchEngine.KOTLIN, LidBenchEngine.ONNX), config.engines)
         assertEquals(listOf(LidBenchMode.SEQUENTIAL, LidBenchMode.PARALLEL3), config.modes)
+        assertEquals(listOf(LidExtractionMethod.CURRENT), config.extractions)
+        assertEquals(StreamingExtractionOptions(), config.streaming)
+    }
+
+    @Test
+    fun `parse_切り出しの方式は指定の順にし順に流す切り出しの設定を読む`() {
+        val parsed = LidBenchConfig.parse(
+            mapOf(
+                "name" to "lesson",
+                "target" to "hi",
+                "base" to "en",
+                "extraction" to "str, cur,par",
+                "streamGapMs" to "5000",
+                "streamRunWindows" to 8,
+                "streamRunMs" to 60_000L,
+                "streamQueue" to "2",
+            ),
+        )
+
+        val config = assertIs<LidBenchParsed.Ok<LidBenchConfig>>(parsed).value
+        assertEquals(listOf(LidExtractionMethod.STREAMING, LidExtractionMethod.CURRENT, LidExtractionMethod.PARALLEL), config.extractions)
+        assertEquals(
+            StreamingExtractionOptions(maxGapMs = 5_000L, maxRunWindows = 8, maxRunDurationMs = 60_000L, queueCapacity = 2),
+            config.streaming,
+        )
     }
 
     @Test
@@ -66,6 +93,13 @@ class LidBenchConfigTest {
             base + ("engines" to "kotlin,tflite"),
             base + ("modes" to "seq,seq"),
             base + ("audio" to "a/b.mp3"),
+            base + ("extraction" to "cur,fast"),
+            base + ("extraction" to "par,par"),
+            base + ("streamGapMs" to -1),
+            base + ("streamRunWindows" to 0),
+            base + ("streamRunMs" to 999),
+            base + ("streamQueue" to 0),
+            base + ("streamQueue" to 65),
         )
         for (args in invalidArgs) {
             assertIs<LidBenchParsed.Invalid>(LidBenchConfig.parse(args), args.toString())

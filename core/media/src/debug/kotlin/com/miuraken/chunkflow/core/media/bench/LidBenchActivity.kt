@@ -39,8 +39,9 @@ import kotlinx.coroutines.launch
  * - 入力: `getExternalFilesDir("lid-bench")`（なければ `filesDir/lid-bench`）の `<name>.mp3` と `<name>.chunks.json`。
  * - 出力: logcat（タグ [LOG_TAG]）、この画面、入力と同じディレクトリの `<name>-<日時>.log`。
  * - 計測中は画面を点けたままにする（前面でなくなるとプロセスが止まることがあるため）。
+ * - 音声の切り出しの方式を比べるときは `--es extraction cur,par,str` を足す（教材全体なら `--ei maxChunks 0`）。
  *
- * 計測の中身は [LidBenchRunner]、手順は `docs/spikes/S3-onnx-whisper-lid.md` §9。
+ * 計測の中身は [LidBenchRunner]、手順は `docs/spikes/S3-onnx-whisper-lid.md` §9（切り出しの方式の比較は §10）。
  */
 class LidBenchActivity : Activity() {
     private lateinit var scrollView: ScrollView

@@ -169,10 +169,14 @@ internal data class LidExtractionTimingsSnapshot(
     val resampleOnlyNanos: Long
         get() = (resampleNanos - pcmNanos).coerceAtLeast(0L)
 
-    /** 切り出し全体のうち、どの段階にも入らない時間（ファイルの確認・ロックの待ち・トラックの選択など）。 */
+    /** 切り出し全体のうち、待ち行列がいっぱいで推論のワーカーを待った時間（[queueWaitNanos]）を除いた時間。 */
+    val busyNanos: Long
+        get() = (extractNanos - queueWaitNanos).coerceAtLeast(0L)
+
+    /** [busyNanos] のうち、どの段階にも入らない時間（ファイルの確認・ロックの待ち・トラックの選択など）。 */
     val otherNanos: Long
         get() = (
-            extractNanos - extractorOpenNanos - positionNanos - codecCreateNanos - decodeLoopNanos -
+            busyNanos - extractorOpenNanos - positionNanos - codecCreateNanos - decodeLoopNanos -
                 codecReleaseNanos - handoffNanos
             ).coerceAtLeast(0L)
 
