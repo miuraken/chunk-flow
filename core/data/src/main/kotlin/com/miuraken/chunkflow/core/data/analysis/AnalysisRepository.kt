@@ -57,9 +57,16 @@ interface AnalysisRepository {
 
     /**
      * 指定した教材でまだ言語判定・文字起こしが行われていないすべてのチャンクについて、
-     * バックグラウンドで言語判定のみ（Whisper Tiny）を実行してチャンクの言語ラベルを設定する。
+     * バックグラウンドで言語判定のみ（Whisper Tiny + 話者プロファイル）を高速一括実行してチャンクの言語ラベルを設定する。
+     * 先読み文字起こしが有効な場合は、一括言語判定（第1段階）の完了後に続けて文字起こし（第2段階）を開始する。
      */
     suspend fun startLanguageDetectionOnly(id: MediaId) = Unit
+
+    /**
+     * 先読み・バックグラウンド文字起こし（第2段階）において、学習対象言語（`targetLang`）のチャンクのみを文字起こしし、
+     * 解説言語（`baseLang`）と判定されたチャンクは言語バッジ付与のみとして本文の音声認識を省略するかどうかを設定する。
+     */
+    suspend fun setTranscribeTargetLanguageOnly(id: MediaId, targetLanguageOnly: Boolean) = Unit
 
     /** チャンクの出どころ（[ChunkOrigin.IMPORTED] / [ChunkOrigin.AUTO]）を切り替える（F5.4）。 */
     suspend fun setChunkSource(id: MediaId, source: ChunkOrigin)

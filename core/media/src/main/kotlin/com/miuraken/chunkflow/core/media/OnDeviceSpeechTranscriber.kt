@@ -2578,9 +2578,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
         val startedAtEpochMs = System.currentTimeMillis()
         try {
+            val lidExtractEndMs = min(endMs, startMs + LID_ONLY_MAX_EXTRACT_DURATION_MS)
             updateActiveStep(
                 step = TranscriptionStep.EXTRACTING_PCM,
-                detail = "${startMs}ms..${endMs}ms",
+                detail = "${startMs}ms..${lidExtractEndMs}ms",
                 startedAtEpochMs = startedAtEpochMs,
                 highPriority = false,
             )
@@ -2589,7 +2590,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     decoder = audioStreamDecoder,
                     audioFile = audioFile,
                     startMs = startMs,
-                    endMs = endMs,
+                    endMs = lidExtractEndMs,
                     sampleRateHz = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
                 )
             } catch (ce: CancellationException) {
@@ -4049,6 +4050,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         private const val AMBIGUOUS_LID_PROB_THRESHOLD: Float = 0.75f
         private const val DEFAULT_PRECOMPUTED_LID_CONFIDENCE: Float = 0.85f
         private const val VOICE_PROFILE_UPDATE_CONFIDENCE_THRESHOLD: Float = 0.88f
+        internal const val LID_ONLY_MAX_EXTRACT_DURATION_MS: Long = 2_800L
         private const val LOW_STT_CONFIDENCE_THRESHOLD: Float = 0.68f
         private const val MODERATE_STT_CONFIDENCE_THRESHOLD: Float = 0.80f
         private const val MODEL_ISSUE_REFRESH_MIN_INTERVAL_MS: Long = 15_000L

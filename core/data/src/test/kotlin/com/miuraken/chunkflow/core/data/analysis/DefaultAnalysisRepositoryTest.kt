@@ -3485,4 +3485,109 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(listOf<Pair<LanguageTag?, Float?>>(LanguageTag("ja") to 0.88f), capturedPrecomputed)
         assertEquals("判定済み言語で認識", transcriptDao.getByChunkId(3101L)?.text)
     }
+
+    @Test
+    fun `setTranscribeTargetLanguageOnly_第1段階の一括言語判定後に学習対象言語のチャンクのみを文字起こしし解説言語はスキップする`() = runTest {
+        val transcribedChunkRanges = mutableListOf<Pair<Long, Long>>()
+        val detectedChunkRanges = mutableListOf<Pair<Long, Long>>()
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun detectChunkLanguage(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair,
+            ): OnDeviceChunkTranscriptionResult {
+                detectedChunkRanges += startMs to endMs
+                // 1チャンク目 (0..1500ms) は解説言語 (ja)、2チャンク目 (1500..3000ms) は学習対象言語 (en)
+                val lang = if (startMs == 0L) LanguageTag("ja") else LanguageTag("en")
+                return OnDeviceChunkTranscriptionResult(
+                    text = "",
+                    language = lang,
+                    confidence = 0.92f,
+                    engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                )
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                forceRefresh: Boolean,
+                highPriority: Boolean,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+                precomputedLanguage: LanguageTag?,
+                precomputedLanguageConfidence: Float?,
+            ): OnDeviceChunkTranscriptionResult {
+                transcribedChunkRanges += startMs to endMs
+                return OnDeviceChunkTranscriptionResult(
+                    text = "Hello world",
+                    language = precomputedLanguage ?: LanguageTag("en"),
+                    confidence = 0.95f,
+                )
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+        }
+
+        val repository = createRepository(testScheduler, onDeviceChunkTranscriber = fakeTranscriber)
+        val mediaId = MediaId("media_two_stage_target_only_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Two Stage Target Only Test",
+                durationMs = 3_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 2048L,
+                sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 4101L, mediaId = mediaId.value, startMs = 0L, endMs = 1_500L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 4102L, mediaId = mediaId.value, startMs = 1_500L, endMs = 3_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        // 学習対象言語（en）のみ文字起こしするモードを有効化
+        repository.setTranscribeTargetLanguageOnly(mediaId, true)
+
+        // 第1段階: 高速一括言語判定で全チャンクに [ja] / [en] バッジを付与
+        repository.startLanguageDetectionOnly(mediaId)
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(0L to 1_500L, 1_500L to 3_000L), detectedChunkRanges)
+        assertEquals("ja", transcriptDao.getByChunkId(4101L)?.language)
+        assertEquals("", transcriptDao.getByChunkId(4101L)?.text)
+        assertEquals("en", transcriptDao.getByChunkId(4102L)?.language)
+        assertEquals("", transcriptDao.getByChunkId(4102L)?.text)
+
+        // 第2段階: 先読み文字起こしを開始すると、解説言語 (ja) の 4101L はスキップされ、学習対象言語 (en) の 4102L のみ文字起こしされる
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        repository.setLookaheadEnabled(mediaId, true)
+        repository.triggerLookaheadAt(mediaId, currentChunkId = ChunkId(4101L))
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(listOf(1_500L to 3_000L), transcribedChunkRanges)
+        assertEquals("ja", transcriptDao.getByChunkId(4101L)?.language)
+        assertEquals("", transcriptDao.getByChunkId(4101L)?.text)
+        assertEquals("en", transcriptDao.getByChunkId(4102L)?.language)
+        assertEquals("Hello world", transcriptDao.getByChunkId(4102L)?.text)
+    }
 }
