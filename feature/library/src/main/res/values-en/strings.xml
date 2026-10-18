@@ -109,4 +109,14 @@
     <string name="library_favorite_remove_cd">Remove from favorites</string>
     <string name="library_queue_add_cd">Add to up next queue</string>
     <string name="library_queue_remove_cd">Remove from queue</string>
+    <string name="library_selection_playlist_badge">Playlist</string>
+    <string name="library_playlist_create_fab_cd">Create new playlist</string>
+    <string name="library_playlist_create_dialog_title">New playlist</string>
+    <string name="library_playlist_create_name_label">Playlist name</string>
+    <string name="library_playlist_create_confirm">Create</string>
+    <string name="library_playlist_add_dialog_title">Add to playlist</string>
+    <string name="library_playlist_add_new_button">+ Create new playlist and add</string>
+    <string name="library_playlist_delete_cd">Delete %1$s</string>
+    <string name="library_playlist_remove_item_cd">Remove from playlist</string>
+    <string name="library_drag_handle_cd">Drag to reorder</string>
 </resources>

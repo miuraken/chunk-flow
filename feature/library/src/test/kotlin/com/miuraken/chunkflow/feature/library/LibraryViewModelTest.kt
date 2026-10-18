@@ -890,15 +890,15 @@ class LibraryViewModelTest {
     }
 
     @Test
-    fun `recentItems_アクセス日時がある教材を新しい順に最大5件返す`() = runTest {
+    fun `recentItems_アクセス日時がある教材を新しい順に最大10件返す`() = runTest {
         val base = SampleMaterials.jaKo.item
-        val items = (1..7).map { i ->
+        val items = (1..12).map { i ->
             base.copy(
                 id = com.miuraken.chunkflow.core.model.MediaId("item-$i"),
                 title = "Lesson $i",
             )
         }
-        // item-1 は未アクセス (updatedAtEpochMs = 0L)、item-2..item-7 はアクセス日時あり
+        // item-1 は未アクセス (updatedAtEpochMs = 0L)、item-2..item-12 はアクセス日時あり（11件）
         val states = mapOf(
             items[0].id to ItemState(mediaId = items[0].id, updatedAtEpochMs = 0L),
             items[1].id to ItemState(mediaId = items[1].id, updatedAtEpochMs = 200L),
@@ -907,6 +907,11 @@ class LibraryViewModelTest {
             items[4].id to ItemState(mediaId = items[4].id, updatedAtEpochMs = 500L),
             items[5].id to ItemState(mediaId = items[5].id, updatedAtEpochMs = 300L),
             items[6].id to ItemState(mediaId = items[6].id, updatedAtEpochMs = 400L),
+            items[7].id to ItemState(mediaId = items[7].id, updatedAtEpochMs = 700L),
+            items[8].id to ItemState(mediaId = items[8].id, updatedAtEpochMs = 900L),
+            items[9].id to ItemState(mediaId = items[9].id, updatedAtEpochMs = 800L),
+            items[10].id to ItemState(mediaId = items[10].id, updatedAtEpochMs = 1_100L),
+            items[11].id to ItemState(mediaId = items[11].id, updatedAtEpochMs = 1_000L),
         )
         val repo = FakeLibraryRepository(
             initialItems = items,
@@ -916,9 +921,20 @@ class LibraryViewModelTest {
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
         val recent = viewModel.uiState.value.recentItems
-        assertEquals(5, recent.size)
+        assertEquals(10, recent.size)
         assertEquals(
-            listOf("Lesson 3", "Lesson 5", "Lesson 7", "Lesson 6", "Lesson 2"),
+            listOf(
+                "Lesson 11",
+                "Lesson 12",
+                "Lesson 9",
+                "Lesson 10",
+                "Lesson 8",
+                "Lesson 3",
+                "Lesson 5",
+                "Lesson 7",
+                "Lesson 6",
+                "Lesson 2",
+            ),
             recent.map { it.item.title },
         )
     }

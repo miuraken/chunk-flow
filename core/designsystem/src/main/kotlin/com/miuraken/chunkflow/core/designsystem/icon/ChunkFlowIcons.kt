@@ -944,6 +944,206 @@ object ChunkFlowIcons {
         }
     }
 
+    /** 右向きシェブロン（パンくず区切り）アイコン。 */
+    val ChevronRight: ImageVector by lazy {
+        materialIcon(name = "ChevronRight") {
+            moveTo(10f, 6f)
+            lineTo(8.59f, 7.41f)
+            lineTo(13.17f, 12f)
+            lineToRelative(-4.58f, 4.59f)
+            lineTo(10f, 18f)
+            lineToRelative(6f, -6f)
+            close()
+        }
+    }
+
+    /** 設定（歯車）アイコン。 */
+    val Settings: ImageVector by lazy {
+        materialIcon(name = "Settings") {
+            moveTo(19.14f, 12.94f)
+            curveToRelative(0.04f, -0.3f, 0.06f, -0.61f, 0.06f, -0.94f)
+            curveToRelative(0f, -0.32f, -0.02f, -0.64f, -0.07f, -0.94f)
+            lineToRelative(2.03f, -1.58f)
+            curveToRelative(0.18f, -0.14f, 0.23f, -0.41f, 0.12f, -0.61f)
+            lineToRelative(-1.92f, -3.32f)
+            curveToRelative(-0.12f, -0.22f, -0.37f, -0.29f, -0.59f, -0.22f)
+            lineToRelative(-2.39f, 0.96f)
+            curveToRelative(-0.5f, -0.38f, -1.03f, -0.7f, -1.62f, -0.94f)
+            lineTo(14.4f, 2.81f)
+            curveToRelative(-0.04f, -0.24f, -0.24f, -0.41f, -0.48f, -0.41f)
+            horizontalLineToRelative(-3.84f)
+            curveToRelative(-0.24f, 0f, -0.43f, 0.17f, -0.47f, 0.41f)
+            lineTo(9.25f, 5.35f)
+            curveTo(8.66f, 5.59f, 8.12f, 5.92f, 7.63f, 6.29f)
+            lineTo(5.24f, 5.33f)
+            curveToRelative(-0.22f, -0.08f, -0.47f, 0f, -0.59f, 0.22f)
+            lineTo(2.74f, 8.87f)
+            curveTo(2.62f, 9.08f, 2.66f, 9.34f, 2.86f, 9.48f)
+            lineToRelative(2.03f, 1.58f)
+            curveTo(4.84f, 11.36f, 4.8f, 11.69f, 4.8f, 12f)
+            curveToRelative(0f, 0.31f, 0.02f, 0.65f, 0.07f, 0.94f)
+            lineToRelative(-2.03f, 1.58f)
+            curveToRelative(-0.18f, 0.14f, -0.23f, 0.41f, -0.12f, 0.61f)
+            lineToRelative(1.92f, 3.32f)
+            curveToRelative(0.12f, 0.22f, 0.37f, 0.29f, 0.59f, 0.22f)
+            lineToRelative(2.39f, -0.96f)
+            curveToRelative(0.5f, 0.38f, 1.03f, 0.7f, 1.62f, 0.94f)
+            lineToRelative(0.36f, 2.54f)
+            curveToRelative(0.05f, 0.24f, 0.24f, 0.41f, 0.48f, 0.41f)
+            horizontalLineToRelative(3.84f)
+            curveToRelative(0.24f, 0f, 0.44f, -0.17f, 0.47f, -0.41f)
+            lineToRelative(0.36f, -2.54f)
+            curveToRelative(0.59f, -0.24f, 1.13f, -0.56f, 1.62f, -0.94f)
+            lineToRelative(2.39f, 0.96f)
+            curveToRelative(0.22f, 0.08f, 0.47f, 0f, 0.59f, -0.22f)
+            lineToRelative(1.92f, -3.32f)
+            curveToRelative(0.12f, -0.22f, 0.07f, -0.47f, -0.12f, -0.61f)
+            lineTo(19.14f, 12.94f)
+            close()
+            moveTo(12f, 15.6f)
+            curveToRelative(-1.98f, 0f, -3.6f, -1.62f, -3.6f, -3.6f)
+            reflectiveCurveToRelative(1.62f, -3.6f, 3.6f, -3.6f)
+            reflectiveCurveToRelative(3.6f, 1.62f, 3.6f, 3.6f)
+            reflectiveCurveTo(13.98f, 15.6f, 12f, 15.6f)
+            close()
+        }
+    }
+
+    /** ホーム（ルートフォルダ階層）アイコン。 */
+    val Home: ImageVector by lazy {
+        materialIcon(name = "Home") {
+            moveTo(12f, 5.69f)
+            lineToRelative(5f, 4.5f)
+            verticalLineTo(18f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(-6f)
+            horizontalLineTo(9f)
+            verticalLineToRelative(6f)
+            horizontalLineTo(7f)
+            verticalLineToRelative(-7.81f)
+            lineToRelative(5f, -4.5f)
+            moveTo(12f, 3f)
+            lineTo(2f, 12f)
+            horizontalLineToRelative(3f)
+            verticalLineToRelative(8f)
+            horizontalLineToRelative(6f)
+            verticalLineToRelative(-6f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(6f)
+            horizontalLineToRelative(6f)
+            verticalLineToRelative(-8f)
+            horizontalLineToRelative(3f)
+            lineTo(12f, 3f)
+            close()
+        }
+    }
+
+    /** 音声文字起こし（SpeechToText）アイコン。 */
+    val SpeechToText: ImageVector by lazy {
+        materialIcon(name = "SpeechToText") {
+            // 書類の枠線（左・下・右）
+            moveTo(11f, 2f)
+            horizontalLineTo(6f)
+            curveTo(4.9f, 2f, 4f, 2.9f, 4f, 4f)
+            verticalLineToRelative(16f)
+            curveToRelative(0f, 1.1f, 0.9f, 2f, 2f, 2f)
+            horizontalLineToRelative(12f)
+            curveToRelative(1.1f, 0f, 2f, -0.9f, 2f, -2f)
+            verticalLineToRelative(-5f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(5f)
+            horizontalLineTo(6f)
+            verticalLineTo(4f)
+            horizontalLineToRelative(5f)
+            verticalLineTo(2f)
+            close()
+            // 下部のテキスト行（2本）
+            moveTo(8f, 14f)
+            horizontalLineToRelative(8f)
+            verticalLineToRelative(2f)
+            horizontalLineTo(8f)
+            close()
+            moveTo(8f, 17f)
+            horizontalLineToRelative(5f)
+            verticalLineToRelative(2f)
+            horizontalLineTo(8f)
+            close()
+            // 右上のマイクカプセル
+            moveTo(16.5f, 2f)
+            curveTo(15.67f, 2f, 15f, 2.67f, 15f, 3.5f)
+            verticalLineToRelative(3f)
+            curveTo(15f, 7.33f, 15.67f, 8f, 16.5f, 8f)
+            reflectiveCurveTo(18f, 7.33f, 18f, 6.5f)
+            verticalLineToRelative(-3f)
+            curveTo(18f, 2.67f, 17.33f, 2f, 16.5f, 2f)
+            close()
+            // マイクの受け皿とスタンド
+            moveTo(19f, 6.5f)
+            curveToRelative(0f, 1.38f, -1.12f, 2.5f, -2.5f, 2.5f)
+            reflectiveCurveTo(14f, 7.88f, 14f, 6.5f)
+            horizontalLineToRelative(-1.5f)
+            curveToRelative(0f, 1.93f, 1.42f, 3.52f, 3.25f, 3.88f)
+            verticalLineTo(12f)
+            horizontalLineToRelative(1.5f)
+            verticalLineToRelative(-1.62f)
+            curveToRelative(1.83f, -0.36f, 3.25f, -1.95f, 3.25f, -3.88f)
+            horizontalLineTo(19f)
+            close()
+        }
+    }
+
+    /** 履歴（反時計回り矢印＋時計針）アイコン。 */
+    val History: ImageVector by lazy {
+        materialIcon(name = "History") {
+            moveTo(13f, 3f)
+            curveToRelative(-4.97f, 0f, -9f, 4.03f, -9f, 9f)
+            horizontalLineTo(1f)
+            lineToRelative(3.89f, 3.89f)
+            lineToRelative(0.07f, 0.14f)
+            lineTo(9f, 12f)
+            horizontalLineTo(6f)
+            curveToRelative(0f, -3.87f, 3.13f, -7f, 7f, -7f)
+            reflectiveCurveToRelative(7f, 3.13f, 7f, 7f)
+            reflectiveCurveToRelative(-3.13f, 7f, -7f, 7f)
+            curveToRelative(-1.93f, 0f, -3.68f, -0.79f, -4.94f, -2.06f)
+            lineToRelative(-1.42f, 1.42f)
+            curveTo(8.27f, 19.99f, 10.51f, 21f, 13f, 21f)
+            curveToRelative(4.97f, 0f, 9f, -4.03f, 9f, -9f)
+            reflectiveCurveTo(17.97f, 3f, 13f, 3f)
+            close()
+            moveTo(12f, 8f)
+            verticalLineToRelative(5f)
+            lineToRelative(4.28f, 2.54f)
+            lineToRelative(0.72f, -1.21f)
+            lineToRelative(-3.5f, -2.08f)
+            verticalLineTo(8f)
+            horizontalLineTo(12f)
+            close()
+        }
+    }
+
+    /** 連桁付き 8 分音符（♫ / MusicNote）アイコン（デフォルトサムネイル用）。 */
+    val MusicNote: ImageVector by lazy {
+        materialIcon(name = "MusicNote") {
+            moveTo(20f, 3f)
+            lineTo(9f, 5.5f)
+            verticalLineToRelative(9.55f)
+            curveTo(8.41f, 14.71f, 7.73f, 14.5f, 7f, 14.5f)
+            curveToRelative(-1.93f, 0f, -3.5f, 1.34f, -3.5f, 3f)
+            reflectiveCurveTo(5.07f, 20.5f, 7f, 20.5f)
+            reflectiveCurveToRelative(3.5f, -1.34f, 3.5f, -3f)
+            verticalLineTo(9.2f)
+            lineTo(18f, 7.5f)
+            verticalLineToRelative(5.55f)
+            curveToRelative(-0.59f, -0.34f, -1.27f, -0.55f, -2f, -0.55f)
+            curveToRelative(-1.93f, 0f, -3.5f, 1.34f, -3.5f, 3f)
+            reflectiveCurveTo(14.07f, 18.5f, 16f, 18.5f)
+            reflectiveCurveToRelative(3.5f, -1.34f, 3.5f, -3f)
+            verticalLineTo(3f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

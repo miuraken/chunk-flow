@@ -30,6 +30,7 @@ fun LibraryScreenPopulatedScreenshot() {
             speed = if (index == 0) 1.25f else 1.0f,
             chunkCount = if (index == 0) 6 else 0,
             hasTranscript = index == 0,
+            isListened = index == 0,
             isAnalyzing = index == 1,
         )
     }
@@ -44,6 +45,105 @@ fun LibraryScreenPopulatedScreenshot() {
                     title = first.title,
                     isPlaying = true,
                     durationMs = first.durationMs,
+                ),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryScreenFolderFilesScreenshot() {
+    val course = "ピンズラー韓国語 I"
+    val baseItem = SampleLibraries.multipleCourses.first()
+    val uiItems = listOf(
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = com.miuraken.chunkflow.core.model.MediaId("pimsleur-01"),
+                title = "ピンズラー 韓国語 01",
+                durationMs = 1_834_000L,
+                course = course,
+                localFilePath = "preview:cover_pimsleur",
+            ),
+            positionMs = 1_806_000L,
+            maxPositionMs = 1_816_000L,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.COMPLETED,
+            transcriptProgressPercent = 100,
+            isListened = true,
+            lastAccessedAtEpochMs = 1_792_338_600_000L,
+        ),
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = com.miuraken.chunkflow.core.model.MediaId("pimsleur-02"),
+                title = "ピンズラー 韓国語 02",
+                durationMs = 1_825_000L,
+                course = course,
+                localFilePath = "preview:cover_book",
+            ),
+            positionMs = 586_000L,
+            maxPositionMs = 949_000L,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.PARTIAL,
+            transcriptProgressPercent = 82,
+            lastAccessedAtEpochMs = 1_792_338_600_000L,
+        ),
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = com.miuraken.chunkflow.core.model.MediaId("pimsleur-03"),
+                title = "ピンズラー 韓国語 03",
+                durationMs = 1_710_000L,
+                course = course,
+                localFilePath = "preview:cover_pimsleur",
+            ),
+            positionMs = 0L,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.PARTIAL,
+            transcriptProgressPercent = 35,
+            isTranscribing = true,
+        ),
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = com.miuraken.chunkflow.core.model.MediaId("pimsleur-04"),
+                title = "ピンズラー 韓国語 04",
+                durationMs = 1_669_000L,
+                course = course,
+            ),
+            positionMs = 0L,
+            hasTranscript = false,
+            transcriptStatus = LibraryTranscriptStatus.NONE,
+        ),
+    )
+    val recentHindiItems = listOf(1, 3, 7, 8).mapIndexed { idx, num ->
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = com.miuraken.chunkflow.core.model.MediaId("hindi-$num"),
+                title = "Lesson $num",
+                course = "Hindi_1",
+                languagePair = com.miuraken.chunkflow.core.model.LanguagePair(
+                    target = com.miuraken.chunkflow.core.model.LanguageTag("hi"),
+                    base = com.miuraken.chunkflow.core.model.LanguageTag("ja"),
+                ),
+            ),
+            positionMs = (10 - idx) * 60_000L,
+            maxPositionMs = (12 - idx) * 60_000L,
+            lastAccessedAtEpochMs = 1_792_338_000_000L - idx * 60_000L,
+        )
+    }
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = uiItems + recentHindiItems,
+                currentDirectoryPath = course,
+                miniPlayer = MiniPlayerUiState(
+                    mediaId = uiItems.first().item.id,
+                    title = "Lesson 1",
+                    isPlaying = false,
+                    durationMs = 1_852_000L,
+                    positionMs = 102_000L,
+                    localFilePath = "preview:cover_pimsleur",
                 ),
             ),
             onEvent = {},

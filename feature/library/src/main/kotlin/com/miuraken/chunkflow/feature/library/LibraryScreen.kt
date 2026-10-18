@@ -1,10 +1,17 @@
 package com.miuraken.chunkflow.feature.library
 
+import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.util.LruCache
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -30,6 +37,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -74,12 +82,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -91,6 +107,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.data.library.ImportError
@@ -111,11 +128,14 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.testing.fixture.SampleLibraryPreviewParameterProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private val LAST_ACCESSED_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm", Locale.ROOT)
@@ -123,8 +143,76 @@ private val LAST_ACCESSED_FORMATTER: DateTimeFormatter =
 /** お気に入り登録済み（⭐️）の塗りつぶし星アイコン色。 */
 private val FavoriteStarColor = Color(0xFFFFB300)
 
+/** デフォルトの音符サムネイル背景色（落ち着いたグレー）。 */
+private val DefaultThumbnailBackgroundColor = Color(0xFF8A8A8E)
+
 /** この割合（%）を超えて聴いた教材を既習として、進捗バーと再生状況を緑系で表示する。 */
 private const val COMPLETED_PROGRESS_PERCENT_THRESHOLD = 95
+
+/** 音声ファイルの埋め込みカバーアート（ImageBitmap）のメモリキャッシュ。 */
+private val embeddedArtworkCache = object : LruCache<String, ImageBitmap>(64) {}
+
+private val noEmbeddedArtworkKeys = java.util.Collections.synchronizedSet(HashSet<String>())
+
+private fun loadEmbeddedArtworkBitmap(
+    context: Context,
+    mediaId: MediaId,
+    localFilePath: String?,
+    sourceUri: String?,
+): ImageBitmap? {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        var initialized = false
+        if (!localFilePath.isNullOrBlank()) {
+            val file = File(localFilePath)
+            if (file.exists()) {
+                runCatching {
+                    retriever.setDataSource(file.absolutePath)
+                    initialized = true
+                }
+            }
+        }
+        if (!initialized) {
+            val internalMediaDir = File(context.filesDir, "media")
+            val directFile = File(internalMediaDir, mediaId.value)
+            val candidateFile = when {
+                directFile.exists() -> directFile
+
+                internalMediaDir.exists() -> internalMediaDir.listFiles()?.firstOrNull {
+                    it.name == mediaId.value || it.name.startsWith("${mediaId.value}.")
+                }
+
+                else -> null
+            }
+            if (candidateFile != null && candidateFile.exists()) {
+                runCatching {
+                    retriever.setDataSource(candidateFile.absolutePath)
+                    initialized = true
+                }
+            }
+        }
+        if (!initialized && !sourceUri.isNullOrBlank()) {
+            runCatching {
+                retriever.setDataSource(context, sourceUri.toUri())
+                initialized = true
+            }
+        }
+        if (!initialized) {
+            null
+        } else {
+            val pictureBytes = retriever.embeddedPicture
+            if (pictureBytes != null && pictureBytes.isNotEmpty()) {
+                BitmapFactory.decodeByteArray(pictureBytes, 0, pictureBytes.size)?.asImageBitmap()
+            } else {
+                null
+            }
+        }
+    } catch (_: Throwable) {
+        null
+    } finally {
+        runCatching { retriever.release() }
+    }
+}
 
 private fun formatEpochMsLocal(epochMs: Long): String = runCatching {
     Instant.ofEpochMilli(epochMs)
@@ -448,10 +536,10 @@ fun LibraryScreen(
                                 contentDescription = stringResource(R.string.library_add_file_cd),
                             )
                         }
-                        TextButton(onClick = { onEvent(LibraryEvent.OpenSettings) }) {
-                            Text(
-                                text = stringResource(R.string.library_open_settings),
-                                maxLines = 1,
+                        IconButton(onClick = { onEvent(LibraryEvent.OpenSettings) }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Settings,
+                                contentDescription = stringResource(R.string.library_open_settings),
                             )
                         }
                     }
@@ -757,21 +845,21 @@ private fun LibraryFoldersTabContent(
             LibraryCurrentFolderHeader(
                 folderPath = currentFolderPath,
                 itemCount = totalItemsInFolder,
-                isSelectionMode = state.isSelectionMode,
                 isSelected = currentFolderPath in state.selectedDirectoryPaths,
                 onNavigateUp = { onEvent(LibraryEvent.NavigateUp) },
                 onLongClick = { onEvent(LibraryEvent.ToggleDirectorySelection(currentFolderPath)) },
-                onEditDirectoryMetadata = {
-                    onEvent(LibraryEvent.RequestEditDirectoryMetadata(currentFolderPath))
-                },
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+            )
+        } else {
+            LibraryRootFolderBreadcrumbHeader(
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
             )
         }
 
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(if (hasRecentItems && isRecentFilesExpanded) 2f else 1f),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
         ) {
             items(
                 items = currentDirs,
@@ -798,7 +886,7 @@ private fun LibraryFoldersTabContent(
                     onEditDirectoryMetadata = {
                         onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
                     },
-                    modifier = Modifier.padding(bottom = 8.dp),
+                    modifier = Modifier.padding(start = 24.dp, bottom = 8.dp),
                 )
             }
             itemsIndexed(
@@ -863,13 +951,34 @@ private fun LibraryFoldersTabContent(
                 isExpanded = isRecentFilesExpanded,
                 onToggleExpanded = { isRecentFilesExpanded = !isRecentFilesExpanded },
                 onOpenItem = { id -> onEvent(LibraryEvent.OpenItem(id)) },
-                modifier = if (isRecentFilesExpanded) {
-                    Modifier.weight(1f)
-                } else {
-                    Modifier
-                },
             )
         }
+    }
+}
+
+@Composable
+private fun LibraryRootFolderBreadcrumbHeader(
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.Home,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp),
+        )
+        Spacer(modifier = Modifier.width(2.dp))
+        Icon(
+            imageVector = ChunkFlowIcons.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
     }
 }
 
@@ -878,22 +987,21 @@ private fun LibraryFoldersTabContent(
 private fun LibraryCurrentFolderHeader(
     folderPath: String,
     itemCount: Int,
-    isSelectionMode: Boolean,
     isSelected: Boolean,
     onNavigateUp: () -> Unit,
     onLongClick: () -> Unit,
-    onEditDirectoryMetadata: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val hierarchicalTitle = folderPath.replace("/", " / ")
+    val navigateUpCd = stringResource(R.string.library_navigate_up)
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = if (isSelected) {
             MaterialTheme.colorScheme.secondaryContainer
         } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
+            Color.Transparent
         },
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(8.dp),
     ) {
         Row(
             modifier = Modifier
@@ -902,12 +1010,27 @@ private fun LibraryCurrentFolderHeader(
                     onClick = onNavigateUp,
                     onLongClick = onLongClick,
                 )
-                .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
+                .semantics { contentDescription = navigateUpCd }
+                .padding(horizontal = 4.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
+                imageVector = ChunkFlowIcons.Home,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(modifier = Modifier.width(2.dp))
+            Icon(
+                imageVector = ChunkFlowIcons.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Icon(
                 imageVector = ChunkFlowIcons.Folder,
-                contentDescription = stringResource(R.string.library_navigate_up),
+                contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(22.dp),
             )
@@ -933,19 +1056,6 @@ private fun LibraryCurrentFolderHeader(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-            if (!isSelectionMode) {
-                IconButton(
-                    onClick = onEditDirectoryMetadata,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Edit,
-                        contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
             }
         }
     }
@@ -1653,6 +1763,19 @@ private fun LibraryDirectoryRow(
     modifier: Modifier = Modifier,
 ) {
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
+    val itemCountText = stringResource(
+        R.string.library_directory_item_count,
+        directory.items.size,
+    )
+    val listenedText = if (directory.items.isNotEmpty()) {
+        stringResource(
+            R.string.library_directory_listened_count,
+            directory.listenedCount,
+            directory.items.size,
+        )
+    } else {
+        null
+    }
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -1686,29 +1809,36 @@ private fun LibraryDirectoryRow(
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(22.dp),
             )
-            Spacer(modifier = Modifier.width(10.dp))
-            Row(
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(
                 modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(
                     text = directoryTitle,
                     style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
                 )
                 Text(
-                    text = stringResource(
-                        R.string.library_directory_item_count,
-                        directory.items.size,
-                    ),
+                    text = if (listenedText != null) {
+                        "$itemCountText  •  $listenedText"
+                    } else {
+                        itemCountText
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            directory.languagePair?.let { pair ->
+                Spacer(modifier = Modifier.width(8.dp))
+                LanguagePairBadge(pair = pair)
+            }
             if (!isSelectionMode) {
+                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(
                     onClick = onEditDirectoryMetadata,
                     modifier = Modifier.size(36.dp),
@@ -2095,8 +2225,12 @@ private fun LibraryItemRow(
         if (isFavorite) R.string.library_favorite_remove_cd else R.string.library_favorite_add_cd,
     )
     val removeFromPlaylistCd = stringResource(R.string.library_playlist_remove_item_cd)
+    val langPalette = chunkFlowLanguagePalette()
+    val maxPercent = itemModel.maxProgressPercent
+    // 既習（95% 超）の教材は、進捗バーを緑系にして一目でわかるようにする。
+    val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
 
-    Column(
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .combinedClickable(
@@ -2109,245 +2243,457 @@ private fun LibraryItemRow(
                 top = 12.dp,
                 bottom = 12.dp,
             ),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (isSelectionMode) {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = { onClick() },
-                )
-            } else if (dragHandle != null) {
+        if (isSelectionMode) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onClick() },
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        } else if (dragHandle != null) {
+            Box(modifier = Modifier.padding(top = 6.dp)) {
                 dragHandle()
             }
-            Icon(
-                imageVector = ChunkFlowIcons.AudioFile,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
-            )
-            Text(
-                text = item.title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (onToggleFavoriteClick != null) {
-                IconButton(
-                    onClick = onToggleFavoriteClick,
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Icon(
-                        imageVector = if (isFavorite) {
-                            ChunkFlowIcons.Favorite
-                        } else {
-                            ChunkFlowIcons.FavoriteBorder
-                        },
-                        contentDescription = favoriteCd,
-                        tint = if (isFavorite) {
-                            FavoriteStarColor
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                        },
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
+        }
+
+        AudioItemThumbnail(
+            mediaId = item.id,
+            localFilePath = item.localFilePath,
+            sourceUri = item.sourceUri,
+            modifier = Modifier
+                .padding(top = 2.dp)
+                .size(46.dp),
+        )
+
+        Column(
+            modifier = Modifier.weight(1f),
+        ) {
+            // 1 行目: ファイル名（タイトル）を横幅いっぱいに表示
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
             }
-            if (!isSelectionMode) {
-                IconButton(
-                    onClick = onEditMetadataClick,
-                    modifier = Modifier.size(32.dp),
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // 2 行目: 言語ペアバッジ + SpeechToText 文字起こし状態 + 右端に ☆ と ✏️
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Edit,
-                        contentDescription = editCd,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
+                    LanguagePairBadge(pair = item.languagePair)
+                    TranscriptStatusIndicator(
+                        transcriptStatus = itemModel.transcriptStatus,
+                        transcriptProgressPercent = itemModel.transcriptProgressPercent,
+                        isTranscribing = itemModel.isTranscribing,
+                        completedBadgeColor = langPalette.completedProgressIndicator,
                     )
+                    if (itemModel.isAnalyzing) {
+                        Text(
+                            text = stringResource(R.string.library_item_analyzing),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            maxLines = 1,
+                        )
+                    }
+                    if (item.isRemoteOnly) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                            shape = MaterialTheme.shapes.extraSmall,
+                            modifier = Modifier.clickable(onClick = onDownloadDriveAudioClick),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Text(
+                                    text = stringResource(R.string.library_item_drive_remote_only_badge),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    } else if (itemModel.isAudioMissing) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            shape = MaterialTheme.shapes.extraSmall,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.library_item_missing_audio),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
                 }
-                if (onRemoveFromPlaylistClick != null) {
+                if (onToggleFavoriteClick != null) {
                     IconButton(
-                        onClick = onRemoveFromPlaylistClick,
+                        onClick = onToggleFavoriteClick,
                         modifier = Modifier.size(32.dp),
                     ) {
                         Icon(
-                            imageVector = ChunkFlowIcons.Close,
-                            contentDescription = removeFromPlaylistCd,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            imageVector = if (isFavorite) {
+                                ChunkFlowIcons.Favorite
+                            } else {
+                                ChunkFlowIcons.FavoriteBorder
+                            },
+                            contentDescription = favoriteCd,
+                            tint = if (isFavorite) {
+                                FavoriteStarColor
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                            },
                             modifier = Modifier.size(18.dp),
                         )
                     }
                 }
-            }
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-            itemVerticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 言語タグのタップは行のタップと同じ扱いにする（プレイヤーを開く / 選択を切り替える）。
-            // 言語の編集は鉛筆アイコンから行う。
-            LanguagePairBadge(pair = item.languagePair)
-            if (itemModel.isAnalyzing) {
-                Text(
-                    text = stringResource(R.string.library_item_analyzing),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.tertiary,
-                )
-            }
-            if (itemModel.isTranscribing && itemModel.transcriptStatus != LibraryTranscriptStatus.COMPLETED) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(10.dp),
-                        strokeWidth = 1.5.dp,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
-                    Text(
-                        text = stringResource(
-                            R.string.library_item_transcript_in_progress,
-                            itemModel.transcriptProgressPercent,
-                        ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                    )
-                }
-            } else {
-                val transcriptStatusText: String
-                val transcriptStatusColor = when (itemModel.transcriptStatus) {
-                    LibraryTranscriptStatus.NONE -> {
-                        transcriptStatusText = stringResource(R.string.library_item_transcript_none)
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-
-                    LibraryTranscriptStatus.PARTIAL -> {
-                        transcriptStatusText = stringResource(
-                            R.string.library_item_transcript_partial,
-                            itemModel.transcriptProgressPercent,
-                        )
-                        MaterialTheme.colorScheme.secondary
-                    }
-
-                    LibraryTranscriptStatus.COMPLETED -> {
-                        transcriptStatusText = stringResource(R.string.library_item_transcript_completed)
-                        MaterialTheme.colorScheme.primary
-                    }
-                }
-                Text(
-                    text = transcriptStatusText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = transcriptStatusColor,
-                )
-            }
-            if (item.isRemoteOnly) {
-                Surface(
-                    color = MaterialTheme.colorScheme.tertiaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                    shape = MaterialTheme.shapes.extraSmall,
-                    modifier = Modifier.clickable(onClick = onDownloadDriveAudioClick),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                if (!isSelectionMode) {
+                    IconButton(
+                        onClick = onEditMetadataClick,
+                        modifier = Modifier.size(32.dp),
                     ) {
                         Icon(
-                            imageVector = ChunkFlowIcons.Download,
+                            imageVector = ChunkFlowIcons.Edit,
+                            contentDescription = editCd,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    if (onRemoveFromPlaylistClick != null) {
+                        IconButton(
+                            onClick = onRemoveFromPlaylistClick,
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Close,
+                                contentDescription = removeFromPlaylistCd,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+            LinearProgressIndicator(
+                progress = { itemModel.maxProgressFraction },
+                modifier = Modifier.fillMaxWidth(),
+                color = if (isCompleted) {
+                    langPalette.completedProgressIndicator
+                } else {
+                    ProgressIndicatorDefaults.linearColor
+                },
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // 3 行目: 再生時間・進捗 と 最終アクセス日時（History アイコン + 日時）
+            val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
+            val durationProgressText = if (hasProgress) {
+                val baseResume = stringResource(
+                    R.string.library_item_resume_position,
+                    formatDurationMs(itemModel.positionMs),
+                    formattedDuration,
+                    maxPercent,
+                )
+                val speedSuffix = if (itemModel.speed != 1.0f) {
+                    " · ${formatSpeed(itemModel.speed)}"
+                } else {
+                    ""
+                }
+                baseResume + speedSuffix
+            } else {
+                stringResource(
+                    R.string.library_item_duration_progress,
+                    formatDurationMs(0L),
+                    formattedDuration,
+                )
+            }
+            val formattedLastAccessed = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
+                formatEpochMsLocal(epochMs).takeIf { it.isNotEmpty() }
+            }
+            val progressStatusColor = when {
+                isCompleted -> langPalette.completedProgressText
+                hasProgress || itemModel.lastAccessedAtEpochMs != null -> MaterialTheme.colorScheme.onSurfaceVariant
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            val lastAccessedColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = durationProgressText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = progressStatusColor,
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                )
+                if (formattedLastAccessed != null) {
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterVertically),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "•",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = lastAccessedColor,
+                        )
+                        Icon(
+                            imageVector = ChunkFlowIcons.History,
                             contentDescription = null,
-                            modifier = Modifier.size(12.dp),
+                            tint = lastAccessedColor,
+                            modifier = Modifier.size(13.dp),
                         )
                         Text(
-                            text = stringResource(R.string.library_item_drive_remote_only_badge),
+                            text = formattedLastAccessed,
                             style = MaterialTheme.typography.labelSmall,
+                            color = lastAccessedColor,
                         )
                     }
                 }
-            } else if (itemModel.isAudioMissing) {
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    shape = MaterialTheme.shapes.extraSmall,
-                ) {
-                    Text(
-                        text = stringResource(R.string.library_item_missing_audio),
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    )
-                }
             }
         }
-        Spacer(modifier = Modifier.height(6.dp))
-        val langPalette = chunkFlowLanguagePalette()
-        val maxPercent = itemModel.maxProgressPercent
-        // 既習（95% 超）の教材は、進捗バーを緑系にして一目でわかるようにする。
-        val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
-        LinearProgressIndicator(
-            progress = { itemModel.maxProgressFraction },
-            modifier = Modifier.fillMaxWidth(),
-            color = if (isCompleted) {
-                langPalette.completedProgressIndicator
+    }
+}
+
+@Composable
+private fun TranscriptStatusIndicator(
+    transcriptStatus: LibraryTranscriptStatus,
+    transcriptProgressPercent: Int,
+    isTranscribing: Boolean,
+    completedBadgeColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    when {
+        transcriptStatus == LibraryTranscriptStatus.COMPLETED -> {
+            val completedCd = stringResource(R.string.library_item_transcript_completed)
+            Box(
+                modifier = modifier
+                    .size(22.dp)
+                    .background(color = completedBadgeColor, shape = CircleShape)
+                    .semantics { contentDescription = completedCd },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SpeechToText,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
+
+        isTranscribing || transcriptStatus == LibraryTranscriptStatus.PARTIAL -> {
+            val statusCd = if (isTranscribing) {
+                stringResource(R.string.library_item_transcript_in_progress, transcriptProgressPercent)
             } else {
-                ProgressIndicatorDefaults.linearColor
-            },
+                stringResource(R.string.library_item_transcript_partial, transcriptProgressPercent)
+            }
+            Row(
+                modifier = modifier.semantics(mergeDescendants = true) {
+                    contentDescription = statusCd
+                },
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SpeechToText,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                if (isTranscribing) {
+                    if (LocalInspectionMode.current) {
+                        CircularProgressIndicator(
+                            progress = { 0.75f },
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            trackColor = Color.Transparent,
+                        )
+                    } else {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(12.dp),
+                            strokeWidth = 1.5.dp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    text = "$transcriptProgressPercent%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        else -> {
+            val noneCd = stringResource(R.string.library_item_transcript_none)
+            Icon(
+                imageVector = ChunkFlowIcons.SpeechToText,
+                contentDescription = noneCd,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f),
+                modifier = modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioItemThumbnail(
+    mediaId: MediaId,
+    localFilePath: String?,
+    sourceUri: String?,
+    modifier: Modifier = Modifier,
+) {
+    val isInspectionMode = LocalInspectionMode.current
+    val context = LocalContext.current
+    val cacheKey = remember(mediaId.value, localFilePath, sourceUri) {
+        "${mediaId.value}|${localFilePath.orEmpty()}|${sourceUri.orEmpty()}"
+    }
+    var bitmap by remember(cacheKey) {
+        mutableStateOf(
+            if (isInspectionMode) null else embeddedArtworkCache.get(cacheKey),
         )
-        Spacer(modifier = Modifier.height(2.dp))
-        val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
-        val durationProgressText = if (hasProgress) {
-            val baseResume = stringResource(
-                R.string.library_item_resume_position,
-                formatDurationMs(itemModel.positionMs),
-                formattedDuration,
-                maxPercent,
-            )
-            val speedSuffix = if (itemModel.speed != 1.0f) {
-                " · ${formatSpeed(itemModel.speed)}"
+    }
+
+    LaunchedEffect(cacheKey, isInspectionMode) {
+        if (!isInspectionMode && bitmap == null && !noEmbeddedArtworkKeys.contains(cacheKey)) {
+            val loaded = withContext(Dispatchers.IO) {
+                loadEmbeddedArtworkBitmap(
+                    context = context,
+                    mediaId = mediaId,
+                    localFilePath = localFilePath,
+                    sourceUri = sourceUri,
+                )
+            }
+            if (loaded != null) {
+                embeddedArtworkCache.put(cacheKey, loaded)
+                bitmap = loaded
             } else {
-                ""
+                noEmbeddedArtworkKeys.add(cacheKey)
             }
-            baseResume + speedSuffix
-        } else {
-            stringResource(
-                R.string.library_item_duration_progress,
-                formatDurationMs(0L),
-                formattedDuration,
+        }
+    }
+
+    val shape = RoundedCornerShape(6.dp)
+    val previewStyle = if (isInspectionMode) {
+        when {
+            localFilePath == "preview:cover_pimsleur" || sourceUri == "preview:cover_pimsleur" -> 1
+            localFilePath == "preview:cover_book" || sourceUri == "preview:cover_book" -> 2
+            else -> 0
+        }
+    } else {
+        0
+    }
+
+    val currentBitmap = bitmap
+    when {
+        currentBitmap != null -> {
+            Image(
+                bitmap = currentBitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = modifier.clip(shape),
             )
         }
-        val lastAccessedText = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
-            val formatted = formatEpochMsLocal(epochMs)
-            if (formatted.isNotEmpty()) {
-                stringResource(R.string.library_item_last_accessed, formatted)
-            } else {
-                null
+
+        previewStyle == 1 -> {
+            PreviewPimsleurArtwork(modifier = modifier.clip(shape))
+        }
+
+        previewStyle == 2 -> {
+            PreviewBookArtwork(modifier = modifier.clip(shape))
+        }
+
+        else -> {
+            Box(
+                modifier = modifier
+                    .background(color = DefaultThumbnailBackgroundColor, shape = shape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.MusicNote,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
-        val progressStatusColor = when {
-            isCompleted -> langPalette.completedProgressText
-            hasProgress || itemModel.lastAccessedAtEpochMs != null -> MaterialTheme.colorScheme.primary
-            else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+}
+
+@Composable
+private fun PreviewPimsleurArtwork(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.background(Color.White)) {
+        val w = size.width
+        val h = size.height
+        drawRect(
+            color = Color(0xFF0D47A1),
+            topLeft = Offset.Zero,
+            size = Size(w * 0.55f, h),
+        )
+        drawCircle(
+            color = Color(0xFF1976D2),
+            radius = w * 0.42f,
+            center = Offset(w * 0.35f, h * 0.45f),
+        )
+        val wavePath = Path().apply {
+            moveTo(0f, h * 0.65f)
+            cubicTo(w * 0.3f, h * 0.5f, w * 0.5f, h * 0.85f, w, h * 0.7f)
+            lineTo(w, h)
+            lineTo(0f, h)
+            close()
         }
-        // 「• 最終アクセス: …」の部分は既習でも緑にせず、いつも同じ色にする。
-        val lastAccessedColor = MaterialTheme.colorScheme.primary
-        val statusText = buildAnnotatedString {
-            withStyle(SpanStyle(color = progressStatusColor)) {
-                append(durationProgressText)
-            }
-            if (lastAccessedText != null) {
-                withStyle(SpanStyle(color = lastAccessedColor)) {
-                    append("  •  ")
-                    append(lastAccessedText)
-                }
-            }
-        }
-        Text(
-            text = statusText,
-            style = MaterialTheme.typography.labelSmall,
+        drawPath(path = wavePath, color = Color(0xFF42A5F5).copy(alpha = 0.75f))
+    }
+}
+
+@Composable
+private fun PreviewBookArtwork(modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.background(Color(0xFFECEFF1))) {
+        val w = size.width
+        val h = size.height
+        drawRect(
+            color = Color(0xFF81D4FA),
+            topLeft = Offset(w * 0.08f, h * 0.08f),
+            size = Size(w * 0.84f, h * 0.28f),
+        )
+        drawRect(
+            color = Color(0xFF90A4AE),
+            topLeft = Offset(w * 0.08f, h * 0.36f),
+            size = Size(w * 0.84f, h * 0.56f),
+        )
+        drawRect(
+            color = Color(0xFF546E7A),
+            topLeft = Offset(w * 0.18f, h * 0.48f),
+            size = Size(w * 0.64f, h * 0.34f),
         )
     }
 }
@@ -2427,11 +2773,7 @@ private fun RecentFilesSection(
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Column(
-            modifier = if (isExpanded) {
-                Modifier.fillMaxSize()
-            } else {
-                Modifier.fillMaxWidth()
-            },
+            modifier = Modifier.fillMaxWidth(),
         ) {
             HorizontalDivider()
             Row(
@@ -2461,7 +2803,9 @@ private fun RecentFilesSection(
             }
             if (isExpanded) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 136.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
                     itemsIndexed(
@@ -2608,11 +2952,11 @@ private fun MiniPlayerBar(
                 .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = ChunkFlowIcons.AudioFile,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp),
+            AudioItemThumbnail(
+                mediaId = miniPlayer.mediaId,
+                localFilePath = miniPlayer.localFilePath,
+                sourceUri = miniPlayer.sourceUri,
+                modifier = Modifier.size(40.dp),
             )
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -2682,25 +3026,93 @@ private fun LibraryScreenPreview(
 @ChunkFlowPreviews
 @Composable
 private fun LibraryScreenFolderPreview() {
-    val course = "korean-course"
-    val materials = listOf(SampleMaterials.jaKo, SampleMaterials.longSentence, SampleMaterials.noTranscript)
-    val uiItems = materials.mapIndexed { index, material ->
-        val audioItem = material.item.copy(course = course)
+    val course = "ピンズラー韓国語 I"
+    val baseItem = SampleMaterials.jaKo.item
+    val uiItems = listOf(
         LibraryItemUiModel(
-            item = audioItem,
-            positionMs = when (index) {
-                0 -> audioItem.durationMs * 97 / 100
-                1 -> audioItem.durationMs * 40 / 100
-                else -> 0L
-            },
-            speed = if (index == 1) 1.25f else 1.0f,
-            isListened = index == 0,
-            lastAccessedAtEpochMs = if (index <= 1) 1_760_000_000_000L else null,
+            item = baseItem.copy(
+                id = MediaId("pimsleur-01"),
+                title = "ピンズラー 韓国語 01",
+                durationMs = 1_834_000L,
+                course = course,
+                localFilePath = "preview:cover_pimsleur",
+            ),
+            positionMs = 1_806_000L,
+            maxPositionMs = 1_816_000L,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.COMPLETED,
+            transcriptProgressPercent = 100,
+            isListened = true,
+            lastAccessedAtEpochMs = 1_792_338_600_000L,
+        ),
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = MediaId("pimsleur-02"),
+                title = "ピンズラー 韓国語 02",
+                durationMs = 1_825_000L,
+                course = course,
+                localFilePath = "preview:cover_book",
+            ),
+            positionMs = 586_000L,
+            maxPositionMs = 949_000L,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.PARTIAL,
+            transcriptProgressPercent = 82,
+            lastAccessedAtEpochMs = 1_792_338_600_000L,
+        ),
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = MediaId("pimsleur-03"),
+                title = "ピンズラー 韓国語 03",
+                durationMs = 1_710_000L,
+                course = course,
+                localFilePath = "preview:cover_pimsleur",
+            ),
+            positionMs = 0L,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.PARTIAL,
+            transcriptProgressPercent = 35,
+            isTranscribing = true,
+        ),
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = MediaId("pimsleur-04"),
+                title = "ピンズラー 韓国語 04",
+                durationMs = 1_669_000L,
+                course = course,
+            ),
+            positionMs = 0L,
+            hasTranscript = false,
+            transcriptStatus = LibraryTranscriptStatus.NONE,
+        ),
+    )
+    val recentHindiItems = listOf(1, 3, 7, 8).mapIndexed { idx, num ->
+        LibraryItemUiModel(
+            item = baseItem.copy(
+                id = MediaId("hindi-$num"),
+                title = "Lesson $num",
+                course = "Hindi_1",
+                languagePair = LanguagePair(target = LanguageTag("hi"), base = LanguageTag("ja")),
+            ),
+            positionMs = (10 - idx) * 60_000L,
+            maxPositionMs = (12 - idx) * 60_000L,
+            lastAccessedAtEpochMs = 1_792_338_000_000L - idx * 60_000L,
         )
     }
     ChunkFlowTheme {
         LibraryScreen(
-            state = LibraryUiState(items = uiItems, currentDirectoryPath = course),
+            state = LibraryUiState(
+                items = uiItems + recentHindiItems,
+                currentDirectoryPath = course,
+                miniPlayer = MiniPlayerUiState(
+                    mediaId = uiItems.first().item.id,
+                    title = "Lesson 1",
+                    isPlaying = false,
+                    durationMs = 1_852_000L,
+                    positionMs = 102_000L,
+                    localFilePath = "preview:cover_pimsleur",
+                ),
+            ),
             onEvent = {},
         )
     }

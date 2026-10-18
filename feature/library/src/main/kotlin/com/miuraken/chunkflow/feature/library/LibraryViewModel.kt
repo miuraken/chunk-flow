@@ -187,12 +187,14 @@ typealias LibraryItemUi = LibraryItemUiModel
  * @property items このディレクトリ（サブディレクトリを含む）内の教材一覧（ファイル名昇順）。
  * @property isExpanded 展開中かどうか。
  * @property displayName 現在の階層で表示するディレクトリ名（末尾セグメント）。
+ * @property languagePair このディレクトリの代表的な言語ペア（配下の最初の教材またはフォルダ設定の言語ペア）。
  */
 data class LibraryDirectoryUiModel(
     val name: String?,
     val items: List<LibraryItemUiModel>,
     val isExpanded: Boolean = true,
     val displayName: String? = name?.substringAfterLast('/'),
+    val languagePair: LanguagePair? = items.firstOrNull()?.item?.languagePair,
 ) {
     /** ディレクトリ配下の `transcription/` サブフォルダの対応パス案内。 */
     val transcriptionPathHint: String
@@ -356,6 +358,8 @@ data class MiniPlayerUiState(
     val isPlaying: Boolean,
     val durationMs: Long,
     val positionMs: Long = 0L,
+    val sourceUri: String? = null,
+    val localFilePath: String? = null,
 )
 
 /**
@@ -521,11 +525,11 @@ data class LibraryUiState(
 ) {
     companion object {
         /** 最近開いたファイル欄に表示する最大件数。 */
-        const val MAX_RECENT_ITEMS = 5
+        const val MAX_RECENT_ITEMS = 10
     }
 
     /**
-     * 直近に開いた（アクセス日時が記録されている）最大 5 件の教材一覧（新しい順）。
+     * 直近に開いた（アクセス日時が記録されている）最大 10 件の教材一覧（新しい順）。
      */
     val recentItems: List<LibraryItemUiModel>
         get() = items
@@ -826,11 +830,15 @@ data class LibraryUiState(
                         val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                         if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
                     }
+                    val folderPair = courseFolders.firstOrNull {
+                        it.coursePath.trim('/') == dirFullPath
+                    }?.languagePair
                     LibraryDirectoryUiModel(
                         name = dirFullPath,
                         items = sortedItems,
                         isExpanded = dirFullPath !in collapsedDirectories,
                         displayName = dirFullPath.substringAfterLast('/'),
+                        languagePair = sortedItems.firstOrNull()?.item?.languagePair ?: folderPair,
                     )
                 }
         }
@@ -887,10 +895,16 @@ data class LibraryUiState(
                     val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                     if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
                 }
+                val folderPair = if (dirName != null) {
+                    courseFolders.firstOrNull { it.coursePath.trim('/') == dirName.trim('/') }?.languagePair
+                } else {
+                    null
+                }
                 LibraryDirectoryUiModel(
                     name = dirName,
                     items = sortedItems,
                     isExpanded = dirName !in collapsedDirectories,
+                    languagePair = sortedItems.firstOrNull()?.item?.languagePair ?: folderPair,
                 )
             }
         }
@@ -2281,6 +2295,8 @@ class LibraryViewModel @Inject constructor(
                     activeAudioItem.durationMs
                 },
                 positionMs = itemStates[activeMediaId]?.positionMs ?: 0L,
+                sourceUri = activeAudioItem.sourceUri,
+                localFilePath = activeAudioItem.localFilePath,
             )
         } else {
             val lastAccessedItem = uiItems
@@ -2296,6 +2312,8 @@ class LibraryViewModel @Inject constructor(
                     isPlaying = false,
                     durationMs = lastAccessedItem.item.durationMs,
                     positionMs = lastAccessedItem.positionMs,
+                    sourceUri = lastAccessedItem.item.sourceUri,
+                    localFilePath = lastAccessedItem.item.localFilePath,
                 )
             } else {
                 null
