@@ -162,14 +162,15 @@ class LidExtractionMethodsTest {
     fun `並列の切り出し_レーンでMediaCodecを作れなければ今の方式で切り出し直し判定は同じ`() = runTest {
         val file = audioFile()
         val current = detect(rawMedia().decoder, LidExtractionMethod.CURRENT, file, CHUNKS)
-        // 最初の 2 回は資源不足で作れない（2 つのレーンの最初の切り出しが失敗する）
+        // 最初の 1 回は資源不足で作れない（どれか 1 つのレーンの最初の切り出しが失敗する）。
+        // 2 回以上にすると、失敗したレーンの切り出し直しが 2 回目に当たるかどうかがスレッドの順番で変わるので 1 回にする
         val media = Media(FakeMedia.rawFormat(durationMs = 40_000L), FakeMedia.rawPackets(40_000L)) { index ->
-            if (index < 2) throw IllegalStateException("資源不足（テスト）") else FakeRawCodec(sampleRate = 44_100, trimStartSamples = 529)
+            if (index == 0) throw IllegalStateException("資源不足（テスト）") else FakeRawCodec(sampleRate = 44_100, trimStartSamples = 529)
         }
         val parallel = detect(media.decoder, LidExtractionMethod.PARALLEL, file, CHUNKS)
 
         assertSamePcmAndResults(current, parallel, "並列（作れない MediaCodec あり）")
-        assertTrue(parallel.timings.fallbacks >= 2L, "今の方式で切り出し直した ${parallel.timings.fallbacks} 件")
+        assertTrue(parallel.timings.fallbacks >= 1L, "今の方式で切り出した ${parallel.timings.fallbacks} 件")
         assertTrue(parallel.transcriber.recentDiagnostics.value.any { it.message.startsWith("並列の切り出しに失敗したため") })
         // 今の方式で使った共有の抽出器のほかは閉じている。解放を求めれば共有の抽出器も閉じる
         assertTrue(media.extractors.count { !it.closed } <= 1)
