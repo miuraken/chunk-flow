@@ -2187,4 +2187,71 @@ class PlayerViewModelTest {
             resolveConfiguredDefaultEngineForLanguage("en", sttEngineByLanguage),
         )
     }
+
+    @Test
+    fun `言語判定のみ完了とlanguageOverrides自動消去_LID完了時は空結果警告にならずhasChunkLanguageがtrueになりDB本文更新で古いoverrideが消える`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            // 最初はテキストなし（言語判定のみ完了: completedCount == totalTargetCount, skippedEmptyChunkIds は空, 各チャンクに language のみあり）
+            update(item.id) { entry ->
+                entry.copy(
+                    transcripts = sample.transcripts.mapValues { (_, t) ->
+                        t.copy(text = "")
+                    },
+                    lookaheadStatus = LookaheadTranscriptionStatus(
+                        enabled = false,
+                        engineAvailable = true,
+                        completedCount = sample.chunks.size,
+                        totalTargetCount = sample.chunks.size,
+                        skippedEmptyChunkIds = emptySet(),
+                    ),
+                )
+            }
+        }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. 言語判定のみ完了時: hasTranscript は false だが hasChunkLanguage は true、isAllTranscriptionEmptyAfterCompletion は false
+        val initialState = viewModel.uiState.value
+        assertFalse(initialState.hasTranscript)
+        assertTrue(initialState.hasChunkLanguage)
+        assertFalse(initialState.isAllTranscriptionEmptyAfterCompletion)
+
+        // 2. チャンク 0 (元は ja) の transcript レコードがいったん未作成 (null) の状態で言語を ko に手動変更し、デバウンス完了させる
+        val chunk0Id = sample.chunks[0].id
+        val originalTranscript0 = sample.transcripts.getValue(chunk0Id)
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(transcripts = entry.transcripts - chunk0Id)
+        }
+        viewModel.onEvent(PlayerEvent.UpdateChunkLanguage(chunk0Id, LanguageTag("ko")))
+        assertEquals(LanguageTag("ko"), viewModel.uiState.value.chunks.first { it.id == chunk0Id }.language)
+        advanceTimeBy(1_100L)
+        // DB 側にまだレコードがないため languageOverrides[chunk0Id] = ko が残っている
+        assertEquals(LanguageTag("ko"), viewModel.uiState.value.chunks.first { it.id == chunk0Id }.language)
+
+        // 3. その後、文字起こし完了等で DB 側に本文ありの transcript (language = ja) が保存されると、
+        // 古い languageOverrides が消去されて DB 側の言語 (ja) と本文が UI に反映される
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                transcripts = entry.transcripts + (
+                    chunk0Id to originalTranscript0.copy(
+                        text = "自動文字起こしされた日本語テキスト",
+                        language = LanguageTag("ja"),
+                    )
+                    ),
+            )
+        }
+
+        val updatedChunk0 = viewModel.uiState.value.chunks.first { it.id == chunk0Id }
+        assertEquals("自動文字起こしされた日本語テキスト", updatedChunk0.text)
+        assertEquals(LanguageTag("ja"), updatedChunk0.language)
+        assertTrue(viewModel.uiState.value.hasTranscript)
+    }
 }

@@ -222,4 +222,32 @@ class PlayerScreenTest {
         assertEquals(60, summary.progressPercent)
         assertEquals(0.675f, summary.overallProgress, 0.001f)
     }
+
+    @Test
+    fun `言語判定のみ完了状態_skippedEmptyChunkIdsが空なら全チャンク空結果警告にならず言語フィルタが有効になる`() {
+        val c1 = ChunkUi(id = ChunkId(1L), startMs = 0L, endMs = 1_000L, text = null, language = LanguageTag("ja"))
+        val c2 = ChunkUi(id = ChunkId(2L), startMs = 1_000L, endMs = 2_000L, text = null, language = LanguageTag("ko"))
+        val c3 = ChunkUi(id = ChunkId(3L), startMs = 2_000L, endMs = 3_000L, text = null, language = LanguageTag("und"))
+
+        val lidCompletedState = PlayerUiState(
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+            chunks = listOf(c1, c2, c3),
+            lookaheadStatus = LookaheadTranscriptionStatus(
+                enabled = false,
+                completedCount = 3,
+                totalTargetCount = 3,
+                skippedEmptyChunkIds = emptySet(),
+            ),
+        )
+
+        assertFalse(lidCompletedState.hasTranscript)
+        assertTrue(lidCompletedState.hasChunkLanguage)
+        assertFalse(lidCompletedState.isAllTranscriptionEmptyAfterCompletion)
+        assertFalse(lidCompletedState.isTranscriptionRunning)
+        assertTrue(lidCompletedState.hasTranscript || lidCompletedState.hasChunkLanguage)
+
+        // und のみの場合は hasChunkLanguage が false になる
+        val undOnlyState = lidCompletedState.copy(chunks = listOf(c3))
+        assertFalse(undOnlyState.hasChunkLanguage)
+    }
 }

@@ -1071,7 +1071,7 @@ private fun ChunkDisplaySettingsStrip(
             val baseChipLabel = stringResource(R.string.player_chip_transcribe)
             val transcribedCount = state.chunks.count { !it.text.isNullOrBlank() }
             val chipLabel = if (!isRunning && state.chunks.isNotEmpty() &&
-                (transcribedCount > 0 || state.lookaheadStatus.totalTargetCount > 0)
+                (transcribedCount > 0 || state.isAllTranscriptionEmptyAfterCompletion || state.lookaheadStatus.skippedEmptyChunkIds.isNotEmpty())
             ) {
                 "$baseChipLabel $transcribedCount/${state.chunks.size}"
             } else {
@@ -1109,10 +1109,12 @@ private fun ChunkDisplaySettingsStrip(
 
         // 1. 「言語」（*すべて、{target_language_code}のみ、{base_language_code}のみ）
         val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
+        val isLanguageFilterEnabled = state.hasTranscript || state.hasChunkLanguage
+        val langFilterChipModifier = Modifier.alpha(if (isLanguageFilterEnabled) 1f else 0.28f)
         Column {
             FilterChip(
                 selected = languageFilter != LanguageFilter.ALL,
-                enabled = state.hasTranscript,
+                enabled = isLanguageFilterEnabled,
                 onClick = { langFilterMenuExpanded = true },
                 label = {
                     Text(
@@ -1122,7 +1124,7 @@ private fun ChunkDisplaySettingsStrip(
                     )
                 },
                 colors = langFilterChipColors,
-                modifier = transcriptChipModifier,
+                modifier = langFilterChipModifier,
             )
             DropdownMenu(
                 expanded = langFilterMenuExpanded,
