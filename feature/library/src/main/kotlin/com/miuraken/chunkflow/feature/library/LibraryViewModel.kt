@@ -187,14 +187,12 @@ typealias LibraryItemUi = LibraryItemUiModel
  * @property items このディレクトリ（サブディレクトリを含む）内の教材一覧（ファイル名昇順）。
  * @property isExpanded 展開中かどうか。
  * @property displayName 現在の階層で表示するディレクトリ名（末尾セグメント）。
- * @property languagePair このディレクトリの代表的な言語ペア（配下の最初の教材またはフォルダ設定の言語ペア）。
  */
 data class LibraryDirectoryUiModel(
     val name: String?,
     val items: List<LibraryItemUiModel>,
     val isExpanded: Boolean = true,
     val displayName: String? = name?.substringAfterLast('/'),
-    val languagePair: LanguagePair? = items.firstOrNull()?.item?.languagePair,
 ) {
     /** ディレクトリ配下の `transcription/` サブフォルダの対応パス案内。 */
     val transcriptionPathHint: String
@@ -830,15 +828,11 @@ data class LibraryUiState(
                         val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                         if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
                     }
-                    val folderPair = courseFolders.firstOrNull {
-                        it.coursePath.trim('/') == dirFullPath
-                    }?.languagePair
                     LibraryDirectoryUiModel(
                         name = dirFullPath,
                         items = sortedItems,
                         isExpanded = dirFullPath !in collapsedDirectories,
                         displayName = dirFullPath.substringAfterLast('/'),
-                        languagePair = sortedItems.firstOrNull()?.item?.languagePair ?: folderPair,
                     )
                 }
         }
@@ -895,16 +889,10 @@ data class LibraryUiState(
                     val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                     if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
                 }
-                val folderPair = if (dirName != null) {
-                    courseFolders.firstOrNull { it.coursePath.trim('/') == dirName.trim('/') }?.languagePair
-                } else {
-                    null
-                }
                 LibraryDirectoryUiModel(
                     name = dirName,
                     items = sortedItems,
                     isExpanded = dirName !in collapsedDirectories,
-                    languagePair = sortedItems.firstOrNull()?.item?.languagePair ?: folderPair,
                 )
             }
         }

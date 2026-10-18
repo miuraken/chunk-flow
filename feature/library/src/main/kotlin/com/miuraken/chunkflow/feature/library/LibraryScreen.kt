@@ -1763,19 +1763,6 @@ private fun LibraryDirectoryRow(
     modifier: Modifier = Modifier,
 ) {
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
-    val itemCountText = stringResource(
-        R.string.library_directory_item_count,
-        directory.items.size,
-    )
-    val listenedText = if (directory.items.isNotEmpty()) {
-        stringResource(
-            R.string.library_directory_listened_count,
-            directory.listenedCount,
-            directory.items.size,
-        )
-    } else {
-        null
-    }
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -1809,36 +1796,29 @@ private fun LibraryDirectoryRow(
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(22.dp),
             )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(
+            Spacer(modifier = Modifier.width(10.dp))
+            Row(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = directoryTitle,
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
                 Text(
-                    text = if (listenedText != null) {
-                        "$itemCountText  •  $listenedText"
-                    } else {
-                        itemCountText
-                    },
+                    text = stringResource(
+                        R.string.library_directory_item_count,
+                        directory.items.size,
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            directory.languagePair?.let { pair ->
-                Spacer(modifier = Modifier.width(8.dp))
-                LanguagePairBadge(pair = pair)
-            }
             if (!isSelectionMode) {
-                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(
                     onClick = onEditDirectoryMetadata,
                     modifier = Modifier.size(36.dp),
