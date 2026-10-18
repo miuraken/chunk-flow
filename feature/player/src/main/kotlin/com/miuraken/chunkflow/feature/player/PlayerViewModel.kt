@@ -725,6 +725,13 @@ data class PlayerUiState(
     val hasTranscript: Boolean
         get() = chunks.any { !it.text.isNullOrBlank() }
 
+    /** 言語タグ（未判定 `und` や空文字を除く）を持つチャンクが 1 件以上あるかどうか。 */
+    val hasChunkLanguage: Boolean
+        get() = chunks.any { chunk ->
+            val tag = chunk.language?.value?.trim()
+            !tag.isNullOrEmpty() && !tag.equals("und", ignoreCase = true)
+        }
+
     /** 全チャンクの文字起こし（スキップ済み・空結果スキップ済みを含む）が完了し、実行中・待機中のキューもないかどうか。 */
     val isAllTranscriptionCompleted: Boolean
         get() {
@@ -768,7 +775,8 @@ data class PlayerUiState(
             ) {
                 return false
             }
-            val finishedByCount = lookaheadStatus.totalTargetCount > 0 &&
+            val finishedByCount = lookaheadStatus.skippedEmptyChunkIds.isNotEmpty() &&
+                lookaheadStatus.totalTargetCount > 0 &&
                 lookaheadStatus.completedCount >= lookaheadStatus.totalTargetCount
             val finishedBySkippedSet = lookaheadStatus.skippedEmptyChunkIds.isNotEmpty() &&
                 chunks.all { chunk -> chunk.isSkipped || chunk.id in lookaheadStatus.skippedEmptyChunkIds }
@@ -1413,6 +1421,26 @@ class PlayerViewModel @Inject constructor(
                     }
                 }
         }
+
+        // 文字起こし完了等で DB 側の transcript（本文あり）が更新されたら、コミット待ちでない古い languageOverrides を消去する
+        viewModelScope.launch {
+            currentAnalysisSnapshot
+                .map { it.transcripts }
+                .distinctUntilChanged()
+                .collect { transcripts ->
+                    val currentOverrides = localUiState.value.languageOverrides
+                    if (currentOverrides.isEmpty()) return@collect
+                    val staleChunkIds = currentOverrides.keys.filter { chunkId ->
+                        pendingLanguageCommitJobs[chunkId]?.isActive != true &&
+                            !transcripts[chunkId]?.text.isNullOrBlank()
+                    }
+                    if (staleChunkIds.isNotEmpty()) {
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = state.languageOverrides - staleChunkIds.toSet())
+                        }
+                    }
+                }
+        }
     }
 
     /** 開いている教材の言語（学習言語・母語）のうち、端末内音声認識モデルに問題がある言語。 */
@@ -1909,15 +1937,16 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.UpdateChunkLanguage -> {
                 val id = resolveActiveMediaId() ?: return
-                // 言語バッジの表示はすぐに切り替え、文字起こしのやり直しは最後のトグルから 1 秒後にまとめて行う（誤タップ対策）
-                localUiState.update { state ->
-                    state.copy(languageOverrides = state.languageOverrides + (event.chunkId to event.language))
-                }
                 pendingLanguageCommitJobs.remove(event.chunkId)?.cancel()
-                pendingLanguageCommitJobs[event.chunkId] = viewModelScope.launch {
+                val job = viewModelScope.launch {
                     delay(LANGUAGE_TOGGLE_COMMIT_DELAY_MS)
                     pendingLanguageCommitJobs.remove(event.chunkId)
                     commitChunkLanguage(id, event.chunkId, event.language)
+                }
+                pendingLanguageCommitJobs[event.chunkId] = job
+                // 言語バッジの表示はすぐに切り替え、文字起こしのやり直しは最後のトグルから 1 秒後にまとめて行う（誤タップ対策）
+                localUiState.update { state ->
+                    state.copy(languageOverrides = state.languageOverrides + (event.chunkId to event.language))
                 }
             }
 
@@ -2562,6 +2591,13 @@ class PlayerViewModel @Inject constructor(
                             text = event.text,
                             language = event.language,
                         )
+                        val hasTranscript =
+                            analysisRepository.observeTranscripts(id).firstOrNull()?.containsKey(event.chunkId) == true
+                        if (hasTranscript) {
+                            localUiState.update { state ->
+                                state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                            }
+                        }
                         val exported = libraryRepository.exportLocalTranscriptJson(id)
                         if (exported) {
                             localUiState.update { it.copy(localTranscriptExported = true) }
@@ -3164,10 +3200,14 @@ class PlayerViewModel @Inject constructor(
                 (bookmark.positionMs >= chunk.startMs && bookmark.positionMs < chunk.endMs) ||
                     bookmark.positionMs == chunk.startMs
             }
-            val resolvedLanguage = if (chunk.id in local.languageOverrides) {
+            val hasPendingLanguageCommit = pendingLanguageCommitJobs[chunk.id]?.isActive == true
+            val resolvedLanguage = if (
+                chunk.id in local.languageOverrides &&
+                (hasPendingLanguageCommit || transcript?.text.isNullOrBlank())
+            ) {
                 local.languageOverrides[chunk.id]
             } else {
-                transcript?.language
+                transcript?.language ?: local.languageOverrides[chunk.id]
             }
             val isClearing = chunk.id in local.clearingChunkIds
             ChunkUi(
