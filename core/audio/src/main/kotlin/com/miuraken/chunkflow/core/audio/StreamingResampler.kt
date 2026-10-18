@@ -136,6 +136,38 @@ class StreamingResampler(
         (inputSamples * up + down - 1) / down
     }
 
+    /**
+     * 出力の格子が繰り返す周期の入力のサンプル数（入力と出力のレートを最大公約数で割った入力側）。
+     *
+     * 入力の [inputPeriod] × m 番目のサンプルから始めた別のリサンプラの j 番目の出力は、このリサンプラの
+     * [outputPeriod] × m + j 番目の出力と同じ入力・同じ位相から計算される（先頭のゼロの補いが届く範囲を除く）。
+     */
+    val inputPeriod: Int
+        get() = down.toInt()
+
+    /** 出力の格子が繰り返す周期の出力のサンプル数（[inputPeriod] を参照）。 */
+    val outputPeriod: Int
+        get() = up.toInt()
+
+    /** 先頭のゼロの補いが影響する出力の数の上限（これより後ろの出力は、入力の先頭より前を参照しない）。 */
+    val startupOutputs: Int
+        get() = if (passthrough) 0 else ((halfWidth.toLong() * up + down - 1) / down).toInt() + 1
+
+    /**
+     * 作った直後の状態に戻す（係数の表はそのまま使う）。同じレートの新しいストリームに使う。
+     * 戻したあとの出力は、同じ引数で新しく作ったリサンプラと同じになる。
+     */
+    fun reset() {
+        bufStart = -halfWidth.toLong()
+        bufLen = halfWidth
+        // 先頭のゼロの補い（作った直後と同じく、履歴の先頭 halfWidth 個は 0）
+        buf.fill(0f, 0, halfWidth.coerceAtMost(buf.size))
+        outLen = 0
+        inputCount = 0
+        outputCount = 0
+        finished = false
+    }
+
     private fun append(input: FloatArray, length: Int) {
         if (bufLen + length > buf.size) {
             // 次の出力で使わない古い入力を捨てる

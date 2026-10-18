@@ -94,4 +94,37 @@ class StreamingResamplerTest {
         val expected = n0.toDouble() * 16_000 / rate
         assertTrue(abs(peak - expected) <= 0.5 + 1e-9, "peak=$peak expected=$expected")
     }
+
+    @Test
+    fun `reset_新しく作った場合と同じ出力になる`() {
+        val rnd = Random(2)
+        val first = FloatArray(20_000) { rnd.nextFloat() * 2 - 1 }
+        val second = FloatArray(13_333) { rnd.nextFloat() * 2 - 1 }
+        for (rate in listOf(44_100, 48_000, 22_050, 8_000, 16_000)) {
+            val reused = StreamingResampler(rate)
+            runAll(reused, first, 4_096)
+            reused.reset()
+            assertEquals(0L, reused.inputCount)
+            assertEquals(0L, reused.outputCount)
+            assertContentEquals(runAll(StreamingResampler(rate), second, 777), runAll(reused, second, 1_000), "rate=$rate")
+        }
+    }
+
+    @Test
+    fun `周期の倍数だけ進めた位置から始める_先頭の補いの影響を除いて元の出力と完全に同じになる`() {
+        val rnd = Random(3)
+        val input = FloatArray(60_000) { rnd.nextFloat() * 2 - 1 }
+        for (rate in listOf(44_100, 48_000, 22_050, 11_025, 8_000, 32_000, 16_000)) {
+            val whole = runAll(StreamingResampler(rate), input, 4_096)
+            val probe = StreamingResampler(rate)
+            val m = 7
+            val offset = m * probe.inputPeriod
+            val shifted = runAll(StreamingResampler(rate), input.copyOfRange(offset, input.size), 1_234)
+            val skip = probe.startupOutputs
+            // 進めたリサンプラの j 番目の出力は、元の (outputPeriod × m + j) 番目の出力（先頭の補いが届く範囲と末尾を除く）
+            for (j in skip until shifted.size - 64) {
+                assertEquals(whole[probe.outputPeriod * m + j], shifted[j], "rate=$rate j=$j")
+            }
+        }
+    }
 }
