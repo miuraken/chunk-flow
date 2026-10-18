@@ -25,4 +25,14 @@ class TimeFormatTest {
         assertEquals("0.75x", formatSpeed(0.75f))
         assertEquals("1.25x", formatSpeed(1.25f))
     }
+
+    @Test
+    fun `formatCompactSpeed_末尾の不要な0を省略して整形する`() {
+        assertEquals("1x", formatCompactSpeed(1.0f))
+        assertEquals("1.5x", formatCompactSpeed(1.5f))
+        assertEquals("2x", formatCompactSpeed(2.0f))
+        assertEquals("1.25x", formatCompactSpeed(1.25f))
+        assertEquals("0.75x", formatCompactSpeed(0.75f))
+        assertEquals("0.8x", formatCompactSpeed(0.80f))
+    }
 }

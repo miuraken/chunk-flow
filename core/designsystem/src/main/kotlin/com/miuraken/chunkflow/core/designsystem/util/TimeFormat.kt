@@ -23,3 +23,8 @@ fun formatDurationMs(durationMs: Long): String {
  * 再生速度（例: `1.0f`, `1.25f`）を表示用の文字列（例: `"1.00x"`）に整形する。
  */
 fun formatSpeed(speed: Float): String = String.format(Locale.ROOT, "%.2fx", speed)
+
+/**
+ * 再生速度（例: `1.0f`, `1.5f`, `1.25f`）を末尾の不要な `0` を省略した文字列（例: `"1x"`, `"1.5x"`, `"1.25x"`）に整形する。
+ */
+fun formatCompactSpeed(speed: Float): String = String.format(Locale.ROOT, "%.2f", speed).trimEnd('0').trimEnd('.') + "x"

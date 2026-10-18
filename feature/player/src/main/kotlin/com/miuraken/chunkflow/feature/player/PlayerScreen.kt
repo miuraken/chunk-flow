@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,10 +24,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -74,14 +78,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.PreviewParameter
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -90,8 +102,8 @@ import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
+import com.miuraken.chunkflow.core.designsystem.util.formatCompactSpeed
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
-import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -299,6 +311,10 @@ fun PlayerScreen(
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showResegmentSheet by remember { mutableStateOf(false) }
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
+    var showFloatingControls by rememberSaveable { mutableStateOf(false) }
+    var floatingOffsetX by rememberSaveable { mutableFloatStateOf(0f) }
+    var floatingOffsetY by rememberSaveable { mutableFloatStateOf(0f) }
+    var isFloatingOffsetInitialized by rememberSaveable { mutableStateOf(false) }
     val seekBackSeconds = (state.seekBackMs / 1_000L).toInt().coerceAtLeast(1)
     val isAudioAnalysisRunning = state.analysis[AnalysisStage.FEATURES] is StageStatus.Running ||
         state.analysis[AnalysisStage.SEGMENTATION] is StageStatus.Running
@@ -407,6 +423,7 @@ fun PlayerScreen(
                             onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
                             onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
                             onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
+                            onToggleFloatingControls = { showFloatingControls = !showFloatingControls },
                         )
                     }
 
@@ -496,7 +513,12 @@ fun PlayerScreen(
 
                     // 5. 再生の操作（画面の下部）
                     Surface(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = { showFloatingControls = !showFloatingControls },
+                            ),
                         color = MaterialTheme.colorScheme.surfaceContainerLow,
                         tonalElevation = 2.dp,
                     ) {
@@ -533,8 +555,103 @@ fun PlayerScreen(
                                 onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
                                 onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
                                 onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
+                                onToggleFloatingControls = { showFloatingControls = !showFloatingControls },
                             )
                         }
+                    }
+                }
+            }
+
+            if (showFloatingControls) {
+                val density = LocalDensity.current
+                val maxWidthPx = with(density) { maxWidth.toPx() }
+                val maxHeightPx = with(density) { maxHeight.toPx() }
+                var floatingSize by remember { mutableStateOf(IntSize.Zero) }
+                if (!isFloatingOffsetInitialized && maxWidthPx > 0f && maxHeightPx > 0f) {
+                    floatingOffsetX = with(density) { 12.dp.toPx() }
+                    floatingOffsetY = (maxHeightPx * 0.45f).coerceAtLeast(0f)
+                    isFloatingOffsetInitialized = true
+                }
+                val maxOffsetX = (maxWidthPx - floatingSize.width).coerceAtLeast(0f)
+                val maxOffsetY = (maxHeightPx - floatingSize.height).coerceAtLeast(0f)
+                val clampedX = floatingOffsetX.coerceIn(0f, maxOffsetX)
+                val clampedY = floatingOffsetY.coerceIn(0f, maxOffsetY)
+
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier
+                        .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
+                        .widthIn(max = (maxWidth - 16.dp).coerceAtLeast(260.dp))
+                        .fillMaxWidth(if (isTwoPane) 0.52f else 0.94f)
+                        .onSizeChanged { floatingSize = it }
+                        .pointerInput(maxOffsetX, maxOffsetY) {
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                floatingOffsetX = (floatingOffsetX + dragAmount.x).coerceIn(0f, maxOffsetX)
+                                floatingOffsetY = (floatingOffsetY + dragAmount.y).coerceIn(0f, maxOffsetY)
+                            }
+                        },
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.DragHandle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = stringResource(R.string.player_floating_controls_title),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                            )
+                            IconButton(
+                                onClick = { showFloatingControls = false },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.Close,
+                                    contentDescription = stringResource(R.string.player_floating_controls_close_cd),
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+
+                        PlayerTransportControls(
+                            isPlaying = state.isPlaying,
+                            seekBackMs = state.seekBackMs,
+                            seekForwardMs = state.seekForwardMs,
+                            hasChunks = state.chunks.isNotEmpty(),
+                            hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
+                            hasNextCheckedChunk = state.hasNextCheckedChunk,
+                            hasNextMediaItem = state.nextMediaId != null,
+                            onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
+                            onSeekBack = { onEvent(PlayerEvent.SeekBack) },
+                            onSeekForward = { onEvent(PlayerEvent.SeekForward) },
+                            onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
+                            onNextChunk = { onEvent(PlayerEvent.NextChunk) },
+                            onSetSeekBackMs = { ms -> onEvent(PlayerEvent.SetSeekBackMs(ms)) },
+                            onSetSeekForwardMs = { ms -> onEvent(PlayerEvent.SetSeekForwardMs(ms)) },
+                            onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
+                            onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
+                            onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
+                            onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
+                            onToggleFloatingControls = { showFloatingControls = false },
+                        )
                     }
                 }
             }
@@ -985,14 +1102,38 @@ private fun ChunkSelectionActionStrip(
     }
 }
 
+@Composable
+private fun LanguageCodePill(
+    code: String,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = containerColor,
+        contentColor = contentColor,
+        shape = MaterialTheme.shapes.extraSmall,
+        modifier = modifier,
+    ) {
+        Text(
+            text = code,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+        )
+    }
+}
+
 /**
  * チャンクの表示に関する設定の行（チャンクリストの上に置く）。
  *
  * 表示項目:
- * - 「言語」（*すべて、{target_language_code}のみ、{base_language_code}のみ）
- * - 「学習言語を隠す」（on, *off）
+ * - 「言語」（`[base][target]`、`[base]`、`[target]`）
+ * - 「{target}を隠す」（on, *off）
  * - 「読み」（on, *off）
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChunkDisplaySettingsStrip(
     state: PlayerUiState,
@@ -1010,50 +1151,6 @@ private fun ChunkDisplaySettingsStrip(
         ?.lowercase(Locale.ROOT)
 
     val languageFilter = state.practice.languageFilter
-    val languageFilterLabel = when (languageFilter) {
-        LanguageFilter.ALL -> stringResource(R.string.player_chip_lang_filter_all)
-
-        LanguageFilter.TARGET_ONLY -> if (targetLangCode != null) {
-            stringResource(R.string.player_chip_lang_filter_code, targetLangCode)
-        } else {
-            stringResource(R.string.player_chip_lang_filter_target)
-        }
-
-        LanguageFilter.BASE_ONLY -> if (baseLangCode != null) {
-            stringResource(R.string.player_chip_lang_filter_code, baseLangCode)
-        } else {
-            stringResource(R.string.player_chip_lang_filter_base)
-        }
-    }
-    val targetMenuLabel = if (targetLangCode != null) {
-        stringResource(R.string.player_menu_lang_filter_code, targetLangCode)
-    } else {
-        stringResource(R.string.player_menu_lang_filter_target)
-    }
-    val baseMenuLabel = if (baseLangCode != null) {
-        stringResource(R.string.player_menu_lang_filter_code, baseLangCode)
-    } else {
-        stringResource(R.string.player_menu_lang_filter_base)
-    }
-
-    val langFilterChipColors = when (languageFilter) {
-        LanguageFilter.TARGET_ONLY -> FilterChipDefaults.filterChipColors(
-            selectedContainerColor = langPalette.targetBadgeContainer,
-            selectedLabelColor = langPalette.onTargetBadgeContainer,
-            selectedLeadingIconColor = langPalette.onTargetBadgeContainer,
-            selectedTrailingIconColor = langPalette.onTargetBadgeContainer,
-        )
-
-        LanguageFilter.BASE_ONLY -> FilterChipDefaults.filterChipColors(
-            selectedContainerColor = langPalette.baseBadgeContainer,
-            selectedLabelColor = langPalette.onBaseBadgeContainer,
-            selectedLeadingIconColor = langPalette.onBaseBadgeContainer,
-            selectedTrailingIconColor = langPalette.onBaseBadgeContainer,
-        )
-
-        LanguageFilter.ALL -> FilterChipDefaults.filterChipColors()
-    }
-
     val isHideTargetLangOn = state.blindMode != BlindMode.OFF
     val isReadingOn = state.showTargetRomanization
     val toggleColors = brightnessToggleChipColors()
@@ -1107,31 +1204,115 @@ private fun ChunkDisplaySettingsStrip(
             )
         }
 
-        // 1. 「言語」（*すべて、{target_language_code}のみ、{base_language_code}のみ）
+        // 1. 「言語」（[base][target]、[base]、[target]）
         val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
         val isLanguageFilterEnabled = state.hasTranscript || state.hasChunkLanguage
-        val langFilterChipModifier = Modifier.alpha(if (isLanguageFilterEnabled) 1f else 0.28f)
+        val isLangFilterSelected = languageFilter != LanguageFilter.ALL
+        val langFilterContainerColor = if (isLangFilterSelected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+        }
+        val langFilterBorder = if (isLangFilterSelected) {
+            null
+        } else {
+            FilterChipDefaults.filterChipBorder(enabled = isLanguageFilterEnabled, selected = false)
+        }
+        val baseDisplayCode = baseLangCode ?: stringResource(R.string.player_settings_base_lang_label)
+        val targetDisplayCode = targetLangCode ?: stringResource(R.string.player_settings_target_lang_label)
         Column {
-            FilterChip(
-                selected = languageFilter != LanguageFilter.ALL,
-                enabled = isLanguageFilterEnabled,
-                onClick = { langFilterMenuExpanded = true },
-                label = {
-                    Text(
-                        text = languageFilterLabel,
-                        fontWeight = if (languageFilter != LanguageFilter.ALL) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1,
-                    )
-                },
-                colors = langFilterChipColors,
-                modifier = langFilterChipModifier,
-            )
+            Surface(
+                shape = FilterChipDefaults.shape,
+                color = langFilterContainerColor,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                border = langFilterBorder,
+                modifier = Modifier
+                    .alpha(if (isLanguageFilterEnabled) 1f else 0.28f)
+                    .heightIn(min = FilterChipDefaults.Height)
+                    .clip(FilterChipDefaults.shape)
+                    .combinedClickable(
+                        enabled = isLanguageFilterEnabled,
+                        onClick = { langFilterMenuExpanded = true },
+                        onLongClick = { langFilterMenuExpanded = true },
+                    ),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    when (languageFilter) {
+                        LanguageFilter.ALL -> {
+                            if (baseLangCode != null) {
+                                LanguageCodePill(
+                                    code = baseLangCode,
+                                    containerColor = langPalette.baseBadgeContainer,
+                                    contentColor = langPalette.onBaseBadgeContainer,
+                                )
+                            }
+                            if (targetLangCode != null) {
+                                LanguageCodePill(
+                                    code = targetLangCode,
+                                    containerColor = langPalette.targetBadgeContainer,
+                                    contentColor = langPalette.onTargetBadgeContainer,
+                                )
+                            }
+                            if (baseLangCode == null && targetLangCode == null) {
+                                Text(
+                                    text = stringResource(R.string.player_chip_lang_filter_all),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+
+                        LanguageFilter.BASE_ONLY -> {
+                            LanguageCodePill(
+                                code = baseDisplayCode,
+                                containerColor = langPalette.baseBadgeContainer,
+                                contentColor = langPalette.onBaseBadgeContainer,
+                            )
+                        }
+
+                        LanguageFilter.TARGET_ONLY -> {
+                            LanguageCodePill(
+                                code = targetDisplayCode,
+                                containerColor = langPalette.targetBadgeContainer,
+                                contentColor = langPalette.onTargetBadgeContainer,
+                            )
+                        }
+                    }
+                }
+            }
             DropdownMenu(
                 expanded = langFilterMenuExpanded,
                 onDismissRequest = { langFilterMenuExpanded = false },
             ) {
                 DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_menu_lang_filter_all)) },
+                    text = {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (baseLangCode != null) {
+                                LanguageCodePill(
+                                    code = baseLangCode,
+                                    containerColor = langPalette.baseBadgeContainer,
+                                    contentColor = langPalette.onBaseBadgeContainer,
+                                )
+                            }
+                            LanguageCodePill(
+                                code = targetDisplayCode,
+                                containerColor = langPalette.targetBadgeContainer,
+                                contentColor = langPalette.onTargetBadgeContainer,
+                            )
+                            Text(
+                                text = stringResource(R.string.player_menu_lang_filter_both_play),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                            )
+                        }
+                    },
                     onClick = {
                         langFilterMenuExpanded = false
                         onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.ALL))
@@ -1139,36 +1320,19 @@ private fun ChunkDisplaySettingsStrip(
                 )
                 DropdownMenuItem(
                     text = {
-                        Surface(
-                            color = langPalette.targetBadgeContainer,
-                            contentColor = langPalette.onTargetBadgeContainer,
-                            shape = RoundedCornerShape(6.dp),
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = targetMenuLabel,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            LanguageCodePill(
+                                code = baseDisplayCode,
+                                containerColor = langPalette.baseBadgeContainer,
+                                contentColor = langPalette.onBaseBadgeContainer,
                             )
-                        }
-                    },
-                    onClick = {
-                        langFilterMenuExpanded = false
-                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
-                    },
-                )
-                DropdownMenuItem(
-                    text = {
-                        Surface(
-                            color = langPalette.baseBadgeContainer,
-                            contentColor = langPalette.onBaseBadgeContainer,
-                            shape = RoundedCornerShape(6.dp),
-                        ) {
                             Text(
-                                text = baseMenuLabel,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                text = stringResource(R.string.player_menu_lang_filter_only_play),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
                             )
                         }
                     },
@@ -1177,10 +1341,38 @@ private fun ChunkDisplaySettingsStrip(
                         onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
                     },
                 )
+                DropdownMenuItem(
+                    text = {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            LanguageCodePill(
+                                code = targetDisplayCode,
+                                containerColor = langPalette.targetBadgeContainer,
+                                contentColor = langPalette.onTargetBadgeContainer,
+                            )
+                            Text(
+                                text = stringResource(R.string.player_menu_lang_filter_only_play),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                            )
+                        }
+                    },
+                    onClick = {
+                        langFilterMenuExpanded = false
+                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
+                    },
+                )
             }
         }
 
-        // 2. 「学習言語を隠す」（on, *off）
+        // 2. 「{target_lang_code}を隠す」（on, *off）
+        val blindChipLabel = if (targetLangCode != null) {
+            stringResource(R.string.player_chip_blind_target_code, targetLangCode)
+        } else {
+            stringResource(R.string.player_chip_blind_target)
+        }
         FilterChip(
             selected = isHideTargetLangOn,
             enabled = state.hasTranscript,
@@ -1194,7 +1386,7 @@ private fun ChunkDisplaySettingsStrip(
             },
             label = {
                 Text(
-                    text = stringResource(R.string.player_chip_blind_target),
+                    text = blindChipLabel,
                     fontWeight = if (isHideTargetLangOn) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                 )
@@ -1321,7 +1513,7 @@ private fun PlaybackControlStrip(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = formatSpeed(state.customSpeed),
+                    text = formatCompactSpeed(state.customSpeed),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = if (isCustomSpeedSelected) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
@@ -1468,7 +1660,8 @@ private fun TransportTonalButton(
         color = containerColor,
         contentColor = contentColor,
         modifier = modifier
-            .heightIn(min = 48.dp)
+            .widthIn(min = 60.dp)
+            .heightIn(min = 58.dp)
             .clip(ButtonDefaults.filledTonalShape)
             .combinedClickable(
                 enabled = enabled,
@@ -1478,7 +1671,7 @@ private fun TransportTonalButton(
             .semantics { contentDescription = contentDescriptionText },
     ) {
         Box(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
             content()
@@ -1486,6 +1679,7 @@ private fun TransportTonalButton(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlayerTransportControls(
     isPlaying: Boolean,
@@ -1507,6 +1701,7 @@ private fun PlayerTransportControls(
     onSeekToNextCheckedChunk: () -> Unit,
     onOpenNextMediaItem: () -> Unit,
     modifier: Modifier = Modifier,
+    onToggleFloatingControls: () -> Unit = {},
 ) {
     var activeOverlay by remember { mutableStateOf<TransportOverlayMenu?>(null) }
     val seekBackSeconds = (seekBackMs / 1_000L).coerceAtLeast(1L)
@@ -1523,24 +1718,26 @@ private fun PlayerTransportControls(
 
     Row(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(modifier = Modifier.weight(1f, fill = false)) {
+        Box(modifier = Modifier.weight(1f)) {
             TransportTonalButton(
                 onClick = onSeekBack,
                 onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_BACK },
                 contentDescriptionText = seekBackCd,
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         imageVector = ChunkFlowIcons.SeekBack,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(24.dp),
                     )
                     Text(
                         text = stringResource(R.string.player_seek_back_label, seekBackSeconds),
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1576,22 +1773,24 @@ private fun PlayerTransportControls(
             }
         }
 
-        Box(modifier = Modifier.weight(1f, fill = false)) {
+        Box(modifier = Modifier.weight(1f)) {
             TransportTonalButton(
                 onClick = onPreviousChunk,
                 onLongClick = { activeOverlay = TransportOverlayMenu.PREVIOUS },
                 enabled = hasChunks,
                 contentDescriptionText = prevChunkCd,
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         imageVector = ChunkFlowIcons.SkipPrevious,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(24.dp),
                     )
                     Text(
                         text = stringResource(R.string.player_prev_chunk_label),
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1634,33 +1833,49 @@ private fun PlayerTransportControls(
             }
         }
 
-        FilledIconButton(
-            onClick = onTogglePlayPause,
-            modifier = Modifier.size(56.dp),
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier
+                .size(68.dp)
+                .clip(CircleShape)
+                .combinedClickable(
+                    onClick = onTogglePlayPause,
+                    onLongClick = onToggleFloatingControls,
+                )
+                .semantics {
+                    role = Role.Button
+                    contentDescription = playPauseCd
+                },
         ) {
-            Icon(
-                imageVector = if (isPlaying) ChunkFlowIcons.Pause else ChunkFlowIcons.Play,
-                contentDescription = playPauseCd,
-                modifier = Modifier.size(28.dp),
-            )
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = if (isPlaying) ChunkFlowIcons.Pause else ChunkFlowIcons.Play,
+                    contentDescription = null,
+                    modifier = Modifier.size(36.dp),
+                )
+            }
         }
 
-        Box(modifier = Modifier.weight(1f, fill = false)) {
+        Box(modifier = Modifier.weight(1f)) {
             TransportTonalButton(
                 onClick = { if (hasChunks) onNextChunk() },
                 onLongClick = { activeOverlay = TransportOverlayMenu.NEXT },
                 enabled = hasChunks || hasNextMediaItem,
                 contentDescriptionText = nextChunkCd,
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         imageVector = ChunkFlowIcons.SkipNext,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(24.dp),
                     )
                     Text(
                         text = stringResource(R.string.player_next_chunk_label),
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1704,21 +1919,23 @@ private fun PlayerTransportControls(
             }
         }
 
-        Box(modifier = Modifier.weight(1f, fill = false)) {
+        Box(modifier = Modifier.weight(1f)) {
             TransportTonalButton(
                 onClick = onSeekForward,
                 onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_FORWARD },
                 contentDescriptionText = seekForwardCd,
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
                         imageVector = ChunkFlowIcons.SeekForward,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(24.dp),
                     )
                     Text(
                         text = stringResource(R.string.player_seek_forward_label, seekForwardSeconds),
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1789,7 +2006,7 @@ private fun PlayerSpeedSheetContent(
                 shape = MaterialTheme.shapes.small,
             ) {
                 Text(
-                    text = formatSpeed(speed),
+                    text = formatCompactSpeed(speed),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -1841,11 +2058,7 @@ private fun PlayerSpeedSheetContent(
         ) {
             PlayerUiState.SPEED_PRESETS.forEach { preset ->
                 val isSelected = abs(speed - preset) < 0.01f
-                val labelText = String.format(
-                    Locale.ROOT,
-                    if (preset * 100f % 10f == 0f) "%.1fx" else "%.2fx",
-                    preset,
-                )
+                val labelText = formatCompactSpeed(preset)
                 FilterChip(
                     selected = isSelected,
                     onClick = { onSetSpeed(preset) },
