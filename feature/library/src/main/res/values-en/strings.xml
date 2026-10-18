@@ -89,4 +89,22 @@
     <string name="library_item_drive_download_button">Download audio</string>
     <string name="library_edit_delete_local_audio_copy_button">Delete local audio cache (keep on Drive)</string>
     <string name="library_recent_files_title">Recently opened files</string>
+    <string name="library_refresh_cd">Rescan and refresh folders</string>
+    <string name="library_add_folder_cd">Add folder</string>
+    <string name="library_add_file_cd">Add files</string>
+    <string name="library_tab_folders">Folders</string>
+    <string name="library_tab_files">Files</string>
+    <string name="library_tab_playlists">Playlists</string>
+    <string name="library_files_search_placeholder">Search by file name</string>
+    <string name="library_files_filter_all_languages">All</string>
+    <string name="library_files_no_matching_results">No matching files found</string>
+    <string name="library_playlist_recently_opened">Recently opened files</string>
+    <string name="library_playlist_frequently_accessed">Frequently accessed files</string>
+    <string name="library_playlist_favorites">Favorites</string>
+    <string name="library_playlist_up_next_queue">Up next queue</string>
+    <string name="library_playlist_empty">No items in this list</string>
+    <string name="library_favorite_add_cd">Add to favorites</string>
+    <string name="library_favorite_remove_cd">Remove from favorites</string>
+    <string name="library_queue_add_cd">Add to up next queue</string>
+    <string name="library_queue_remove_cd">Remove from queue</string>
 </resources>

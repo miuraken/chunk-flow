@@ -89,4 +89,22 @@
     <string name="library_item_drive_download_button">音声をDL</string>
     <string name="library_edit_delete_local_audio_copy_button">ローカルの音声キャッシュを削除（Drive 未DLに戻す）</string>
     <string name="library_recent_files_title">最近開いたファイル</string>
+    <string name="library_refresh_cd">フォルダを再スキャン・更新</string>
+    <string name="library_add_folder_cd">フォルダを追加</string>
+    <string name="library_add_file_cd">ファイルを追加</string>
+    <string name="library_tab_folders">フォルダ</string>
+    <string name="library_tab_files">ファイル</string>
+    <string name="library_tab_playlists">再生リスト</string>
+    <string name="library_files_search_placeholder">ファイル名で検索</string>
+    <string name="library_files_filter_all_languages">すべて</string>
+    <string name="library_files_no_matching_results">条件に一致するファイルがありません</string>
+    <string name="library_playlist_recently_opened">最近開いたファイル</string>
+    <string name="library_playlist_frequently_accessed">よくアクセスするファイル</string>
+    <string name="library_playlist_favorites">お気に入り</string>
+    <string name="library_playlist_up_next_queue">次に再生するキュー</string>
+    <string name="library_playlist_empty">該当するファイルがありません</string>
+    <string name="library_favorite_add_cd">お気に入りに追加</string>
+    <string name="library_favorite_remove_cd">お気に入りを解除</string>
+    <string name="library_queue_add_cd">次に再生するキューに追加</string>
+    <string name="library_queue_remove_cd">キューから削除</string>
 </resources>

@@ -672,6 +672,217 @@ object ChunkFlowIcons {
         }
     }
 
+    /** フォルダ追加（+ 付きフォルダ）アイコン。 */
+    val CreateNewFolder: ImageVector by lazy {
+        materialIcon(name = "CreateNewFolder") {
+            moveTo(20f, 6f)
+            horizontalLineToRelative(-8f)
+            lineToRelative(-2f, -2f)
+            lineTo(4f, 4f)
+            curveToRelative(-1.11f, 0f, -1.99f, 0.89f, -1.99f, 2f)
+            lineTo(2f, 18f)
+            curveToRelative(0f, 1.11f, 0.89f, 2f, 2f, 2f)
+            horizontalLineToRelative(16f)
+            curveToRelative(1.11f, 0f, 2f, -0.89f, 2f, -2f)
+            lineTo(22f, 8f)
+            curveToRelative(0f, -1.11f, -0.89f, -2f, -2f, -2f)
+            close()
+            moveTo(19f, 14f)
+            horizontalLineToRelative(-3f)
+            verticalLineToRelative(3f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(-3f)
+            horizontalLineToRelative(-3f)
+            verticalLineToRelative(-2f)
+            horizontalLineToRelative(3f)
+            lineTo(14f, 9f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(3f)
+            horizontalLineToRelative(3f)
+            verticalLineToRelative(2f)
+            close()
+        }
+    }
+
+    /** ファイル追加（+ 付きドキュメント）アイコン。 */
+    val NoteAdd: ImageVector by lazy {
+        materialIcon(name = "NoteAdd") {
+            moveTo(14f, 2f)
+            lineTo(6f, 2f)
+            curveToRelative(-1.1f, 0f, -1.99f, 0.9f, -1.99f, 2f)
+            lineTo(4f, 20f)
+            curveToRelative(0f, 1.1f, 0.89f, 2f, 1.99f, 2f)
+            lineTo(18f, 22f)
+            curveToRelative(1.1f, 0f, 2f, -0.9f, 2f, -2f)
+            lineTo(20f, 8f)
+            lineToRelative(-6f, -6f)
+            close()
+            moveTo(16f, 16f)
+            horizontalLineToRelative(-3f)
+            verticalLineToRelative(3f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(-3f)
+            lineTo(8f, 16f)
+            verticalLineToRelative(-2f)
+            horizontalLineToRelative(3f)
+            verticalLineToRelative(-3f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(3f)
+            horizontalLineToRelative(3f)
+            verticalLineToRelative(2f)
+            close()
+            moveTo(13f, 9f)
+            lineTo(13f, 3.5f)
+            lineTo(18.5f, 9f)
+            lineTo(13f, 9f)
+            close()
+        }
+    }
+
+    /** 履歴（時計）アイコン。 */
+    val Schedule: ImageVector by lazy {
+        materialIcon(name = "Schedule") {
+            moveTo(11.99f, 2f)
+            curveTo(6.47f, 2f, 2f, 6.48f, 2f, 12f)
+            reflectiveCurveToRelative(4.47f, 10f, 9.99f, 10f)
+            curveTo(17.52f, 22f, 22f, 17.52f, 22f, 12f)
+            reflectiveCurveTo(17.52f, 2f, 11.99f, 2f)
+            close()
+            moveTo(12f, 20f)
+            curveToRelative(-4.42f, 0f, -8f, -3.58f, -8f, -8f)
+            reflectiveCurveToRelative(3.58f, -8f, 8f, -8f)
+            reflectiveCurveToRelative(8f, 3.58f, 8f, 8f)
+            reflectiveCurveToRelative(-3.58f, 8f, -8f, 8f)
+            close()
+            moveTo(12.5f, 7f)
+            lineTo(11f, 7f)
+            verticalLineToRelative(6f)
+            lineToRelative(5.25f, 3.15f)
+            lineToRelative(0.75f, -1.23f)
+            lineToRelative(-4.5f, -2.67f)
+            close()
+        }
+    }
+
+    /** よく再生する・上昇トレンドアイコン。 */
+    val TrendingUp: ImageVector by lazy {
+        materialIcon(name = "TrendingUp") {
+            moveTo(16f, 6f)
+            lineToRelative(2.29f, 2.29f)
+            lineToRelative(-4.88f, 4.88f)
+            lineToRelative(-4f, -4f)
+            lineTo(2f, 16.59f)
+            lineTo(3.41f, 18f)
+            lineToRelative(6f, -6f)
+            lineToRelative(4f, 4f)
+            lineToRelative(6.3f, -6.29f)
+            lineTo(22f, 12f)
+            lineTo(22f, 6f)
+            close()
+        }
+    }
+
+    /** お気に入り（ハート塗りつぶし）アイコン。 */
+    val Favorite: ImageVector by lazy {
+        materialIcon(name = "Favorite") {
+            moveTo(12f, 21.35f)
+            lineToRelative(-1.45f, -1.32f)
+            curveTo(5.4f, 15.36f, 2f, 12.28f, 2f, 8.5f)
+            curveTo(2f, 5.42f, 4.42f, 3f, 7.5f, 3f)
+            curveToRelative(1.74f, 0f, 3.41f, 0.81f, 4.5f, 2.09f)
+            curveTo(13.09f, 3.81f, 14.76f, 3f, 16.5f, 3f)
+            curveTo(19.58f, 3f, 22f, 5.42f, 22f, 8.5f)
+            curveToRelative(0f, 3.78f, -3.4f, 6.86f, -8.55f, 11.54f)
+            lineTo(12f, 21.35f)
+            close()
+        }
+    }
+
+    /** お気に入り未設定（ハート枠線）アイコン。 */
+    val FavoriteBorder: ImageVector by lazy {
+        materialIcon(name = "FavoriteBorder") {
+            moveTo(16.5f, 3f)
+            curveToRelative(-1.74f, 0f, -3.41f, 0.81f, -4.5f, 2.09f)
+            curveTo(10.91f, 3.81f, 9.24f, 3f, 7.5f, 3f)
+            curveTo(4.42f, 3f, 2f, 5.42f, 2f, 8.5f)
+            curveToRelative(0f, 3.78f, -3.4f, 6.86f, -8.55f, 11.54f)
+            lineTo(12f, 21.35f)
+            lineToRelative(-1.45f, -1.32f)
+            curveTo(5.4f, 15.36f, 2f, 12.28f, 2f, 8.5f)
+            close()
+            moveTo(12.1f, 18.55f)
+            lineToRelative(-0.1f, 0.1f)
+            lineToRelative(-0.1f, -0.1f)
+            curveTo(7.14f, 14.24f, 4f, 11.39f, 4f, 8.5f)
+            curveTo(4f, 6.5f, 5.5f, 5f, 7.5f, 5f)
+            curveToRelative(1.54f, 0f, 3.04f, 0.99f, 3.57f, 2.36f)
+            horizontalLineToRelative(1.87f)
+            curveTo(13.46f, 5.99f, 14.96f, 5f, 16.5f, 5f)
+            curveToRelative(2f, 0f, 3.5f, 1.5f, 3.5f, 3.5f)
+            curveToRelative(0f, 2.89f, -3.14f, 5.74f, -7.9f, 10.05f)
+            close()
+        }
+    }
+
+    /** 再生キュー（QueueMusic）アイコン。 */
+    val QueueMusic: ImageVector by lazy {
+        materialIcon(name = "QueueMusic") {
+            moveTo(15f, 6f)
+            lineTo(3f, 6f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(12f)
+            lineTo(15f, 6f)
+            close()
+            moveTo(15f, 10f)
+            lineTo(3f, 10f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(12f)
+            verticalLineToRelative(-2f)
+            close()
+            moveTo(3f, 16f)
+            horizontalLineToRelative(8f)
+            verticalLineToRelative(-2f)
+            lineTo(3f, 14f)
+            verticalLineToRelative(2f)
+            close()
+            moveTo(17f, 6f)
+            verticalLineToRelative(8.18f)
+            curveTo(16.69f, 14.07f, 16.35f, 14f, 16f, 14f)
+            curveToRelative(-1.66f, 0f, -3f, 1.34f, -3f, 3f)
+            reflectiveCurveToRelative(1.34f, 3f, 3f, 3f)
+            reflectiveCurveToRelative(3f, -1.34f, 3f, -3f)
+            lineTo(19f, 8f)
+            horizontalLineToRelative(3f)
+            lineTo(22f, 6f)
+            horizontalLineToRelative(-5f)
+            close()
+        }
+    }
+
+    /** 三点リーダー（横）アイコン。 */
+    val MoreHoriz: ImageVector by lazy {
+        materialIcon(name = "MoreHoriz") {
+            moveTo(6f, 10f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            reflectiveCurveToRelative(0.9f, 2f, 2f, 2f)
+            reflectiveCurveToRelative(2f, -0.9f, 2f, -2f)
+            reflectiveCurveToRelative(-0.9f, -2f, -2f, -2f)
+            close()
+            moveTo(18f, 10f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            reflectiveCurveToRelative(0.9f, 2f, 2f, 2f)
+            reflectiveCurveToRelative(2f, -0.9f, 2f, -2f)
+            reflectiveCurveToRelative(-0.9f, -2f, -2f, -2f)
+            close()
+            moveTo(12f, 10f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            reflectiveCurveToRelative(0.9f, 2f, 2f, 2f)
+            reflectiveCurveToRelative(2f, -0.9f, 2f, -2f)
+            reflectiveCurveToRelative(-0.9f, -2f, -2f, -2f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

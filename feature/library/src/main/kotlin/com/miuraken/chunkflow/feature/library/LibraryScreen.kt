@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -40,6 +42,7 @@ import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,9 +51,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -64,6 +69,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -287,7 +293,11 @@ fun LibraryScreen(
     val currentDirs = state.currentDirectories
     val currentFiles = state.currentFiles
 
-    BackHandler(enabled = state.isSelectionMode || state.currentDirectoryPath != null) {
+    val canNavigateBack = state.isSelectionMode ||
+        (state.selectedTab == LibraryViewTab.FOLDERS && state.currentDirectoryPath != null) ||
+        (state.selectedTab == LibraryViewTab.PLAYLISTS && state.selectedPlaylistCategory != null)
+
+    BackHandler(enabled = canNavigateBack) {
         onEvent(LibraryEvent.NavigateUp)
     }
 
@@ -313,27 +323,16 @@ fun LibraryScreen(
                                 contentDescription = stringResource(R.string.library_selection_clear),
                             )
                         }
-                    } else if (state.currentDirectoryPath != null) {
-                        IconButton(onClick = { onEvent(LibraryEvent.NavigateUp) }) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.ArrowBack,
-                                contentDescription = stringResource(R.string.library_navigate_up),
-                            )
-                        }
                     }
                 },
                 title = {
-                    val titleText = when {
-                        state.isSelectionMode -> stringResource(
+                    val titleText = if (state.isSelectionMode) {
+                        stringResource(
                             R.string.library_selection_count,
                             state.selectedCount,
                         )
-
-                        state.currentDirectoryPath != null -> {
-                            state.currentDirectoryPath.substringAfterLast('/')
-                        }
-
-                        else -> stringResource(R.string.library_title)
+                    } else {
+                        stringResource(R.string.library_title)
                     }
                     Text(
                         text = titleText,
@@ -362,25 +361,22 @@ fun LibraryScreen(
                             )
                         }
                     } else {
-                        IconButton(onClick = { onEvent(LibraryEvent.SyncFromDrive) }) {
+                        IconButton(onClick = { onEvent(LibraryEvent.RescanLocalDirectories) }) {
                             Icon(
                                 imageVector = ChunkFlowIcons.Sync,
-                                contentDescription = stringResource(R.string.library_drive_sync_button),
+                                contentDescription = stringResource(R.string.library_refresh_cd),
                             )
                         }
-                        FilledTonalButton(
-                            onClick = { onEvent(LibraryEvent.RequestImportDirectory) },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        ) {
+                        IconButton(onClick = { onEvent(LibraryEvent.RequestImportDirectory) }) {
                             Icon(
-                                imageVector = ChunkFlowIcons.Folder,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
+                                imageVector = ChunkFlowIcons.CreateNewFolder,
+                                contentDescription = stringResource(R.string.library_add_folder_cd),
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = stringResource(R.string.library_import_directory_button),
-                                maxLines = 1,
+                        }
+                        IconButton(onClick = { onEvent(LibraryEvent.RequestImport) }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.NoteAdd,
+                                contentDescription = stringResource(R.string.library_add_file_cd),
                             )
                         }
                         TextButton(onClick = { onEvent(LibraryEvent.OpenSettings) }) {
@@ -416,7 +412,12 @@ fun LibraryScreen(
                 onDismiss = { onEvent(LibraryEvent.DismissImportStatus) },
             )
 
-            if (state.items.isEmpty() && state.courseFolders.isEmpty()) {
+            LibraryViewTabRow(
+                selectedTab = state.selectedTab,
+                onSelectTab = { tab -> onEvent(LibraryEvent.SelectTab(tab)) },
+            )
+
+            if (state.items.isEmpty() && state.courseFolders.isEmpty() && state.selectedTab != LibraryViewTab.PLAYLISTS) {
                 LibraryEmptyContent(
                     onImportDirectoryClick = { onEvent(LibraryEvent.RequestImportDirectory) },
                     onImportFilesClick = { onEvent(LibraryEvent.RequestImport) },
@@ -424,120 +425,31 @@ fun LibraryScreen(
                     modifier = Modifier.weight(1f),
                 )
             } else {
-                val hasRecentItems = state.recentItems.isNotEmpty()
-                var isRecentFilesExpanded by rememberSaveable { mutableStateOf(true) }
-                LibraryActionToolbar(
-                    onSelectDirectory = { onEvent(LibraryEvent.RequestImportDirectory) },
-                    onImportFiles = { onEvent(LibraryEvent.RequestImport) },
-                    onCreateVirtualFolder = { showCreateFolderDialog = true },
-                    onRescanDirectories = { onEvent(LibraryEvent.RescanLocalDirectories) },
-                    onImportTranscript = { onEvent(LibraryEvent.RequestImportTranscript) },
-                    onSyncFromDrive = { onEvent(LibraryEvent.SyncFromDrive) },
-                )
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(if (hasRecentItems && isRecentFilesExpanded) 2f else 1f),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    items(
-                        items = currentDirs,
-                        key = { dir -> "dir_${dir.name.orEmpty()}" },
-                    ) { directory ->
-                        val dirPath = directory.name.orEmpty()
-                        val isSelected = dirPath in state.selectedDirectoryPaths
-                        LibraryDirectoryRow(
-                            directory = directory,
-                            isSelectionMode = state.isSelectionMode,
-                            isSelected = isSelected,
-                            onClick = {
-                                if (state.isSelectionMode) {
-                                    onEvent(LibraryEvent.ToggleDirectorySelection(dirPath))
-                                } else {
-                                    onEvent(LibraryEvent.OpenDirectory(dirPath))
-                                }
-                            },
-                            onLongClick = {
-                                if (dirPath.isNotEmpty()) {
-                                    onEvent(LibraryEvent.ToggleDirectorySelection(dirPath))
-                                }
-                            },
-                            onEditDirectoryMetadata = {
-                                onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
-                            },
-                            onDeleteDirectory = {
-                                if (dirPath.isNotEmpty()) {
-                                    onEvent(LibraryEvent.RequestDeleteDirectory(dirPath))
-                                }
-                            },
-                            modifier = Modifier.padding(bottom = 8.dp),
+                when (state.selectedTab) {
+                    LibraryViewTab.FOLDERS -> {
+                        LibraryFoldersTabContent(
+                            state = state,
+                            listState = listState,
+                            onEvent = onEvent,
+                            modifier = Modifier.weight(1f),
                         )
                     }
-                    itemsIndexed(
-                        items = currentFiles,
-                        key = { _, itemModel -> "file_${itemModel.item.id.value}" },
-                    ) { index, itemModel ->
-                        val isFirstFile = index == 0
-                        val isLastFile = index == currentFiles.lastIndex
-                        val isSelected = itemModel.item.id in state.selectedItemIds
-                        val shape = when {
-                            isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
-                            isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
-                            isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
-                            else -> RectangleShape
-                        }
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = if (isSelected) {
-                                MaterialTheme.colorScheme.secondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerLow
-                            },
-                            shape = shape,
-                        ) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                LibraryItemRow(
-                                    itemModel = itemModel,
-                                    isSelectionMode = state.isSelectionMode,
-                                    isSelected = isSelected,
-                                    onClick = {
-                                        if (state.isSelectionMode) {
-                                            onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
-                                        } else {
-                                            onEvent(LibraryEvent.OpenItem(itemModel.item.id))
-                                        }
-                                    },
-                                    onLongClick = {
-                                        onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
-                                    },
-                                    onEditMetadataClick = {
-                                        onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
-                                    },
-                                    onDeleteClick = {
-                                        onEvent(LibraryEvent.RequestDelete(itemModel.item))
-                                    },
-                                    onDownloadDriveAudioClick = {
-                                        onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
-                                    },
-                                )
-                                if (!isLastFile) {
-                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                                }
-                            }
-                        }
+
+                    LibraryViewTab.FILES -> {
+                        LibraryFilesTabContent(
+                            state = state,
+                            onEvent = onEvent,
+                            modifier = Modifier.weight(1f),
+                        )
                     }
-                }
-                if (hasRecentItems) {
-                    RecentFilesSection(
-                        recentItems = state.recentItems,
-                        isExpanded = isRecentFilesExpanded,
-                        onToggleExpanded = { isRecentFilesExpanded = !isRecentFilesExpanded },
-                        onOpenItem = { id -> onEvent(LibraryEvent.OpenItem(id)) },
-                        modifier = if (isRecentFilesExpanded) {
-                            Modifier.weight(1f)
-                        } else {
-                            Modifier
-                        },
-                    )
+
+                    LibraryViewTab.PLAYLISTS -> {
+                        LibraryPlaylistsTabContent(
+                            state = state,
+                            onEvent = onEvent,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
         }
@@ -685,115 +597,658 @@ fun LibraryScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LibraryActionToolbar(
-    onSelectDirectory: () -> Unit,
-    onImportFiles: () -> Unit,
-    onImportTranscript: () -> Unit,
-    onSyncFromDrive: () -> Unit,
+private fun LibraryViewTabRow(
+    selectedTab: LibraryViewTab,
+    onSelectTab: (LibraryViewTab) -> Unit,
     modifier: Modifier = Modifier,
-    onCreateVirtualFolder: () -> Unit = {},
-    onRescanDirectories: () -> Unit = {},
+) {
+    PrimaryTabRow(
+        selectedTabIndex = selectedTab.ordinal,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        LibraryViewTab.entries.forEach { tab ->
+            val labelRes = when (tab) {
+                LibraryViewTab.FOLDERS -> R.string.library_tab_folders
+                LibraryViewTab.FILES -> R.string.library_tab_files
+                LibraryViewTab.PLAYLISTS -> R.string.library_tab_playlists
+            }
+            Tab(
+                selected = selectedTab == tab,
+                onClick = { onSelectTab(tab) },
+                text = {
+                    Text(
+                        text = stringResource(labelRes),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LibraryFoldersTabContent(
+    state: LibraryUiState,
+    listState: LazyListState,
+    onEvent: (LibraryEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val currentDirs = state.currentDirectories
+    val currentFiles = state.currentFiles
+    val hasRecentItems = state.recentItems.isNotEmpty()
+    var isRecentFilesExpanded by rememberSaveable { mutableStateOf(true) }
+    val currentFolderPath = state.currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        if (currentFolderPath != null) {
+            val totalItemsInFolder = state.itemsInDirectoryTree(currentFolderPath).size
+            LibraryCurrentFolderHeader(
+                folderPath = currentFolderPath,
+                itemCount = totalItemsInFolder,
+                isSelectionMode = state.isSelectionMode,
+                onNavigateUp = { onEvent(LibraryEvent.NavigateUp) },
+                onEditDirectoryMetadata = {
+                    onEvent(LibraryEvent.RequestEditDirectoryMetadata(currentFolderPath))
+                },
+                onDeleteDirectory = {
+                    onEvent(LibraryEvent.RequestDeleteDirectory(currentFolderPath))
+                },
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+            )
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(if (hasRecentItems && isRecentFilesExpanded) 2f else 1f),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            items(
+                items = currentDirs,
+                key = { dir -> "dir_${dir.name.orEmpty()}" },
+            ) { directory ->
+                val dirPath = directory.name.orEmpty()
+                val isSelected = dirPath in state.selectedDirectoryPaths
+                LibraryDirectoryRow(
+                    directory = directory,
+                    isSelectionMode = state.isSelectionMode,
+                    isSelected = isSelected,
+                    onClick = {
+                        if (state.isSelectionMode) {
+                            onEvent(LibraryEvent.ToggleDirectorySelection(dirPath))
+                        } else {
+                            onEvent(LibraryEvent.OpenDirectory(dirPath))
+                        }
+                    },
+                    onLongClick = {
+                        if (dirPath.isNotEmpty()) {
+                            onEvent(LibraryEvent.ToggleDirectorySelection(dirPath))
+                        }
+                    },
+                    onEditDirectoryMetadata = {
+                        onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
+                    },
+                    onDeleteDirectory = {
+                        if (dirPath.isNotEmpty()) {
+                            onEvent(LibraryEvent.RequestDeleteDirectory(dirPath))
+                        }
+                    },
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
+            itemsIndexed(
+                items = currentFiles,
+                key = { _, itemModel -> "file_${itemModel.item.id.value}" },
+            ) { index, itemModel ->
+                val isFirstFile = index == 0
+                val isLastFile = index == currentFiles.lastIndex
+                val isSelected = itemModel.item.id in state.selectedItemIds
+                val shape = when {
+                    isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
+                    isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
+                    isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                    else -> RectangleShape
+                }
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerLow
+                    },
+                    shape = shape,
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        LibraryItemRow(
+                            itemModel = itemModel,
+                            isSelectionMode = state.isSelectionMode,
+                            isSelected = isSelected,
+                            onClick = {
+                                if (state.isSelectionMode) {
+                                    onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                                } else {
+                                    onEvent(LibraryEvent.OpenItem(itemModel.item.id))
+                                }
+                            },
+                            onLongClick = {
+                                onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                            },
+                            onEditMetadataClick = {
+                                onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
+                            },
+                            onDeleteClick = {
+                                onEvent(LibraryEvent.RequestDelete(itemModel.item))
+                            },
+                            onDownloadDriveAudioClick = {
+                                onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
+                            },
+                            isFavorite = itemModel.item.id in state.favoriteItemIds,
+                            onToggleFavoriteClick = {
+                                onEvent(LibraryEvent.ToggleFavorite(itemModel.item.id))
+                            },
+                            isQueued = itemModel.item.id in state.queuedItemIds,
+                            onToggleQueueClick = {
+                                onEvent(LibraryEvent.ToggleQueueItem(itemModel.item.id))
+                            },
+                        )
+                        if (!isLastFile) {
+                            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        if (hasRecentItems) {
+            RecentFilesSection(
+                recentItems = state.recentItems,
+                isExpanded = isRecentFilesExpanded,
+                onToggleExpanded = { isRecentFilesExpanded = !isRecentFilesExpanded },
+                onOpenItem = { id -> onEvent(LibraryEvent.OpenItem(id)) },
+                modifier = if (isRecentFilesExpanded) {
+                    Modifier.weight(1f)
+                } else {
+                    Modifier
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LibraryCurrentFolderHeader(
+    folderPath: String,
+    itemCount: Int,
+    isSelectionMode: Boolean,
+    onNavigateUp: () -> Unit,
+    onEditDirectoryMetadata: () -> Unit,
+    onDeleteDirectory: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val hierarchicalTitle = folderPath.replace("/", " / ")
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onNavigateUp)
+                .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.Folder,
+                contentDescription = stringResource(R.string.library_navigate_up),
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = hierarchicalTitle,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Text(
+                    text = stringResource(
+                        R.string.library_directory_item_count,
+                        itemCount,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (!isSelectionMode) {
+                IconButton(
+                    onClick = onEditDirectoryMetadata,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Edit,
+                        contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                IconButton(
+                    onClick = onDeleteDirectory,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Delete,
+                        contentDescription = stringResource(
+                            R.string.library_delete_content_description,
+                            hierarchicalTitle,
+                        ),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryFilesTabContent(
+    state: LibraryUiState,
+    onEvent: (LibraryEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val filteredFiles = state.filteredAllFiles
+    val targetLanguages = state.availableTargetLanguages
+
+    Column(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = state.fileSearchQuery,
+                onValueChange = { onEvent(LibraryEvent.UpdateFileSearchQuery(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(text = stringResource(R.string.library_files_search_placeholder))
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Search,
+                        contentDescription = null,
+                    )
+                },
+                trailingIcon = {
+                    if (state.fileSearchQuery.isNotEmpty()) {
+                        IconButton(onClick = { onEvent(LibraryEvent.UpdateFileSearchQuery("")) }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Close,
+                                contentDescription = stringResource(R.string.library_selection_clear),
+                            )
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(),
+            )
+
+            if (targetLanguages.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val activeFilterCode = state.fileTargetLanguageFilter?.value?.lowercase(Locale.ROOT)
+                    FilterChip(
+                        selected = activeFilterCode == null,
+                        onClick = { onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null)) },
+                        label = { Text(text = stringResource(R.string.library_files_filter_all_languages)) },
+                    )
+                    targetLanguages.forEach { lang ->
+                        val code = lang.value.lowercase(Locale.ROOT)
+                        val isSelected = activeFilterCode == code
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                onEvent(
+                                    LibraryEvent.SelectFileTargetLanguageFilter(
+                                        if (isSelected) null else LanguageTag(code),
+                                    ),
+                                )
+                            },
+                            label = { Text(text = code) },
+                        )
+                    }
+                }
+            }
+        }
+
+        if (filteredFiles.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = stringResource(R.string.library_files_no_matching_results),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                itemsIndexed(
+                    items = filteredFiles,
+                    key = { _, itemModel -> "all_file_${itemModel.item.id.value}" },
+                ) { index, itemModel ->
+                    val isFirstFile = index == 0
+                    val isLastFile = index == filteredFiles.lastIndex
+                    val isSelected = itemModel.item.id in state.selectedItemIds
+                    val shape = when {
+                        isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
+                        isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
+                        isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                        else -> RectangleShape
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        },
+                        shape = shape,
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            LibraryItemRow(
+                                itemModel = itemModel,
+                                isSelectionMode = state.isSelectionMode,
+                                isSelected = isSelected,
+                                onClick = {
+                                    if (state.isSelectionMode) {
+                                        onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                                    } else {
+                                        onEvent(LibraryEvent.OpenItem(itemModel.item.id))
+                                    }
+                                },
+                                onLongClick = {
+                                    onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                                },
+                                onEditMetadataClick = {
+                                    onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
+                                },
+                                onDeleteClick = {
+                                    onEvent(LibraryEvent.RequestDelete(itemModel.item))
+                                },
+                                onDownloadDriveAudioClick = {
+                                    onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
+                                },
+                                isFavorite = itemModel.item.id in state.favoriteItemIds,
+                                onToggleFavoriteClick = {
+                                    onEvent(LibraryEvent.ToggleFavorite(itemModel.item.id))
+                                },
+                                isQueued = itemModel.item.id in state.queuedItemIds,
+                                onToggleQueueClick = {
+                                    onEvent(LibraryEvent.ToggleQueueItem(itemModel.item.id))
+                                },
+                            )
+                            if (!isLastFile) {
+                                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryPlaylistsTabContent(
+    state: LibraryUiState,
+    onEvent: (LibraryEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val activeCategory = state.selectedPlaylistCategory
+
+    if (activeCategory == null) {
+        LazyColumn(
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp),
+        ) {
+            itemsIndexed(
+                items = LibraryPlaylistCategory.entries,
+                key = { _, category -> "playlist_${category.name}" },
+            ) { index, category ->
+                val count = state.playlistItemsFor(category).size
+                LibraryPlaylistCategoryRow(
+                    category = category,
+                    itemCount = count,
+                    onClick = { onEvent(LibraryEvent.SelectPlaylistCategory(category)) },
+                )
+                if (index < LibraryPlaylistCategory.entries.lastIndex) {
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                }
+            }
+        }
+    } else {
+        val playlistItems = state.playlistItemsFor(activeCategory)
+        Column(modifier = modifier.fillMaxSize()) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onEvent(LibraryEvent.SelectPlaylistCategory(null)) }
+                        .padding(start = 8.dp, top = 8.dp, bottom = 8.dp, end = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = { onEvent(LibraryEvent.SelectPlaylistCategory(null)) }) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.ArrowBack,
+                            contentDescription = stringResource(R.string.library_navigate_up),
+                        )
+                    }
+                    Icon(
+                        imageVector = playlistCategoryIcon(activeCategory),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = playlistCategoryTitle(activeCategory),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = stringResource(R.string.library_directory_item_count, playlistItems.size),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            if (playlistItems.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(R.string.library_playlist_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    itemsIndexed(
+                        items = playlistItems,
+                        key = { _, itemModel -> "playlist_item_${itemModel.item.id.value}" },
+                    ) { index, itemModel ->
+                        val isFirstFile = index == 0
+                        val isLastFile = index == playlistItems.lastIndex
+                        val isSelected = itemModel.item.id in state.selectedItemIds
+                        val shape = when {
+                            isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
+                            isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
+                            isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                            else -> RectangleShape
+                        }
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerLow
+                            },
+                            shape = shape,
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                LibraryItemRow(
+                                    itemModel = itemModel,
+                                    isSelectionMode = state.isSelectionMode,
+                                    isSelected = isSelected,
+                                    onClick = {
+                                        if (state.isSelectionMode) {
+                                            onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                                        } else {
+                                            onEvent(LibraryEvent.OpenItem(itemModel.item.id))
+                                        }
+                                    },
+                                    onLongClick = {
+                                        onEvent(LibraryEvent.ToggleItemSelection(itemModel.item.id))
+                                    },
+                                    onEditMetadataClick = {
+                                        onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
+                                    },
+                                    onDeleteClick = {
+                                        onEvent(LibraryEvent.RequestDelete(itemModel.item))
+                                    },
+                                    onDownloadDriveAudioClick = {
+                                        onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
+                                    },
+                                    isFavorite = itemModel.item.id in state.favoriteItemIds,
+                                    onToggleFavoriteClick = {
+                                        onEvent(LibraryEvent.ToggleFavorite(itemModel.item.id))
+                                    },
+                                    isQueued = itemModel.item.id in state.queuedItemIds,
+                                    onToggleQueueClick = {
+                                        onEvent(LibraryEvent.ToggleQueueItem(itemModel.item.id))
+                                    },
+                                )
+                                if (!isLastFile) {
+                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryPlaylistCategoryRow(
+    category: LibraryPlaylistCategory,
+    itemCount: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        OutlinedButton(
-            onClick = onSelectDirectory,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        Surface(
+            modifier = Modifier.size(56.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(14.dp),
         ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Folder,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = playlistCategoryIcon(category),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = stringResource(R.string.library_import_directory_button),
-                style = MaterialTheme.typography.labelMedium,
+                text = playlistCategoryTitle(category),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = stringResource(R.string.library_directory_item_count, itemCount),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        OutlinedButton(
-            onClick = onImportFiles,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Add,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = stringResource(R.string.library_import_button),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-        OutlinedButton(
-            onClick = onImportTranscript,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Description,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = stringResource(R.string.library_import_transcript_button),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-        OutlinedButton(
-            onClick = onCreateVirtualFolder,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Folder,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = stringResource(R.string.library_create_virtual_folder_button),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-        OutlinedButton(
-            onClick = onRescanDirectories,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Sync,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = stringResource(R.string.library_rescan_directories_button),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
-        OutlinedButton(
-            onClick = onSyncFromDrive,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.Sync,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(
-                text = stringResource(R.string.library_drive_sync_button),
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
+        Icon(
+            imageVector = ChunkFlowIcons.MoreHoriz,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp),
+        )
     }
+}
+
+@Composable
+private fun playlistCategoryTitle(category: LibraryPlaylistCategory): String = when (category) {
+    LibraryPlaylistCategory.RECENTLY_OPENED -> stringResource(R.string.library_playlist_recently_opened)
+    LibraryPlaylistCategory.FREQUENTLY_ACCESSED -> stringResource(R.string.library_playlist_frequently_accessed)
+    LibraryPlaylistCategory.FAVORITES -> stringResource(R.string.library_playlist_favorites)
+    LibraryPlaylistCategory.UP_NEXT_QUEUE -> stringResource(R.string.library_playlist_up_next_queue)
+}
+
+private fun playlistCategoryIcon(category: LibraryPlaylistCategory): ImageVector = when (category) {
+    LibraryPlaylistCategory.RECENTLY_OPENED -> ChunkFlowIcons.Schedule
+    LibraryPlaylistCategory.FREQUENTLY_ACCESSED -> ChunkFlowIcons.TrendingUp
+    LibraryPlaylistCategory.FAVORITES -> ChunkFlowIcons.Favorite
+    LibraryPlaylistCategory.UP_NEXT_QUEUE -> ChunkFlowIcons.QueueMusic
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1253,11 +1708,21 @@ private fun LibraryItemRow(
     onDeleteClick: () -> Unit,
     modifier: Modifier = Modifier,
     onDownloadDriveAudioClick: () -> Unit = {},
+    isFavorite: Boolean = false,
+    onToggleFavoriteClick: (() -> Unit)? = null,
+    isQueued: Boolean = false,
+    onToggleQueueClick: (() -> Unit)? = null,
 ) {
     val item = itemModel.item
     val formattedDuration = formatDurationMs(item.durationMs)
     val editCd = stringResource(R.string.library_edit_metadata_cd)
     val deleteCd = stringResource(R.string.library_delete_content_description, item.title)
+    val favoriteCd = stringResource(
+        if (isFavorite) R.string.library_favorite_remove_cd else R.string.library_favorite_add_cd,
+    )
+    val queueCd = stringResource(
+        if (isQueued) R.string.library_queue_remove_cd else R.string.library_queue_add_cd,
+    )
 
     Column(
         modifier = modifier
@@ -1293,6 +1758,44 @@ private fun LibraryItemRow(
                 modifier = Modifier.weight(1f),
             )
             if (!isSelectionMode) {
+                if (onToggleFavoriteClick != null) {
+                    IconButton(
+                        onClick = onToggleFavoriteClick,
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) {
+                                ChunkFlowIcons.Favorite
+                            } else {
+                                ChunkFlowIcons.FavoriteBorder
+                            },
+                            contentDescription = favoriteCd,
+                            tint = if (isFavorite) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+                if (onToggleQueueClick != null) {
+                    IconButton(
+                        onClick = onToggleQueueClick,
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.QueueMusic,
+                            contentDescription = queueCd,
+                            tint = if (isQueued) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
                 IconButton(
                     onClick = onEditMetadataClick,
                     modifier = Modifier.size(32.dp),
@@ -1886,6 +2389,62 @@ private fun LibraryScreenImportConfigDialogPreview() {
                         base = LanguageTag("ja"),
                     ),
                     isDriveSyncFolder = false,
+                ),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun LibraryScreenFilesTabPreview() {
+    val materials = listOf(SampleMaterials.jaKo, SampleMaterials.longSentence, SampleMaterials.noTranscript)
+    val uiItems = materials.mapIndexed { index, material ->
+        LibraryItemUiModel(
+            item = material.item,
+            positionMs = if (index == 0) 12_000L else 0L,
+            isListened = index == 0,
+            lastAccessedAtEpochMs = if (index == 0) 1_760_000_000_000L else null,
+        )
+    }
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = uiItems,
+                selectedTab = LibraryViewTab.FILES,
+                favoriteItemIds = setOf(materials.first().item.id),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun LibraryScreenPlaylistsTabPreview() {
+    val materials = listOf(SampleMaterials.jaKo, SampleMaterials.longSentence)
+    val uiItems = materials.mapIndexed { index, material ->
+        LibraryItemUiModel(
+            item = material.item,
+            positionMs = if (index == 0) 12_000L else 0L,
+            isListened = index == 0,
+            lastAccessedAtEpochMs = 1_760_000_000_000L,
+        )
+    }
+    val first = materials.first().item
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = uiItems,
+                selectedTab = LibraryViewTab.PLAYLISTS,
+                favoriteItemIds = setOf(first.id),
+                queuedItemIds = listOf(first.id),
+                miniPlayer = MiniPlayerUiState(
+                    mediaId = first.id,
+                    title = first.title,
+                    isPlaying = true,
+                    durationMs = first.durationMs,
                 ),
             ),
             onEvent = {},

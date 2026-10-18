@@ -968,4 +968,122 @@ class LibraryViewModelTest {
         assertEquals(100, completedItem.transcriptProgressPercent)
         assertFalse(completedItem.isTranscribing)
     }
+
+    @Test
+    fun `ファイルビュー_ファイル名検索と対象言語フィルタで全ファイルを絞り込める`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val itemKo = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("ko-1"),
+            title = "Pimsleur Korean 01",
+            course = "韓国語 I",
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        val itemEn = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("en-1"),
+            title = "Business English 02",
+            course = "ビジネス英語",
+            languagePair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        val itemEs = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("es-1"),
+            title = "Spanish Conversation 01",
+            course = "スペイン語入門",
+            languagePair = LanguagePair(target = LanguageTag("es"), base = LanguageTag("ja")),
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(itemKo, itemEn, itemEs))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.FILES))
+        assertEquals(LibraryViewTab.FILES, viewModel.uiState.value.selectedTab)
+        assertEquals(
+            listOf(LanguageTag("en"), LanguageTag("es"), LanguageTag("ko")),
+            viewModel.uiState.value.availableTargetLanguages,
+        )
+        assertEquals(3, viewModel.uiState.value.filteredAllFiles.size)
+
+        // 対象言語フィルタで ko のみ絞り込み
+        viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(LanguageTag("ko")))
+        assertEquals(
+            listOf(itemKo.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+
+        // 言語フィルタを解除し、ファイル名キーワードで絞り込み
+        viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null))
+        viewModel.onEvent(LibraryEvent.UpdateFileSearchQuery("business"))
+        assertEquals(
+            listOf(itemEn.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+    }
+
+    @Test
+    fun `再生リストビュー_お気に入りと次に再生するキューおよびカテゴリの開閉が動作する`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val item1 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-1"),
+            title = "Lesson 1",
+        )
+        val item2 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-2"),
+            title = "Lesson 2",
+        )
+        val states = mapOf(
+            item1.id to ItemState(
+                mediaId = item1.id,
+                positionMs = 15_000L,
+                maxPositionMs = 20_000L,
+                isListened = true,
+                updatedAtEpochMs = 500L,
+            ),
+            item2.id to ItemState(
+                mediaId = item2.id,
+                positionMs = 0L,
+                maxPositionMs = 0L,
+                isListened = false,
+                updatedAtEpochMs = 100L,
+            ),
+        )
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(item1, item2),
+            initialItemStates = states,
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.PLAYLISTS))
+        assertEquals(LibraryViewTab.PLAYLISTS, viewModel.uiState.value.selectedTab)
+
+        // 最近開いたファイル・よくアクセスするファイル
+        assertEquals(
+            listOf(item1.id, item2.id),
+            viewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.RECENTLY_OPENED).map { it.item.id },
+        )
+        assertEquals(
+            listOf(item1.id, item2.id),
+            viewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.FREQUENTLY_ACCESSED).map { it.item.id },
+        )
+
+        // お気に入りの追加・解除
+        viewModel.onEvent(LibraryEvent.ToggleFavorite(item2.id))
+        assertEquals(
+            listOf(item2.id),
+            viewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.FAVORITES).map { it.item.id },
+        )
+
+        // 次に再生するキューへの追加（追加順を保持）
+        viewModel.onEvent(LibraryEvent.ToggleQueueItem(item2.id))
+        viewModel.onEvent(LibraryEvent.ToggleQueueItem(item1.id))
+        assertEquals(
+            listOf(item2.id, item1.id),
+            viewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.UP_NEXT_QUEUE).map { it.item.id },
+        )
+
+        // カテゴリを開いて NavigateUp でカテゴリ一覧へ戻る
+        viewModel.onEvent(LibraryEvent.SelectPlaylistCategory(LibraryPlaylistCategory.FAVORITES))
+        assertEquals(LibraryPlaylistCategory.FAVORITES, viewModel.uiState.value.selectedPlaylistCategory)
+        viewModel.onEvent(LibraryEvent.NavigateUp)
+        assertEquals(null, viewModel.uiState.value.selectedPlaylistCategory)
+    }
 }
