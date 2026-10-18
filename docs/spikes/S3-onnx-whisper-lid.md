@@ -38,6 +38,8 @@ log-mel の計算・平均プーリング・同系言語の合算と 2 言語の
 | `core/media/.../WhisperTinyLanguageDetector.kt` | 推論を ONNX Runtime で行い、読み込みや推論に失敗したら純 Kotlin に切り替える。どちらで推論したかと時間の累計（`inferenceStats`） |
 | `core/media/.../OnDeviceSpeechTranscriber.kt` | 一括言語判定（`detectChunkLanguages`）の終わりに、推論エンジンと推論時間を診断ログに出す |
 | `core/media/src/test/.../WhisperLidOnnxRuntimeTest.kt` | ONNX Runtime と純 Kotlin の一致、切り替え、並列推論、診断ログの単体テスト（10 件、合成音声） |
+| `core/media/src/debug/`（`bench/LidBench*.kt`、`AndroidManifest.xml`） | 実機の計測ツール（debug ビルドだけ）。同じチャンクを純 Kotlin と ONNX Runtime で判定し、逐次と 3 並列の時間と判定の一致を出す（§9） |
+| `core/media/src/testDebug/.../bench/` | 計測ツールの単体テスト（引数・入力の検証、集計と出力の行、合成音声での流れ。16 件） |
 
 ## 2. ONNX モデル
 
@@ -238,6 +240,8 @@ Kotlin で実装する場合の手順:
 
 ## 7. 実機で比べるときに見る項目
 
+アプリの普段の操作で main と比べるときの見方。同じチャンクを両方のエンジンで決まった手順で測るときは、§9 の計測ツールを使う。
+
 - **ビルドの切り替え**: main（純 Kotlin）とこのブランチ（ONNX Runtime）をそれぞれビルドして入れ替える。このブランチには
   実行中に推論エンジンを切り替える設定はない（ONNX Runtime を使えないときだけ自動で純 Kotlin になる）。
 - **同じ条件にする**: 同じ教材・同じチャンク（再分割しない）で、言語判定を消してから一括言語判定をやり直す。端末が熱いと
@@ -257,7 +261,8 @@ Kotlin で実装する場合の手順:
 
 ## 8. 残っている課題・判断が必要なこと
 
-1. **実機（Pixel）で測っていない**（未確認）。上の §7 の手順で、main との全体時間（T・A）と、推論時間 X を比べてほしい。
+1. **実機（Pixel）で測っていない**（未確認）。§9 の計測ツールで、純 Kotlin と ONNX Runtime の 1 チャンクの推論時間と、
+   実際のデコードを含む全体時間（逐次 / 3 並列）、判定の一致を測ってほしい（qa）。アプリの普段の操作での比べ方は §7。
    ONNX Runtime の ARM64 の CPU カーネル（MLAS の SGEMM・MatMulNBits）は NEON で最適化されているので、Mac と同程度の
    倍率（数十倍）を見込むが、実測が要る。
 2. **APK の増分（約 9.7 MB）を受け入れるか**。受け入れない場合は §6 の外部データ方式にする（実装は 1〜2 日の見込み。
@@ -279,3 +284,150 @@ Kotlin で実装する場合の手順:
      （Python での参考値。端末は未確認）。その代わり Java ヒープの重み（約 11 MB）と作業領域（約 9 MB）は使わない（§5.5）。
    - 設計書の §4.2 のライブラリの表（「純 Kotlin 量子化 Whisper Tiny 2 言語判定」）、§7.4.6、付録 C の「NDK / JNI に依存せず」の
      記述も合わせて直す。
+
+## 9. 実機の計測ツール（debug ビルドだけ）
+
+同じチャンクを純 Kotlin と ONNX Runtime の両方で判定し、1 チャンクの推論時間と、`AndroidSpeechRecognizerChunkTranscriber.detectChunkLanguages`
+を通した全体時間（本番と同じ `MediaCodecAudioStreamDecoder` での実際のデコードを含む）を、逐次と 3 並列で測る。両エンジンの最終判定の
+一致率も出す。新しい依存は使っていない。
+
+- 場所: `core/media/src/debug/`（`bench/LidBenchActivity.kt` ほかと、debug 用の `AndroidManifest.xml`）。`src/debug` は debug の変種で
+  だけコンパイル・マージされるので、release には入らない（§9.6）。
+- 本番の動作は変えない。エンジンは判定器の `LidEngineMode` で選ぶ（純 Kotlin は `KOTLIN_ONLY`、ONNX Runtime は本番と同じ `AUTO`）。
+  - ウォームアップで ONNX Runtime を読み込めなければ `ERROR ONNX_UNAVAILABLE reason=…` を出し、ONNX Runtime の回は計測しない
+    （`status=SKIPPED`）。
+  - 計測中に純 Kotlin へ切り替わった推論が 1 件でもあれば、その回は `status=FALLBACK` にして、ONNX Runtime の結果として扱わない。
+- Activity は adb から起動できるように exported にしたが、`android.permission.DUMP`（adb の shell は持つが、ふつうのアプリは持てない
+  権限）を求めるので、ほかのアプリからは起動できない（WorkManager の `DiagnosticsReceiver` などと同じ方法）。
+- 計測中は画面を点けたまま（`FLAG_KEEP_SCREEN_ON`）にし、ロック画面の上にも表示する。前面でなくなった回は `bg=true` になる。
+
+### 9.1 手順（qa）
+
+1. このブランチの debug ビルドを入れる（main の debug ビルドの上に入れてよい。debug の署名は同じなので、アプリのデータは残る）。
+   このブランチは audio-analysis の作業ツリーで checkout しているので、別の作業ツリーで作る場合は `--detach` を付ける。
+
+   ```sh
+   git worktree add --detach <作業ツリー> agent/audio-analysis/onnx-whisper-lid
+   cd <作業ツリー>
+   JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ANDROID_HOME=$HOME/Library/Android/sdk \
+       gtimeout 1800 ./gradlew :app:installDebug
+   ```
+
+2. 入力を置く（`<name>` は英数字・`.`・`_`・`-`）。チャンク境界は lead の評価データの `chunks_<name>.json` をそのまま使う。
+   音声は、その評価データの PCM を作った元の音声ファイル（実際の教材。リポジトリには入れない）。
+
+   ```sh
+   PKG=com.miuraken.chunkflow
+   DIR=/sdcard/Android/data/$PKG/files/lid-bench
+   adb shell mkdir -p $DIR
+   adb push Hindi_1_Lesson_16.mp3 $DIR/Hindi_1_Lesson_16.mp3
+   adb push chunks_Hindi_1_Lesson_16.json $DIR/Hindi_1_Lesson_16.chunks.json
+   ```
+
+   `adb push` で `Android/data` に書けない場合は、アプリの内部の `files/lid-bench` に置く（ツールは両方を探す）。
+
+   ```sh
+   adb push Hindi_1_Lesson_16.mp3 /data/local/tmp/Hindi_1_Lesson_16.mp3
+   adb push chunks_Hindi_1_Lesson_16.json /data/local/tmp/Hindi_1_Lesson_16.chunks.json
+   adb shell run-as $PKG sh -c 'mkdir -p files/lid-bench && cp /data/local/tmp/Hindi_1_Lesson_16.* files/lid-bench/'
+   ```
+
+3. 端末を準備する。
+   - 省電力モードをオフにする（オンだと 3 並列が 1 件ずつになる）。
+   - アプリで解析・文字起こし・一括言語判定が動いていないことを、アプリの画面で確かめる（同じプロセスで動くと遅くなる）。
+   - 端末が冷えていること（`adb shell dumpsys thermalservice` の `Thermal Status: 0`）。充電の有無は、比べる回どうしでそろえる。
+
+4. 起動する（logcat を消してから）。
+
+   ```sh
+   adb logcat -c
+   adb shell am start -n $PKG/com.miuraken.chunkflow.core.media.bench.LidBenchActivity \
+       --es name Hindi_1_Lesson_16 --es target hi --es base en --ei maxChunks 60
+   ```
+
+   韓国語の教材は `--es name Korean_lesson_ja --es target ko --es base ja`。
+
+5. `END` 行が出るまで待つ。60 チャンク・既定の設定で 5〜10 分の見込み（Mac の値からの見込みで、大半は純 Kotlin の回とクールダウン。
+   実機は未確認）。画面は点けたままにし、ほかのアプリに切り替えない。計測中にもう一度 `am start` しても無視する（`BUSY` 行）。
+
+6. 結果を読む。すべての行は、入力と同じディレクトリの `<name>-<日時>.log` にも書く（`LOG_FILE` 行にパス）。
+
+   ```sh
+   adb logcat -d -v raw -s ChunkFlowLidBench:I \
+       | grep -E '^(START|WARMUP|ONNX_LOAD|THERMAL_WAIT|RESULT|DIFF|TABLE|SUMMARY|END|ERROR|WARN|LOG_FILE)'
+   adb pull /sdcard/Android/data/$PKG/files/lid-bench/ ./lid-bench-results/
+   ```
+
+   内部の `files/lid-bench` に置いた場合は `adb shell run-as $PKG cat files/lid-bench/<name>-<日時>.log`。
+
+### 9.2 引数
+
+| 引数 | 既定 | 内容 |
+| --- | --- | --- |
+| `--es name` | （必須） | 教材名。入力は `<name>.chunks.json` と `<name>.mp3` |
+| `--es target` / `--es base` | （必須） | 学習対象言語と解説の言語（例: `hi` / `en`、`ko` / `ja`） |
+| `--ei maxChunks` | 60 | 先頭から使うチャンク数（0 ならすべて） |
+| `--ei warmupChunks` | 6 | エンジンごとのウォームアップのチャンク数（0 ならしない） |
+| `--ei cooldownSec` | 30 | 各回の前に待つ秒数 |
+| `--ei thermalWaitSec` | 300 | クールダウンのあと、温度の状態が MODERATE（2）未満に下がるまで追加で待つ上限の秒数 |
+| `--es engines` | `kotlin,onnx` | 計測するエンジンと順番（例: `onnx` だけ、`onnx,kotlin` の順） |
+| `--es modes` | `seq,par3` | 各エンジンで計測する進め方と順番 |
+| `--es audio` | `<name>.mp3` | 音声のファイル名（m4a などの場合） |
+
+数値の引数は `--es`（文字列）で渡してもよい。正しくない引数は `ERROR 引数が正しくない: …` と使い方（`USAGE` 行）を出して終わる。
+
+### 9.3 計測の流れ
+
+1. エンジンごとにウォームアップする（先頭の `warmupChunks` 件。モデルの読み込みと JIT）。ONNX Runtime は `ONNX_LOAD ok loadMs=…`
+   （プロセスで最初の読み込みの時間。ネイティブライブラリの初期化を含む）。
+2. エンジン × 進め方の順（既定は 純 Kotlin 逐次 → 純 Kotlin 3 並列 → ONNX Runtime 逐次 → ONNX Runtime 3 並列）に、
+   `COOLDOWN`（必要なら `THERMAL_WAIT`）→ `RUN_START` → 計測 → `DIAG`（その回の文字起こし器の診断ログ）→ `RUN_DONE`。
+   - 回ごとに新しいデコーダと文字起こし器を作る（ファイル内の補正の状態と、切り出しのキャッシュを持ち越さない）。
+   - 推論はツールの中で作る 3 スレッドのプールで行う。逐次の回は、本番の `parallelism=1` と同じく呼び出し側のスレッドで 1 件ずつ。
+3. 最後に `RESULT`（各回 1 行。判定の一致を含む）、`DIFF`（判定が違うチャンク）、`TABLE`（表）、`SUMMARY`（進め方ごとの
+   純 Kotlin / ONNX Runtime の比）、`END`。
+
+### 9.4 RESULT 行
+
+1 回の計測を 1 行で出す（`key=value` を空白で区切る。`note=` は行の最後で、空白を含むことがある）。例（値は例）:
+
+```text
+RESULT name=Hindi_1_Lesson_16 engine=onnx mode=par3 status=OK chunks=60 detected=58 totalMs=1234.5 perChunkMs=20.6 inferN=58 inferMedianMs=31.0 inferMeanMs=32.4 engineMeanMs=28.1 melMeanMs=2.30 nullAnalyses=2 onnxRuns=58 kotlinRuns=0 workers=3 degraded=false cpuMs=4567 thermal=0->1 headroom=0.41->0.47 powerSave=false bg=false agree=1.000 agreeN=60/60 ref=kotlin/par3
+```
+
+| 項目 | 内容 |
+| --- | --- |
+| `status` | `OK` / `FALLBACK`（ONNX Runtime の回で純 Kotlin に切り替わった）/ `NO_INFERENCE` / `SKIPPED`（ウォームアップでそのエンジンを使えなかった。ふつうは ONNX Runtime を読み込めない場合）/ `ERROR`。`OK` 以外の回は比べない |
+| `chunks` / `detected` | 計測したチャンク数 / 言語を判定できたチャンク数 |
+| `totalMs` / `perChunkMs` | `detectChunkLanguages` の全体時間（音声の切り出し・log-mel・推論・ファイル内の補正）/ 1 チャンクあたり |
+| `inferN` / `inferMedianMs` / `inferMeanMs` | チャンクごとの推論時間（`analyzeLanguagePair`: log-mel・推論・平均プーリング。`LanguagePairPrediction.inferenceTimeMs` と同じ範囲をナノ秒で測った値）の件数・中央値・平均。3 並列の回は、同時に動かした 1 件ごとの時間 |
+| `engineMeanMs` / `melMeanMs` | 推論（エンコーダ + デコーダ）だけ / log-mel だけの平均（判定器の累計から） |
+| `nullAnalyses` | 判定器が結果を返さなかった回数（無音など） |
+| `onnxRuns` / `kotlinRuns` | エンジンごとの推論の回数（ONNX Runtime の回で `kotlinRuns` が 0 でなければ `FALLBACK`） |
+| `workers` / `degraded` | 実際に同時に推論した数 / 3 並列を指定したが、温度か省電力モードのため 1 件ずつになった |
+| `cpuMs` | その回にプロセスが使った CPU 時間（全スレッドの合計。参考） |
+| `thermal` / `headroom` | 開始→終了の `PowerManager.currentThermalStatus`（0 = NONE、1 = LIGHT、2 = MODERATE、3 = SEVERE …）/ `getThermalHeadroom(0)`（1.0 で重い制限が始まる目安。取れなければ NaN） |
+| `powerSave` / `bg` | 開始時に省電力モードだった / 計測中に画面が前面でなくなった |
+| `agree` / `agreeN` / `ref` | 最終判定（ファイル内の補正の後）の一致率 / 件数 / 比べた回。ONNX Runtime の回は同じ進め方の純 Kotlin の回と、純 Kotlin の 3 並列は純 Kotlin の逐次と比べる |
+| `note` | 補足（切り替わった理由、例外など） |
+
+### 9.5 結果を見るときの注意
+
+- `status=OK`・`degraded=false`・`bg=false`・`powerSave=false` の回だけを比べる。`thermal` の終わりが 2（MODERATE）以上の回は、
+  端末が温まって遅くなっている可能性がある。純 Kotlin の回は温まりやすいので、必要なら `--es engines kotlin --es modes par3`
+  のように分けて、冷えてから測り直す。
+- 1 チャンクの推論の速さは、逐次の回の `inferMedianMs`（と `engineMeanMs`）で比べる。3 並列の回の値は同時に動かした 1 件ごとの時間。
+- 全体時間には音声の切り出し（MediaCodec のデコード）が入る。ONNX Runtime ではこれが占める割合が大きくなる（§5.4）。
+- debug ビルドなので、純 Kotlin の推論は release より遅いかもしれない（debuggable なアプリでは ART の一部の最適化が使えない。
+  未確認）。ONNX Runtime の推論はネイティブのコードなので、影響は小さい見込み。
+- `agree` は Mac では全チャンクで 1.000 だった（§5.2）。1 未満なら `DIFF` 行のチャンクを lead に知らせる。
+
+### 9.6 release に入らないことの確認
+
+`:app:assembleDebug`・`:app:processReleaseMainManifest`・`:core:media:compileReleaseKotlin` のあとで確かめた。
+
+- マージ後のマニフェスト: debug（`app/build/intermediates/merged_manifests/debug/…`）には `LidBenchActivity`（exported、
+  `android.permission.DUMP`）があり、release（`merged_manifest/release/processReleaseMainManifest/…`）にはない。
+- クラス: `core:media` の debug のコンパイル結果には `…/core/media/bench/` があり、release のコンパイル結果
+  （`built_in_kotlinc/release/compileReleaseKotlin/classes`）にはない。debug の APK の dex には `LidBenchActivity` がある。
+- 計測ツールの単体テストは `src/testDebug` に置いた（`testReleaseUnitTest` からは見えない debug だけのクラスを使うため）。

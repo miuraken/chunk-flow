@@ -81,3 +81,9 @@ $RUFF check --line-length 100 --target-version py312 --select E,F,W,I,B,UP,SIM,R
   `slice()` したテンソルを渡す → 読める（テンソルはセッションにコピーされるので、作成後に閉じてよい）。
 
 アプリでの使い方の案と課題は `docs/spikes/S3-onnx-whisper-lid.md` §6 に書く。
+
+## 実機での計測（debug ビルド）
+
+Pixel などの実機で、純 Kotlin と ONNX Runtime の速度（1 チャンクの推論時間、実際のデコードを含む全体時間の逐次 / 3 並列）と
+判定の一致を測る計測ツールを `core/media/src/debug/`（`LidBenchActivity`）に置いた。adb の `am start` で起動する。
+入力の置き場所・起動の例・logcat の読み方は `docs/spikes/S3-onnx-whisper-lid.md` §9 に書く。
