@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  debug ビルドだけに入る、一括言語判定の実機計測ツール（docs/spikes/S3-onnx-whisper-lid.md §9）。release には入らない。
+  adb の shell から `am start` で起動できるように exported にする。android.permission.DUMP（shell は持つが、ふつうのアプリは
+  持てない権限）を求めて、ほかのアプリからは起動できないようにする。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity
+            android:name="com.miuraken.chunkflow.core.media.bench.LidBenchActivity"
+            android:configChanges="density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:permission="android.permission.DUMP"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+    </application>
+
+</manifest>
