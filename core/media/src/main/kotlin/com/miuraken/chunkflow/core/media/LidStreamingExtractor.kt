@@ -80,8 +80,12 @@ internal data class StreamingExtractionOptions(
         /** 既定の [maxRunDurationMs]。 */
         const val DEFAULT_MAX_RUN_DURATION_MS: Long = 120_000L
 
-        /** 既定の [queueCapacity]。 */
-        const val DEFAULT_QUEUE_CAPACITY: Int = 4
+        /**
+         * 既定の [queueCapacity]（[DEFAULT_MAX_RUN_WINDOWS] と同じ）。MP3 をまとめて渡す run は、出力の長さを確かめてから run の窓を
+         * まとめて渡すので、推論のワーカーが追いついている間は、まとめて渡すときにデコードを止めずに済む長さにする
+         * （1 窓は 16kHz で最大 2.8 秒・約 88 KB。16 窓で約 1.4 MB）。
+         */
+        const val DEFAULT_QUEUE_CAPACITY: Int = DEFAULT_MAX_RUN_WINDOWS
     }
 }
 

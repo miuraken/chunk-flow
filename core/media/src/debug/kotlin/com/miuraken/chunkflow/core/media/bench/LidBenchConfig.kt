@@ -107,7 +107,7 @@ internal data class LidBenchConfig(
         const val USAGE: String = "USAGE --es name <教材名> --es target <言語> --es base <言語> [--ei maxChunks 60（0 ですべて）] " +
             "[--ei warmupChunks 6] [--ei cooldownSec 30] [--ei thermalWaitSec 300] [--es engines kotlin,onnx] " +
             "[--es modes seq,par3] [--es extraction cur,par,str] [--ei streamGapMs 10000] [--ei streamRunWindows 16] " +
-            "[--ei streamRunMs 120000] [--ei streamQueue 4] [--es audio <音声のファイル名>]"
+            "[--ei streamRunMs 120000] [--ei streamQueue 16] [--es audio <音声のファイル名>]"
 
         private const val MAX_CHUNKS_LIMIT: Int = LidBenchChunkList.MAX_CHUNKS
         private const val MAX_WARMUP_CHUNKS: Int = 50
