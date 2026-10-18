@@ -8,6 +8,7 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
@@ -58,6 +59,145 @@ internal class LanguagePairAnalysis(
 )
 
 /**
+ * 言語判定の推論エンジンの選び方（[WhisperTinyLanguageDetector]）。
+ */
+internal enum class LidEngineMode {
+    /** ONNX Runtime で推論し、読み込みや推論に失敗したら純 Kotlin の推論に切り替える。 */
+    AUTO,
+
+    /** 常に純 Kotlin で推論する（比較とテスト用）。 */
+    KOTLIN_ONLY,
+}
+
+/**
+ * 言語判定の推論の累計（[WhisperTinyLanguageDetector.inferenceStats]）。どのエンジンで判定したかと推論時間を診断ログに出すために使う。
+ *
+ * 推論の時間はエンコーダと融合デコーダだけで、log-mel の計算は [melNanos] に分けて数える。
+ *
+ * @property onnxRuns ONNX Runtime で推論した回数。
+ * @property onnxNanos ONNX Runtime の推論にかかった時間の合計（ナノ秒）。
+ * @property kotlinRuns 純 Kotlin で推論した回数。
+ * @property kotlinNanos 純 Kotlin の推論にかかった時間の合計（ナノ秒）。
+ * @property melRuns log-mel を計算した回数。
+ * @property melNanos log-mel の計算にかかった時間の合計（ナノ秒）。
+ * @property onnxLoadTimeMs ONNX Runtime の読み込み（ONNX の読み出しとセッションの作成）にかかった時間（ミリ秒）。
+ *   まだ読み込んでいない、または読み込めなかった場合は `null`。
+ * @property onnxUnavailableReason ONNX Runtime を使えない理由（読み込みや推論の失敗）。使える場合と、まだ試していない場合は `null`。
+ */
+internal data class LidInferenceStats(
+    val onnxRuns: Long = 0L,
+    val onnxNanos: Long = 0L,
+    val kotlinRuns: Long = 0L,
+    val kotlinNanos: Long = 0L,
+    val melRuns: Long = 0L,
+    val melNanos: Long = 0L,
+    val onnxLoadTimeMs: Long? = null,
+    val onnxUnavailableReason: String? = null,
+) {
+    /** [before] からの増分を返す（エンジンの状態はこちらの値のまま）。 */
+    fun since(before: LidInferenceStats): LidInferenceStats = copy(
+        onnxRuns = onnxRuns - before.onnxRuns,
+        onnxNanos = onnxNanos - before.onnxNanos,
+        kotlinRuns = kotlinRuns - before.kotlinRuns,
+        kotlinNanos = kotlinNanos - before.kotlinNanos,
+        melRuns = melRuns - before.melRuns,
+        melNanos = melNanos - before.melNanos,
+    )
+}
+
+/**
+ * 1 回の推論の生の出力（テストと評価用、[WhisperTinyLanguageDetector.computeRawOutputs]）。
+ *
+ * @property mel300x80 正規化 log-mel（300 フレーム × 80、時間が先）。
+ * @property logits 99 言語のロジット。
+ * @property audioFeatures エンコーダ出力（LayerNorm 後、150 × 384）。
+ * @property copiedSamples 窓に切り出した有効なサンプル数。
+ * @property engineName 推論したエンジンの名前（[OnnxWhisperLidEngine.ENGINE_NAME] または [WhisperTinyLanguageDetector.KOTLIN_ENGINE_NAME]）。
+ */
+internal class LidRawOutputs(
+    val mel300x80: FloatArray,
+    val logits: FloatArray,
+    val audioFeatures: FloatArray,
+    val copiedSamples: Int,
+    val engineName: String,
+)
+
+/** ONNX Runtime を使えない理由を、診断ログに出せる短い文で表す例外。 */
+internal class OnnxUnavailableException(reason: String) : Exception(reason)
+
+/**
+ * ONNX Runtime のエンジンの読み込み状態。
+ *
+ * 読み込みは 1 回だけ試す。読み込みに失敗した場合と、推論に失敗した場合（[disable]）は、理由を残して以後は使わない
+ * （失敗を繰り返して判定を遅くしない）。
+ */
+internal class OnnxEngineHolder {
+    private val lock = Any()
+
+    @Volatile
+    private var engine: WhisperLidNeuralEngine? = null
+
+    /** 読み込みを試し終えたか（成功・失敗とも）。読み込みの途中は `false` のまま（ほかのスレッドは [lock] で終わるのを待つ）。 */
+    @Volatile
+    private var loadFinished: Boolean = false
+
+    /** 読み込み（ONNX の読み出しとセッションの作成）にかかった時間（ミリ秒）。読み込めていなければ `null`。 */
+    @Volatile
+    var loadTimeMs: Long? = null
+        private set
+
+    /** 使えない理由。使える場合と、まだ試していない場合は `null`。 */
+    @Volatile
+    var unavailableReason: String? = null
+        private set
+
+    /**
+     * 読み込み済みのエンジンを返す。まだ試していなければ [loader] で読み込む。使えない場合は `null`。
+     *
+     * ほかのスレッドが読み込んでいる途中なら、終わるまで待つ（読み込みの途中に純 Kotlin へ切り替えない）。
+     */
+    fun getOrLoad(loader: () -> WhisperLidNeuralEngine): WhisperLidNeuralEngine? {
+        engine?.let { return it }
+        if (loadFinished) return null
+        synchronized(lock) {
+            engine?.let { return it }
+            if (loadFinished) return null
+            val startNanos = System.nanoTime()
+            try {
+                val loaded = loader()
+                loadTimeMs = (System.nanoTime() - startNanos) / 1_000_000L
+                engine = loaded
+                return loaded
+            } catch (e: OnnxUnavailableException) {
+                unavailableReason = e.message
+            } catch (e: Exception) {
+                unavailableReason = "読み込みに失敗 (${e.javaClass.simpleName})"
+            } catch (e: LinkageError) {
+                // ネイティブライブラリ（libonnxruntime.so）を読めない端末・環境
+                unavailableReason = "ネイティブライブラリを読み込めない (${e.javaClass.simpleName})"
+            } finally {
+                loadFinished = true
+            }
+            return null
+        }
+    }
+
+    /**
+     * 推論に失敗したエンジンを使わないようにし、[reason] を残す。
+     *
+     * ほかのスレッドが同じセッションで推論している途中かもしれないので、セッションは閉じない（プロセスの終わりまで残す）。
+     */
+    fun disable(reason: String) {
+        synchronized(lock) {
+            if (engine != null) {
+                engine = null
+                unavailableReason = reason
+            }
+        }
+    }
+}
+
+/**
  * 量子化 Whisper Tiny（`whisper_tiny_lid_q8q4.bin`、約 10.7 MB）を用いて、
  * `SpeechRecognizer` を呼び出す前にミリ秒単位で `target` 言語と `base` 言語の確率を算出する言語判定器（F6.2）。
  *
@@ -66,22 +206,65 @@ internal class LanguagePairAnalysis(
  *   99 言語トークンのロジットを算出する。
  * - 重みは Q8（行単位スケール）および Q4Group64（64 要素ブロック単位スケール）のパック形式で保持し、
  *   初回推論時に 1 回だけ遅延ロードする。
+ * - （実験版）エンコーダと融合デコーダの推論は、同じ重み（量子化の値もそのまま）から作った ONNX
+ *   （`whisper_tiny_lid.onnx`、[OnnxWhisperLidEngine]）を ONNX Runtime（CPU）で行う。ONNX Runtime の読み込みや推論に
+ *   失敗した場合は、純 Kotlin の推論に切り替える。log-mel の計算・平均プーリング・2 言語の判定は、どちらでも同じ Kotlin のコードを使う。
+ *   どちらで推論したかと推論時間は [inferenceStats] で分かる。
+ * - ONNX Runtime で推論する間は、純 Kotlin の重み（約 11 MB）は読み込まない（log-mel のフィルタと言語コードだけを読む）。
  */
 @Singleton
-class WhisperTinyLanguageDetector @Inject constructor(
-    @ApplicationContext private val context: Context?,
+class WhisperTinyLanguageDetector internal constructor(
+    private val context: Context?,
+    private val engineMode: LidEngineMode,
+    /** ONNX のバイト列を返す関数（テスト用）。`null` ならアセット（またはモジュールのファイル）から読む。 */
+    private val onnxModelSource: (() -> ByteArray?)?,
+    /** ONNX のバイト列から推論エンジンを作る関数（テスト用）。`null` なら [OnnxWhisperLidEngine.create]。 */
+    private val neuralEngineFactory: ((ByteArray) -> WhisperLidNeuralEngine)?,
 ) {
-    internal constructor() : this(context = null)
+    /**
+     * DI 用のコンストラクタ。ONNX Runtime で推論し、使えない場合は純 Kotlin で推論する（[LidEngineMode.AUTO]）。
+     *
+     * @param context モデル（アセット）を読むためのアプリの Context。`null` ならモジュールのファイルから読む（JVM のテスト用）。
+     */
+    @Inject
+    constructor(@ApplicationContext context: Context?) : this(
+        context = context,
+        engineMode = LidEngineMode.AUTO,
+        onnxModelSource = null,
+        neuralEngineFactory = null,
+    )
+
+    /** 推論エンジンの選び方 [engineMode] を指定して作る（比較とテスト用）。 */
+    internal constructor(context: Context?, engineMode: LidEngineMode) : this(
+        context = context,
+        engineMode = engineMode,
+        onnxModelSource = null,
+        neuralEngineFactory = null,
+    )
+
+    /** Context なしで作る（JVM のテスト用。モデルはモジュールのファイルから読む）。 */
+    internal constructor() : this(context = null, engineMode = LidEngineMode.AUTO)
 
     @Volatile
     private var cachedModel: QuantizedWhisperLidModel? = null
     private val loadLock = Any()
     private val workspacePool = ArrayDeque<InferenceWorkspace>()
 
+    /** ONNX Runtime のエンジン。既定の ONNX はプロセスで 1 つを共有し、テストで差し替えた場合はこのインスタンスだけで持つ。 */
+    private val onnxHolder: OnnxEngineHolder =
+        if (onnxModelSource == null && neuralEngineFactory == null) sharedOnnxHolder else OnnxEngineHolder()
+
+    private val onnxRuns = AtomicLong()
+    private val onnxNanos = AtomicLong()
+    private val kotlinRuns = AtomicLong()
+    private val kotlinNanos = AtomicLong()
+    private val melRuns = AtomicLong()
+    private val melNanos = AtomicLong()
+
     /**
      * モデルに含まれる言語コード一覧（99 言語）を返す。モデルがロードできない場合は空リストを返す。
      */
-    internal fun supportedLanguageCodes(): List<String> = ensureModelLoaded()?.languageCodes.orEmpty()
+    internal fun supportedLanguageCodes(): List<String> = ensureFrontEndLoaded()?.languageCodes.orEmpty()
 
     /**
      * `sherpa-onnx` Whisper 推論向けに、16kHz モノラル 16-bit PCM（最大 30 秒 = 3,000 フレーム）から
@@ -92,10 +275,10 @@ class WhisperTinyLanguageDetector @Inject constructor(
         allowSilentForTest: Boolean = false,
     ): FloatArray? {
         if (pcm16kMono.isEmpty()) return null
-        val model = ensureModelLoaded() ?: return null
+        val frontEnd = ensureFrontEndLoaded() ?: return null
         return computeMelSpectrogram80x3000WithFilters(
             pcm16kMono = pcm16kMono,
-            melFilters201x80 = model.melFilters201x80,
+            melFilters201x80 = frontEnd.melFilters201x80,
             allowSilentForTest = allowSilentForTest,
         )?.first
     }
@@ -140,14 +323,14 @@ class WhisperTinyLanguageDetector @Inject constructor(
         maxWindowSamples: Int = DEFAULT_LID_WINDOW_SAMPLES,
     ): LanguagePairAnalysis? {
         if (pcm16kMono.size < MIN_VALID_PCM_SAMPLES) return null
-        val model = ensureModelLoaded() ?: return null
+        val frontEnd = ensureFrontEndLoaded() ?: return null
 
-        val targetCode = resolveWhisperLanguageCode(targetTag, model.languageIndexByCode) ?: return null
-        val baseCode = resolveWhisperLanguageCode(baseTag, model.languageIndexByCode) ?: return null
+        val targetCode = resolveWhisperLanguageCode(targetTag, frontEnd.languageIndexByCode) ?: return null
+        val baseCode = resolveWhisperLanguageCode(baseTag, frontEnd.languageIndexByCode) ?: return null
         if (targetCode == baseCode) return null
 
-        val targetIndices = languageFamilyIndices(targetCode, baseCode, model.languageIndexByCode)
-        val baseIndices = languageFamilyIndices(baseCode, targetCode, model.languageIndexByCode)
+        val targetIndices = languageFamilyIndices(targetCode, baseCode, frontEnd.languageIndexByCode)
+        val baseIndices = languageFamilyIndices(baseCode, targetCode, frontEnd.languageIndexByCode)
         if (targetIndices.isEmpty() || baseIndices.isEmpty()) return null
 
         val startRealtimeMs = elapsedMillis()
@@ -160,7 +343,7 @@ class WhisperTinyLanguageDetector @Inject constructor(
             )
             if (copiedSamples <= 0) return null
 
-            val logits = runInference(model, workspace, copiedSamples)
+            val logits = infer(frontEnd, workspace, copiedSamples) ?: return null
             val embedding = meanPoolEncoderOutput(workspace.audioFeatures150x384, copiedSamples)
             val elapsedMs = (elapsedMillis() - startRealtimeMs).coerceAtLeast(0L)
             LanguagePairAnalysis(
@@ -184,7 +367,7 @@ class WhisperTinyLanguageDetector @Inject constructor(
      */
     internal fun predictAllLanguageLogits(pcm16kMono: ShortArray): Map<String, Float>? {
         if (pcm16kMono.isEmpty()) return null
-        val model = ensureModelLoaded() ?: return null
+        val frontEnd = ensureFrontEndLoaded() ?: return null
         val workspace = acquireWorkspace()
         return try {
             val copiedSamples = preparePcm48kWindow(
@@ -193,15 +376,133 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 maxWindowSamples = TARGET_PCM_SAMPLES,
                 allowSilentForTest = true,
             )
-            val logits = runInference(model, workspace, copiedSamples.coerceAtLeast(1))
-            val result = LinkedHashMap<String, Float>(model.languageCodes.size)
-            for (i in model.languageCodes.indices) {
-                result[model.languageCodes[i]] = logits[i]
+            val logits = infer(frontEnd, workspace, copiedSamples.coerceAtLeast(1)) ?: return null
+            val result = LinkedHashMap<String, Float>(frontEnd.languageCodes.size)
+            for (i in frontEnd.languageCodes.indices) {
+                result[frontEnd.languageCodes[i]] = logits[i]
             }
             result
         } finally {
             releaseWorkspace(workspace)
         }
+    }
+
+    /**
+     * テスト・評価用に、[analyzeLanguagePair] と同じ窓で 1 回推論し、log-mel・ロジット・エンコーダ出力をそのまま返す。
+     *
+     * 無音でも推論する。モデルを読み込めない場合は `null`。
+     */
+    internal fun computeRawOutputs(
+        pcm16kMono: ShortArray,
+        maxWindowSamples: Int = DEFAULT_LID_WINDOW_SAMPLES,
+    ): LidRawOutputs? {
+        if (pcm16kMono.isEmpty()) return null
+        val frontEnd = ensureFrontEndLoaded() ?: return null
+        val workspace = acquireWorkspace()
+        return try {
+            val copiedSamples = preparePcm48kWindow(
+                pcm16kMono = pcm16kMono,
+                out48k = workspace.pcm48k,
+                maxWindowSamples = maxWindowSamples,
+                allowSilentForTest = true,
+            ).coerceAtLeast(1)
+            val logits = infer(frontEnd, workspace, copiedSamples) ?: return null
+            LidRawOutputs(
+                mel300x80 = workspace.mel300x80.copyOf(),
+                logits = logits,
+                audioFeatures = workspace.audioFeatures150x384.copyOf(),
+                copiedSamples = copiedSamples,
+                engineName = workspace.lastEngineName,
+            )
+        } finally {
+            releaseWorkspace(workspace)
+        }
+    }
+
+    /**
+     * これまでの推論の累計（エンジンごとの回数と時間）と、ONNX Runtime の状態を返す。
+     *
+     * [LidEngineMode.KOTLIN_ONLY] では ONNX Runtime を使わないので、その状態（読み込み時間・使えない理由）は `null` にする。
+     */
+    internal fun inferenceStats(): LidInferenceStats = LidInferenceStats(
+        onnxRuns = onnxRuns.get(),
+        onnxNanos = onnxNanos.get(),
+        kotlinRuns = kotlinRuns.get(),
+        kotlinNanos = kotlinNanos.get(),
+        melRuns = melRuns.get(),
+        melNanos = melNanos.get(),
+        onnxLoadTimeMs = onnxHolder.loadTimeMs.takeIf { engineMode == LidEngineMode.AUTO },
+        onnxUnavailableReason = onnxHolder.unavailableReason.takeIf { engineMode == LidEngineMode.AUTO },
+    )
+
+    /**
+     * 窓に切り出した PCM（[InferenceWorkspace.pcm48k] の先頭 [copiedSamples]）から log-mel を計算し、
+     * エンコーダと融合デコーダを推論して 99 言語のロジットを返す。エンコーダ出力は [InferenceWorkspace.audioFeatures150x384] に入る。
+     *
+     * [engineMode] が [LidEngineMode.AUTO] なら ONNX Runtime で推論し、使えない場合や推論に失敗した場合は純 Kotlin で推論する。
+     * どちらのモデルも読み込めない場合は `null`。
+     */
+    private fun infer(frontEnd: LidFrontEnd, ws: InferenceWorkspace, copiedSamples: Int): FloatArray? {
+        val melStartNanos = System.nanoTime()
+        val activeMelFrames = computeLogMelSpectrogram(
+            pcm48k = ws.pcm48k,
+            melFilters201x80 = frontEnd.melFilters201x80,
+            ws = ws,
+            copiedSamples = copiedSamples,
+        )
+        melNanos.addAndGet(System.nanoTime() - melStartNanos)
+        melRuns.incrementAndGet()
+
+        if (engineMode == LidEngineMode.AUTO) {
+            val engine = onnxHolder.getOrLoad { loadOnnxEngine(frontEnd) }
+            if (engine != null) {
+                val startNanos = System.nanoTime()
+                val logits = FloatArray(frontEnd.languageCodes.size)
+                try {
+                    engine.run(ws.mel300x80, logits, ws.audioFeatures150x384)
+                    onnxNanos.addAndGet(System.nanoTime() - startNanos)
+                    onnxRuns.incrementAndGet()
+                    ws.lastEngineName = engine.engineName
+                    return logits
+                } catch (e: Exception) {
+                    onnxHolder.disable("推論に失敗 (${e.javaClass.simpleName})")
+                }
+            }
+        }
+
+        val model = ensureModelLoaded() ?: return null
+        val startNanos = System.nanoTime()
+        runAudioEncoder(model, ws, activeMelFrames)
+        val logits = runFusedDecoder(model, ws)
+        kotlinNanos.addAndGet(System.nanoTime() - startNanos)
+        kotlinRuns.incrementAndGet()
+        ws.lastEngineName = KOTLIN_ENGINE_NAME
+        return logits
+    }
+
+    /**
+     * ONNX を読み出して推論エンジンを作る。ONNX がない、言語の並びが .bin と違う場合は [OnnxUnavailableException]。
+     */
+    private fun loadOnnxEngine(frontEnd: LidFrontEnd): WhisperLidNeuralEngine {
+        val bytes = (onnxModelSource ?: ::readDefaultOnnxBytes).invoke()
+            ?: throw OnnxUnavailableException("ONNX のファイルがない")
+        val engine = neuralEngineFactory?.invoke(bytes) ?: OnnxWhisperLidEngine.create(bytes)
+        val onnxCodes = (engine as? OnnxWhisperLidEngine)?.languageCodes
+        if (onnxCodes != null && onnxCodes != frontEnd.languageCodes) {
+            throw OnnxUnavailableException("ONNX の言語の並びが whisper_tiny_lid_q8q4.bin と違う")
+        }
+        return engine
+    }
+
+    /** アセット（またはモジュールのファイル）から ONNX を読み出す。見つからない、または大きすぎる場合は `null`。 */
+    private fun readDefaultOnnxBytes(): ByteArray? {
+        for (streamProvider in candidateStreamProviders(OnnxWhisperLidEngine.ASSET_FILE_NAME)) {
+            val bytes = runCatching {
+                streamProvider()?.use { stream -> stream.readNBytes(OnnxWhisperLidEngine.MAX_MODEL_BYTES + 1) }
+            }.getOrNull() ?: continue
+            if (bytes.isNotEmpty() && bytes.size <= OnnxWhisperLidEngine.MAX_MODEL_BYTES) return bytes
+        }
+        return null
     }
 
     private fun acquireWorkspace(): InferenceWorkspace = synchronized(workspacePool) {
@@ -216,6 +517,34 @@ class WhisperTinyLanguageDetector @Inject constructor(
         }
     }
 
+    /**
+     * log-mel のフィルタと言語コード（.bin の先頭の部分）を返す。
+     *
+     * 純 Kotlin の重みを読み込み済みならそれを使う。[LidEngineMode.KOTLIN_ONLY] では重みも一緒に読み込む。
+     */
+    private fun ensureFrontEndLoaded(): LidFrontEnd? {
+        sharedLoadedModel?.let { return it.frontEnd }
+        sharedFrontEnd?.let { return it }
+        if (engineMode == LidEngineMode.KOTLIN_ONLY) return ensureModelLoaded()?.frontEnd
+        synchronized(loadLock) {
+            sharedLoadedModel?.let { return it.frontEnd }
+            sharedFrontEnd?.let { return it }
+            for (streamProvider in candidateStreamProviders(ASSET_FILE_NAME)) {
+                val frontEnd = runCatching {
+                    streamProvider()?.use { stream ->
+                        parseFrontEndBytes(stream.readNBytes(FRONT_END_PREFIX_BYTES))
+                    }
+                }.getOrNull()
+                if (frontEnd != null) {
+                    sharedFrontEnd = frontEnd
+                    return frontEnd
+                }
+            }
+            return null
+        }
+    }
+
+    /** 純 Kotlin の推論に使う重み（.bin 全体）を返す。 */
     private fun ensureModelLoaded(): QuantizedWhisperLidModel? {
         sharedLoadedModel?.let {
             cachedModel = it
@@ -226,7 +555,7 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 cachedModel = it
                 return it
             }
-            for (streamProvider in candidateStreamProviders()) {
+            for (streamProvider in candidateStreamProviders(ASSET_FILE_NAME)) {
                 val model = runCatching {
                     streamProvider()?.use { stream ->
                         parseModelBytes(stream.readBytes())
@@ -242,22 +571,22 @@ class WhisperTinyLanguageDetector @Inject constructor(
         }
     }
 
-    private fun candidateStreamProviders(): List<() -> InputStream?> = listOf(
+    private fun candidateStreamProviders(fileName: String): List<() -> InputStream?> = listOf(
         {
             context?.let { ctx ->
-                runCatching { ctx.assets.open(ASSET_FILE_NAME) }.getOrNull()
+                runCatching { ctx.assets.open(fileName) }.getOrNull()
             }
         },
         {
             val candidateFiles = listOf(
-                File("src/main/assets/$ASSET_FILE_NAME"),
-                File("core/media/src/main/assets/$ASSET_FILE_NAME"),
-                File("../core/media/src/main/assets/$ASSET_FILE_NAME"),
+                File("src/main/assets/$fileName"),
+                File("core/media/src/main/assets/$fileName"),
+                File("../core/media/src/main/assets/$fileName"),
             )
             candidateFiles.firstOrNull { it.isFile }?.inputStream()
         },
         {
-            WhisperTinyLanguageDetector::class.java.classLoader?.getResourceAsStream(ASSET_FILE_NAME)
+            WhisperTinyLanguageDetector::class.java.classLoader?.getResourceAsStream(fileName)
         },
     )
 
@@ -301,7 +630,19 @@ class WhisperTinyLanguageDetector @Inject constructor(
         private const val SPEECH_ONSET_RMS_THRESHOLD: Double = 120.0
         private const val MIN_PEAK_AMPLITUDE: Int = 64
 
-        /** 使い回す作業領域（1 つ約 3.5MB）の数。一括言語判定の同時推論数の上限（3）に合わせる。 */
+        /** 純 Kotlin の推論の名前（診断ログに出す）。 */
+        internal const val KOTLIN_ENGINE_NAME: String = "kotlin"
+
+        /** log-mel のフィルタと言語コードを読むために、.bin の先頭から読み出す量（ヘッダ・言語コード・フィルタが必ず収まる）。 */
+        private const val FRONT_END_PREFIX_BYTES: Int = 256 * 1024
+
+        /** .bin に入っていてよい言語の数の上限（[FRONT_END_PREFIX_BYTES] に収まるようにする）。 */
+        private const val MAX_LANGUAGES: Int = 128
+
+        /**
+         * 使い回す作業領域の数。一括言語判定の同時推論数の上限（3）に合わせる。
+         * 1 つは log-mel と出力の分で約 0.4MB、純 Kotlin で推論した場合はさらに約 3MB（[InferenceWorkspace]）。
+         */
         private const val MAX_POOLED_WORKSPACES: Int = 3
 
         /** Whisper Tiny (v1/v2) 多言語モデルがサポートする 99 言語コード（トークン ID 50259..50357 の順）。 */
@@ -458,6 +799,13 @@ class WhisperTinyLanguageDetector @Inject constructor(
         @Volatile
         private var sharedLoadedModel: QuantizedWhisperLidModel? = null
 
+        /** .bin の先頭の部分（言語コードと log-mel のフィルタ）。ONNX Runtime で推論する間は、重みを読まずにこれだけを使う。 */
+        @Volatile
+        private var sharedFrontEnd: LidFrontEnd? = null
+
+        /** 既定の ONNX（アセット）の ONNX Runtime のエンジン。プロセスで 1 つを共有する。 */
+        private val sharedOnnxHolder: OnnxEngineHolder = OnnxEngineHolder()
+
         // 400点 RFFT 用の周期的 Hann 窓と 20x20 Cooley-Tukey 分解テーブル
         private val HANN_WINDOW_400: FloatArray = FloatArray(N_FFT) { n ->
             (0.5 * (1.0 - cos(2.0 * Math.PI * n.toDouble() / N_FFT.toDouble()))).toFloat()
@@ -567,21 +915,6 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 out48k[i] = pcm16kMono[startSample + i].toFloat() * norm
             }
             return copyLen
-        }
-
-        private fun runInference(
-            model: QuantizedWhisperLidModel,
-            ws: InferenceWorkspace,
-            copiedSamples: Int = TARGET_PCM_SAMPLES,
-        ): FloatArray {
-            val activeMelFrames = computeLogMelSpectrogram(
-                pcm48k = ws.pcm48k,
-                melFilters201x80 = model.melFilters201x80,
-                ws = ws,
-                copiedSamples = copiedSamples,
-            )
-            runAudioEncoder(model, ws, activeMelFrames)
-            return runFusedDecoder(model, ws)
         }
 
         private fun computeLogMelSpectrogram(
@@ -1393,9 +1726,12 @@ class WhisperTinyLanguageDetector @Inject constructor(
 
         private fun gelu(x: Float): Float = 0.5f * x * (1.0f + erf(x * INV_SQRT_2))
 
-        internal fun parseModelBytes(bytes: ByteArray): QuantizedWhisperLidModel? {
-            if (bytes.size < 64) return null
-            val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        /**
+         * .bin のヘッダ（マジックと形状）を確かめて、言語コードを読む。読み終えたとき [buf] は言語コードの次を指す。
+         *
+         * 形式が違う場合と、言語の数が `1..maxLanguages` にない場合は `null`。
+         */
+        private fun readHeaderAndLanguageCodes(buf: ByteBuffer, maxLanguages: Int): List<String>? {
             val m0 = buf.get().toInt().toChar()
             val m1 = buf.get().toInt().toChar()
             val m2 = buf.get().toInt().toChar()
@@ -1427,21 +1763,52 @@ class WhisperTinyLanguageDetector @Inject constructor(
                 nAudioLayer != N_AUDIO_LAYER ||
                 nTextLayer != N_TEXT_LAYER ||
                 nLangs <= 0 ||
+                nLangs > maxLanguages ||
                 q4GroupSize != Q4_GROUP_SIZE
             ) {
                 return null
             }
 
             val languageCodes = ArrayList<String>(nLangs)
-            val languageIndexByCode = LinkedHashMap<String, Int>(nLangs)
             for (i in 0 until nLangs) {
                 val len = buf.get().toInt() and 0xFF
                 val strBytes = ByteArray(len)
                 buf.get(strBytes)
-                val code = String(strBytes, Charsets.UTF_8)
-                languageCodes.add(code)
+                languageCodes.add(String(strBytes, Charsets.UTF_8))
+            }
+            return languageCodes
+        }
+
+        /**
+         * .bin の先頭の部分（言語コードと log-mel のフィルタ）だけを読む。[bytes] は .bin の先頭から
+         * 少なくともフィルタの終わりまでを含むこと（[FRONT_END_PREFIX_BYTES]）。形式が違う場合は `null`。
+         */
+        internal fun parseFrontEndBytes(bytes: ByteArray): LidFrontEnd? {
+            if (bytes.size < 64) return null
+            return runCatching {
+                val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+                val languageCodes = readHeaderAndLanguageCodes(buf, MAX_LANGUAGES) ?: return null
+                val melFilters = FloatArray(N_FREQ_BINS * N_MELS)
+                for (i in melFilters.indices) {
+                    melFilters[i] = buf.float
+                }
+                LidFrontEnd(
+                    languageCodes = languageCodes,
+                    languageIndexByCode = languageCodes.withIndex().associate { (idx, code) -> code to idx },
+                    melFilters201x80 = melFilters,
+                )
+            }.getOrNull()
+        }
+
+        internal fun parseModelBytes(bytes: ByteArray): QuantizedWhisperLidModel? {
+            if (bytes.size < 64) return null
+            val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+            val languageCodes = readHeaderAndLanguageCodes(buf, Int.MAX_VALUE) ?: return null
+            val languageIndexByCode = LinkedHashMap<String, Int>(languageCodes.size)
+            for ((i, code) in languageCodes.withIndex()) {
                 languageIndexByCode[code] = i
             }
+            val nLangs = languageCodes.size
 
             fun readFloatArray(count: Int): FloatArray {
                 val out = FloatArray(count)
@@ -1627,6 +1994,19 @@ class WhisperTinyLanguageDetector @Inject constructor(
         val mlp2B: FloatArray,
     )
 
+    /**
+     * log-mel の計算と言語コードの対応に要る、.bin の先頭の部分（[parseFrontEndBytes]）。
+     *
+     * @property languageCodes モデルの言語コード（ロジットの並び）。
+     * @property languageIndexByCode 言語コードからロジットの位置への対応。
+     * @property melFilters201x80 mel フィルタ（201 周波数ビン × 80）。
+     */
+    internal class LidFrontEnd(
+        val languageCodes: List<String>,
+        val languageIndexByCode: Map<String, Int>,
+        val melFilters201x80: FloatArray,
+    )
+
     internal class QuantizedWhisperLidModel(
         val languageCodes: List<String>,
         val languageIndexByCode: Map<String, Int>,
@@ -1645,8 +2025,16 @@ class WhisperTinyLanguageDetector @Inject constructor(
         val decLnW: FloatArray,
         val decLnB: FloatArray,
         val langEmbW: Q8Matrix,
-    )
+    ) {
+        /** このモデルの先頭の部分（言語コードと mel フィルタ）。 */
+        val frontEnd: LidFrontEnd = LidFrontEnd(languageCodes, languageIndexByCode, melFilters201x80)
+    }
 
+    /**
+     * 1 回の推論の作業領域（同時に使うのは 1 スレッドだけ）。
+     *
+     * 純 Kotlin の推論だけが使う大きなバッファ（約 3MB）は、初めて使うときに確保する（ONNX Runtime で推論する間は確保しない）。
+     */
     private class InferenceWorkspace {
         val pcm48k = FloatArray(TARGET_PCM_SAMPLES)
         val paddedPcm48400 = FloatArray(TARGET_PCM_SAMPLES + N_FFT)
@@ -1654,23 +2042,27 @@ class WhisperTinyLanguageDetector @Inject constructor(
         val dftStage1Im = FloatArray(20 * 20)
         val magnitudes201 = FloatArray(N_FREQ_BINS)
         val mel300x80 = FloatArray(N_FRAMES * N_MELS)
-        val conv1Out300x384 = FloatArray(N_FRAMES * D_MODEL)
-        val encX150x384 = FloatArray(N_AUDIO_CTX * D_MODEL)
-        val encNorm150x384 = FloatArray(N_AUDIO_CTX * D_MODEL)
-        val encQ150x384 = FloatArray(N_AUDIO_CTX * D_MODEL)
-        val encK150x384 = FloatArray(N_AUDIO_CTX * D_MODEL)
-        val encV150x384 = FloatArray(N_AUDIO_CTX * D_MODEL)
-        val encAttnOut150x384 = FloatArray(N_AUDIO_CTX * D_MODEL)
-        val encMlpHidden150x1536 = FloatArray(N_AUDIO_CTX * D_FF)
         val audioFeatures150x384 = FloatArray(N_AUDIO_CTX * D_MODEL)
-        val dequantRowBuf = FloatArray(D_FF)
-        val attnScores150 = FloatArray(N_AUDIO_CTX)
-        val decXd384 = FloatArray(D_MODEL)
-        val decNorm384 = FloatArray(D_MODEL)
-        val decQ384 = FloatArray(D_MODEL)
-        val decQk6x384 = FloatArray(N_HEAD * D_MODEL)
-        val decPooled6x384 = FloatArray(N_HEAD * D_MODEL)
-        val decWvOut384 = FloatArray(D_MODEL)
-        val decMlpHidden1536 = FloatArray(D_FF)
+
+        /** 最後に推論したエンジンの名前。 */
+        var lastEngineName: String = KOTLIN_ENGINE_NAME
+
+        val conv1Out300x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_FRAMES * D_MODEL) }
+        val encX150x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX * D_MODEL) }
+        val encNorm150x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX * D_MODEL) }
+        val encQ150x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX * D_MODEL) }
+        val encK150x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX * D_MODEL) }
+        val encV150x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX * D_MODEL) }
+        val encAttnOut150x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX * D_MODEL) }
+        val encMlpHidden150x1536 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX * D_FF) }
+        val dequantRowBuf by lazy(LazyThreadSafetyMode.NONE) { FloatArray(D_FF) }
+        val attnScores150 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_AUDIO_CTX) }
+        val decXd384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(D_MODEL) }
+        val decNorm384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(D_MODEL) }
+        val decQ384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(D_MODEL) }
+        val decQk6x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_HEAD * D_MODEL) }
+        val decPooled6x384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(N_HEAD * D_MODEL) }
+        val decWvOut384 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(D_MODEL) }
+        val decMlpHidden1536 by lazy(LazyThreadSafetyMode.NONE) { FloatArray(D_FF) }
     }
 }
