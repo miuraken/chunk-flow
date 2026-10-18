@@ -13,6 +13,7 @@ import com.miuraken.chunkflow.core.audio.ChunkSegmenter
 import com.miuraken.chunkflow.core.audio.DbfsQuantizer
 import com.miuraken.chunkflow.core.audio.FeatureAccumulator
 import com.miuraken.chunkflow.core.audio.FrameFeatureExtractor
+import com.miuraken.chunkflow.core.audio.PcmSlidingWindowBuffer
 import com.miuraken.chunkflow.core.audio.SampleSink
 import com.miuraken.chunkflow.core.audio.StoredFeatures
 import com.miuraken.chunkflow.core.audio.TranscriptOffsetAligner
@@ -44,6 +45,7 @@ import com.miuraken.chunkflow.core.media.MlKitOnDeviceTextTranslator
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriptionResult
 import com.miuraken.chunkflow.core.media.OnDeviceTextTranslator
+import com.miuraken.chunkflow.core.media.PcmChunkLanguageRequest
 import com.miuraken.chunkflow.core.model.AnalysisError
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.Bookmark
@@ -85,6 +87,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -150,6 +154,7 @@ class DefaultAnalysisRepository(
         @Dispatcher(ChunkFlowDispatchers.IO) ioDispatcher: CoroutineDispatcher,
         onDeviceChunkTranscriber: OnDeviceChunkTranscriber,
         bookmarkDao: BookmarkDao,
+        audioStreamDecoder: AudioStreamDecoder,
         userSettingsRepository: UserSettingsRepository,
         itemSttOverrideRepository: ItemSttOverrideRepository,
         textTranslator: OnDeviceTextTranslator,
@@ -166,6 +171,7 @@ class DefaultAnalysisRepository(
         onDeviceChunkTranscriber = onDeviceChunkTranscriber,
         bookmarkDao = bookmarkDao,
         clock = System::currentTimeMillis,
+        audioStreamDecoder = audioStreamDecoder,
         userSettingsRepository = userSettingsRepository,
         itemSttOverrideRepository = itemSttOverrideRepository,
         textTranslator = textTranslator,
@@ -205,6 +211,8 @@ class DefaultAnalysisRepository(
     private val hasExplicitSessionTracking = AtomicBoolean(false)
     private val activeTranscriptionJobs = ConcurrentHashMap<MediaId, MutableSet<Job>>()
     private val targetLanguageOnlyMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
+    private val activePipelinedLidJobs = ConcurrentHashMap<MediaId, Job>()
+    private val pipelinedLidProcessedChunkIds = ConcurrentHashMap<MediaId, MutableSet<Long>>()
 
     private fun isMediaOpenForTranscription(id: MediaId): Boolean = !hasExplicitSessionTracking.get() || activeOpenMediaIds.contains(id)
 
@@ -388,25 +396,39 @@ class DefaultAnalysisRepository(
 
             val decoder = audioStreamDecoder
             if (decoder != null) {
-                while (true) {
-                    val effectiveHigh = explicitHighPriority || pipelineGate.isMediaOpen(id)
-                    val completed = pipelineGate.withLock(highPriority = effectiveHigh) {
-                        try {
-                            runAnalysisPipeline(
-                                mediaId = id,
-                                requestedStages = stages,
-                                decoder = decoder,
-                                // 同じ要求でワーカー（AnalysisWorker）も登録しているので、どちらが後になっても、
-                                // 済んでいれば飛ばす（優先度にかかわらず。以前は開いているファイルで同じ解析が 2 回走っていた）
-                                skipIfAlreadyDone = true,
-                            )
-                            true
-                        } catch (_: AnalysisPreemptedException) {
-                            resetStagesToNotStarted(id, stages)
-                            false
-                        }
+                val lidBarrier = if (AnalysisStage.SEGMENTATION in stages) {
+                    CompletableDeferred<Unit>().also { deferred ->
+                        activePipelinedLidJobs[id] = deferred
                     }
-                    if (completed) break
+                } else {
+                    null
+                }
+                try {
+                    while (true) {
+                        val effectiveHigh = explicitHighPriority || pipelineGate.isMediaOpen(id)
+                        val completed = pipelineGate.withLock(highPriority = effectiveHigh) {
+                            try {
+                                runAnalysisPipeline(
+                                    mediaId = id,
+                                    requestedStages = stages,
+                                    decoder = decoder,
+                                    // 同じ要求でワーカー（AnalysisWorker）も登録しているので、どちらが後になっても、
+                                    // 済んでいれば飛ばす（優先度にかかわらず。以前は開いているファイルで同じ解析が 2 回走っていた）
+                                    skipIfAlreadyDone = true,
+                                )
+                                true
+                            } catch (_: AnalysisPreemptedException) {
+                                resetStagesToNotStarted(id, stages)
+                                false
+                            }
+                        }
+                        if (completed) break
+                    }
+                } finally {
+                    if (lidBarrier != null) {
+                        activePipelinedLidJobs.remove(id, lidBarrier)
+                        lidBarrier.complete(Unit)
+                    }
                 }
             }
         }
@@ -445,231 +467,564 @@ class DefaultAnalysisRepository(
         val needDecode = AnalysisStage.FEATURES in requestedStages || !featuresFile.isFile
 
         try {
-            var decodedDurationMs: Long? = null
-            if (needDecode) {
-                val now = clock()
-                analysisStateDao.upsert(
-                    StageStatus.Running(progress = 0f).toEntity(
-                        mediaId = mediaId,
-                        stage = AnalysisStage.FEATURES,
-                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                        updatedAtEpochMs = now,
-                    ),
-                )
-
+            coroutineScope {
+                var decodedDurationMs: Long? = null
                 val mediaItem = mediaItemForSource ?: mediaItemDao.getById(mediaId.value)
-                val expectedDurationMs = mediaItem?.durationMs?.takeIf { it > 0L }
-
-                val coarseWaveform = when (audioSource) {
-                    is ResolvedAudioSource.LocalFile -> decoder.decodeCoarseOverviewWaveform(
-                        file = audioSource.file,
-                        expectedDurationMs = expectedDurationMs,
-                    )
-
-                    is ResolvedAudioSource.SourceUri -> decoder.decodeCoarseOverviewWaveform(
-                        uri = audioSource.uri,
-                        expectedDurationMs = expectedDurationMs,
-                    )
-                }?.takeIf { it.peak.isNotEmpty() }
-                if (coarseWaveform != null) {
-                    val saved = AnalysisBinaryFormat.writeWaveformAtomic(
-                        file = waveformFile,
-                        waveform = coarseWaveform,
-                    )
-                    if (saved) {
-                        notifyWaveformUpdated(mediaId)
-                    }
+                val segmentationParams = if (AnalysisStage.SEGMENTATION in requestedStages) {
+                    val customParams = runCatching {
+                        itemStateDao.getByMediaId(mediaId.value)?.let {
+                            ItemStateEntity.decodeSegmentationParams(it.customSegmentation)
+                        }
+                    }.getOrNull()
+                    customParams ?: runCatching {
+                        userSettingsRepository?.settings?.first()?.defaultSegmentationParams
+                    }.getOrNull() ?: SegmentationParams()
+                } else {
+                    null
                 }
 
-                val accumulator = FeatureAccumulator(binMs = ChunkSegmenter.DEFAULT_BIN_MS)
-                val extractor = FrameFeatureExtractor(
-                    sampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
-                    sink = accumulator,
-                )
-
-                var lastCheckpointMs = now
-                var lastProgressUpdateMs = now
-                var lastSavedDecodedBins = 0
-
-                val sampleSink = SampleSink { samples, count ->
-                    if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
-                        throw AnalysisPreemptedException()
+                val lidLanguagePair = if (
+                    needDecode &&
+                    AnalysisStage.SEGMENTATION in requestedStages &&
+                    onDeviceChunkTranscriber !== NoOpOnDeviceChunkTranscriber
+                ) {
+                    val target = mediaItem?.targetLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                    val base = mediaItem?.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                    if (target != null && base != null && !target.value.equals(base.value, ignoreCase = true)) {
+                        LanguagePair(target = target, base = base)
+                    } else {
+                        null
                     }
-                    extractor.process(samples, count)
+                } else {
+                    null
                 }
-                val onProgressCallback: suspend (com.miuraken.chunkflow.core.media.DecodeProgress) -> Unit = { progress ->
-                    if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
-                        throw AnalysisPreemptedException()
-                    }
-                    val currentMs = clock()
-                    // 30 秒区間ごとの保存は、最初の区間はすぐ公開し、2 回目以降は前の保存から一定時間あける
-                    // （デコードが速いと 30 秒区間が数百 ms ごとにそろい、そのたびに波形全体を書き直すことになるため）
-                    val hasNew30sSegment =
-                        accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
-                            (
-                                lastSavedDecodedBins == 0 ||
-                                    currentMs - lastCheckpointMs >= AnalysisWorker.MIN_SEGMENT_SAVE_INTERVAL_MS
-                                )
-                    val shouldSaveWaveform =
-                        currentMs - lastCheckpointMs >= AnalysisWorker.PROGRESS_SAVE_INTERVAL_MS ||
-                            hasNew30sSegment
-                    val shouldUpdateProgress =
-                        currentMs - lastProgressUpdateMs >= AnalysisWorker.PROGRESS_DB_INTERVAL_MS
 
-                    if (shouldSaveWaveform && accumulator.size > 0) {
-                        AnalysisBinaryFormat.writeWaveformAtomic(
-                            file = waveformFile,
-                            waveform = accumulator.toProgressiveWaveform(coarseWaveform),
+                val pcmWindowBuffer = if (lidLanguagePair != null) {
+                    PcmSlidingWindowBuffer(sampleRateHz = AnalysisWorker.TARGET_SAMPLE_RATE_HZ)
+                } else {
+                    null
+                }
+                val lidRequestChannel = if (lidLanguagePair != null) {
+                    Channel<PcmChunkLanguageRequest>(capacity = Channel.UNLIMITED)
+                } else {
+                    null
+                }
+                val chunkPersistenceMutex = Mutex()
+                val enqueuedLidRanges = ArrayList<ChunkTimeRange>()
+                val lidRemainingChunkIds = ConcurrentHashMap.newKeySet<ChunkId>()
+                val lidCompletedCount = AtomicInteger(0)
+                val lidTotalEnqueuedCount = AtomicInteger(0)
+                val stateFlow = lookaheadStateFor(mediaId)
+
+                fun enqueueConfirmedChunksForLid(
+                    insertedChunks: List<ChunkEntity>,
+                    buffer: PcmSlidingWindowBuffer,
+                    channel: Channel<PcmChunkLanguageRequest>,
+                ) {
+                    for (chunk in insertedChunks) {
+                        val chunkDuration = (chunk.endMs - chunk.startMs).coerceAtLeast(1L)
+                        val alreadyEnqueued = enqueuedLidRanges.any { existing ->
+                            val overlap = minOf(chunk.endMs, existing.endMs) - maxOf(chunk.startMs, existing.startMs)
+                            overlap > chunkDuration / 2L
+                        }
+                        if (alreadyEnqueued) continue
+
+                        val pcmSlice = buffer.sliceLeadingPcm(
+                            startMs = chunk.startMs,
+                            endMs = chunk.endMs,
                         )
-                        lastCheckpointMs = currentMs
-                        lastSavedDecodedBins = accumulator.size
-                        notifyWaveformUpdated(mediaId)
+                        enqueuedLidRanges.add(ChunkTimeRange(startMs = chunk.startMs, endMs = chunk.endMs))
+                        val cid = ChunkId(chunk.id)
+                        lidRemainingChunkIds.add(cid)
+                        val newTotal = lidTotalEnqueuedCount.incrementAndGet()
+                        val done = lidCompletedCount.get()
+                        val startedAt = clock()
+                        stateFlow.update { current ->
+                            current.copy(
+                                engineAvailable = true,
+                                inFlightChunkId = current.inFlightChunkId ?: cid,
+                                inFlightStep = TranscriptionStep.DETECTING_LANGUAGE,
+                                inFlightDetail = "言語判定のみを実行中",
+                                inFlightStartedAtEpochMs = current.inFlightStartedAtEpochMs ?: startedAt,
+                                queuedChunkIds = current.queuedChunkIds + lidRemainingChunkIds,
+                                completedCount = done,
+                                totalTargetCount = newTotal,
+                            )
+                        }
+                        channel.trySend(
+                            PcmChunkLanguageRequest(
+                                chunkId = chunk.id,
+                                startMs = chunk.startMs,
+                                endMs = chunk.endMs,
+                                pcm16kMono = pcmSlice ?: ShortArray(0),
+                            ),
+                        )
                     }
+                }
 
-                    if (shouldUpdateProgress || shouldSaveWaveform) {
-                        lastProgressUpdateMs = currentMs
+                val localAudioFile = if (lidLanguagePair != null) {
+                    (audioSource as? ResolvedAudioSource.LocalFile)?.file
+                        ?: resolveReadableAudioFile(mediaId, mediaFileResolver, mediaItemDao, mediaItem, context)
+                } else {
+                    null
+                }
+                val lidAudioScopeKey = localAudioFile?.absolutePath ?: mediaId.value
+                val lidParallelism = OnDeviceChunkTranscriber.recommendedLanguageDetectionParallelism()
+
+                val lidConsumerJob = if (lidLanguagePair != null && lidRequestChannel != null) {
+                    launch(computeDispatcher) {
+                        val lidStartedAt = clock()
+                        try {
+                            onDeviceChunkTranscriber.detectChunkLanguagesFromPcmStream(
+                                audioScopeKey = lidAudioScopeKey,
+                                requests = lidRequestChannel,
+                                languagePair = lidLanguagePair,
+                                parallelism = lidParallelism,
+                                computeDispatcher = computeDispatcher,
+                                audioFile = localAudioFile,
+                            ) { req, detected ->
+                                chunkPersistenceMutex.withLock {
+                                    val currentAutoChunks = chunkDao.getByMediaIdAndOrigin(
+                                        mediaId.value,
+                                        ChunkOrigin.AUTO.name,
+                                    )
+                                    val matchedChunk = currentAutoChunks.firstOrNull { it.id == req.chunkId }
+                                        ?: currentAutoChunks.firstOrNull {
+                                            kotlin.math.abs(it.startMs - req.startMs) <= 50L &&
+                                                kotlin.math.abs(it.endMs - req.endMs) <= 50L
+                                        }
+                                        ?: currentAutoChunks
+                                            .map { c ->
+                                                c to (minOf(req.endMs, c.endMs) - maxOf(req.startMs, c.startMs))
+                                            }
+                                            .filter { it.second > 0L }
+                                            .maxByOrNull { it.second }
+                                            ?.first
+                                    if (matchedChunk != null) {
+                                        val latestTranscript = transcriptDao.getByChunkId(matchedChunk.id)
+                                        val isOverwritableLidOnly = latestTranscript != null &&
+                                            latestTranscript.isLanguageIdOnly() &&
+                                            !latestTranscript.userEdited
+                                        val alreadyHasProtectedLanguageOrText = latestTranscript != null &&
+                                            !isOverwritableLidOnly && (
+                                                latestTranscript.text.isNotBlank() ||
+                                                    latestTranscript.userEdited ||
+                                                    (
+                                                        !latestTranscript.language.isNullOrBlank() &&
+                                                            !latestTranscript.language.equals("und", ignoreCase = true)
+                                                        )
+                                                )
+                                        if (!alreadyHasProtectedLanguageOrText) {
+                                            withContext(NonCancellable) {
+                                                if (detected?.language != null) {
+                                                    persistLanguageOnlyTranscript(matchedChunk.id, detected)
+                                                } else if (isOverwritableLidOnly) {
+                                                    transcriptDao.deleteByChunkId(matchedChunk.id)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                lidRemainingChunkIds.remove(ChunkId(req.chunkId))
+                                val done = lidCompletedCount.incrementAndGet()
+                                val total = lidTotalEnqueuedCount.get()
+                                val nextInFlight = lidRemainingChunkIds.firstOrNull()
+                                val nowMs = clock()
+                                stateFlow.update { current ->
+                                    current.copy(
+                                        engineAvailable = true,
+                                        inFlightChunkId = nextInFlight,
+                                        inFlightStep = if (nextInFlight != null) TranscriptionStep.DETECTING_LANGUAGE else null,
+                                        inFlightDetail = if (nextInFlight != null) "言語判定のみを実行中" else null,
+                                        inFlightStartedAtEpochMs = if (nextInFlight != null) nowMs else null,
+                                        queuedChunkIds = (current.queuedChunkIds - ChunkId(req.chunkId)) + lidRemainingChunkIds,
+                                        completedCount = done,
+                                        totalTargetCount = total,
+                                    )
+                                }
+                            }
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (e: Exception) {
+                            runCatching {
+                                onDeviceChunkTranscriber.recordExternalDiagnostic(
+                                    stage = "LID_ONLY",
+                                    message = "デコード並列の言語判定を中断 (${e.javaClass.simpleName})",
+                                    isWarningOrError = true,
+                                )
+                            }
+                        } finally {
+                            withContext(NonCancellable) {
+                                val done = lidCompletedCount.get()
+                                val total = lidTotalEnqueuedCount.get()
+                                stateFlow.update { current ->
+                                    val isLidStep = current.inFlightDetail == "言語判定のみを実行中"
+                                    current.copy(
+                                        inFlightChunkId = if (isLidStep) null else current.inFlightChunkId,
+                                        inFlightStep = if (isLidStep) null else current.inFlightStep,
+                                        inFlightDetail = if (isLidStep) null else current.inFlightDetail,
+                                        inFlightStartedAtEpochMs = if (isLidStep) null else current.inFlightStartedAtEpochMs,
+                                        queuedChunkIds = current.queuedChunkIds - lidRemainingChunkIds,
+                                        completedCount = if (isLidStep || total > 0) done else current.completedCount,
+                                        totalTargetCount = if (isLidStep || total > 0) total else current.totalTargetCount,
+                                    )
+                                }
+                                if (total > 0) {
+                                    updateQueuedChunkIdsState(mediaId)
+                                    persistTranscriptBackupFile(mediaId)
+                                    val elapsedMs = (clock() - lidStartedAt).coerceAtLeast(0L)
+                                    val elapsedTenths = (elapsedMs + 50L) / 100L
+                                    runCatching {
+                                        onDeviceChunkTranscriber.recordExternalDiagnostic(
+                                            stage = "LID_ONLY",
+                                            message = "デコード並列の言語判定を終了 ($done / $total チャンク、" +
+                                                "${elapsedTenths / 10}.${elapsedTenths % 10} 秒、" +
+                                                "平均 ${elapsedMs / done.coerceAtLeast(1)} ms/チャンク)",
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    null
+                }
+
+                try {
+                    if (needDecode) {
+                        val now = clock()
                         analysisStateDao.upsert(
-                            StageStatus.Running(progress = progress.fraction).toEntity(
+                            StageStatus.Running(progress = 0f).toEntity(
                                 mediaId = mediaId,
                                 stage = AnalysisStage.FEATURES,
                                 algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                                updatedAtEpochMs = currentMs,
+                                updatedAtEpochMs = now,
                             ),
                         )
-                    }
-                }
-                val decodeResult = when (audioSource) {
-                    is ResolvedAudioSource.LocalFile -> decoder.decode(
-                        file = audioSource.file,
-                        sink = sampleSink,
-                        outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
-                        expectedDurationMs = expectedDurationMs,
-                        onProgress = onProgressCallback,
-                    )
 
-                    is ResolvedAudioSource.SourceUri -> decoder.decode(
-                        uri = audioSource.uri,
-                        sink = sampleSink,
-                        outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
-                        expectedDurationMs = expectedDurationMs,
-                        onProgress = onProgressCallback,
-                    )
-                }
+                        val expectedDurationMs = mediaItem?.durationMs?.takeIf { it > 0L }
 
-                when (decodeResult) {
-                    is AudioDecodeResult.Failure -> {
-                        markStagesFailed(mediaId, requestedStages, decodeResult.error)
-                        return
-                    }
+                        val coarseWaveform = when (audioSource) {
+                            is ResolvedAudioSource.LocalFile -> decoder.decodeCoarseOverviewWaveform(
+                                file = audioSource.file,
+                                expectedDurationMs = expectedDurationMs,
+                            )
 
-                    is AudioDecodeResult.Success -> {
-                        extractor.finish()
-                        decodedDurationMs = decodeResult.durationMs
-
-                        val waveformSaved = AnalysisBinaryFormat.writeWaveformAtomic(
-                            file = waveformFile,
-                            waveform = accumulator.toWaveform(),
-                        )
-                        val featuresSaved = AnalysisBinaryFormat.writeFeaturesAtomic(
-                            file = featuresFile,
-                            features = StoredFeatures(
-                                binMs = ChunkSegmenter.DEFAULT_BIN_MS,
-                                logEnergyDb = accumulator.logEnergyDb(),
-                            ),
-                        )
-                        if (!waveformSaved || !featuresSaved) {
-                            markStagesFailed(mediaId, requestedStages, AnalysisError.IO)
-                            return
+                            is ResolvedAudioSource.SourceUri -> decoder.decodeCoarseOverviewWaveform(
+                                uri = audioSource.uri,
+                                expectedDurationMs = expectedDurationMs,
+                            )
+                        }?.takeIf { it.peak.isNotEmpty() }
+                        if (coarseWaveform != null) {
+                            val saved = AnalysisBinaryFormat.writeWaveformAtomic(
+                                file = waveformFile,
+                                waveform = coarseWaveform,
+                            )
+                            if (saved) {
+                                notifyWaveformUpdated(mediaId)
+                            }
                         }
-                        notifyWaveformUpdated(mediaId)
 
-                        if (decodeResult.durationMs > 0L) {
-                            val currentItem = mediaItemDao.getById(mediaId.value)
-                            if (currentItem != null && currentItem.durationMs != decodeResult.durationMs) {
-                                mediaItemDao.update(
-                                    currentItem.copy(durationMs = decodeResult.durationMs),
+                        val accumulator = FeatureAccumulator(binMs = ChunkSegmenter.DEFAULT_BIN_MS)
+                        val extractor = FrameFeatureExtractor(
+                            sampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                            sink = accumulator,
+                        )
+
+                        var lastCheckpointMs = now
+                        var lastProgressUpdateMs = now
+                        var lastSavedDecodedBins = 0
+                        var lastSegmentedBins = 0
+                        var progressiveConfirmedCount = 0
+                        var progressiveSegmentationRunning = false
+
+                        val sampleSink = SampleSink { samples, count ->
+                            if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                                throw AnalysisPreemptedException()
+                            }
+                            extractor.process(samples, count)
+                            pcmWindowBuffer?.appendFloats(samples, count)
+                        }
+                        val onProgressCallback: suspend (com.miuraken.chunkflow.core.media.DecodeProgress) -> Unit = { progress ->
+                            if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
+                                throw AnalysisPreemptedException()
+                            }
+                            val currentMs = clock()
+                            // 30 秒区間ごとの保存は、最初の区間はすぐ公開し、2 回目以降は前の保存から一定時間あける
+                            // （デコードが速いと 30 秒区間が数百 ms ごとにそろい、そのたびに波形全体を書き直すことになるため）
+                            val hasNew30sSegment =
+                                accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
+                                    (
+                                        lastSavedDecodedBins == 0 ||
+                                            currentMs - lastCheckpointMs >= AnalysisWorker.MIN_SEGMENT_SAVE_INTERVAL_MS
+                                        )
+                            val shouldSaveWaveform =
+                                currentMs - lastCheckpointMs >= AnalysisWorker.PROGRESS_SAVE_INTERVAL_MS ||
+                                    hasNew30sSegment
+                            val shouldUpdateProgress =
+                                currentMs - lastProgressUpdateMs >= AnalysisWorker.PROGRESS_DB_INTERVAL_MS
+
+                            if (shouldSaveWaveform && accumulator.size > 0) {
+                                AnalysisBinaryFormat.writeWaveformAtomic(
+                                    file = waveformFile,
+                                    waveform = accumulator.toProgressiveWaveform(coarseWaveform),
                                 )
+                                lastCheckpointMs = currentMs
+                                lastSavedDecodedBins = accumulator.size
+                                notifyWaveformUpdated(mediaId)
+
+                                if (
+                                    segmentationParams != null &&
+                                    accumulator.size - lastSegmentedBins >= FeatureAccumulator.BINS_PER_30_SECONDS
+                                ) {
+                                    lastSegmentedBins = accumulator.size
+                                    if (!progressiveSegmentationRunning) {
+                                        progressiveSegmentationRunning = true
+                                        analysisStateDao.upsert(
+                                            StageStatus.Running(progress = progress.fraction).toEntity(
+                                                mediaId = mediaId,
+                                                stage = AnalysisStage.SEGMENTATION,
+                                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                                updatedAtEpochMs = currentMs,
+                                            ),
+                                        )
+                                    }
+                                    val provisionalChunks = chunkSegmenter.segment(
+                                        logEnergyDb = accumulator.logEnergyDb(),
+                                        params = segmentationParams,
+                                        binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                                        durationMs = accumulator.size.toLong() * ChunkSegmenter.DEFAULT_BIN_MS,
+                                    )
+                                    val confirmedChunks = if (provisionalChunks.size > 1) {
+                                        provisionalChunks.dropLast(1)
+                                    } else {
+                                        emptyList()
+                                    }
+                                    if (confirmedChunks.size > progressiveConfirmedCount) {
+                                        val confirmedEntities = confirmedChunks.map {
+                                            it.toEntity(
+                                                mediaId = mediaId,
+                                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                            )
+                                        }
+                                        chunkPersistenceMutex.withLock {
+                                            val inserted = chunkDao.replaceChunksTransaction(
+                                                mediaId = mediaId.value,
+                                                origin = ChunkOrigin.AUTO.name,
+                                                newChunks = confirmedEntities,
+                                                newTranscriptsByIndex = emptyMap(),
+                                                preserveAllOldTranscripts = true,
+                                            )
+                                            if (pcmWindowBuffer != null && lidRequestChannel != null) {
+                                                enqueueConfirmedChunksForLid(
+                                                    insertedChunks = inserted,
+                                                    buffer = pcmWindowBuffer,
+                                                    channel = lidRequestChannel,
+                                                )
+                                                val safeDiscardMs = (confirmedChunks.last().endMs - 500L).coerceAtLeast(0L)
+                                                pcmWindowBuffer.discardBeforeMs(safeDiscardMs)
+                                            }
+                                        }
+                                        progressiveConfirmedCount = confirmedChunks.size
+                                        analysisStateDao.upsert(
+                                            StageStatus.Running(progress = progress.fraction).toEntity(
+                                                mediaId = mediaId,
+                                                stage = AnalysisStage.SEGMENTATION,
+                                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                                updatedAtEpochMs = currentMs,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (shouldUpdateProgress || shouldSaveWaveform) {
+                                lastProgressUpdateMs = currentMs
+                                analysisStateDao.upsert(
+                                    StageStatus.Running(progress = progress.fraction).toEntity(
+                                        mediaId = mediaId,
+                                        stage = AnalysisStage.FEATURES,
+                                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                        updatedAtEpochMs = currentMs,
+                                    ),
+                                )
+                            }
+                        }
+                        val decodeResult = when (audioSource) {
+                            is ResolvedAudioSource.LocalFile -> decoder.decode(
+                                file = audioSource.file,
+                                sink = sampleSink,
+                                outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                                expectedDurationMs = expectedDurationMs,
+                                onProgress = onProgressCallback,
+                            )
+
+                            is ResolvedAudioSource.SourceUri -> decoder.decode(
+                                uri = audioSource.uri,
+                                sink = sampleSink,
+                                outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                                expectedDurationMs = expectedDurationMs,
+                                onProgress = onProgressCallback,
+                            )
+                        }
+
+                        when (decodeResult) {
+                            is AudioDecodeResult.Failure -> {
+                                pcmWindowBuffer?.clear()
+                                lidRequestChannel?.close()
+                                lidConsumerJob?.cancel()
+                                markStagesFailed(mediaId, requestedStages, decodeResult.error)
+                                return@coroutineScope
+                            }
+
+                            is AudioDecodeResult.Success -> {
+                                extractor.finish()
+                                decodedDurationMs = decodeResult.durationMs
+
+                                val waveformSaved = AnalysisBinaryFormat.writeWaveformAtomic(
+                                    file = waveformFile,
+                                    waveform = accumulator.toWaveform(),
+                                )
+                                val featuresSaved = AnalysisBinaryFormat.writeFeaturesAtomic(
+                                    file = featuresFile,
+                                    features = StoredFeatures(
+                                        binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                                        logEnergyDb = accumulator.logEnergyDb(),
+                                    ),
+                                )
+                                if (!waveformSaved || !featuresSaved) {
+                                    pcmWindowBuffer?.clear()
+                                    lidRequestChannel?.close()
+                                    lidConsumerJob?.cancel()
+                                    markStagesFailed(mediaId, requestedStages, AnalysisError.IO)
+                                    return@coroutineScope
+                                }
+                                notifyWaveformUpdated(mediaId)
+
+                                if (decodeResult.durationMs > 0L) {
+                                    val currentItem = mediaItemDao.getById(mediaId.value)
+                                    if (currentItem != null && currentItem.durationMs != decodeResult.durationMs) {
+                                        mediaItemDao.update(
+                                            currentItem.copy(durationMs = decodeResult.durationMs),
+                                        )
+                                    }
+                                }
+
+                                analysisStateDao.upsert(
+                                    StageStatus.Done.toEntity(
+                                        mediaId = mediaId,
+                                        stage = AnalysisStage.FEATURES,
+                                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                        updatedAtEpochMs = clock(),
+                                    ),
+                                )
+                            }
+                        }
+                    }
+
+                    if (AnalysisStage.SEGMENTATION in requestedStages) {
+                        val segStartMs = clock()
+                        analysisStateDao.upsert(
+                            StageStatus.Running(progress = 0f).toEntity(
+                                mediaId = mediaId,
+                                stage = AnalysisStage.SEGMENTATION,
+                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                updatedAtEpochMs = segStartMs,
+                            ),
+                        )
+
+                        val storedFeatures = AnalysisBinaryFormat.readFeatures(featuresFile)
+                        if (storedFeatures == null) {
+                            pcmWindowBuffer?.clear()
+                            lidRequestChannel?.close()
+                            lidConsumerJob?.cancel()
+                            analysisStateDao.upsert(
+                                StageStatus.Failed(AnalysisError.IO).toEntity(
+                                    mediaId = mediaId,
+                                    stage = AnalysisStage.SEGMENTATION,
+                                    algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                    updatedAtEpochMs = clock(),
+                                ),
+                            )
+                            return@coroutineScope
+                        }
+
+                        val params = segmentationParams ?: SegmentationParams()
+
+                        val durationMs = decodedDurationMs?.takeIf { it > 0L }
+                            ?: mediaItemDao.getById(mediaId.value)?.durationMs?.takeIf { it > 0L }
+                            ?: storedFeatures.durationMs
+
+                        val autoChunks = chunkSegmenter.segment(
+                            logEnergyDb = storedFeatures.logEnergyDb,
+                            params = params,
+                            binMs = storedFeatures.binMs,
+                            durationMs = durationMs,
+                        )
+                        val chunkEntities = autoChunks.map {
+                            it.toEntity(
+                                mediaId = mediaId,
+                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                            )
+                        }
+
+                        chunkPersistenceMutex.withLock {
+                            val finalInserted = chunkDao.replaceChunksTransaction(
+                                mediaId = mediaId.value,
+                                origin = ChunkOrigin.AUTO.name,
+                                newChunks = chunkEntities,
+                                newTranscriptsByIndex = emptyMap(),
+                                preserveAllOldTranscripts = true,
+                            )
+                            if (pcmWindowBuffer != null && lidRequestChannel != null) {
+                                enqueueConfirmedChunksForLid(
+                                    insertedChunks = finalInserted,
+                                    buffer = pcmWindowBuffer,
+                                    channel = lidRequestChannel,
+                                )
+                                pcmWindowBuffer.clear()
+                                lidRequestChannel.close()
                             }
                         }
 
                         analysisStateDao.upsert(
                             StageStatus.Done.toEntity(
                                 mediaId = mediaId,
-                                stage = AnalysisStage.FEATURES,
+                                stage = AnalysisStage.SEGMENTATION,
                                 algorithmVersion = CURRENT_ALGORITHM_VERSION,
                                 updatedAtEpochMs = clock(),
                             ),
                         )
+
+                        if (lidConsumerJob != null) {
+                            lidConsumerJob.join()
+                            val finalAutoIds = chunkDao.getByMediaIdAndOrigin(
+                                mediaId.value,
+                                ChunkOrigin.AUTO.name,
+                            ).map { it.id }
+                            pipelinedLidProcessedChunkIds.computeIfAbsent(mediaId) {
+                                ConcurrentHashMap.newKeySet()
+                            }.addAll(finalAutoIds)
+                            val resumeStartIndex = latestLookaheadChunkIndex[mediaId]
+                            if (
+                                resumeStartIndex != null &&
+                                stateFlow.value.enabled &&
+                                canContinueTranscriptionForMedia(mediaId)
+                            ) {
+                                triggerLookaheadAt(mediaId, resumeStartIndex.coerceAtLeast(0))
+                            }
+                        }
+                    } else {
+                        pcmWindowBuffer?.clear()
+                        lidRequestChannel?.close()
+                        lidConsumerJob?.cancel()
                     }
+                } catch (t: Throwable) {
+                    pcmWindowBuffer?.clear()
+                    lidRequestChannel?.close()
+                    lidConsumerJob?.cancel()
+                    throw t
                 }
-            }
-
-            if (AnalysisStage.SEGMENTATION in requestedStages) {
-                val segStartMs = clock()
-                analysisStateDao.upsert(
-                    StageStatus.Running(progress = 0f).toEntity(
-                        mediaId = mediaId,
-                        stage = AnalysisStage.SEGMENTATION,
-                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                        updatedAtEpochMs = segStartMs,
-                    ),
-                )
-
-                val storedFeatures = AnalysisBinaryFormat.readFeatures(featuresFile)
-                if (storedFeatures == null) {
-                    analysisStateDao.upsert(
-                        StageStatus.Failed(AnalysisError.IO).toEntity(
-                            mediaId = mediaId,
-                            stage = AnalysisStage.SEGMENTATION,
-                            algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                            updatedAtEpochMs = clock(),
-                        ),
-                    )
-                    return
-                }
-
-                val customParams = runCatching {
-                    itemStateDao.getByMediaId(mediaId.value)?.let {
-                        ItemStateEntity.decodeSegmentationParams(it.customSegmentation)
-                    }
-                }.getOrNull()
-                val params = customParams ?: runCatching {
-                    userSettingsRepository?.settings?.first()?.defaultSegmentationParams
-                }.getOrNull() ?: SegmentationParams()
-
-                val durationMs = decodedDurationMs?.takeIf { it > 0L }
-                    ?: mediaItemDao.getById(mediaId.value)?.durationMs?.takeIf { it > 0L }
-                    ?: storedFeatures.durationMs
-
-                val autoChunks = chunkSegmenter.segment(
-                    logEnergyDb = storedFeatures.logEnergyDb,
-                    params = params,
-                    binMs = storedFeatures.binMs,
-                    durationMs = durationMs,
-                )
-                val chunkEntities = autoChunks.map {
-                    it.toEntity(
-                        mediaId = mediaId,
-                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                    )
-                }
-
-                chunkDao.replaceChunksTransaction(
-                    mediaId = mediaId.value,
-                    origin = ChunkOrigin.AUTO.name,
-                    newChunks = chunkEntities,
-                    newTranscriptsByIndex = emptyMap(),
-                    preserveAllOldTranscripts = true,
-                )
-
-                analysisStateDao.upsert(
-                    StageStatus.Done.toEntity(
-                        mediaId = mediaId,
-                        stage = AnalysisStage.SEGMENTATION,
-                        algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                        updatedAtEpochMs = clock(),
-                    ),
-                )
             }
         } catch (ce: CancellationException) {
             throw ce
@@ -774,6 +1129,7 @@ class DefaultAnalysisRepository(
             )
 
             attemptedEmptyChunkIds.remove(id)
+            pipelinedLidProcessedChunkIds.remove(id)
             val completedAt = clock()
             analysisStateDao.upsert(
                 StageStatus.Done.toEntity(
@@ -808,13 +1164,20 @@ class DefaultAnalysisRepository(
                 val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
                 if (audioFile == null || !audioFile.isFile) return@withTrackedTranscriptionJob
 
+                // 初回デコード中の並列言語判定パイプラインが実行中の場合は、その完了を待ってから未処理チャンクのみを対象にする
+                activePipelinedLidJobs[id]?.join()
+
                 val chunkSource = itemStateDao.getByMediaId(id.value)?.chunkSource ?: ChunkOrigin.AUTO.name
                 val allChunks = chunkDao.observeByMediaId(id.value).first()
                 val activeChunks = allChunks.filter { it.origin == chunkSource }.ifEmpty { allChunks }
                 if (activeChunks.isEmpty()) return@withTrackedTranscriptionJob
 
+                val alreadyProcessedByPipelinedLid = pipelinedLidProcessedChunkIds[id].orEmpty()
                 val transcriptsByChunkId = transcriptDao.observeByMediaId(id.value).first().associateBy { it.chunkId }
                 val targetChunks = activeChunks.filter { chunk ->
+                    if (chunk.id in alreadyProcessedByPipelinedLid) {
+                        return@filter false
+                    }
                     val existing = transcriptsByChunkId[chunk.id]
                     existing == null ||
                         (existing.isLanguageIdOnly() && !existing.userEdited) ||
@@ -824,7 +1187,14 @@ class DefaultAnalysisRepository(
                                 !(existing.userEdited && existing.language == null)
                             )
                 }
-                if (targetChunks.isEmpty()) return@withTrackedTranscriptionJob
+                if (targetChunks.isEmpty()) {
+                    val stateFlow = lookaheadStateFor(id)
+                    val resumeStartIndex = latestLookaheadChunkIndex[id]
+                    if (resumeStartIndex != null && stateFlow.value.enabled && canContinueTranscriptionForMedia(id)) {
+                        triggerLookaheadAt(id, resumeStartIndex.coerceAtLeast(0))
+                    }
+                    return@withTrackedTranscriptionJob
+                }
 
                 // 第1段階（高速一括言語判定）を即座に走らせるため、低優先度の先読み音声認識があれば中断する
                 runCatching {
@@ -1468,6 +1838,7 @@ class DefaultAnalysisRepository(
             backgroundJobs.remove(id)?.cancel()
             pendingHighPriorityChunkIds[id]?.clear()
             attemptedEmptyChunkIds.remove(id)
+            pipelinedLidProcessedChunkIds.remove(id)
             cancelActiveTranscriptionJobs(
                 id = id,
                 cause = CancellationException("Transcription forcibly reset by user"),

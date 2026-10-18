@@ -3941,4 +3941,287 @@ class DefaultAnalysisRepositoryTest {
         )
         assertEquals(LanguageTag("en"), capturedPrecomputed.last())
     }
+
+    @Test
+    fun `requestAnalysis_初回デコード中に30秒区間ごとに確定したAUTOチャンクを段階的に公開する`() = runTest {
+        val mediaId = MediaId("progressive_chunks_01")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Progressive Chunks Test",
+                durationMs = 60_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        var chunksAt30s: List<com.miuraken.chunkflow.core.model.Chunk> = emptyList()
+        var segStatusAt30s: StageStatus? = null
+        lateinit var repository: DefaultAnalysisRepository
+
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                // 前半 30.1 秒: 3 つの発話区間 (1..5s, 7..12s, 15..25s) と無音区間を作る
+                val samples30s = FloatArray(outputSampleRate * 30 + (outputSampleRate / 10)) { idx ->
+                    val sec = idx.toDouble() / outputSampleRate
+                    if (sec in 1.0..5.0 || sec in 7.0..12.0 || sec in 15.0..25.0) {
+                        (0.5 * sin(2.0 * PI * 440.0 * sec)).toFloat()
+                    } else {
+                        0f
+                    }
+                }
+                sink.onSamples(samples30s, samples30s.size)
+                onProgress(
+                    DecodeProgress(
+                        decodedDurationMs = 30_100L,
+                        totalDurationMs = 60_000L,
+                        fraction = 0.5f,
+                    ),
+                )
+
+                // デコード完了前の 30.1 秒時点で、末尾の未確定 1 チャンク (15..25s) を除いた 2 チャンクが公開されていること
+                chunksAt30s = repository.observeChunks(mediaId).first()
+                segStatusAt30s = repository.observeStatus(mediaId).first()[AnalysisStage.SEGMENTATION]
+
+                // 後半 29.9 秒: さらに 1 つの発話区間 (35..45s) を流してデコード完了
+                val totalSamples = outputSampleRate * 60
+                val remainingSamples = FloatArray(totalSamples - samples30s.size) { idx ->
+                    val sec = (samples30s.size + idx).toDouble() / outputSampleRate
+                    if (sec in 35.0..45.0) {
+                        (0.5 * sin(2.0 * PI * 440.0 * sec)).toFloat()
+                    } else {
+                        0f
+                    }
+                }
+                sink.onSamples(remainingSamples, remainingSamples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = totalSamples.toLong(),
+                    resampledSamples = totalSamples.toLong(),
+                    durationMs = 60_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = dispatcher,
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            audioStreamDecoder = fakeDecoder,
+        )
+
+        repository.requestAnalysis(mediaId, setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION))
+
+        assertEquals(2, chunksAt30s.size, "30秒チェックポイント時点で確定済み2チャンクが先行公開される")
+        assertTrue(segStatusAt30s is StageStatus.Running, "30秒チェックポイント時点でSEGMENTATIONがRunningになる")
+
+        val finalChunks = repository.observeChunks(mediaId).first()
+        assertEquals(4, finalChunks.size, "デコード完了時には全4チャンクが公開される")
+        assertEquals(
+            StageStatus.Done,
+            repository.observeStatus(mediaId).first()[AnalysisStage.SEGMENTATION],
+        )
+    }
+
+    @Test
+    fun `requestAnalysis_2言語教材の初回デコード中にPCMストリームから並列で言語判定を行い音声の再デコードなしで言語バッジを保存する`() = runTest {
+        val mediaId = MediaId("pipelined_lid_01")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Pipelined LID Test",
+                durationMs = 60_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        val pcmLidLengths = mutableListOf<Int>()
+        var fileBasedDetectCalls = 0
+        var callIndex = 0
+
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun detectChunkLanguageFromPcm(
+                audioScopeKey: String,
+                pcm16kMono: ShortArray,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair,
+                audioFile: File?,
+            ): OnDeviceChunkTranscriptionResult {
+                pcmLidLengths += pcm16kMono.size
+                val lang = if (callIndex % 2 == 0) languagePair.base ?: LanguageTag("ja") else languagePair.target
+                callIndex += 1
+                return OnDeviceChunkTranscriptionResult(
+                    text = "",
+                    language = lang,
+                    confidence = 0.91f,
+                    engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                )
+            }
+
+            override suspend fun detectChunkLanguage(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair,
+            ): OnDeviceChunkTranscriptionResult? {
+                fileBasedDetectCalls += 1
+                return null
+            }
+
+            override suspend fun detectChunkLanguages(
+                audioFile: File,
+                chunks: List<ChunkTimeRange>,
+                languagePair: LanguagePair,
+                parallelism: Int,
+                computeDispatcher: CoroutineDispatcher,
+                onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+            ) {
+                fileBasedDetectCalls += 1
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+        }
+
+        var transcriptsAt30s: Map<ChunkId, Transcript> = emptyMap()
+        lateinit var repository: DefaultAnalysisRepository
+
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                val samples30s = FloatArray(outputSampleRate * 30 + (outputSampleRate / 10)) { idx ->
+                    val sec = idx.toDouble() / outputSampleRate
+                    if (sec in 1.0..5.0 || sec in 7.0..12.0 || sec in 15.0..25.0) {
+                        (0.5 * sin(2.0 * PI * 440.0 * sec)).toFloat()
+                    } else {
+                        0f
+                    }
+                }
+                sink.onSamples(samples30s, samples30s.size)
+                onProgress(
+                    DecodeProgress(
+                        decodedDurationMs = 30_100L,
+                        totalDurationMs = 60_000L,
+                        fraction = 0.5f,
+                    ),
+                )
+                testScheduler.runCurrent()
+                transcriptsAt30s = repository.observeTranscripts(mediaId).first()
+
+                val totalSamples = outputSampleRate * 60
+                val remainingSamples = FloatArray(totalSamples - samples30s.size) { idx ->
+                    val sec = (samples30s.size + idx).toDouble() / outputSampleRate
+                    if (sec in 35.0..45.0) {
+                        (0.5 * sin(2.0 * PI * 440.0 * sec)).toFloat()
+                    } else {
+                        0f
+                    }
+                }
+                sink.onSamples(remainingSamples, remainingSamples.size)
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = totalSamples.toLong(),
+                    resampledSamples = totalSamples.toLong(),
+                    durationMs = 60_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = dispatcher,
+            onDeviceChunkTranscriber = fakeTranscriber,
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            audioStreamDecoder = fakeDecoder,
+            computeDispatcher = dispatcher,
+        )
+
+        repository.requestAnalysis(mediaId, setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION))
+        testScheduler.advanceUntilIdle()
+
+        // 30秒チェックポイント時点で確定した2チャンクの言語判定がすでに完了していること
+        assertEquals(2, transcriptsAt30s.size, "デコード途中の30秒時点で確定済み2チャンクの言語判定が保存される")
+        assertEquals(
+            listOf(LanguageTag("ja"), LanguageTag("en")),
+            transcriptsAt30s.values.map { it.language },
+        )
+
+        // デコード完了時には全4チャンクの言語判定が完了しており、ファイルからの再デコードは0回であること
+        val finalChunks = repository.observeChunks(mediaId).first()
+        val finalTranscripts = repository.observeTranscripts(mediaId).first()
+        assertEquals(4, finalChunks.size)
+        assertEquals(4, pcmLidLengths.size)
+        assertTrue(pcmLidLengths.all { it > 0 })
+        assertEquals(
+            listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ja"), LanguageTag("en")),
+            finalChunks.map { finalTranscripts[it.id]?.language },
+        )
+        assertEquals(0, fileBasedDetectCalls, "PCMストリームから直接言語判定するため音声ファイルの再デコードは発生しない")
+
+        // 後続で startLanguageDetectionOnly が呼ばれても、パイプライン処理済みチャンクは再デコード・再判定しないこと
+        repository.startLanguageDetectionOnly(mediaId)
+        testScheduler.advanceUntilIdle()
+        assertEquals(0, fileBasedDetectCalls, "startLanguageDetectionOnly を呼んでも重複してファイル再デコードしない")
+    }
 }
