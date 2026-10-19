@@ -112,15 +112,15 @@ flowchart LR
 
 - **Gradle を動かす JDK**: JDK 17 以上。ローカル（開発用の Mac）は **Android Studio の JBR（25.0.3）**、CI は **Temurin 25**（同じメジャーバージョン）。
   - 当初は Homebrew の OpenJDK 17 を使う予定だったが、開発用の Mac の実行許可の仕組み（Santa）が Homebrew の JDK の
-    `jspawnhelper` をブロックするため、Gradle のデーモンを起動できなかった。署名済みの Android Studio の JBR は動く。
-  - ターミナルからは `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew build` のように実行する。
-- **Java ツールチェーン（`jvmToolchain`）は使わない**。出力するバイトコードを Java 17 に揃える:
-  Android のモジュールは `compileOptions`（17）と Kotlin の `jvmTarget`（17）、純 Kotlin のモジュールはさらに
+    `jspawnhelper` や `jmod` をブロックするため、Gradle のデーモンやビルドタスクを起動できなかった。署名済みの Android Studio の JBR は動く。
+  - `gradlew` で macOS かつ `JAVA_HOME` 未設定のときは `/Applications/Android Studio.app/Contents/jbr/Contents/Home` を既定で使うようにし、`gradle.properties` に `org.gradle.java.installations.auto-detect=false` と `org.gradle.java.installations.auto-download=false` を設定して Homebrew 等の JDK を自動検出しないようにする。
+- **Java ツールチェーン（`jvmToolchain`）と AGP の `JdkImageTransform`（`jmod` / `jlink`）は使わない**。出力するバイトコードを Java 17 に揃える:
+  Android のモジュールは `compileOptions`（17）と Kotlin の `jvmTarget`（17）に加え、`JavaCompile` から AGP の `JdkImageInput` を外して `javac --system none`（クラスパス先頭の `android.jar` を直接参照）を指定することで、`jmod` / `jlink` を一切起動せずにコンパイルする。純 Kotlin のモジュールはさらに
   `javac --release 17` と `-Xjdk-release=17` で Java 17 にない API の使用も防ぐ。
 - 理由: ツールチェーンは「Gradle を動かす JDK とは別の JDK を自動検出・自動ダウンロードする」仕組みで、
-  (1) 自動ダウンロードには許可していない通信先（foojay など）が必要、(2) 開発用の Mac では Homebrew の JDK が使えない、
-  (3) Android のコンパイルは android.jar に対して行うため、ツールチェーンで得られる利点が小さい。
-  `--release` / `-Xjdk-release` により、どの JDK（17〜25）で動かしても同じ互換性の出力になる。
+  (1) 自動ダウンロードには許可していない通信先（foojay など）が必要、(2) 開発用の Mac では Homebrew の JDK が使えず、`jmod` の起動も制限される、
+  (3) Android のコンパイルは android.jar に対して行うため、ツールチェーンや `JdkImageTransform` で得られる利点が小さい。
+  `--system none` と `--release` / `-Xjdk-release` により、`jmod` に依存せずどの JDK（17〜25）で動かしても同じ互換性の出力になる。
 
 ## 影響
 
