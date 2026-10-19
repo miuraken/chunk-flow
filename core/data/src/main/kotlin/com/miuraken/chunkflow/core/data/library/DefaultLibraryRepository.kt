@@ -62,6 +62,7 @@ import com.miuraken.chunkflow.core.transcript.TranscriptError
 import com.miuraken.chunkflow.core.transcript.TranscriptParseResult
 import com.miuraken.chunkflow.core.transcript.TranscriptParser
 import com.miuraken.chunkflow.core.transcript.TranscriptSegment
+import com.miuraken.chunkflow.core.transcript.TranscriptTextExporter
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -104,10 +105,10 @@ import kotlinx.coroutines.withContext
  * - 取り込むファイルはすべて信頼できない入力として扱い、`content://` スキームの検証、サイズ上限（音声 2GB / 文字起こし 20MB）、
  *   空き容量（ファイルサイズの 1.2 倍以上）、SHA-256 による重複検出、デコーダによる形式検証を通す（§8.1）。
  * - SAF の複数ファイル選択（`OpenMultipleDocuments`）とフォルダ選択（`OpenDocumentTree`）の両方に対応し、
- *   フォルダ名を [AudioItem.course] に記録して `<フォルダ>/transcription/<ファイル名>.chunkflow.json` も自動で紐付ける（§7.1）。
+ *   フォルダ名を [AudioItem.course] に記録する（§7.1）。
  * - 音声の取り込み完了後、[AnalysisRepository.requestAnalysis] で波形・特徴量・自動分割のジョブを投入する（§7.1 手順 6）。
- * - 文字起こし（`.chunkflow.json` 等）は `audio.sha256` またはファイル名で教材と照合し、前後のパディング（前 150ms / 後 200ms、
- *   隣のチャンクとの無音の中点を越えない）を付けて [ChunkOrigin.IMPORTED] のチャンクとして保存する（§7.4.6）。
+ * - 文字起こし（`.chunkflow.json` 等）はファイル個別設定画面からファイル単位で手動取り込みを行い、前後のパディング（前 150ms / 後 200ms、
+ *   隣のチャンクとの無音の中点を越えない）を付けて [ChunkOrigin.IMPORTED] のチャンクとして管理領域に保存する（§7.4.6）。
  */
 @SuppressLint("UseKtx")
 @Singleton
@@ -285,7 +286,8 @@ class DefaultLibraryRepository(
             return@flow
         }
 
-        val (transcriptCandidates, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
+        // 文字起こしのインポートは再生画面のファイル個別設定画面から手動でのみ行うため、音声取り込み時は無視する
+        val (_, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
         val audioCandidates = rawAudioCandidates.sortedWith { left, right ->
             naturalFileNameComparator.compare(
                 left.meta?.displayName ?: left.uri.lastPathSegment.orEmpty(),
@@ -294,11 +296,9 @@ class DefaultLibraryRepository(
         }
         val totalAudio = audioCandidates.size
         val mediaIds = mutableListOf<MediaId>()
-        val batchAudioByStemAndCourse = LinkedHashMap<Pair<String?, String>, MediaId>()
-        val batchAudioByStem = LinkedHashMap<String, MediaId>()
         var duplicates = 0
 
-        // 2. 音声ファイルの取り込みと解析ジョブの投入（§7.1 手順 1〜6）
+        // 2. 音声ファイルの取り込み（§7.1 手順 1〜6）
         // 読み込めない非対応ファイルや破損ファイルはエラーバナーを出さずに無視してスキップする
         for ((index, candidate) in audioCandidates.withIndex()) {
             currentCoroutineContext().ensureActive()
@@ -336,11 +336,10 @@ class DefaultLibraryRepository(
                 throw ce
             }
 
-            val resolvedMediaId = when (outcome) {
+            when (outcome) {
                 is SingleImportOutcome.Imported -> {
                     mediaIds += outcome.mediaId
                     scheduleCourseAnalysisUpToLimit(candidate.course)
-                    outcome.mediaId
                 }
 
                 is SingleImportOutcome.Duplicate -> {
@@ -349,7 +348,6 @@ class DefaultLibraryRepository(
                     if (outcome.reattachedAudioFile) {
                         handleReattachedAudioAnalysis(outcome.mediaId, candidate.course)
                     }
-                    outcome.mediaId
                 }
 
                 is SingleImportOutcome.Failed -> {
@@ -360,56 +358,13 @@ class DefaultLibraryRepository(
                     continue
                 }
             }
-
-            val stem = extractFileStem(meta?.displayName ?: uri.lastPathSegment.orEmpty())
-            if (stem.isNotEmpty()) {
-                batchAudioByStemAndCourse[candidate.course to stem] = resolvedMediaId
-                batchAudioByStem[stem] = resolvedMediaId
-            }
-        }
-
-        // 3. 同じバッチまたはフォルダ内の文字起こしファイルの照合と反映（§7.1 手順 7、§7.4.6）
-        var transcriptsAttached = 0
-        if (transcriptCandidates.isNotEmpty()) {
-            val matchedByMediaId = LinkedHashMap<String, MutableList<Pair<MediaItemEntity, ParsedTranscript>>>()
-            for (candidate in transcriptCandidates) {
-                currentCoroutineContext().ensureActive()
-                val parseOutcome = readAndParseTranscript(candidate.uri, candidate.meta)
-                val parsed = (parseOutcome as? InternalTranscriptParseOutcome.Ok)?.parsed ?: continue
-                val targetEntity = findMatchingMediaItem(
-                    doc = parsed.document,
-                    transcriptFileName = parsed.fileName,
-                    course = candidate.course,
-                    batchByStemAndCourse = batchAudioByStemAndCourse,
-                    batchByStem = batchAudioByStem,
-                ) ?: continue
-                matchedByMediaId.getOrPut(targetEntity.id) { mutableListOf() }
-                    .add(targetEntity to parsed)
-            }
-
-            for ((_, pairs) in matchedByMediaId) {
-                // 同じ音声の JSON が複数ある場合は generator.createdAt が最も新しいものを使う（§7.4.6）
-                val winningPair = pairs.maxWithOrNull(
-                    compareBy<Pair<MediaItemEntity, ParsedTranscript>> { it.second.createdAt.orEmpty() },
-                ) ?: continue
-                val latestEntity = mediaItemDao.getById(winningPair.first.id) ?: winningPair.first
-                if (
-                    attachTranscriptToMediaItem(
-                        targetEntity = latestEntity,
-                        parsed = winningPair.second,
-                        preserveEntityLanguages = languages != null,
-                    ) != null
-                ) {
-                    transcriptsAttached += 1
-                }
-            }
         }
 
         emit(
             ImportProgress.Done(
                 mediaIds = mediaIds.toList(),
                 duplicates = duplicates,
-                transcriptsAttached = transcriptsAttached,
+                transcriptsAttached = 0,
             ),
         )
     }.flowOn(ioDispatcher)
@@ -513,7 +468,7 @@ class DefaultLibraryRepository(
             return@flow
         }
 
-        val (transcriptCandidates, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
+        val (_, rawAudioCandidates) = candidates.partition(::isTranscriptCandidate)
         val audioCandidates = rawAudioCandidates.sortedWith { left, right ->
             naturalFileNameComparator.compare(
                 left.meta?.displayName ?: left.uri.lastPathSegment.orEmpty(),
@@ -523,8 +478,6 @@ class DefaultLibraryRepository(
 
         val totalAudio = audioCandidates.size
         val mediaIds = mutableListOf<MediaId>()
-        val batchAudioByStemAndCourse = LinkedHashMap<Pair<String?, String>, MediaId>()
-        val batchAudioByStem = LinkedHashMap<String, MediaId>()
         var duplicates = 0
 
         for ((index, candidate) in audioCandidates.withIndex()) {
@@ -548,11 +501,10 @@ class DefaultLibraryRepository(
                 onProgress = { fraction -> emit(ImportProgress.Copying(fraction)) },
             )
 
-            val resolvedMediaId = when (outcome) {
+            when (outcome) {
                 is SingleImportOutcome.Imported -> {
                     mediaIds += outcome.mediaId
                     scheduleCourseAnalysisUpToLimit(candidate.course ?: resolvedRootCourse)
-                    outcome.mediaId
                 }
 
                 is SingleImportOutcome.Duplicate -> {
@@ -561,51 +513,9 @@ class DefaultLibraryRepository(
                     if (outcome.reattachedAudioFile) {
                         handleReattachedAudioAnalysis(outcome.mediaId, candidate.course ?: resolvedRootCourse)
                     }
-                    outcome.mediaId
                 }
 
                 is SingleImportOutcome.Failed -> continue
-            }
-
-            val stem = extractFileStem(candidate.meta?.displayName ?: candidate.uri.lastPathSegment.orEmpty())
-            if (stem.isNotEmpty()) {
-                batchAudioByStemAndCourse[(candidate.course ?: resolvedRootCourse) to stem] = resolvedMediaId
-                batchAudioByStem[stem] = resolvedMediaId
-            }
-        }
-
-        var transcriptsAttached = 0
-        if (transcriptCandidates.isNotEmpty()) {
-            val matchedByMediaId = LinkedHashMap<String, MutableList<Pair<MediaItemEntity, ParsedTranscript>>>()
-            for (candidate in transcriptCandidates) {
-                currentCoroutineContext().ensureActive()
-                val parseOutcome = readAndParseTranscript(candidate.uri, candidate.meta)
-                val parsed = (parseOutcome as? InternalTranscriptParseOutcome.Ok)?.parsed ?: continue
-                val targetEntity = findMatchingMediaItem(
-                    doc = parsed.document,
-                    transcriptFileName = parsed.fileName,
-                    course = candidate.course ?: resolvedRootCourse,
-                    batchByStemAndCourse = batchAudioByStemAndCourse,
-                    batchByStem = batchAudioByStem,
-                ) ?: continue
-                matchedByMediaId.getOrPut(targetEntity.id) { mutableListOf() }
-                    .add(targetEntity to parsed)
-            }
-
-            for ((_, pairs) in matchedByMediaId) {
-                val winningPair = pairs.maxWithOrNull(
-                    compareBy<Pair<MediaItemEntity, ParsedTranscript>> { it.second.createdAt.orEmpty() },
-                ) ?: continue
-                val latestEntity = mediaItemDao.getById(winningPair.first.id) ?: winningPair.first
-                if (
-                    attachTranscriptToMediaItem(
-                        targetEntity = latestEntity,
-                        parsed = winningPair.second,
-                        preserveEntityLanguages = languages != null || courseJsonMeta?.languages != null,
-                    ) != null
-                ) {
-                    transcriptsAttached += 1
-                }
             }
         }
 
@@ -614,7 +524,7 @@ class DefaultLibraryRepository(
             ImportProgress.Done(
                 mediaIds = mediaIds.toList(),
                 duplicates = duplicates,
-                transcriptsAttached = transcriptsAttached,
+                transcriptsAttached = 0,
             ),
         )
     }.flowOn(ioDispatcher)
@@ -685,7 +595,7 @@ class DefaultLibraryRepository(
                 }
             }
 
-            val (transcriptCandidates, rawAudioCandidates) = scopedCandidates.partition(::isTranscriptCandidate)
+            val (_, rawAudioCandidates) = scopedCandidates.partition(::isTranscriptCandidate)
             val audioCandidates = rawAudioCandidates.sortedWith { left, right ->
                 naturalFileNameComparator.compare(
                     left.meta?.displayName ?: left.uri.lastPathSegment.orEmpty(),
@@ -695,8 +605,6 @@ class DefaultLibraryRepository(
 
             val seenMediaIds = mutableSetOf<String>()
             val seenSourceUris = mutableSetOf<String>()
-            val batchAudioByStemAndCourse = LinkedHashMap<Pair<String?, String>, MediaId>()
-            val batchAudioByStem = LinkedHashMap<String, MediaId>()
 
             for ((index, candidate) in audioCandidates.withIndex()) {
                 currentCoroutineContext().ensureActive()
@@ -720,12 +628,11 @@ class DefaultLibraryRepository(
                     onProgress = {},
                 )
 
-                val resolvedMediaId = when (outcome) {
+                when (outcome) {
                     is SingleImportOutcome.Imported -> {
                         changedCount += 1
                         seenMediaIds += outcome.mediaId.value
                         scheduleCourseAnalysisUpToLimit(candidateCourse)
-                        outcome.mediaId
                     }
 
                     is SingleImportOutcome.Duplicate -> {
@@ -734,20 +641,13 @@ class DefaultLibraryRepository(
                             changedCount += 1
                             handleReattachedAudioAnalysis(outcome.mediaId, candidateCourse)
                         }
-                        outcome.mediaId
                     }
 
                     is SingleImportOutcome.Failed -> continue
                 }
-
-                val stem = extractFileStem(candidate.meta?.displayName ?: candidate.uri.lastPathSegment.orEmpty())
-                if (stem.isNotEmpty()) {
-                    batchAudioByStemAndCourse[candidateCourse to stem] = resolvedMediaId
-                    batchAudioByStem[stem] = resolvedMediaId
-                }
             }
 
-            // フォルダから消失した LOCAL_REFERENCE 教材を DB から削除する（.chunkflow/ 内のデータは消さない）
+            // フォルダから消失した LOCAL_REFERENCE 教材を DB から削除する
             val scopePrefix = filterCourse ?: rootFolder.coursePath
             val existingItemsInScope = mediaItemDao.observeAll().first().filter { item ->
                 val c = item.course ?: return@filter false
@@ -761,49 +661,6 @@ class DefaultLibraryRepository(
                     mediaItemDao.deleteById(item.id)
                     mediaFileLocator.deleteMediaFiles(mediaId)
                     changedCount += 1
-                }
-            }
-
-            // 新規・更新された文字起こしファイルを反映する
-            if (transcriptCandidates.isNotEmpty()) {
-                val matchedByMediaId = LinkedHashMap<String, MutableList<Pair<MediaItemEntity, ParsedTranscript>>>()
-                for (candidate in transcriptCandidates) {
-                    currentCoroutineContext().ensureActive()
-                    val parseOutcome = readAndParseTranscript(candidate.uri, candidate.meta)
-                    val parsed = (parseOutcome as? InternalTranscriptParseOutcome.Ok)?.parsed ?: continue
-                    val targetEntity = findMatchingMediaItem(
-                        doc = parsed.document,
-                        transcriptFileName = parsed.fileName,
-                        course = candidate.course ?: rootFolder.coursePath,
-                        batchByStemAndCourse = batchAudioByStemAndCourse,
-                        batchByStem = batchAudioByStem,
-                    ) ?: continue
-                    matchedByMediaId.getOrPut(targetEntity.id) { mutableListOf() }
-                        .add(targetEntity to parsed)
-                }
-
-                for ((_, pairs) in matchedByMediaId) {
-                    val winningPair = pairs.maxWithOrNull(
-                        compareBy<Pair<MediaItemEntity, ParsedTranscript>> { it.second.createdAt.orEmpty() },
-                    ) ?: continue
-                    val targetEntity = winningPair.first
-                    val parsed = winningPair.second
-                    val ext = transcriptExtensionForFileName(parsed.fileName)
-                    val existingTranscriptFile = mediaFileLocator.transcriptFileFor(MediaId(targetEntity.id), ext)
-                    val alreadySame = existingTranscriptFile.exists() &&
-                        runCatching { existingTranscriptFile.readBytes().contentEquals(parsed.rawBytes) }.getOrDefault(false)
-                    if (!alreadySame) {
-                        val latestEntity = mediaItemDao.getById(targetEntity.id) ?: targetEntity
-                        if (
-                            attachTranscriptToMediaItem(
-                                targetEntity = latestEntity,
-                                parsed = parsed,
-                                preserveEntityLanguages = true,
-                            ) != null
-                        ) {
-                            changedCount += 1
-                        }
-                    }
                 }
             }
 
@@ -933,7 +790,6 @@ class DefaultLibraryRepository(
     }
 
     override suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean = withContext(ioDispatcher) {
-        val entity = mediaItemDao.getById(id.value)
         analysisRepository.clearTranscriptsForMedia(id)
         chunkDao?.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.IMPORTED.name)
         val existingState = itemStateDao.getByMediaId(id.value)
@@ -946,12 +802,6 @@ class DefaultLibraryRepository(
         }
         mediaFileLocator.deleteTranscriptFiles(id)
         driveFileDao?.deleteByMediaIdAndKind(id.value, DriveFileKind.TRANSCRIPT.name)
-        if (entity != null) {
-            loadLinkedSyncFolderConfig()?.let { linked ->
-                val targetFileName = "${sanitizeDisplayName(entity.title).ifBlank { entity.id }}.chunkflow.json"
-                deleteTranscriptJsonFromSafTree(linked.treeUri, targetFileName)
-            }
-        }
         true
     }
 
@@ -1225,15 +1075,6 @@ class DefaultLibraryRepository(
 
         val uploadFileName = "${sanitizeDisplayName(entity.title).ifBlank { entity.id }}.chunkflow.json"
         val uploadCourse = entity.course.orEmpty()
-        if (uploadCourse.isNotBlank()) {
-            courseFolderDao.getByPath(uploadCourse)
-                ?.takeIf { it.kind == LibraryFolderKind.LOCAL_DIRECTORY.name && !it.treeUri.isNullOrBlank() }
-                ?.treeUri
-                ?.let { runCatching { Uri.parse(it) }.getOrNull() }
-                ?.let { treeUri ->
-                    writeTranscriptJsonToSafTree(treeUri, uploadFileName, jsonBytes, preferChunkFlowDir = true)
-                }
-        }
         when (val uploadResult = driveSyncClient.uploadTranscriptJson(uploadCourse, uploadFileName, jsonBytes)) {
             is DriveUploadResult.Success -> {
                 val uploaded = uploadResult.file
@@ -1250,12 +1091,7 @@ class DefaultLibraryRepository(
                 )
             }
 
-            is DriveUploadResult.Failure -> {
-                // REST API 未認可時はリンク済み SAF フォルダがあればそちらの transcription/ にもベストエフォートで書き出す
-                loadLinkedSyncFolderConfig()?.let { linked ->
-                    writeTranscriptJsonToSafTree(linked.treeUri, uploadFileName, jsonBytes)
-                }
-            }
+            is DriveUploadResult.Failure -> Unit
         }
         true
     }
@@ -1683,6 +1519,7 @@ class DefaultLibraryRepository(
         id: MediaId,
         format: TranscriptExportFormat,
     ): String? = withContext(ioDispatcher) {
+        val entity = mediaItemDao.getById(id.value)
         val analysisChunks = analysisRepository.observeChunks(id).first().sortedBy { it.startMs }
         val analysisTranscripts = analysisRepository.observeTranscripts(id).first()
         val pairsFromAnalysis = analysisChunks.mapNotNull { chunk ->
@@ -1697,7 +1534,7 @@ class DefaultLibraryRepository(
             }
         }
         if (pairs.isEmpty()) return@withContext null
-        formatTranscriptExport(pairs, format)
+        formatTranscriptExport(pairs, format, entity).takeIf { it.isNotBlank() }
     }
 
     override suspend fun writeExportedTranscriptToUri(
@@ -1725,6 +1562,69 @@ class DefaultLibraryRepository(
         } catch (_: IOException) {
             false
         }
+    }
+
+    override suspend fun writeExportedTranscriptsToDirectory(
+        ids: List<MediaId>,
+        format: TranscriptExportFormat,
+        treeUri: Uri,
+    ): Int = withContext(ioDispatcher) {
+        if (ids.isEmpty() || !isTreeUriSafe(treeUri)) {
+            return@withContext 0
+        }
+        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
+            ?: return@withContext 0
+        val rootDocUri = runCatching { DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId) }.getOrNull()
+            ?: return@withContext 0
+        val mimeType = TranscriptTextExporter.suggestedMimeType(format)
+
+        var writtenCount = 0
+        for (id in ids.distinct()) {
+            currentCoroutineContext().ensureActive()
+            val entity = mediaItemDao.getById(id.value) ?: continue
+            val exportedText = exportTranscriptText(id, format) ?: continue
+            val baseStem = sanitizeDisplayName(entity.title).ifBlank { entity.id }
+            val fileName = TranscriptTextExporter.defaultFileName(baseStem, format)
+
+            val wrote = try {
+                val existingFileDocId = findChildDocumentIdByName(
+                    treeUri = treeUri,
+                    parentDocId = rootDocId,
+                    targetName = fileName,
+                    requireDirectory = false,
+                )
+                val targetDocUri = if (existingFileDocId != null) {
+                    DocumentsContract.buildDocumentUriUsingTree(treeUri, existingFileDocId)
+                } else {
+                    DocumentsContract.createDocument(
+                        context.contentResolver,
+                        rootDocUri,
+                        mimeType,
+                        fileName,
+                    )
+                } ?: continue
+                val outputStream = context.contentResolver.openOutputStream(targetDocUri, "wt")
+                    ?: context.contentResolver.openOutputStream(targetDocUri)
+                    ?: continue
+                outputStream.use { out ->
+                    out.write(exportedText.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                }
+                true
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: SecurityException) {
+                false
+            } catch (_: IOException) {
+                false
+            } catch (_: IllegalArgumentException) {
+                false
+            }
+            if (wrote) {
+                writtenCount += 1
+            }
+        }
+        writtenCount
     }
 
     override suspend fun delete(id: MediaId) {
@@ -2821,61 +2721,38 @@ class DefaultLibraryRepository(
     private fun formatTranscriptExport(
         pairs: List<Pair<Chunk, Transcript>>,
         format: TranscriptExportFormat,
-    ): String = when (format) {
-        TranscriptExportFormat.SRT -> {
-            pairs.mapIndexed { index, (chunk, transcript) ->
-                val seq = index + 1
-                val start = formatSrtTimestamp(chunk.startMs)
-                val end = formatSrtTimestamp(chunk.endMs)
-                val text = transcript.text.trim()
-                "$seq\n$start --> $end\n$text"
-            }.joinToString("\n\n")
-        }
-
-        TranscriptExportFormat.LRC -> {
-            pairs.joinToString("\n") { (chunk, transcript) ->
-                val tag = formatLrcTimestamp(chunk.startMs)
-                val text = transcript.text.trim().replace("\r\n", " ").replace('\n', ' ')
-                "[$tag]$text"
-            }
-        }
-
-        TranscriptExportFormat.TXT -> {
-            pairs.joinToString("\n") { (chunk, transcript) ->
-                val timeTag = formatTxtTimestamp(chunk.startMs)
-                val lang = transcript.language?.value?.takeIf { it.isNotBlank() }
-                val text = transcript.text.trim().replace("\r\n", " ").replace('\n', ' ')
-                if (lang != null) {
-                    "[$timeTag] [${lang.uppercase(Locale.ROOT)}] $text"
+        entity: MediaItemEntity? = null,
+    ): String {
+        val chunks = pairs.map { it.first }
+        val transcripts = pairs.associate { (chunk, transcript) -> chunk.id to transcript }
+        return when (format) {
+            TranscriptExportFormat.JSON -> {
+                val targetLang = entity?.targetLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                val baseLang = entity?.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                val languages = if (targetLang != null) {
+                    LanguagePair(target = targetLang, base = baseLang)
                 } else {
-                    "[$timeTag] $text"
+                    null
                 }
+                val fileName = entity?.let {
+                    val base = sanitizeDisplayName(it.title).ifBlank { it.id }
+                    "$base.${extensionForMimeType(it.mimeType)}"
+                }
+                TranscriptTextExporter.exportJson(
+                    chunks = chunks,
+                    transcripts = transcripts,
+                    sha256 = entity?.sha256,
+                    fileName = fileName,
+                    durationMs = entity?.durationMs,
+                    languages = languages,
+                )
             }
+
+            TranscriptExportFormat.SRT,
+            TranscriptExportFormat.LRC,
+            TranscriptExportFormat.TSV,
+            -> TranscriptTextExporter.export(chunks, transcripts, format).trimEnd()
         }
-    }
-
-    private fun formatSrtTimestamp(ms: Long): String {
-        val clamped = ms.coerceAtLeast(0L)
-        val hours = clamped / 3_600_000L
-        val minutes = (clamped % 3_600_000L) / 60_000L
-        val seconds = (clamped % 60_000L) / 1_000L
-        val millis = clamped % 1_000L
-        return String.format(Locale.ROOT, "%02d:%02d:%02d,%03d", hours, minutes, seconds, millis)
-    }
-
-    private fun formatLrcTimestamp(ms: Long): String {
-        val clamped = ms.coerceAtLeast(0L)
-        val totalMinutes = clamped / 60_000L
-        val seconds = (clamped % 60_000L) / 1_000L
-        val centiseconds = (clamped % 1_000L) / 10L
-        return String.format(Locale.ROOT, "%02d:%02d.%02d", totalMinutes, seconds, centiseconds)
-    }
-
-    private fun formatTxtTimestamp(ms: Long): String {
-        val clamped = ms.coerceAtLeast(0L)
-        val totalMinutes = clamped / 60_000L
-        val seconds = (clamped % 60_000L) / 1_000L
-        return String.format(Locale.ROOT, "%02d:%02d", totalMinutes, seconds)
     }
 
     private data class LinkedSyncFolderConfig(
@@ -3745,12 +3622,14 @@ class DefaultLibraryRepository(
             if (rawName.endsWith(".chunkflow.json") ||
                 rawName.endsWith(".srt") ||
                 rawName.endsWith(".vtt") ||
-                rawName.endsWith(".lrc")
+                rawName.endsWith(".lrc") ||
+                rawName.endsWith(".tsv")
             ) {
                 return true
             }
             val mime = candidate.meta?.mimeType?.lowercase()
-            return mime == "application/json" && rawName.endsWith(".json")
+            return (mime == "application/json" && rawName.endsWith(".json")) ||
+                mime == "text/tab-separated-values"
         }
 
         private fun transcriptExtensionForFileName(fileName: String): String {
@@ -3760,6 +3639,7 @@ class DefaultLibraryRepository(
                 lower.endsWith(".srt") -> "srt"
                 lower.endsWith(".vtt") -> "vtt"
                 lower.endsWith(".lrc") -> "lrc"
+                lower.endsWith(".tsv") -> "tsv"
                 lower.endsWith(".json") -> "json"
                 else -> "chunkflow.json"
             }
@@ -3778,7 +3658,7 @@ class DefaultLibraryRepository(
         internal fun extractFileStem(rawName: String): String {
             val fileName = rawName.substringAfterLast('/').substringAfterLast('\\').trim()
             val withoutTranscriptExt = fileName.replace(
-                Regex("\\.(chunkflow\\.json|json|srt|vtt|lrc)$", RegexOption.IGNORE_CASE),
+                Regex("\\.(chunkflow\\.json|json|srt|vtt|lrc|tsv)$", RegexOption.IGNORE_CASE),
                 "",
             )
             return sanitizeDisplayName(withoutTranscriptExt).lowercase()

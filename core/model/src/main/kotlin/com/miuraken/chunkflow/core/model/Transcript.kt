@@ -38,13 +38,37 @@ data class Transcript(
 data class WordTiming(val startMs: Long, val endMs: Long, val text: String, val confidence: Float?)
 
 /** 文字起こしの書き出し形式（F7.5）。 */
-enum class TranscriptExportFormat {
+enum class TranscriptExportFormat(
+    /** ドットなしの拡張子。 */
+    val extension: String,
+    /** 推奨 MIME タイプ。 */
+    val mimeType: String,
+) {
     /** SubRip 字幕形式（`.srt`）。 */
-    SRT,
+    SRT(extension = "srt", mimeType = "application/x-subrip"),
 
     /** LRC 歌詞・字幕形式（`.lrc`）。 */
-    LRC,
+    LRC(extension = "lrc", mimeType = "text/plain"),
 
-    /** プレーンテキスト形式（`.txt`）。 */
-    TXT,
+    /** タブ区切りテキスト形式（`.tsv`: `startMs\tendMs\tlang\ttext`）。 */
+    TSV(extension = "tsv", mimeType = "text/tab-separated-values"),
+
+    /** Chunk Flow 標準 JSON 形式（`.json`: `chunkflow-transcript` v1）。 */
+    JSON(extension = "json", mimeType = "application/json"),
+    ;
+
+    /**
+     * 音声ファイル名またはタイトルから拡張子を取り除き、この形式の拡張子を付与したデフォルト出力ファイル名を返す。
+     */
+    fun defaultFileName(baseTitleOrFileName: String): String {
+        val lastSegment = baseTitleOrFileName
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .trim()
+        val stem = lastSegment.replace(
+            Regex("\\.(mp3|m4a|mp4|ogg|opus|flac|wav|aac)$", RegexOption.IGNORE_CASE),
+            "",
+        ).trim().ifBlank { "transcript" }
+        return "$stem.$extension"
+    }
 }

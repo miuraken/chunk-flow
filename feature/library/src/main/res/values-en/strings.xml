@@ -182,4 +182,24 @@
     <string name="library_target_lang_change_confirm_message">Changing the target language will clear all current transcript and language detection data and restart language detection.</string>
     <string name="library_target_lang_change_confirm_ok">Change and clear</string>
     <string name="library_target_lang_change_confirm_cancel">Cancel</string>
+    <string name="library_selection_export_badge">Export</string>
+    <string name="transcript_export_title">Export Transcript</string>
+    <string name="transcript_export_target_single">Target file: %1$s</string>
+    <string name="transcript_export_target_multiple">%1$d files selected (previewing first: %2$s)</string>
+    <string name="transcript_export_format_section_title">Format</string>
+    <string name="transcript_export_format_srt">SRT (.srt)</string>
+    <string name="transcript_export_format_srt_desc">SubRip subtitle format</string>
+    <string name="transcript_export_format_lrc">LRC (.lrc)</string>
+    <string name="transcript_export_format_lrc_desc">Lyric time-tag format ([mm:ss.xx] text)</string>
+    <string name="transcript_export_format_tsv">TSV (.tsv)</string>
+    <string name="transcript_export_format_tsv_desc">Tab-separated values (startMs / endMs / lang / text)</string>
+    <string name="transcript_export_format_json">JSON (.json)</string>
+    <string name="transcript_export_format_json_desc">Chunk Flow transcript JSON format</string>
+    <string name="transcript_export_preview_section_title">Preview (first lines)</string>
+    <string name="transcript_export_preview_file_name">Output file: %1$s</string>
+    <string name="transcript_export_preview_empty">No transcript data available</string>
+    <string name="transcript_export_button">Export</string>
+    <string name="transcript_export_done_single">Exported transcript (%1$s)</string>
+    <string name="transcript_export_done_multiple">Exported %1$d transcript file(s) to folder (%2$s)</string>
+    <string name="transcript_export_failed">Failed to export transcript</string>
 </resources>

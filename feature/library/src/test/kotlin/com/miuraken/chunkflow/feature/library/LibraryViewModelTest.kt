@@ -1,22 +1,22 @@
 package com.miuraken.chunkflow.feature.library
 
 import android.net.StubUri
+import androidx.lifecycle.SavedStateHandle
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.SyncError
 import com.miuraken.chunkflow.core.data.library.SyncProgress
-import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
 import com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository
 import com.miuraken.chunkflow.core.testing.fake.FakeLibraryRepository
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
-import com.miuraken.chunkflow.core.transcript.TranscriptError
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -184,43 +184,48 @@ class LibraryViewModelTest {
     }
 
     @Test
-    fun `ImportTranscriptUri_紐付けと未取り込み音声案内とエラーを反映する`() = runTest {
-        val item = SampleMaterials.jaKo.item
-        val repo = FakeLibraryRepository(initialItems = listOf(item))
-        val playback = FakePlaybackController()
-        val viewModel = LibraryViewModel(repo, playback)
-        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+    fun `TranscriptExportViewModel_形式切替でプレビューを更新し単一ファイルとフォルダ出力を実行する`() = runTest {
+        val sampleKo = SampleMaterials.jaKo
+        val sampleZh = SampleMaterials.jaZh
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(sampleKo.item, sampleZh.item),
+        )
+        repo.exportedTranscriptTexts[sampleKo.item.id to TranscriptExportFormat.SRT] =
+            "1\n00:00:00,000 --> 00:00:01,500\n안녕하세요\n"
+        repo.exportedTranscriptTexts[sampleKo.item.id to TranscriptExportFormat.TSV] =
+            "startMs\tendMs\tlang\ttext\n0\t1500\tko\t안녕하세요\n"
+        repo.exportedTranscriptTexts[sampleKo.item.id to TranscriptExportFormat.JSON] =
+            "{\n  \"format\": \"chunkflow-transcript\",\n  \"version\": 1\n}\n"
+        repo.exportedTranscriptTexts[sampleZh.item.id to TranscriptExportFormat.JSON] =
+            "{\n  \"format\": \"chunkflow-transcript\",\n  \"version\": 1\n}\n"
 
-        val fakeUri = StubUri.create()
-        repo.importTranscriptResult = {
-            TranscriptImportResult.Attached(mediaId = item.id, chunkCount = 6, durationMismatch = false)
-        }
-        viewModel.onEvent(LibraryEvent.ImportTranscriptUri(fakeUri))
+        val viewModel = TranscriptExportViewModel(libraryRepository = repo)
+        viewModel.open(listOf(sampleKo.item.id, sampleZh.item.id))
+
+        assertEquals(listOf(sampleKo.item.id, sampleZh.item.id), viewModel.uiState.value.mediaIds)
+        assertTrue(viewModel.uiState.value.isMultipleFiles)
+        assertEquals(TranscriptExportFormat.SRT, viewModel.uiState.value.selectedFormat)
+        assertTrue(viewModel.uiState.value.previewText.contains("-->"))
+
+        viewModel.onEvent(TranscriptExportEvent.SelectFormat(TranscriptExportFormat.TSV))
+        assertEquals(TranscriptExportFormat.TSV, viewModel.uiState.value.selectedFormat)
+        assertTrue(viewModel.uiState.value.previewText.startsWith("startMs\tendMs\tlang\ttext"))
+
+        viewModel.onEvent(TranscriptExportEvent.SelectFormat(TranscriptExportFormat.JSON))
+        assertEquals(TranscriptExportFormat.JSON, viewModel.uiState.value.selectedFormat)
+        assertTrue(viewModel.uiState.value.previewText.contains("\"format\": \"chunkflow-transcript\""))
         assertEquals(
-            TranscriptImportUiState.Attached(mediaId = item.id, chunkCount = 6, durationMismatch = false),
-            viewModel.uiState.value.transcriptImportState,
+            TranscriptExportFormat.JSON.defaultFileName(sampleKo.item.title),
+            viewModel.uiState.value.suggestedFileName,
         )
 
-        repo.importTranscriptResult = {
-            TranscriptImportResult.NoMatchingAudio(audioFileName = "lesson01.mp3")
-        }
-        viewModel.onEvent(LibraryEvent.ImportTranscriptUri(fakeUri))
+        val dirUri = StubUri.create()
+        viewModel.onEvent(TranscriptExportEvent.ExportMultipleFilesToDirectory(dirUri))
+        assertEquals(1, repo.writtenDirectoryTranscriptExports.size)
         assertEquals(
-            TranscriptImportUiState.NoMatchingAudio(audioFileName = "lesson01.mp3"),
-            viewModel.uiState.value.transcriptImportState,
+            TranscriptExportResultState.MultipleDone(count = 2, format = TranscriptExportFormat.JSON),
+            viewModel.uiState.value.exportResult,
         )
-
-        repo.importTranscriptResult = {
-            TranscriptImportResult.Invalid(error = TranscriptError.SCHEMA_VIOLATION)
-        }
-        viewModel.onEvent(LibraryEvent.ImportTranscriptUri(fakeUri))
-        assertEquals(
-            TranscriptImportUiState.Invalid(error = TranscriptError.SCHEMA_VIOLATION),
-            viewModel.uiState.value.transcriptImportState,
-        )
-
-        viewModel.onEvent(LibraryEvent.DismissImportStatus)
-        assertEquals(TranscriptImportUiState.Idle, viewModel.uiState.value.transcriptImportState)
     }
 
     @Test

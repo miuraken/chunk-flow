@@ -2,13 +2,19 @@ package com.miuraken.chunkflow.core.transcript
 
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.EngineId
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 
 /**
- * 教材のチャンクと文字起こしを SRT / LRC / TXT 形式の文字列へ書き出すエクスポータ（F7.5）。
+ * 教材のチャンクと文字起こしを SRT / LRC / TSV / JSON 形式の文字列へ書き出すエクスポータ（F7.5）。
  */
 object TranscriptTextExporter {
+
+    private const val DEFAULT_EXPORT_SHA256: String =
+        "0000000000000000000000000000000000000000000000000000000000000000"
 
     /**
      * 指定した [format] でチャンクと文字起こしを文字列に書き出す。
@@ -25,7 +31,8 @@ object TranscriptTextExporter {
     ): String = when (format) {
         TranscriptExportFormat.SRT -> exportSrt(chunks, transcripts)
         TranscriptExportFormat.LRC -> exportLrc(chunks, transcripts)
-        TranscriptExportFormat.TXT -> exportTxt(chunks, transcripts)
+        TranscriptExportFormat.TSV -> exportTsv(chunks, transcripts)
+        TranscriptExportFormat.JSON -> exportJson(chunks, transcripts)
     }
 
     /**
@@ -79,27 +86,97 @@ object TranscriptTextExporter {
 
     /**
      * チャンクを `startMs` 昇順で並べ、文字起こしテキストが存在するチャンクを
-     * `[MM:SS] [LANG] テキスト`（`language` が `null` の場合は `[MM:SS] テキスト`）形式で 1 行ずつ出力する。
+     * 先頭ヘッダー行 `startMs\tendMs\tlang\ttext` 付きのタブ区切り（`.tsv`）形式で 1 行ずつ出力する。
      */
-    fun exportTxt(
+    fun exportTsv(
         chunks: List<Chunk>,
         transcripts: Map<ChunkId, Transcript>,
     ): String {
         val entries = collectValidEntries(chunks, transcripts)
         if (entries.isEmpty()) return ""
 
-        return entries.joinToString("\n") { entry ->
-            val timeTag = formatTxtTimestamp(maxOf(0L, entry.chunk.startMs))
-            val langTag = entry.transcript.language?.value
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.uppercase()
-            if (langTag != null) {
-                "$timeTag [$langTag] ${entry.singleLineText}"
-            } else {
-                "$timeTag ${entry.singleLineText}"
+        return buildString {
+            append("startMs\tendMs\tlang\ttext")
+            for (entry in entries) {
+                val startMs = maxOf(0L, entry.chunk.startMs)
+                val endMs = maxOf(startMs + 1L, entry.chunk.endMs)
+                val lang = entry.transcript.language?.value
+                    ?.trim()
+                    ?.replace('\t', ' ')
+                    .orEmpty()
+                val text = entry.singleLineText.replace('\t', ' ')
+                append('\n')
+                append(startMs).append('\t')
+                append(endMs).append('\t')
+                append(lang).append('\t')
+                append(text)
             }
         }
+    }
+
+    /**
+     * チャンクを `startMs` 昇順で並べ、文字起こしテキストが存在するチャンクを
+     * `chunkflow-transcript` v1 形式の整形済み JSON（`.json`）として出力する。
+     */
+    fun exportJson(
+        chunks: List<Chunk>,
+        transcripts: Map<ChunkId, Transcript>,
+        sha256: String? = null,
+        fileName: String? = null,
+        durationMs: Long? = null,
+        languages: LanguagePair? = null,
+    ): String {
+        val entries = collectValidEntries(chunks, transcripts)
+        if (entries.isEmpty()) return ""
+
+        val resolvedSha256 = sha256?.trim()?.lowercase()
+            ?.takeIf(ChunkFlowTranscriptParser::isValidSha256)
+            ?: DEFAULT_EXPORT_SHA256
+
+        val distinctValidLangs = entries
+            .mapNotNull { it.transcript.language?.value?.trim()?.takeIf(ChunkFlowTranscriptParser::isValidLanguageTag) }
+            .distinct()
+        val resolvedLanguages = languages ?: LanguagePair(
+            target = LanguageTag(distinctValidLangs.firstOrNull() ?: ChunkFlowTranscriptSerializer.DEFAULT_TARGET_LANG),
+            base = distinctValidLangs.getOrNull(1)?.let(::LanguageTag),
+        )
+
+        val segments = entries.map { entry ->
+            val startMs = maxOf(0L, entry.chunk.startMs)
+            val endMs = maxOf(startMs + 1L, entry.chunk.endMs)
+            TranscriptSegment(
+                startMs = startMs,
+                endMs = endMs,
+                language = entry.transcript.language,
+                languageConfidence = entry.transcript.languageConfidence,
+                text = entry.multilineText,
+                textVariants = entry.transcript.textVariants,
+                words = entry.transcript.words,
+            )
+        }
+
+        val maxEndMs = segments.maxOfOrNull { it.endMs } ?: 1L
+        val resolvedDurationMs = maxOf(durationMs ?: maxEndMs, maxEndMs, 1L)
+        val generatorEngine = entries.first().transcript.engine.value
+            .ifBlank { ChunkFlowTranscriptSerializer.DEFAULT_ENGINE }
+
+        val document = TranscriptDocument(
+            audioSha256 = resolvedSha256,
+            audioFileName = fileName,
+            durationMs = resolvedDurationMs,
+            languages = resolvedLanguages,
+            generator = EngineId(generatorEngine),
+            segments = segments,
+            createdAt = null,
+        )
+
+        return ChunkFlowTranscriptSerializer.serialize(
+            document = document,
+            sha256 = resolvedSha256,
+            fileName = fileName,
+            durationMs = resolvedDurationMs,
+            languages = resolvedLanguages,
+        )
     }
 
     /**
@@ -108,7 +185,8 @@ object TranscriptTextExporter {
     fun suggestedExtension(format: TranscriptExportFormat): String = when (format) {
         TranscriptExportFormat.SRT -> "srt"
         TranscriptExportFormat.LRC -> "lrc"
-        TranscriptExportFormat.TXT -> "txt"
+        TranscriptExportFormat.TSV -> "tsv"
+        TranscriptExportFormat.JSON -> "json"
     }
 
     /**
@@ -117,7 +195,26 @@ object TranscriptTextExporter {
     fun suggestedMimeType(format: TranscriptExportFormat): String = when (format) {
         TranscriptExportFormat.SRT -> "application/x-subrip"
         TranscriptExportFormat.LRC -> "text/plain"
-        TranscriptExportFormat.TXT -> "text/plain"
+        TranscriptExportFormat.TSV -> "text/tab-separated-values"
+        TranscriptExportFormat.JSON -> "application/json"
+    }
+
+    /**
+     * 音声ファイル名またはタイトルから拡張子を取り除き、[format] の拡張子を付与したデフォルト出力ファイル名を返す。
+     */
+    fun defaultFileName(
+        baseTitleOrFileName: String,
+        format: TranscriptExportFormat,
+    ): String {
+        val lastSegment = baseTitleOrFileName
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .trim()
+        val stem = lastSegment.replace(
+            Regex("\\.(mp3|m4a|mp4|ogg|opus|flac|wav|aac)$", RegexOption.IGNORE_CASE),
+            "",
+        ).trim().ifBlank { "transcript" }
+        return "$stem.${suggestedExtension(format)}"
     }
 
     private fun collectValidEntries(
@@ -178,18 +275,6 @@ object TranscriptTextExporter {
             append(minutes.toString().padStart(2, '0')).append(':')
             append(seconds.toString().padStart(2, '0')).append('.')
             append(centiseconds.toString().padStart(2, '0'))
-            append(']')
-        }
-    }
-
-    private fun formatTxtTimestamp(ms: Long): String {
-        val totalSeconds = ms / 1_000L
-        val minutes = totalSeconds / 60L
-        val seconds = totalSeconds % 60L
-        return buildString(7) {
-            append('[')
-            append(minutes.toString().padStart(2, '0')).append(':')
-            append(seconds.toString().padStart(2, '0'))
             append(']')
         }
     }

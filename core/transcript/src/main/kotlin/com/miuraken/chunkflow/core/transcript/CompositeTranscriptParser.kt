@@ -74,7 +74,7 @@ class CompositeTranscriptParser(
             val firstChar = (bytes[offset].toInt() and 0xFF).toChar()
             return when {
                 firstChar == '{' -> ContentKind.JSON
-                firstChar == 'W' || firstChar == '[' || firstChar in '0'..'9' -> ContentKind.SUBTITLE
+                firstChar == 'W' || firstChar == '[' || firstChar == 's' || firstChar == 'S' || firstChar in '0'..'9' -> ContentKind.SUBTITLE
                 else -> ContentKind.UNKNOWN
             }
         }

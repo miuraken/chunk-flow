@@ -621,7 +621,6 @@ internal fun CreateVirtualFolderDialog(
 internal fun EditItemMetadataDialog(
     item: AudioItem,
     enabledLanguages: List<LanguageTag>,
-    onImportTranscript: () -> Unit,
     onConfirm: (String?, LanguagePair, ItemSttOverride) -> Unit,
     onDismiss: () -> Unit,
     initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
@@ -667,28 +666,9 @@ internal fun EditItemMetadataDialog(
                     confirmTargetLangChange = true,
                 )
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-                Text(
-                    text = stringResource(R.string.library_edit_transcript_section_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-
-                FilledTonalButton(
-                    onClick = onImportTranscript,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Description,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = stringResource(R.string.library_edit_import_transcript_button))
-                }
-
                 if (onDeleteLocalAudioCopy != null) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
                     OutlinedButton(
                         onClick = onDeleteLocalAudioCopy,
                         modifier = Modifier.fillMaxWidth(),
@@ -869,7 +849,6 @@ private fun EditItemMetadataDialogPreview() {
                     importedAtEpochMs = 0L,
                 ),
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
-                onImportTranscript = {},
                 onConfirm = { _, _, _ -> },
                 onDismiss = {},
             )

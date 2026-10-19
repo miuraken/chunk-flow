@@ -120,7 +120,6 @@ import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
-import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.playback.PositionProvider
@@ -148,6 +147,7 @@ fun PlayerRoute(
     initialChunkId: ChunkId? = null,
     onOpenPlaybackSettings: () -> Unit = {},
     onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
+    onOpenTranscriptExport: (MediaId) -> Unit = {},
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(mediaId, initialChunkId) {
@@ -199,17 +199,6 @@ fun PlayerRoute(
         }
     }
 
-    var pendingExportFormat by remember { mutableStateOf<TranscriptExportFormat?>(null) }
-    val exportDocumentLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("text/plain"),
-    ) { uri ->
-        val format = pendingExportFormat
-        pendingExportFormat = null
-        if (uri != null && format != null) {
-            viewModel.onEvent(PlayerEvent.ExportTranscriptToUri(format = format, uri = uri))
-        }
-    }
-
     PlayerScreen(
         state = state,
         positionProvider = viewModel.positionProvider,
@@ -242,10 +231,9 @@ fun PlayerRoute(
                 arrayOf("*/*"),
             )
         },
-        onRequestExportTranscript = { format ->
-            pendingExportFormat = format
-            val baseName = state.title.ifBlank { "transcript" }
-            exportDocumentLauncher.launch("$baseName.${format.name.lowercase(Locale.ROOT)}")
+        onOpenTranscriptExport = {
+            val targetId = state.mediaId ?: mediaId
+            onOpenTranscriptExport(targetId)
         },
         hasRecordAudioPermission = hasRecordAudioPermission,
         onRequestRecordAudioPermission = {
@@ -309,7 +297,7 @@ fun PlayerScreen(
     onOpenPlaybackSettings: () -> Unit = {},
     onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
     onPickTranscriptJson: () -> Unit = {},
-    onRequestExportTranscript: (TranscriptExportFormat) -> Unit = {},
+    onOpenTranscriptExport: () -> Unit = {},
     hasRecordAudioPermission: Boolean = true,
     onRequestRecordAudioPermission: () -> Unit = {},
 ) {
@@ -712,9 +700,9 @@ fun PlayerScreen(
                     showResegmentSheet = false
                     onPickTranscriptJson()
                 },
-                onExportTranscript = { format ->
+                onExportTranscript = {
                     showResegmentSheet = false
-                    onRequestExportTranscript(format)
+                    onOpenTranscriptExport()
                 },
                 onResetTranscripts = {
                     showResegmentSheet = false
@@ -2244,7 +2232,7 @@ internal fun ResegmentSheetContent(
     onAdjustTranscriptOffset: (Int) -> Unit,
     onAutoAlignTranscriptOffset: () -> Unit,
     onImportTranscript: () -> Unit,
-    onExportTranscript: (TranscriptExportFormat) -> Unit,
+    onExportTranscript: () -> Unit,
     onResetTranscripts: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onToggleUseGlobalSegmentation: (Boolean) -> Unit,
@@ -2252,8 +2240,9 @@ internal fun ResegmentSheetContent(
     onOpenGlobalSettings: () -> Unit,
     onClose: () -> Unit,
     onResetSegmentation: (SegmentationParams?) -> Unit = {},
+    initialTabIndex: Int = 0,
 ) {
-    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(initialTabIndex) }
     var minSilenceMs by remember(initialParams) { mutableIntStateOf(initialParams.minSilenceMs) }
     var prePaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.prePaddingMs) }
     var postPaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.postPaddingMs) }
@@ -2368,58 +2357,17 @@ internal fun ResegmentSheetContent(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Row(
+                OutlinedButton(
+                    onClick = onExportTranscript,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    OutlinedButton(
-                        onClick = { onExportTranscript(TranscriptExportFormat.SRT) },
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Download,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.player_export_srt),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = { onExportTranscript(TranscriptExportFormat.LRC) },
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Download,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.player_export_lrc),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
-                    OutlinedButton(
-                        onClick = { onExportTranscript(TranscriptExportFormat.TXT) },
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Download,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = stringResource(R.string.player_export_txt),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
+                    Icon(
+                        imageVector = ChunkFlowIcons.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_file_settings_section_export))
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -2897,6 +2845,42 @@ private fun PlayerFileSettingsSheetPreview() {
                 onApply = {},
                 onOpenGlobalSettings = {},
                 onClose = {},
+            )
+        }
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun PlayerFileSettingsTranscriptTabPreview() {
+    ChunkFlowTheme {
+        Surface {
+            ResegmentSheetContent(
+                initialParams = SegmentationParams(),
+                useGlobalSegmentation = true,
+                languagePair = LanguagePair(
+                    target = LanguageTag("ko"),
+                    base = LanguageTag("ja"),
+                ),
+                itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+                sttEngineByLanguage = emptyMap(),
+                languageModelInfos = emptyMap(),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onChangeLanguages = {},
+                onChangeTargetEngine = {},
+                onChangeBaseEngine = {},
+                transcriptOffsetMs = 0,
+                onAdjustTranscriptOffset = {},
+                onAutoAlignTranscriptOffset = {},
+                onImportTranscript = {},
+                onExportTranscript = {},
+                onResetTranscripts = {},
+                onOpenDiagnostics = {},
+                onToggleUseGlobalSegmentation = {},
+                onApply = {},
+                onOpenGlobalSettings = {},
+                onClose = {},
+                initialTabIndex = 1,
             )
         }
     }

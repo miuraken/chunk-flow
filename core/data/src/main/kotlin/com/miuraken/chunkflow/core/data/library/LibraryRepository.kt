@@ -257,14 +257,14 @@ interface LibraryRepository {
     fun observeMissingAudioIds(): Flow<Set<MediaId>> = flowOf(emptySet())
 
     /**
-     * 現在のチャンクと文字起こしを指定した形式（SRT / LRC / TXT）の文字列に変換して返す（F7.5）。
+     * 現在のチャンクと文字起こしを指定した形式（SRT / LRC / TSV / JSON）の文字列に変換して返す（F7.5）。
      *
      * @return 書き出し文字列。対象の教材やチャンクが存在しない場合は `null`。
      */
     suspend fun exportTranscriptText(id: MediaId, format: TranscriptExportFormat): String? = null
 
     /**
-     * 現在のチャンクと文字起こしを指定した形式（SRT / LRC / TXT）で SAF の `content://` [targetUri] に書き出す（F7.5）。
+     * 現在のチャンクと文字起こしを指定した形式（SRT / LRC / TSV / JSON）で SAF の `content://` [targetUri] に書き出す（F7.5）。
      *
      * @return 書き出しに成功した場合は `true`。
      */
@@ -273,6 +273,19 @@ interface LibraryRepository {
         format: TranscriptExportFormat,
         targetUri: Uri,
     ): Boolean = false
+
+    /**
+     * 複数の教材 [ids] の文字起こしを指定した形式（SRT / LRC / TSV / JSON）で SAF のフォルダ [treeUri] に書き出す。
+     *
+     * 各ファイル名は音声ファイル名の拡張子を対象形式の拡張子（`.srt`, `.lrc`, `.tsv`, `.json`）に置き換えたものになる。
+     *
+     * @return 書き出しに成功したファイル数。
+     */
+    suspend fun writeExportedTranscriptsToDirectory(
+        ids: List<MediaId>,
+        format: TranscriptExportFormat,
+        treeUri: Uri,
+    ): Int = 0
 
     /** 教材を削除する（音声・解析結果・文字起こし・状態を含む）。 */
     suspend fun delete(id: MediaId)

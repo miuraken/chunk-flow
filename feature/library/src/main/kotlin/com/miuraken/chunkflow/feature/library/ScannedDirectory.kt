@@ -8,7 +8,7 @@ import android.provider.DocumentsContract
  * SAF のフォルダ選択（`OpenDocumentTree`）で指定されたディレクトリの走査結果。
  *
  * @property directoryName 選択されたディレクトリの表示名。
- * @property documentUris ディレクトリ配下および `transcription/` サブフォルダ配下の対象ファイル URI 一覧。
+ * @property documentUris ディレクトリ配下の対象音声ファイル URI 一覧。
  */
 internal data class ScannedDirectory(
     val directoryName: String?,
@@ -16,8 +16,7 @@ internal data class ScannedDirectory(
 )
 
 /**
- * `OpenDocumentTree` で選ばれたツリー URI から、音声ファイルと `transcription/<音声名>.chunkflow.json` などの
- * 対象ドキュメント URI 一覧を走査して返す。
+ * `OpenDocumentTree` で選ばれたツリー URI から、音声ファイルのドキュメント URI 一覧を走査して返す。
  */
 internal fun scanDocumentTree(
     contentResolver: ContentResolver,
@@ -101,7 +100,6 @@ private fun collectChildDocuments(
 
 private fun isSupportedImportFile(displayName: String, mimeType: String): Boolean {
     if (mimeType.startsWith("audio/")) return true
-    if (mimeType == "application/json") return true
     val lower = displayName.lowercase()
     return lower.endsWith(".mp3") ||
         lower.endsWith(".m4a") ||
@@ -109,9 +107,5 @@ private fun isSupportedImportFile(displayName: String, mimeType: String): Boolea
         lower.endsWith(".ogg") ||
         lower.endsWith(".opus") ||
         lower.endsWith(".flac") ||
-        lower.endsWith(".wav") ||
-        lower.endsWith(".json") ||
-        lower.endsWith(".srt") ||
-        lower.endsWith(".vtt") ||
-        lower.endsWith(".lrc")
+        lower.endsWith(".wav")
 }

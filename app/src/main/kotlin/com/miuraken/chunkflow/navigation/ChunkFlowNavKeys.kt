@@ -29,3 +29,11 @@ data class PlayerKey(
  */
 @Serializable
 data class SettingsKey(val initialTab: Int = 0) : NavKey
+
+/**
+ * 文字起こしエクスポート画面。
+ *
+ * @property mediaIds エクスポート対象の [com.miuraken.chunkflow.core.model.MediaId] の値一覧。
+ */
+@Serializable
+data class TranscriptExportKey(val mediaIds: List<String>) : NavKey

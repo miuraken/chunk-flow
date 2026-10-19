@@ -1,13 +1,14 @@
 package com.miuraken.chunkflow.core.transcript
 
 import com.miuraken.chunkflow.core.model.EngineId
+import com.miuraken.chunkflow.core.model.LanguageTag
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import java.text.Normalizer
 
 /**
- * SRT（`.srt`）、WebVTT（`.vtt`）、LRC（`.lrc`）形式の字幕ファイルを解析・検証する [TranscriptParser] 実装（F1.4、§7.4.6、§8.1）。
+ * SRT（`.srt`）、WebVTT（`.vtt`）、LRC（`.lrc`）、TSV（`.tsv`）形式の字幕ファイルを解析・検証する [TranscriptParser] 実装（F1.4、§7.4.6、§8.1）。
  *
  * - 入力サイズ上限 20MB、セグメント数上限 50,000 件、1 セグメントあたり 2,000 コードポイントの上限を強制する（§8.1）。
  * - 厳格な UTF-8 デコードを行い、先頭の UTF-8 BOM（`\uFEFF`）を除去する。
@@ -43,6 +44,7 @@ class SubtitleTranscriptParser : TranscriptParser {
             SubtitleFormat.SRT -> parseSrt(text)
             SubtitleFormat.VTT -> parseVtt(text)
             SubtitleFormat.LRC -> parseLrc(text)
+            SubtitleFormat.TSV -> parseTsv(text)
         }
 
         val rawCues = when (rawCuesResult) {
@@ -382,6 +384,117 @@ class SubtitleTranscriptParser : TranscriptParser {
         return RawCueParseOutcome.Ok(cues)
     }
 
+    private fun parseTsv(text: String): RawCueParseOutcome {
+        val lines = normalizeLineEndings(text).split('\n')
+        val cues = mutableListOf<RawCue>()
+        var sawDataRow = false
+        var isFirstNonBlankLine = true
+
+        for (rawLine in lines) {
+            if (rawLine.isBlank()) continue
+            if (rawLine.length > MAX_RAW_CUE_CHARS) {
+                return RawCueParseOutcome.Error(
+                    TranscriptParseResult.Error(
+                        TranscriptError.SCHEMA_VIOLATION,
+                        "TSV line exceeds maximum allowed length",
+                    ),
+                )
+            }
+
+            val cols = rawLine.split('\t')
+            if (isFirstNonBlankLine) {
+                isFirstNonBlankLine = false
+                val firstCol = cols.firstOrNull()?.trim().orEmpty()
+                if (firstCol.equals("startMs", ignoreCase = true) || firstCol.equals("start", ignoreCase = true)) {
+                    continue
+                }
+            }
+
+            if (cols.size < 3) {
+                return RawCueParseOutcome.Error(
+                    TranscriptParseResult.Error(
+                        TranscriptError.SCHEMA_VIOLATION,
+                        "Invalid TSV row: expected at least 3 tab-separated columns",
+                    ),
+                )
+            }
+
+            val startMs = parseFixedDigits(cols[0].trim(), minDigits = 1, maxDigits = 12)
+                ?: return RawCueParseOutcome.Error(
+                    TranscriptParseResult.Error(
+                        TranscriptError.SCHEMA_VIOLATION,
+                        "Invalid TSV startMs value",
+                    ),
+                )
+            val endMs = parseFixedDigits(cols[1].trim(), minDigits = 1, maxDigits = 12)
+                ?: return RawCueParseOutcome.Error(
+                    TranscriptParseResult.Error(
+                        TranscriptError.SCHEMA_VIOLATION,
+                        "Invalid TSV endMs value",
+                    ),
+                )
+
+            if (startMs < 0L || startMs >= endMs) {
+                return RawCueParseOutcome.Error(
+                    TranscriptParseResult.Error(
+                        TranscriptError.TIME_OUT_OF_RANGE,
+                        "TSV cue timestamp out of range: $startMs .. $endMs",
+                    ),
+                )
+            }
+
+            sawDataRow = true
+            val language: LanguageTag?
+            val rawTextPayload: String
+            if (cols.size >= 4) {
+                val rawLang = cols[2].trim()
+                language = rawLang
+                    .takeIf { it.isNotEmpty() && ChunkFlowTranscriptParser.isValidLanguageTag(it) }
+                    ?.let(::LanguageTag)
+                rawTextPayload = cols.subList(3, cols.size).joinToString(" ")
+            } else {
+                language = null
+                rawTextPayload = cols[2]
+            }
+
+            val cleaned = cleanAndNormalizeCueText(rawTextPayload)
+            when (cleaned) {
+                is CleanedTextOutcome.TooLong -> return RawCueParseOutcome.Error(cleaned.error)
+
+                is CleanedTextOutcome.Empty -> continue
+
+                is CleanedTextOutcome.Ok -> {
+                    if (cues.size >= MAX_SEGMENTS) {
+                        return RawCueParseOutcome.Error(
+                            TranscriptParseResult.Error(
+                                TranscriptError.TOO_LARGE,
+                                "TSV segments exceed maximum of $MAX_SEGMENTS",
+                            ),
+                        )
+                    }
+                    cues.add(
+                        RawCue(
+                            startMs = startMs,
+                            endMs = endMs,
+                            text = cleaned.text,
+                            language = language,
+                        ),
+                    )
+                }
+            }
+        }
+
+        if (!sawDataRow) {
+            return RawCueParseOutcome.Error(
+                TranscriptParseResult.Error(
+                    TranscriptError.SCHEMA_VIOLATION,
+                    "Empty TSV file",
+                ),
+            )
+        }
+        return RawCueParseOutcome.Ok(cues)
+    }
+
     private fun sortAndClampSegments(rawCues: List<RawCue>): List<TranscriptSegment> {
         val sorted = rawCues.sortedWith(compareBy<RawCue> { it.startMs }.thenBy { it.endMs })
         val result = ArrayList<TranscriptSegment>(sorted.size)
@@ -402,7 +515,7 @@ class SubtitleTranscriptParser : TranscriptParser {
                 TranscriptSegment(
                     startMs = current.startMs,
                     endMs = clampedEndMs,
-                    language = null,
+                    language = current.language,
                     languageConfidence = null,
                     text = current.text,
                     textVariants = emptyMap(),
@@ -448,6 +561,7 @@ class SubtitleTranscriptParser : TranscriptParser {
         val startMs: Long,
         val endMs: Long,
         val text: String,
+        val language: LanguageTag? = null,
     )
 
     private data class LrcTimedEntry(
@@ -480,6 +594,7 @@ class SubtitleTranscriptParser : TranscriptParser {
         SRT("srt"),
         VTT("vtt"),
         LRC("lrc"),
+        TSV("tsv"),
     }
 
     companion object {
@@ -505,7 +620,8 @@ class SubtitleTranscriptParser : TranscriptParser {
             return name.endsWith(".srt") ||
                 name.endsWith(".vtt") ||
                 name.endsWith(".webvtt") ||
-                name.endsWith(".lrc")
+                name.endsWith(".lrc") ||
+                name.endsWith(".tsv")
         }
 
         internal fun detectFormat(fileName: String, content: String): SubtitleFormat? {
@@ -516,14 +632,19 @@ class SubtitleTranscriptParser : TranscriptParser {
                     lower.endsWith(".srt") -> SubtitleFormat.SRT
                     lower.endsWith(".vtt") || lower.endsWith(".webvtt") -> SubtitleFormat.VTT
                     lower.endsWith(".lrc") -> SubtitleFormat.LRC
+                    lower.endsWith(".tsv") -> SubtitleFormat.TSV
                     else -> null
                 }
             }
 
             val trimmed = content.trimStart()
             if (trimmed.isEmpty()) return null
-            if (isValidWebVttHeader(trimmed.lineSequence().firstOrNull().orEmpty())) {
+            val firstLine = trimmed.lineSequence().firstOrNull().orEmpty()
+            if (isValidWebVttHeader(firstLine)) {
                 return SubtitleFormat.VTT
+            }
+            if (isTsvHeaderOrDataLine(firstLine)) {
+                return SubtitleFormat.TSV
             }
             val firstNonEmptyLines = trimmed.lineSequence().filter { it.isNotBlank() }.take(2).toList()
             if (firstNonEmptyLines.any { it.contains("-->") }) {
@@ -533,6 +654,17 @@ class SubtitleTranscriptParser : TranscriptParser {
                 return SubtitleFormat.LRC
             }
             return null
+        }
+
+        private fun isTsvHeaderOrDataLine(line: String): Boolean {
+            if (!line.contains('\t')) return false
+            val cols = line.split('\t')
+            if (cols.size < 3) return false
+            val first = cols[0].trim()
+            if (first.equals("startMs", ignoreCase = true) || first.equals("start", ignoreCase = true)) {
+                return true
+            }
+            return parseFixedDigits(first, 1, 12) != null && parseFixedDigits(cols[1].trim(), 1, 12) != null
         }
 
         internal fun extractAudioStem(fileName: String): String? {

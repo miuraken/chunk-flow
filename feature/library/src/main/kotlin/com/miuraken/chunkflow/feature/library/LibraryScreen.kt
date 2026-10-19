@@ -244,15 +244,16 @@ private fun formatEpochMsLocal(epochMs: Long): String = runCatching {
 }.getOrDefault("")
 
 /**
- * ライブラリ画面の Route。画面遷移のコールバックと SAF ピッカー（フォルダ指定・ファイル選択・文字起こし追加）を扱い、[LibraryScreen] に状態を渡す。
+ * ライブラリ画面の Route。画面遷移のコールバックと SAF ピッカー（フォルダ指定・ファイル選択）を扱い、[LibraryScreen] に状態を渡す。
  */
 @Composable
 fun LibraryRoute(
     onOpenPlayer: (MediaId) -> Unit,
     onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier,
     onOpenLanguageSettings: () -> Unit = onOpenSettings,
     onOpenPlayerAtChunk: (MediaId, ChunkId) -> Unit = { id, _ -> onOpenPlayer(id) },
-    modifier: Modifier = Modifier,
+    onOpenTranscriptExport: (List<MediaId>) -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -322,22 +323,6 @@ fun LibraryRoute(
         }
     }
 
-    var targetTranscriptItemId by remember { mutableStateOf<MediaId?>(null) }
-
-    val transcriptPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        val itemId = targetTranscriptItemId
-        targetTranscriptItemId = null
-        if (uri != null) {
-            if (itemId != null) {
-                viewModel.onEvent(LibraryEvent.ImportTranscriptForItem(id = itemId, uri = uri))
-            } else {
-                viewModel.onEvent(LibraryEvent.ImportTranscriptUri(uri))
-            }
-        }
-    }
-
     LaunchedEffect(state.syncState) {
         val currentSync = state.syncState
         if (currentSync is DriveSyncUiState.Error && currentSync.error == SyncError.NOT_AUTHORIZED) {
@@ -354,42 +339,8 @@ fun LibraryRoute(
                 LibraryEvent.RequestSelectDriveSyncFolder -> driveSyncFolderLauncher.launch(null)
 
                 LibraryEvent.RequestImport -> filePickerLauncher.launch(
-                    arrayOf(
-                        "audio/*",
-                        "application/json",
-                        "text/vtt",
-                        "application/x-subrip",
-                        "text/plain",
-                        "*/*",
-                    ),
+                    arrayOf("audio/*"),
                 )
-
-                LibraryEvent.RequestImportTranscript -> {
-                    targetTranscriptItemId = null
-                    transcriptPickerLauncher.launch(
-                        arrayOf(
-                            "application/json",
-                            "text/vtt",
-                            "application/x-subrip",
-                            "text/plain",
-                            "*/*",
-                        ),
-                    )
-                }
-
-                is LibraryEvent.RequestImportTranscriptForItem -> {
-                    targetTranscriptItemId = event.id
-                    viewModel.onEvent(LibraryEvent.CancelEditMetadata)
-                    transcriptPickerLauncher.launch(
-                        arrayOf(
-                            "application/json",
-                            "text/vtt",
-                            "application/x-subrip",
-                            "text/plain",
-                            "*/*",
-                        ),
-                    )
-                }
 
                 is LibraryEvent.OpenItem -> {
                     viewModel.onEvent(event)
@@ -411,6 +362,7 @@ fun LibraryRoute(
                 else -> viewModel.onEvent(event)
             }
         },
+        onOpenTranscriptExport = onOpenTranscriptExport,
         modifier = modifier,
     )
 }
@@ -424,6 +376,7 @@ fun LibraryScreen(
     state: LibraryUiState,
     onEvent: (LibraryEvent) -> Unit,
     modifier: Modifier = Modifier,
+    onOpenTranscriptExport: (List<MediaId>) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     var lastScrolledDirectoryPath by remember { mutableStateOf<String?>("__uninitialized__") }
@@ -488,7 +441,7 @@ fun LibraryScreen(
                         if (hasSelectedFiles) {
                             FilledTonalButton(
                                 onClick = { showAddToPlaylistDialog = true },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             ) {
                                 Icon(
                                     imageVector = ChunkFlowIcons.PlaylistAdd,
@@ -502,11 +455,11 @@ fun LibraryScreen(
                                     maxLines = 1,
                                 )
                             }
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
                             val allFavorite = state.areAllSelectedFavorite
                             FilledTonalButton(
                                 onClick = { onEvent(LibraryEvent.ToggleFavoriteSelected) },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             ) {
                                 Icon(
                                     imageVector = if (allFavorite) {
@@ -529,11 +482,34 @@ fun LibraryScreen(
                                     maxLines = 1,
                                 )
                             }
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            FilledTonalButton(
+                                onClick = {
+                                    val targetIds = state.selectedTargetItemIds
+                                    onEvent(LibraryEvent.ClearSelection)
+                                    if (targetIds.isNotEmpty()) {
+                                        onOpenTranscriptExport(targetIds)
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                            ) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = stringResource(R.string.library_selection_export_badge),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
                         }
                         FilledTonalButton(
                             onClick = { onEvent(LibraryEvent.RequestDeleteSelected) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                             colors = ButtonDefaults.filledTonalButtonColors(
                                 containerColor = MaterialTheme.colorScheme.errorContainer,
                                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -614,7 +590,6 @@ fun LibraryScreen(
         ) {
             ImportStatusBanner(
                 importState = state.importState,
-                transcriptImportState = state.transcriptImportState,
                 syncState = state.syncState,
                 onSelectDriveSyncFolder = { onEvent(LibraryEvent.RequestSelectDriveSyncFolder) },
                 onOpenItem = { mediaId -> onEvent(LibraryEvent.OpenItem(mediaId)) },
@@ -768,9 +743,6 @@ fun LibraryScreen(
             item = itemToEdit,
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
-            onImportTranscript = {
-                onEvent(LibraryEvent.RequestImportTranscriptForItem(itemToEdit.id))
-            },
             onDeleteLocalAudioCopy = if (itemToEdit.storageState == AudioStorageState.DRIVE_DOWNLOADED) {
                 { onEvent(LibraryEvent.DeleteLocalAudioCopy(itemToEdit.id)) }
             } else {
@@ -2027,7 +1999,6 @@ private fun FolderKindBadge(
 @Composable
 private fun ImportStatusBanner(
     importState: LibraryImportUiState,
-    transcriptImportState: TranscriptImportUiState,
     syncState: DriveSyncUiState,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
@@ -2156,54 +2127,6 @@ private fun ImportStatusBanner(
             }
             StatusBannerCard(
                 message = errorText,
-                isError = true,
-                onDismiss = onDismiss,
-                modifier = modifier,
-            )
-        }
-    }
-
-    when (transcriptImportState) {
-        TranscriptImportUiState.Idle -> Unit
-
-        is TranscriptImportUiState.Attached -> {
-            val message = if (transcriptImportState.durationMismatch) {
-                stringResource(
-                    R.string.library_transcript_attached_mismatch,
-                    transcriptImportState.chunkCount,
-                )
-            } else {
-                stringResource(
-                    R.string.library_transcript_attached,
-                    transcriptImportState.chunkCount,
-                )
-            }
-            StatusBannerCard(
-                message = message,
-                isError = false,
-                onDismiss = onDismiss,
-                modifier = modifier,
-            )
-        }
-
-        is TranscriptImportUiState.NoMatchingAudio -> {
-            val fileName = transcriptImportState.audioFileName
-            val message = if (!fileName.isNullOrBlank()) {
-                stringResource(R.string.library_transcript_no_matching_audio, fileName)
-            } else {
-                stringResource(R.string.library_transcript_no_matching_audio_unknown)
-            }
-            StatusBannerCard(
-                message = message,
-                isError = true,
-                onDismiss = onDismiss,
-                modifier = modifier,
-            )
-        }
-
-        is TranscriptImportUiState.Invalid -> {
-            StatusBannerCard(
-                message = stringResource(R.string.library_transcript_invalid),
                 isError = true,
                 onDismiss = onDismiss,
                 modifier = modifier,

@@ -8,12 +8,13 @@ import androidx.navigation3.ui.NavDisplay
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.feature.library.LibraryRoute
+import com.miuraken.chunkflow.feature.library.TranscriptExportRoute
 import com.miuraken.chunkflow.feature.player.PlayerRoute
 import com.miuraken.chunkflow.feature.settings.SettingsRoute
 import com.miuraken.chunkflow.feature.settings.SettingsTab
 
 /**
- * アプリの画面遷移（Navigation 3）。ライブラリ → プレイヤー / 設定。
+ * アプリの画面遷移（Navigation 3）。ライブラリ → プレイヤー / 設定 / 文字起こしエクスポート。
  *
  * 予測型「戻る」は NavDisplay が扱う（§7.5.6）。大画面の 2 ペイン表示（material3-adaptive）は M4 で加える。
  */
@@ -35,6 +36,11 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                     onOpenLanguageSettings = {
                         backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
                     },
+                    onOpenTranscriptExport = { ids ->
+                        if (ids.isNotEmpty()) {
+                            backStack.add(TranscriptExportKey(mediaIds = ids.map { it.value }))
+                        }
+                    },
                 )
             }
             entry<PlayerKey> { key ->
@@ -46,6 +52,15 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                     onOpenLanguageSettings = {
                         backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
                     },
+                    onOpenTranscriptExport = { id ->
+                        backStack.add(TranscriptExportKey(mediaIds = listOf(id.value)))
+                    },
+                )
+            }
+            entry<TranscriptExportKey> { key ->
+                TranscriptExportRoute(
+                    mediaIds = key.mediaIds.map { MediaId(it) },
+                    onBack = { backStack.removeLastOrNull() },
                 )
             }
             entry<SettingsKey> { key ->

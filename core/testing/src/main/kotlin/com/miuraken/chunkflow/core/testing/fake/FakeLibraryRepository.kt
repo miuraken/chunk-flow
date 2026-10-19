@@ -116,6 +116,12 @@ class FakeLibraryRepository(
     /** [writeExportedTranscriptToUri] の呼び出し履歴（F7.5）。 */
     val writtenTranscriptExports: MutableList<Triple<MediaId, TranscriptExportFormat, Uri>> = mutableListOf()
 
+    /** [writeExportedTranscriptsToDirectory] が返す結果（`null` の場合は書き出し可能な件数を返す）。 */
+    var writeExportedTranscriptsToDirectoryResult: Int? = null
+
+    /** [writeExportedTranscriptsToDirectory] の呼び出し履歴。 */
+    val writtenDirectoryTranscriptExports: MutableList<Triple<List<MediaId>, TranscriptExportFormat, Uri>> = mutableListOf()
+
     override fun observeItems(): Flow<List<AudioItem>> = items
 
     override fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = courseFolders
@@ -599,6 +605,16 @@ class FakeLibraryRepository(
     ): Boolean {
         writtenTranscriptExports += Triple(id, format, targetUri)
         return writeExportedTranscriptResult
+    }
+
+    override suspend fun writeExportedTranscriptsToDirectory(
+        ids: List<MediaId>,
+        format: TranscriptExportFormat,
+        treeUri: Uri,
+    ): Int {
+        writtenDirectoryTranscriptExports += Triple(ids, format, treeUri)
+        return writeExportedTranscriptsToDirectoryResult
+            ?: ids.count { id -> exportedTranscriptTexts[id to format]?.isNotBlank() == true }
     }
 
     override suspend fun delete(id: MediaId) {

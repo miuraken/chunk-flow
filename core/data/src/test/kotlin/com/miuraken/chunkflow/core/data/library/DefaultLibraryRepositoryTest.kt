@@ -231,7 +231,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `import_音声と文字起こしJSONを同時に選ぶとSHA256で照合しパディング付きIMPORTEDチャンクと言語ペアを保存する`() = runTest {
+    fun `importとimportTranscriptForMedia_音声取り込み時は文字起こしを自動紐付けせず手動指定時にIMPORTEDチャンクと言語ペアを保存する`() = runTest {
         val audioBytes = "audio-with-transcript-payload".encodeToByteArray()
         val audioSha = sha256Hex(audioBytes)
         val audioUri = registerContent("a1", "lesson01.mp3", audioBytes.size.toLong(), audioBytes)
@@ -292,9 +292,15 @@ class DefaultLibraryRepositoryTest {
 
         assertEquals(1, done.mediaIds.size)
         assertEquals(0, done.duplicates)
-        assertEquals(1, done.transcriptsAttached)
+        assertEquals(0, done.transcriptsAttached)
 
         val mediaId = done.mediaIds.single()
+        val importResult = repo.importTranscriptForMedia(mediaId, newJsonUri)
+        assertEquals(
+            TranscriptImportResult.Attached(mediaId = mediaId, chunkCount = 2, durationMismatch = false),
+            importResult,
+        )
+
         val item = repo.observeItem(mediaId).first()
         assertNotNull(item)
         assertEquals(LanguagePair(LanguageTag("zh"), LanguageTag("ja")), item.languagePair)
@@ -312,7 +318,6 @@ class DefaultLibraryRepositoryTest {
         assertEquals(3_050L, importedChunks[1].startMs) // max(3100 - 150, (3000 + 3100) / 2) = 3050
         assertEquals(5_200L, importedChunks[1].endMs) // 5000 + 200
 
-        // createdAt が新しい方の JSON が採用されていること（§7.4.6）
         val transcripts = chunkDao.getTranscriptsByChunkIds(importedChunks.map { it.id })
         assertEquals(2, transcripts.size)
         assertEquals("新しいテキスト", transcripts[0].text)
@@ -325,7 +330,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `import_SAFフォルダTreeURIを渡すとフォルダ名をcourseに設定しtranscription配下のJSONも自動で紐付ける`() = runTest {
+    fun `import_SAFフォルダTreeURIを渡すとフォルダ名をcourseに設定しtranscription配下のJSONは自動紐付けしない`() = runTest {
         val audioBytes = "tree-import-audio-lesson01".encodeToByteArray()
         val jsonBytes = """{"createdAt":"2026-10-14T12:00:00Z"}""".encodeToByteArray()
 
@@ -336,46 +341,20 @@ class DefaultLibraryRepositoryTest {
             transcriptionFiles = listOf("lesson01.chunkflow.json" to jsonBytes),
         )
 
-        transcriptParser.result = { _, _ ->
-            TranscriptParseResult.Ok(
-                TranscriptDocument(
-                    audioSha256 = null, // SHA-256 なしでも <directory>/transcription/<stem>.chunkflow.json から紐付く
-                    audioFileName = "lesson01.mp3",
-                    durationMs = 120_000L,
-                    languages = LanguagePair(LanguageTag("ko"), LanguageTag("ja")),
-                    generator = EngineId("whisper-large-v3"),
-                    segments = listOf(
-                        TranscriptSegment(
-                            startMs = 500L,
-                            endMs = 2_000L,
-                            language = LanguageTag("ko"),
-                            languageConfidence = 0.99f,
-                            text = "안녕하세요",
-                            textVariants = emptyMap(),
-                            words = emptyList(),
-                        ),
-                    ),
-                ),
-            )
-        }
-
         val repo = createRepository()
         val done = repo.import(listOf(treeUri)).toList().last() as ImportProgress.Done
 
         assertEquals(1, done.mediaIds.size)
-        assertEquals(1, done.transcriptsAttached)
+        assertEquals(0, done.transcriptsAttached)
 
         val mediaId = done.mediaIds.single()
         val item = repo.observeItem(mediaId).first()
         assertNotNull(item)
         assertEquals("korean-course", item.course)
         assertEquals("lesson01", item.title)
-        assertEquals(LanguagePair(LanguageTag("ko"), LanguageTag("ja")), item.languagePair)
 
         val chunks = chunkDao.getByMediaIdAndOrigin(mediaId.value, ChunkOrigin.IMPORTED.name)
-        assertEquals(1, chunks.size)
-        assertEquals(350L, chunks.single().startMs)
-        assertEquals(2_200L, chunks.single().endMs)
+        assertTrue(chunks.isEmpty())
     }
 
     @Test
@@ -934,7 +913,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `import_SRTやVTTやLRCの文字起こしファイルもファイル名ステム一致で紐付けられる`() = runTest {
+    fun `importTranscriptForMedia_SRTやVTTやLRCやTSVの文字起こしファイルを手動で紐付けられる`() = runTest {
         val audioBytes = "srt-matching-audio".encodeToByteArray()
         val audioUri = registerContent(
             id = "srt_audio",
@@ -978,9 +957,15 @@ class DefaultLibraryRepositoryTest {
         val repo = createRepository()
         val done = repo.import(listOf(audioUri, srtUri)).toList().last() as ImportProgress.Done
         assertEquals(1, done.mediaIds.size)
-        assertEquals(1, done.transcriptsAttached)
+        assertEquals(0, done.transcriptsAttached)
 
         val mediaId = done.mediaIds.single()
+        val attachResult = repo.importTranscriptForMedia(mediaId, srtUri)
+        assertEquals(
+            TranscriptImportResult.Attached(mediaId = mediaId, chunkCount = 1, durationMismatch = false),
+            attachResult,
+        )
+
         val importedChunks = chunkDao.getByMediaIdAndOrigin(mediaId.value, ChunkOrigin.IMPORTED.name)
         assertEquals(1, importedChunks.size)
         assertEquals(850L, importedChunks.single().startMs)
@@ -1168,7 +1153,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `exportTranscriptTextとwriteExportedTranscriptToUri_SRTとLRCとTXTを整形しSAFのcontentURIへ書き出す`() = runTest {
+    fun `exportTranscriptTextとwriteExportedTranscriptToUri_SRTとLRCとTSVとJSONを整形しSAFのcontentURIへ書き出す`() = runTest {
         val repo = createRepository()
         val mediaId = MediaId("export-text-media")
 
@@ -1207,11 +1192,17 @@ class DefaultLibraryRepositoryTest {
             lrc,
         )
 
-        val txt = repo.exportTranscriptText(mediaId, TranscriptExportFormat.TXT)
+        val tsv = repo.exportTranscriptText(mediaId, TranscriptExportFormat.TSV)
         assertEquals(
-            "[00:01] [EN] Hello world\n[01:05] [JA] こんにちは",
-            txt,
+            "startMs\tendMs\tlang\ttext\n1250\t3500\ten\tHello world\n65000\t68400\tja\tこんにちは",
+            tsv,
         )
+
+        val json = repo.exportTranscriptText(mediaId, TranscriptExportFormat.JSON)
+        assertNotNull(json)
+        assertTrue(json.contains(""""format": "chunkflow-transcript""""))
+        assertTrue(json.contains(""""text": "Hello world""""))
+        assertTrue(json.contains(""""text": "こんにちは""""))
 
         // content:// URI への書き出しと非 content:// スキームの拒否
         val targetUri = Uri.parse("content://${TestContentProvider.AUTHORITY}/exports/out.srt")
@@ -1225,7 +1216,7 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
-    fun `import_コース名と言語ペアを指定して取り込むとフォルダ名やJSON内の言語よりユーザー指定値が優先される`() = runTest {
+    fun `import_コース名と言語ペアを指定して取り込むとフォルダ名よりユーザー指定値が優先される`() = runTest {
         val audioBytes = "custom-course-lang-audio".encodeToByteArray()
         val jsonBytes = """{"createdAt":"2026-10-14T12:00:00Z"}""".encodeToByteArray()
         val treeUri = registerTreeDirectory(
@@ -1234,30 +1225,6 @@ class DefaultLibraryRepositoryTest {
             audioFiles = listOf("ep01.mp3" to audioBytes),
             transcriptionFiles = listOf("ep01.chunkflow.json" to jsonBytes),
         )
-
-        // JSON 側は ko / ja だが、ユーザー指定は fr / en
-        transcriptParser.result = { _, _ ->
-            TranscriptParseResult.Ok(
-                TranscriptDocument(
-                    audioSha256 = null,
-                    audioFileName = "ep01.mp3",
-                    durationMs = 120_000L,
-                    languages = LanguagePair(LanguageTag("ko"), LanguageTag("ja")),
-                    generator = EngineId("whisper"),
-                    segments = listOf(
-                        TranscriptSegment(
-                            startMs = 500L,
-                            endMs = 2_000L,
-                            language = LanguageTag("fr"),
-                            languageConfidence = 0.99f,
-                            text = "Bonjour",
-                            textVariants = emptyMap(),
-                            words = emptyList(),
-                        ),
-                    ),
-                ),
-            )
-        }
 
         val repo = createRepository()
         val explicitLanguages = LanguagePair(target = LanguageTag("fr"), base = LanguageTag("en"))
@@ -1268,7 +1235,7 @@ class DefaultLibraryRepositoryTest {
         ).toList().last() as ImportProgress.Done
 
         assertEquals(1, done.mediaIds.size)
-        assertEquals(1, done.transcriptsAttached)
+        assertEquals(0, done.transcriptsAttached)
 
         val mediaId = done.mediaIds.single()
         val item = repo.observeItem(mediaId).first()
@@ -1530,33 +1497,10 @@ class DefaultLibraryRepositoryTest {
             ),
         )
 
-        transcriptParser.result = { _, _ ->
-            TranscriptParseResult.Ok(
-                TranscriptDocument(
-                    audioSha256 = null,
-                    audioFileName = "ep01.mp3",
-                    durationMs = 120_000L,
-                    languages = LanguagePair(LanguageTag("ko"), LanguageTag("ja")),
-                    generator = EngineId("whisper"),
-                    segments = listOf(
-                        TranscriptSegment(
-                            startMs = 1_000L,
-                            endMs = 3_000L,
-                            language = LanguageTag("ko"),
-                            languageConfidence = 0.99f,
-                            text = "안녕하세요",
-                            textVariants = emptyMap(),
-                            words = emptyList(),
-                        ),
-                    ),
-                ),
-            )
-        }
-
         val repo = createRepository()
         val done = repo.linkLocalDirectory(treeUri).toList().last() as ImportProgress.Done
         assertEquals(1, done.mediaIds.size)
-        assertEquals(1, done.transcriptsAttached)
+        assertEquals(0, done.transcriptsAttached)
 
         val ep1Id = done.mediaIds.single()
         val ep1 = assertNotNull(repo.observeItem(ep1Id).first())

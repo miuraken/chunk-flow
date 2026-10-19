@@ -9,7 +9,6 @@ import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.SyncError
 import com.miuraken.chunkflow.core.data.library.SyncProgress
-import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
@@ -41,7 +40,6 @@ import com.miuraken.chunkflow.core.playback.PlaybackStatus
 import com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
-import com.miuraken.chunkflow.core.transcript.TranscriptError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.math.BigInteger
 import javax.inject.Inject
@@ -291,41 +289,6 @@ data class LibraryImportedFileUiModel(
 )
 
 /**
- * 文字起こし JSON / 字幕単体取り込みの UI 状態（F7.1、F1.4、§7.1）。
- */
-sealed interface TranscriptImportUiState {
-    /** 取り込みを行っていない。 */
-    data object Idle : TranscriptImportUiState
-
-    /**
-     * 既存の教材に文字起こしを紐付けた。
-     *
-     * @property mediaId 紐付けた教材の ID。
-     * @property chunkCount 作成したチャンクの数。
-     * @property durationMismatch 教材の長さと JSON の `durationMs` に 0.5 秒以上の差があるか。
-     */
-    data class Attached(
-        val mediaId: MediaId,
-        val chunkCount: Int,
-        val durationMismatch: Boolean,
-    ) : TranscriptImportUiState
-
-    /**
-     * 対応する音声がまだ取り込まれていない。
-     *
-     * @property audioFileName JSON に書かれた音声ファイル名。
-     */
-    data class NoMatchingAudio(val audioFileName: String?) : TranscriptImportUiState
-
-    /**
-     * 文字起こしファイルが不正。
-     *
-     * @property error 失敗の種別。
-     */
-    data class Invalid(val error: TranscriptError) : TranscriptImportUiState
-}
-
-/**
  * Google Drive 同期の UI 状態（F1.5、§7.1）。
  */
 sealed interface DriveSyncUiState {
@@ -546,7 +509,6 @@ data class LibraryBookmarkedFileUiModel(
  *
  * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無・聴取完了・最終アクセス日時を含む）。
  * @property importState 音声・フォルダ取り込みの進捗・エラー状態。
- * @property transcriptImportState 文字起こし単体取り込みの結果状態。
  * @property syncState Google Drive 同期の進捗・エラー状態。
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
  * @property pendingDeleteItem 削除確認ダイアログで対象になっている単一教材（表示中でなければ `null`）。
@@ -584,7 +546,6 @@ data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
     val courseFolders: List<LibraryCourseFolder> = emptyList(),
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
-    val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
     val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
@@ -1193,14 +1154,8 @@ sealed interface LibraryEvent {
     /** SAF フォルダピッカー（OpenDocumentTree）を開いてディレクトリ単位で取り込む。 */
     data object RequestImportDirectory : LibraryEvent
 
-    /** SAF ファイルピッカーを開いて音声・文字起こしファイルを取り込む。 */
+    /** SAF ファイルピッカーを開いて音声ファイルを取り込む。 */
     data object RequestImport : LibraryEvent
-
-    /** SAF ファイルピッカーを開いて文字起こし・字幕ファイルを単体で取り込む。 */
-    data object RequestImportTranscript : LibraryEvent
-
-    /** 指定された教材 [id] に対して SAF ファイルピッカーを開き、文字起こし・字幕ファイルを取り込む。 */
-    data class RequestImportTranscriptForItem(val id: MediaId) : LibraryEvent
 
     /** 指定されたフォルダ（ディレクトリ）名と配下の URI 一覧（および SAF Tree URI）を取り込む。 */
     data class ImportDirectory(
@@ -1211,12 +1166,6 @@ sealed interface LibraryEvent {
 
     /** SAF で選択された URI の一覧を取り込む。 */
     data class ImportUris(val uris: List<Uri>) : LibraryEvent
-
-    /** SAF で選択された文字起こし・字幕 URI を単体で取り込む。 */
-    data class ImportTranscriptUri(val uri: Uri) : LibraryEvent
-
-    /** 指定された教材 [id] に対して選択された文字起こし・字幕 URI を直接取り込む。 */
-    data class ImportTranscriptForItem(val id: MediaId, val uri: Uri) : LibraryEvent
 
     /** Google Drive の `ChunkFlow/` フォルダと同期する（F1.5）。 */
     data object SyncFromDrive : LibraryEvent
@@ -1474,7 +1423,6 @@ private data class LibraryRepositorySnapshot(
 
 private data class DialogAndImportSnapshot(
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
-    val transcriptImportState: TranscriptImportUiState = TranscriptImportUiState.Idle,
     val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val pendingDeleteItem: AudioItem? = null,
     val pendingDeleteDirectoryPath: String? = null,
@@ -1548,8 +1496,6 @@ class LibraryViewModel @Inject constructor(
     )
 
     private val importState = MutableStateFlow<LibraryImportUiState>(LibraryImportUiState.Idle)
-    private val transcriptImportState =
-        MutableStateFlow<TranscriptImportUiState>(TranscriptImportUiState.Idle)
     private val syncState = MutableStateFlow<DriveSyncUiState>(DriveSyncUiState.Idle)
     private val pendingDeleteItem = MutableStateFlow<AudioItem?>(null)
     private val pendingDeleteDirectoryPath = MutableStateFlow<String?>(null)
@@ -1691,10 +1637,9 @@ class LibraryViewModel @Inject constructor(
     private val dialogAndImportFlow: Flow<DialogAndImportSnapshot> = combine(
         combine(
             importState,
-            transcriptImportState,
             syncState,
-        ) { currentImport, currentTranscript, currentSync ->
-            Triple(currentImport, currentTranscript, currentSync)
+        ) { currentImport, currentSync ->
+            currentImport to currentSync
         },
         combine(
             pendingDeleteItem,
@@ -1711,10 +1656,9 @@ class LibraryViewModel @Inject constructor(
             Triple(editItem, editItemOverride, editDir)
         },
         pendingImportConfig,
-    ) { (currentImport, currentTranscript, currentSync), (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig ->
+    ) { (currentImport, currentSync), (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig ->
         DialogAndImportSnapshot(
             importState = currentImport,
-            transcriptImportState = currentTranscript,
             syncState = currentSync,
             pendingDeleteItem = deleteTarget,
             pendingDeleteDirectoryPath = deleteDirTarget,
@@ -1926,15 +1870,10 @@ class LibraryViewModel @Inject constructor(
                 pendingImportConfig.value = null
             }
 
-            is LibraryEvent.ImportTranscriptUri -> importTranscriptUri(event.uri)
-
-            is LibraryEvent.ImportTranscriptForItem -> importTranscriptForItem(event.id, event.uri)
-
             LibraryEvent.SyncFromDrive -> syncFromDrive()
 
             LibraryEvent.DismissImportStatus -> {
                 importState.value = LibraryImportUiState.Idle
-                transcriptImportState.value = TranscriptImportUiState.Idle
                 syncState.value = DriveSyncUiState.Idle
             }
 
@@ -2532,8 +2471,6 @@ class LibraryViewModel @Inject constructor(
 
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
-            LibraryEvent.RequestImportTranscript,
-            is LibraryEvent.RequestImportTranscriptForItem,
             LibraryEvent.RequestSelectDriveSyncFolder,
             LibraryEvent.OpenSettings,
             -> Unit
@@ -2797,7 +2734,6 @@ class LibraryViewModel @Inject constructor(
         languages: LanguagePair,
         sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) {
-        transcriptImportState.value = TranscriptImportUiState.Idle
         importJob?.cancel()
         importJob = viewModelScope.launch {
             libraryRepository.linkLocalDirectory(
@@ -2835,7 +2771,6 @@ class LibraryViewModel @Inject constructor(
         val effectiveCourse = course?.trim()?.takeIf { it.isNotEmpty() }
             ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
         val normalizedFolder = effectiveCourse.trim('/').ifBlank { LibraryCourseFolder.DEFAULT_IMPORTED_COURSE }
-        transcriptImportState.value = TranscriptImportUiState.Idle
         importJob?.cancel()
         importJob = viewModelScope.launch {
             libraryRepository.createVirtualFolder(
@@ -2887,39 +2822,6 @@ class LibraryViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    private fun importTranscriptUri(uri: Uri) {
-        importState.value = LibraryImportUiState.Idle
-        viewModelScope.launch {
-            val result = libraryRepository.importTranscript(uri)
-            transcriptImportState.value = mapTranscriptImportResult(result)
-        }
-    }
-
-    private fun importTranscriptForItem(id: MediaId, uri: Uri) {
-        importState.value = LibraryImportUiState.Idle
-        pendingEditItem.value = null
-        viewModelScope.launch {
-            val result = libraryRepository.importTranscriptForMedia(id, uri)
-            transcriptImportState.value = mapTranscriptImportResult(result)
-        }
-    }
-
-    private fun mapTranscriptImportResult(result: TranscriptImportResult): TranscriptImportUiState = when (result) {
-        is TranscriptImportResult.Attached -> TranscriptImportUiState.Attached(
-            mediaId = result.mediaId,
-            chunkCount = result.chunkCount,
-            durationMismatch = result.durationMismatch,
-        )
-
-        is TranscriptImportResult.NoMatchingAudio -> TranscriptImportUiState.NoMatchingAudio(
-            audioFileName = result.audioFileName,
-        )
-
-        is TranscriptImportResult.Invalid -> TranscriptImportUiState.Invalid(
-            error = result.error,
-        )
     }
 
     private fun syncFromDrive() {
@@ -3145,7 +3047,6 @@ class LibraryViewModel @Inject constructor(
             items = uiItems,
             courseFolders = courseFolders,
             importState = dialogAndImport.importState,
-            transcriptImportState = dialogAndImport.transcriptImportState,
             syncState = dialogAndImport.syncState,
             miniPlayer = miniPlayer,
             pendingDeleteItem = dialogAndImport.pendingDeleteItem,

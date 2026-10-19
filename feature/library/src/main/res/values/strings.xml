@@ -182,4 +182,24 @@
     <string name="library_target_lang_change_confirm_message">学習対象言語を切り替えると、現在の文字起こしデータと言語判定データがすべてクリアされ、言語判定がやり直されます。</string>
     <string name="library_target_lang_change_confirm_ok">変更してクリア</string>
     <string name="library_target_lang_change_confirm_cancel">キャンセル</string>
+    <string name="library_selection_export_badge">エクスポート</string>
+    <string name="transcript_export_title">文字起こしのエクスポート</string>
+    <string name="transcript_export_target_single">対象ファイル: %1$s</string>
+    <string name="transcript_export_target_multiple">選択中の %1$d 件のファイル（プレビューは先頭: %2$s）</string>
+    <string name="transcript_export_format_section_title">フォーマット選択</string>
+    <string name="transcript_export_format_srt">SRT (.srt)</string>
+    <string name="transcript_export_format_srt_desc">SubRip 字幕形式（番号・開始/終了時刻・テキスト）</string>
+    <string name="transcript_export_format_lrc">LRC (.lrc)</string>
+    <string name="transcript_export_format_lrc_desc">歌詞タイムタグ形式（[mm:ss.xx] テキスト）</string>
+    <string name="transcript_export_format_tsv">TSV (.tsv)</string>
+    <string name="transcript_export_format_tsv_desc">タブ区切り形式（startMs / endMs / lang / text）</string>
+    <string name="transcript_export_format_json">JSON (.json)</string>
+    <string name="transcript_export_format_json_desc">Chunk Flow 文字起こし形式（チャンク・言語・信頼度を含む）</string>
+    <string name="transcript_export_preview_section_title">プレビュー（先頭数行）</string>
+    <string name="transcript_export_preview_file_name">出力ファイル名: %1$s</string>
+    <string name="transcript_export_preview_empty">文字起こしデータがありません</string>
+    <string name="transcript_export_button">エクスポート</string>
+    <string name="transcript_export_done_single">文字起こしを書き出しました（%1$s）</string>
+    <string name="transcript_export_done_multiple">%1$d 件の文字起こしファイルをフォルダに書き出しました（%2$s）</string>
+    <string name="transcript_export_failed">文字起こしの書き出しに失敗しました</string>
 </resources>
