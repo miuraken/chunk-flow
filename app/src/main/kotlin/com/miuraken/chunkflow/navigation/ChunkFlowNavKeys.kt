@@ -18,6 +18,10 @@ data object LibraryKey : NavKey
 @Serializable
 data class PlayerKey(val mediaId: String) : NavKey
 
-/** 設定画面。 */
+/**
+ * 設定画面。
+ *
+ * @property initialTab 初期表示するタブのインデックス（0 = 再生, 3 = 言語）。
+ */
 @Serializable
-data object SettingsKey : NavKey
+data class SettingsKey(val initialTab: Int = 0) : NavKey

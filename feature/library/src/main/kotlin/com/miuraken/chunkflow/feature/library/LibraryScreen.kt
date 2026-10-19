@@ -229,6 +229,7 @@ private fun formatEpochMsLocal(epochMs: Long): String = runCatching {
 fun LibraryRoute(
     onOpenPlayer: (MediaId) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenLanguageSettings: () -> Unit = onOpenSettings,
     modifier: Modifier = Modifier,
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
@@ -374,6 +375,11 @@ fun LibraryRoute(
                 }
 
                 LibraryEvent.OpenSettings -> onOpenSettings()
+
+                LibraryEvent.OpenLanguageSettings -> {
+                    viewModel.onEvent(event)
+                    onOpenLanguageSettings()
+                }
 
                 else -> viewModel.onEvent(event)
             }
@@ -669,23 +675,27 @@ fun LibraryScreen(
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
             availableFolders = state.availableImportFolders,
-            onCreateVirtualFolder = { folderName, languages ->
+            onCreateVirtualFolder = { folderName, languages, sttOverride ->
                 onEvent(
                     LibraryEvent.CreateVirtualFolder(
                         folderName = folderName,
                         languages = languages,
+                        sttOverride = sttOverride,
                     ),
                 )
             },
-            onConfirm = { course, languages ->
+            onConfirm = { course, languages, sttOverride ->
                 onEvent(
                     LibraryEvent.ConfirmImportConfig(
                         course = course,
                         languages = languages,
+                        sttOverride = sttOverride,
                     ),
                 )
             },
             onDismiss = { onEvent(LibraryEvent.CancelImportConfig) },
+            sttEngineByLanguage = state.sttEngineByLanguage,
+            onOpenLanguageSettings = { onEvent(LibraryEvent.OpenLanguageSettings) },
         )
     }
 
@@ -693,16 +703,22 @@ fun LibraryScreen(
         CreateVirtualFolderDialog(
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
-            onConfirm = { folderName, languages ->
+            onConfirm = { folderName, languages, sttOverride ->
                 showCreateFolderDialog = false
                 onEvent(
                     LibraryEvent.CreateVirtualFolder(
                         folderName = folderName,
                         languages = languages,
+                        sttOverride = sttOverride,
                     ),
                 )
             },
             onDismiss = { showCreateFolderDialog = false },
+            sttEngineByLanguage = state.sttEngineByLanguage,
+            onOpenLanguageSettings = {
+                showCreateFolderDialog = false
+                onEvent(LibraryEvent.OpenLanguageSettings)
+            },
         )
     }
 
@@ -719,16 +735,20 @@ fun LibraryScreen(
             } else {
                 null
             },
-            onConfirm = { course, languages ->
+            onConfirm = { course, languages, sttOverride ->
                 onEvent(
                     LibraryEvent.ConfirmEditMetadata(
                         id = itemToEdit.id,
                         course = course,
                         languages = languages,
+                        sttOverride = sttOverride,
                     ),
                 )
             },
             onDismiss = { onEvent(LibraryEvent.CancelEditMetadata) },
+            initialSttOverride = state.pendingEditItemSttOverride,
+            sttEngineByLanguage = state.sttEngineByLanguage,
+            onOpenLanguageSettings = { onEvent(LibraryEvent.OpenLanguageSettings) },
         )
     }
 
@@ -737,16 +757,19 @@ fun LibraryScreen(
             directoryEdit = directoryToEdit,
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
-            onConfirm = { newCourse, languages ->
+            onConfirm = { newCourse, languages, sttOverride ->
                 onEvent(
                     LibraryEvent.ConfirmEditDirectoryMetadata(
                         currentCourse = directoryToEdit.currentCourse,
                         newCourse = newCourse,
                         languages = languages,
+                        sttOverride = sttOverride,
                     ),
                 )
             },
             onDismiss = { onEvent(LibraryEvent.CancelEditDirectoryMetadata) },
+            sttEngineByLanguage = state.sttEngineByLanguage,
+            onOpenLanguageSettings = { onEvent(LibraryEvent.OpenLanguageSettings) },
         )
     }
 

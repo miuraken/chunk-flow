@@ -34,21 +34,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
-import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
-import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithModalLink
+import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintText
 import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
 import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
 import com.miuraken.chunkflow.core.designsystem.component.normalizeSelectableLanguageCode
+import com.miuraken.chunkflow.core.designsystem.component.resolveConfiguredDefaultEngineForLanguage
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
+import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
+import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.SttEngine
 
 internal typealias LanguageDropdownOption = SelectableLanguageOption
 
@@ -67,6 +73,81 @@ internal fun buildDialogLanguageOptions(
     enabledLanguages = enabledLanguages,
 )
 
+@Composable
+private fun librarySttEngineDisplayName(engine: SttEngine): String = when (engine) {
+    SttEngine.ML_KIT -> stringResource(R.string.library_edit_stt_engine_mlkit)
+    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.library_edit_stt_engine_speech_recognizer)
+    SttEngine.SHERPA_ONNX -> stringResource(R.string.library_edit_stt_engine_sherpa_onnx)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LibrarySttEngineDropdown(
+    label: String,
+    selectedEngine: SttEngine?,
+    defaultEngine: SttEngine,
+    accentColor: Color,
+    onSelect: (SttEngine?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val defaultEngineLabel = stringResource(
+        R.string.library_edit_stt_engine_default_with_name,
+        librarySttEngineDisplayName(defaultEngine),
+    )
+
+    val options = listOf(
+        null to defaultEngineLabel,
+        SttEngine.ML_KIT to stringResource(R.string.library_edit_stt_engine_mlkit),
+        SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.library_edit_stt_engine_speech_recognizer),
+        SttEngine.SHERPA_ONNX to stringResource(R.string.library_edit_stt_engine_sherpa_onnx),
+    )
+
+    val selectedLabel = options.firstOrNull { it.first == selectedEngine }?.second ?: options.first().second
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(text = label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = accentColor,
+                focusedLabelColor = accentColor,
+            ),
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            options.forEach { (engine, optionLabel) ->
+                val isSelected = engine == selectedEngine
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = optionLabel,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(engine)
+                    },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun LanguagePairDropdownSection(
@@ -74,10 +155,15 @@ internal fun LanguagePairDropdownSection(
     baseLangCode: String,
     onTargetLangChange: (String) -> Unit,
     onBaseLangChange: (String) -> Unit,
+    targetSttEngine: SttEngine? = null,
+    baseSttEngine: SttEngine? = null,
+    onTargetSttEngineChange: (SttEngine?) -> Unit = {},
+    onBaseSttEngineChange: (SttEngine?) -> Unit = {},
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     enabledLanguages: List<LanguageTag> = emptyList(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    onOpenLanguageSettings: () -> Unit = {},
 ) {
-    var showLanguageSettingsModal by rememberSaveable { mutableStateOf(false) }
     val langPalette = chunkFlowLanguagePalette()
     val noneLabel = stringResource(R.string.library_edit_base_lang_none)
 
@@ -99,6 +185,19 @@ internal fun LanguagePairDropdownSection(
         )
     }
 
+    val targetDefaultEngine = remember(normalizedTarget, sttEngineByLanguage) {
+        resolveConfiguredDefaultEngineForLanguage(
+            rawCode = normalizedTarget,
+            sttEngineByLanguage = sttEngineByLanguage,
+        )
+    }
+    val baseDefaultEngine = remember(normalizedBase, sttEngineByLanguage) {
+        resolveConfiguredDefaultEngineForLanguage(
+            rawCode = normalizedBase,
+            sttEngineByLanguage = sttEngineByLanguage,
+        )
+    }
+
     val selectedTargetLabel = targetOptions.firstOrNull { it.code == normalizedTarget }?.label
         ?: normalizedTarget.ifBlank { "en" }
     val selectedBaseLabel = baseOptions.firstOrNull { it.code == normalizedBase }?.label
@@ -116,7 +215,7 @@ internal fun LanguagePairDropdownSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             ExposedDropdownMenuBox(
                 expanded = targetExpanded,
@@ -162,6 +261,14 @@ internal fun LanguagePairDropdownSection(
                     }
                 }
             }
+
+            LibrarySttEngineDropdown(
+                label = stringResource(R.string.library_edit_target_stt_engine_label),
+                selectedEngine = targetSttEngine,
+                defaultEngine = targetDefaultEngine,
+                accentColor = langPalette.onTargetBadgeContainer,
+                onSelect = onTargetSttEngineChange,
+            )
         }
     }
 
@@ -174,7 +281,7 @@ internal fun LanguagePairDropdownSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             ExposedDropdownMenuBox(
                 expanded = baseExpanded,
@@ -220,20 +327,34 @@ internal fun LanguagePairDropdownSection(
                     }
                 }
             }
+
+            LibrarySttEngineDropdown(
+                label = stringResource(R.string.library_edit_base_stt_engine_label),
+                selectedEngine = baseSttEngine,
+                defaultEngine = baseDefaultEngine,
+                accentColor = langPalette.onBaseBadgeContainer,
+                onSelect = onBaseSttEngineChange,
+            )
         }
     }
 
-    MissingLanguageHintWithModalLink(
-        onOpenLanguageSettingsModal = { showLanguageSettingsModal = true },
+    MissingLanguageHintText(
+        text = stringResource(R.string.library_missing_language_hint),
     )
 
-    if (showLanguageSettingsModal) {
-        LanguageSettingsModalDialog(
-            enabledLanguages = enabledLanguages.toSet(),
-            onToggleLanguage = onToggleEnabledLanguage,
-            onDismiss = { showLanguageSettingsModal = false },
-            isFirstLaunchOnboarding = false,
+    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+    OutlinedButton(
+        onClick = onOpenLanguageSettings,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.Settings,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
         )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(text = stringResource(R.string.library_open_global_language_settings))
     }
 }
 
@@ -242,11 +363,13 @@ internal fun LanguagePairDropdownSection(
 internal fun ImportConfigDialog(
     config: PendingImportConfig,
     enabledLanguages: List<LanguageTag>,
-    onConfirm: (String?, LanguagePair) -> Unit,
+    onConfirm: (String?, LanguagePair, ItemSttOverride) -> Unit,
     onDismiss: () -> Unit,
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    onOpenLanguageSettings: () -> Unit = {},
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     availableFolders: List<String> = listOf(LibraryCourseFolder.DEFAULT_IMPORTED_COURSE),
-    onCreateVirtualFolder: (String, LanguagePair) -> Unit = { _, _ -> },
+    onCreateVirtualFolder: (String, LanguagePair, ItemSttOverride) -> Unit = { _, _, _ -> },
 ) {
     val isFileImport = !config.isDriveSyncFolder && config.treeUri == null
     var courseText by remember(config) {
@@ -264,6 +387,12 @@ internal fun ImportConfigDialog(
     }
     var baseLangText by remember(config) {
         mutableStateOf(normalizeDialogLanguageCode(config.initialLanguages.base?.value.orEmpty()))
+    }
+    var targetSttEngine by remember(config) {
+        mutableStateOf(config.initialSttOverride.targetEngine)
+    }
+    var baseSttEngine by remember(config) {
+        mutableStateOf(config.initialSttOverride.baseEngine)
     }
     var folderDropdownExpanded by remember { mutableStateOf(false) }
     var showNewVirtualFolderDialog by rememberSaveable { mutableStateOf(false) }
@@ -399,8 +528,14 @@ internal fun ImportConfigDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    targetSttEngine = targetSttEngine,
+                    baseSttEngine = baseSttEngine,
+                    onTargetSttEngineChange = { targetSttEngine = it },
+                    onBaseSttEngineChange = { baseSttEngine = it },
+                    sttEngineByLanguage = sttEngineByLanguage,
                     enabledLanguages = enabledLanguages,
                     onToggleEnabledLanguage = onToggleEnabledLanguage,
+                    onOpenLanguageSettings = onOpenLanguageSettings,
                 )
             }
         },
@@ -414,6 +549,10 @@ internal fun ImportConfigDialog(
                         LanguagePair(
                             target = LanguageTag(cleanTarget),
                             base = cleanBase?.let { LanguageTag(it) },
+                        ),
+                        ItemSttOverride(
+                            targetEngine = targetSttEngine,
+                            baseEngine = baseSttEngine,
                         ),
                     )
                 },
@@ -459,6 +598,10 @@ internal fun ImportConfigDialog(
                                     target = LanguageTag(cleanTarget),
                                     base = cleanBase?.let { LanguageTag(it) },
                                 ),
+                                ItemSttOverride(
+                                    targetEngine = targetSttEngine,
+                                    baseEngine = baseSttEngine,
+                                ),
                             )
                             showNewVirtualFolderDialog = false
                         }
@@ -480,9 +623,11 @@ internal fun ImportConfigDialog(
 @Composable
 internal fun CreateVirtualFolderDialog(
     enabledLanguages: List<LanguageTag>,
-    onConfirm: (String, LanguagePair) -> Unit,
+    onConfirm: (String, LanguagePair, ItemSttOverride) -> Unit,
     onDismiss: () -> Unit,
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    onOpenLanguageSettings: () -> Unit = {},
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
 ) {
     val defaultTarget = remember(enabledLanguages) {
         enabledLanguages.firstOrNull { normalizeDialogLanguageCode(it.value) != "ja" }
@@ -502,6 +647,8 @@ internal fun CreateVirtualFolderDialog(
     var folderNameText by remember { mutableStateOf("") }
     var targetLangText by remember(defaultTarget) { mutableStateOf(defaultTarget) }
     var baseLangText by remember(defaultBase) { mutableStateOf(defaultBase) }
+    var targetSttEngine by remember { mutableStateOf<SttEngine?>(null) }
+    var baseSttEngine by remember { mutableStateOf<SttEngine?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -526,8 +673,14 @@ internal fun CreateVirtualFolderDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    targetSttEngine = targetSttEngine,
+                    baseSttEngine = baseSttEngine,
+                    onTargetSttEngineChange = { targetSttEngine = it },
+                    onBaseSttEngineChange = { baseSttEngine = it },
+                    sttEngineByLanguage = sttEngineByLanguage,
                     enabledLanguages = enabledLanguages,
                     onToggleEnabledLanguage = onToggleEnabledLanguage,
+                    onOpenLanguageSettings = onOpenLanguageSettings,
                 )
             }
         },
@@ -543,6 +696,10 @@ internal fun CreateVirtualFolderDialog(
                             LanguagePair(
                                 target = LanguageTag(cleanTarget),
                                 base = cleanBase?.let { LanguageTag(it) },
+                            ),
+                            ItemSttOverride(
+                                targetEngine = targetSttEngine,
+                                baseEngine = baseSttEngine,
                             ),
                         )
                     }
@@ -565,10 +722,13 @@ internal fun EditItemMetadataDialog(
     item: AudioItem,
     enabledLanguages: List<LanguageTag>,
     onImportTranscript: () -> Unit,
-    onConfirm: (String?, LanguagePair) -> Unit,
+    onConfirm: (String?, LanguagePair, ItemSttOverride) -> Unit,
     onDismiss: () -> Unit,
+    initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     onDeleteLocalAudioCopy: (() -> Unit)? = null,
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    onOpenLanguageSettings: () -> Unit = {},
 ) {
     var courseText by remember(item) { mutableStateOf(item.course.orEmpty()) }
     var targetLangText by remember(item) {
@@ -576,6 +736,12 @@ internal fun EditItemMetadataDialog(
     }
     var baseLangText by remember(item) {
         mutableStateOf(normalizeDialogLanguageCode(item.languagePair.base?.value.orEmpty()))
+    }
+    var targetSttEngine by remember(item, initialSttOverride) {
+        mutableStateOf(initialSttOverride.targetEngine)
+    }
+    var baseSttEngine by remember(item, initialSttOverride) {
+        mutableStateOf(initialSttOverride.baseEngine)
     }
 
     AlertDialog(
@@ -600,8 +766,14 @@ internal fun EditItemMetadataDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    targetSttEngine = targetSttEngine,
+                    baseSttEngine = baseSttEngine,
+                    onTargetSttEngineChange = { targetSttEngine = it },
+                    onBaseSttEngineChange = { baseSttEngine = it },
+                    sttEngineByLanguage = sttEngineByLanguage,
                     enabledLanguages = enabledLanguages,
                     onToggleEnabledLanguage = onToggleEnabledLanguage,
+                    onOpenLanguageSettings = onOpenLanguageSettings,
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
@@ -652,6 +824,10 @@ internal fun EditItemMetadataDialog(
                             target = LanguageTag(cleanTarget),
                             base = cleanBase?.let { LanguageTag(it) },
                         ),
+                        ItemSttOverride(
+                            targetEngine = targetSttEngine,
+                            baseEngine = baseSttEngine,
+                        ),
                     )
                 },
             ) {
@@ -670,9 +846,11 @@ internal fun EditItemMetadataDialog(
 internal fun EditDirectoryMetadataDialog(
     directoryEdit: PendingDirectoryEdit,
     enabledLanguages: List<LanguageTag>,
-    onConfirm: (String?, LanguagePair) -> Unit,
+    onConfirm: (String?, LanguagePair, ItemSttOverride) -> Unit,
     onDismiss: () -> Unit,
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    onOpenLanguageSettings: () -> Unit = {},
 ) {
     var courseText by remember(directoryEdit) {
         mutableStateOf(directoryEdit.currentCourse?.substringAfterLast('/').orEmpty())
@@ -682,6 +860,12 @@ internal fun EditDirectoryMetadataDialog(
     }
     var baseLangText by remember(directoryEdit) {
         mutableStateOf(normalizeDialogLanguageCode(directoryEdit.initialLanguages.base?.value.orEmpty()))
+    }
+    var targetSttEngine by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.initialSttOverride.targetEngine)
+    }
+    var baseSttEngine by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.initialSttOverride.baseEngine)
     }
 
     AlertDialog(
@@ -706,8 +890,14 @@ internal fun EditDirectoryMetadataDialog(
                     baseLangCode = baseLangText,
                     onTargetLangChange = { targetLangText = it },
                     onBaseLangChange = { baseLangText = it },
+                    targetSttEngine = targetSttEngine,
+                    baseSttEngine = baseSttEngine,
+                    onTargetSttEngineChange = { targetSttEngine = it },
+                    onBaseSttEngineChange = { baseSttEngine = it },
+                    sttEngineByLanguage = sttEngineByLanguage,
                     enabledLanguages = enabledLanguages,
                     onToggleEnabledLanguage = onToggleEnabledLanguage,
+                    onOpenLanguageSettings = onOpenLanguageSettings,
                 )
             }
         },
@@ -722,6 +912,10 @@ internal fun EditDirectoryMetadataDialog(
                             target = LanguageTag(cleanTarget),
                             base = cleanBase?.let { LanguageTag(it) },
                         ),
+                        ItemSttOverride(
+                            targetEngine = targetSttEngine,
+                            baseEngine = baseSttEngine,
+                        ),
                     )
                 },
             ) {
@@ -734,4 +928,54 @@ internal fun EditDirectoryMetadataDialog(
             }
         },
     )
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun EditDirectoryMetadataDialogPreview() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "ピンズラー韓国語 I",
+                    initialLanguages = LanguagePair(
+                        target = LanguageTag("ko"),
+                        base = LanguageTag("ja"),
+                    ),
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onConfirm = { _, _, _ -> },
+                onDismiss = {},
+            )
+        }
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun EditItemMetadataDialogPreview() {
+    ChunkFlowTheme {
+        Surface {
+            EditItemMetadataDialog(
+                item = AudioItem(
+                    id = MediaId("sample-1"),
+                    title = "ピンズラー 韓国語 01",
+                    course = "ピンズラー韓国語 I",
+                    durationMs = 180_000L,
+                    mimeType = "audio/mpeg",
+                    sizeBytes = 1_000L,
+                    contentSha256 = "0".repeat(64),
+                    languagePair = LanguagePair(
+                        target = LanguageTag("ko"),
+                        base = LanguageTag("ja"),
+                    ),
+                    importedAtEpochMs = 0L,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onImportTranscript = {},
+                onConfirm = { _, _, _ -> },
+                onDismiss = {},
+            )
+        }
+    }
 }

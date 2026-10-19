@@ -85,7 +85,7 @@ import kotlin.math.roundToInt
 /**
  * 設定画面のタブ種別。
  */
-private enum class SettingsTab {
+enum class SettingsTab {
     PLAYBACK,
     SEGMENTATION,
     TRANSCRIPTION,
@@ -99,6 +99,7 @@ private enum class SettingsTab {
 fun SettingsRoute(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    initialTab: Int = SettingsTab.PLAYBACK.ordinal,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -112,6 +113,7 @@ fun SettingsRoute(
             }
         },
         modifier = modifier,
+        initialTab = initialTab,
     )
 }
 

@@ -27,20 +27,17 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
-import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
-import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithModalLink
+import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintText
 import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
 import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
 import com.miuraken.chunkflow.core.designsystem.component.normalizeSelectableLanguageCode
+import com.miuraken.chunkflow.core.designsystem.component.resolveConfiguredDefaultEngineForLanguage as resolveDesignSystemDefaultEngineForLanguage
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
-import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
-import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.SttEngine
-import java.util.Locale
 
 internal typealias ItemLanguageOption = SelectableLanguageOption
 
@@ -65,30 +62,11 @@ internal fun resolveConfiguredDefaultEngineForLanguage(
     rawCode: String,
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
-): SttEngine {
-    val normalized = normalizeItemLanguageCode(rawCode).ifBlank { return SttEngine.ML_KIT }
-    val langTag = LanguageTag(normalized)
-    val settingsNormalizedTag = LanguageSettings.normalize(langTag)
-    val modelLangTag = LanguageTag(
-        com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(langTag.value),
-    )
-
-    val explicitPreferred = sttEngineByLanguage[langTag]
-        ?: sttEngineByLanguage[settingsNormalizedTag]
-        ?: sttEngineByLanguage[modelLangTag]
-    if (explicitPreferred != null) {
-        return explicitPreferred
-    }
-
-    val rawInfo = languageModelInfos[langTag]
-        ?: languageModelInfos[settingsNormalizedTag]
-        ?: languageModelInfos[modelLangTag]
-        ?: OnDeviceLanguageModelInfo(language = langTag)
-    val enriched = DetailedTranscriptionDialogState.enrichWithCatalog(rawInfo, langTag)
-    return enriched.effectiveEngine(override = null, userPreferred = null)
-        ?: SttEngine.AUTO_ORDER.firstOrNull { enriched.statusOf(it) != OnDeviceLanguageModelStatus.UNSUPPORTED }
-        ?: SttEngine.ML_KIT
-}
+): SttEngine = resolveDesignSystemDefaultEngineForLanguage(
+    rawCode = rawCode,
+    sttEngineByLanguage = sttEngineByLanguage,
+    languageModelInfos = languageModelInfos,
+)
 
 /**
  * 学習言語を [targetCode] に変えたあとの言語ペアを返す。変更がない、または無効な場合は `null`。
@@ -130,7 +108,7 @@ internal fun languagePairWithBase(
 }
 
 /**
- * プレイヤーの設定シートの「言語」セクション。開いている教材の学習言語とベース言語をプルダウンで選び直す。
+ * プレイヤーの設定シートの「言語」セクション。開いている教材の学習対象言語とベース言語および文字起こしエンジンをプルダウンで選び直す。
  *
  * 選んだ時点で [onChangeLanguages] を呼ぶ（いまの言語と同じものを選んだときは呼ばない）。
  */
@@ -148,7 +126,6 @@ internal fun ItemLanguageSettingsSection(
     languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
     showSectionTitle: Boolean = true,
 ) {
-    var showLanguageSettingsModal by rememberSaveable { mutableStateOf(false) }
     val langPalette = chunkFlowLanguagePalette()
     val noneLabel = stringResource(R.string.player_settings_base_lang_none)
     val targetCode = normalizeItemLanguageCode(languagePair?.target?.value.orEmpty())
@@ -189,51 +166,64 @@ internal fun ItemLanguageSettingsSection(
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        ItemLanguageDropdown(
-            label = stringResource(R.string.player_settings_target_lang_label),
-            selectedCode = targetCode,
-            options = targetOptions,
-            fallbackLabel = targetCode,
-            containerColor = langPalette.targetRowBackground,
-            accentColor = langPalette.onTargetBadgeContainer,
-            onSelect = { code -> languagePairWithTarget(languagePair, code)?.let(onChangeLanguages) },
-        )
-        SttEngineDropdown(
-            label = stringResource(R.string.player_settings_target_stt_engine_label),
-            selectedEngine = itemSttOverride.targetEngine,
-            defaultEngine = targetDefaultEngine,
-            containerColor = langPalette.targetRowBackground,
-            accentColor = langPalette.onTargetBadgeContainer,
-            onSelect = onChangeTargetEngine,
-        )
-        ItemLanguageDropdown(
-            label = stringResource(R.string.player_settings_base_lang_label),
-            selectedCode = baseCode,
-            options = baseOptions,
-            fallbackLabel = noneLabel,
-            containerColor = langPalette.baseRowBackground,
-            accentColor = langPalette.onBaseBadgeContainer,
-            onSelect = { code -> languagePairWithBase(languagePair, code)?.let(onChangeLanguages) },
-        )
-        SttEngineDropdown(
-            label = stringResource(R.string.player_settings_base_stt_engine_label),
-            selectedEngine = itemSttOverride.baseEngine,
-            defaultEngine = baseDefaultEngine,
-            containerColor = langPalette.baseRowBackground,
-            accentColor = langPalette.onBaseBadgeContainer,
-            onSelect = onChangeBaseEngine,
-        )
-        MissingLanguageHintWithModalLink(
-            onOpenLanguageSettingsModal = { showLanguageSettingsModal = true },
-        )
-    }
-
-    if (showLanguageSettingsModal) {
-        LanguageSettingsModalDialog(
-            enabledLanguages = enabledLanguages.toSet(),
-            onToggleLanguage = onToggleEnabledLanguage,
-            onDismiss = { showLanguageSettingsModal = false },
-            isFirstLaunchOnboarding = false,
+        Surface(
+            color = langPalette.targetRowBackground,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ItemLanguageDropdown(
+                    label = stringResource(R.string.player_settings_target_lang_label),
+                    selectedCode = targetCode,
+                    options = targetOptions,
+                    fallbackLabel = targetCode,
+                    accentColor = langPalette.onTargetBadgeContainer,
+                    onSelect = { code -> languagePairWithTarget(languagePair, code)?.let(onChangeLanguages) },
+                )
+                SttEngineDropdown(
+                    label = stringResource(R.string.player_settings_target_stt_engine_label),
+                    selectedEngine = itemSttOverride.targetEngine,
+                    defaultEngine = targetDefaultEngine,
+                    accentColor = langPalette.onTargetBadgeContainer,
+                    onSelect = onChangeTargetEngine,
+                )
+            }
+        }
+        Surface(
+            color = langPalette.baseRowBackground,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ItemLanguageDropdown(
+                    label = stringResource(R.string.player_settings_base_lang_label),
+                    selectedCode = baseCode,
+                    options = baseOptions,
+                    fallbackLabel = noneLabel,
+                    accentColor = langPalette.onBaseBadgeContainer,
+                    onSelect = { code -> languagePairWithBase(languagePair, code)?.let(onChangeLanguages) },
+                )
+                SttEngineDropdown(
+                    label = stringResource(R.string.player_settings_base_stt_engine_label),
+                    selectedEngine = itemSttOverride.baseEngine,
+                    defaultEngine = baseDefaultEngine,
+                    accentColor = langPalette.onBaseBadgeContainer,
+                    onSelect = onChangeBaseEngine,
+                )
+            }
+        }
+        MissingLanguageHintText(
+            text = stringResource(R.string.player_missing_language_hint),
         )
     }
 }
@@ -251,7 +241,6 @@ private fun SttEngineDropdown(
     label: String,
     selectedEngine: SttEngine?,
     defaultEngine: SttEngine,
-    containerColor: Color,
     accentColor: Color,
     onSelect: (SttEngine?) -> Unit,
 ) {
@@ -270,51 +259,45 @@ private fun SttEngineDropdown(
 
     val selectedLabel = options.firstOrNull { it.first == selectedEngine }?.second ?: options.first().second
 
-    Surface(
-        color = containerColor,
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        ExposedDropdownMenuBox(
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(text = label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = accentColor,
+                focusedLabelColor = accentColor,
+            ),
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(
             expanded = expanded,
-            onExpandedChange = { expanded = it },
-            modifier = Modifier.fillMaxWidth().padding(10.dp),
+            onDismissRequest = { expanded = false },
         ) {
-            OutlinedTextField(
-                value = selectedLabel,
-                onValueChange = {},
-                readOnly = true,
-                singleLine = true,
-                label = { Text(text = label) },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accentColor,
-                    focusedLabelColor = accentColor,
-                ),
-                modifier = Modifier
-                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                    .fillMaxWidth(),
-            )
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false },
-            ) {
-                options.forEach { (engine, optionLabel) ->
-                    val isSelected = engine == selectedEngine
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = optionLabel,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            )
-                        },
-                        onClick = {
-                            expanded = false
-                            onSelect(engine)
-                        },
-                        contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
-                    )
-                }
+            options.forEach { (engine, optionLabel) ->
+                val isSelected = engine == selectedEngine
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = optionLabel,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(engine)
+                    },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                )
             }
         }
     }
@@ -327,60 +310,51 @@ private fun ItemLanguageDropdown(
     selectedCode: String,
     options: List<ItemLanguageOption>,
     fallbackLabel: String,
-    containerColor: Color,
     accentColor: Color,
     onSelect: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selectedLabel = options.firstOrNull { it.code == selectedCode }?.label ?: fallbackLabel
 
-    Surface(
-        color = containerColor,
-        shape = RoundedCornerShape(10.dp),
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
         modifier = Modifier.fillMaxWidth(),
     ) {
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = it },
+        OutlinedTextField(
+            value = selectedLabel,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(text = label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = accentColor,
+                focusedLabelColor = accentColor,
+            ),
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
         ) {
-            OutlinedTextField(
-                value = selectedLabel,
-                onValueChange = {},
-                readOnly = true,
-                singleLine = true,
-                label = { Text(text = label) },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accentColor,
-                    focusedLabelColor = accentColor,
-                ),
-                modifier = Modifier
-                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                    .fillMaxWidth(),
-            )
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false },
-            ) {
-                options.forEach { option ->
-                    val isSelected = option.code == selectedCode
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = option.label,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            )
-                        },
-                        onClick = {
-                            expanded = false
-                            onSelect(option.code)
-                        },
-                        contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
-                    )
-                }
+            options.forEach { option ->
+                val isSelected = option.code == selectedCode
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = option.label,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(option.code)
+                    },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                )
             }
         }
     }

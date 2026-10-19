@@ -25,17 +25,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.LinkAnnotation
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
+import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import java.util.Locale
 
@@ -229,9 +227,9 @@ fun LanguageSettingsModalDialog(
         "言語設定"
     }
     val description = if (isFirstLaunchOnboarding) {
-        "学習する言語とベース言語（母国語）にチェックを入れてください（最低1つは選択が必要です）。\nこの設定は後から「全体設定 > 言語設定」でいつでも変更できます。"
+        "学習する言語とベース言語（母国語）にチェックを入れてください（最低1つは選択が必要です）。\nこの設定は後から「全体設定 > 言語」でいつでも変更できます。"
     } else {
-        "教材の学習言語・ベース言語として選択できる言語を設定します（最低1つは選択が必要です）。"
+        "教材の学習対象言語・ベース言語として選択できる言語を設定します（最低1つは選択が必要です）。"
     }
     val confirmLabel = if (isFirstLaunchOnboarding) {
         "完了"
@@ -272,44 +270,42 @@ fun LanguageSettingsModalDialog(
 }
 
 /**
- * 対象となる言語が選択肢にない場合に「全体設定>言語設定」モーダルを開くリンク付き案内テキスト。
+ * 設定したい言語が選択肢に見つからない場合の案内テキスト（リンクなし）。
+ */
+const val DEFAULT_MISSING_LANGUAGE_HINT_TEXT: String =
+    "設定したい言語が見つからないときは、全体設定 > 言語 から追加してください。"
+
+/**
+ * 設定したい言語が選択肢にない場合の案内テキストを表示する。
  *
- * @param onOpenLanguageSettingsModal 「全体設定>言語設定」リンクタップ時のコールバック
+ * @param text 表示する案内文言
  * @param modifier レイアウト修飾子
  */
 @Composable
-fun MissingLanguageHintWithModalLink(
-    onOpenLanguageSettingsModal: () -> Unit,
+fun MissingLanguageHintText(
     modifier: Modifier = Modifier,
+    text: String = DEFAULT_MISSING_LANGUAGE_HINT_TEXT,
 ) {
-    val linkColor = MaterialTheme.colorScheme.primary
-    val annotatedText = remember(linkColor, onOpenLanguageSettingsModal) {
-        buildAnnotatedString {
-            append("対象となる言語がない場合は、")
-            withLink(
-                LinkAnnotation.Clickable(
-                    tag = "language_settings",
-                    styles = TextLinkStyles(
-                        style = SpanStyle(
-                            color = linkColor,
-                            fontWeight = FontWeight.Bold,
-                            textDecoration = TextDecoration.Underline,
-                        ),
-                    ),
-                    linkInteractionListener = { onOpenLanguageSettingsModal() },
-                ),
-            ) {
-                append("全体設定>言語設定")
-            }
-            append("から設定してください")
-        }
-    }
     Text(
-        text = annotatedText,
+        text = text,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier,
     )
+}
+
+/**
+ * 対象となる言語が選択肢にない場合に「全体設定>言語」を案内するテキスト。
+ *
+ * @param onOpenLanguageSettingsModal 互換用のコールバック（リンクなし表示のため未使用）
+ * @param modifier レイアウト修飾子
+ */
+@Composable
+fun MissingLanguageHintWithModalLink(
+    onOpenLanguageSettingsModal: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
+    MissingLanguageHintText(modifier = modifier)
 }
 
 /**
@@ -380,4 +376,58 @@ fun buildSelectableLanguageOptions(
         options.sortBy { it.code }
     }
     return if (noneLabel != null) listOf(SelectableLanguageOption("", noneLabel)) + options else options
+}
+
+/**
+ * 言語設定（[sttEngineByLanguage] および [languageModelInfos]）で規定されている当該言語の既定文字起こしエンジンを返す。
+ */
+fun resolveConfiguredDefaultEngineForLanguage(
+    rawCode: String,
+    sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
+): SttEngine {
+    val normalized = normalizeSelectableLanguageCode(rawCode).ifBlank { return SttEngine.ML_KIT }
+    val langTag = LanguageTag(normalized)
+    val settingsNormalizedTag = LanguageSettings.normalize(langTag)
+    val modelLangTag = LanguageTag(
+        SupportedLanguageCatalog.normalizeToModelManagementCode(langTag.value),
+    )
+
+    val explicitPreferred = sttEngineByLanguage[langTag]
+        ?: sttEngineByLanguage[settingsNormalizedTag]
+        ?: sttEngineByLanguage[modelLangTag]
+    if (explicitPreferred != null) {
+        return explicitPreferred
+    }
+
+    val rawInfo = languageModelInfos[langTag]
+        ?: languageModelInfos[settingsNormalizedTag]
+        ?: languageModelInfos[modelLangTag]
+        ?: OnDeviceLanguageModelInfo(language = langTag)
+    val entry = SupportedLanguageCatalog.findByCode(langTag.value)
+    val enriched = if (entry != null) {
+        rawInfo.copy(
+            mlKitStatus = if (!entry.mlKitSupported) {
+                OnDeviceLanguageModelStatus.UNSUPPORTED
+            } else {
+                rawInfo.mlKitStatus
+            },
+            status = if (!entry.speechRecognizerSupported) {
+                OnDeviceLanguageModelStatus.UNSUPPORTED
+            } else {
+                rawInfo.status
+            },
+            sherpaModelStatus = if (entry.whisperCode == null) {
+                OnDeviceLanguageModelStatus.UNSUPPORTED
+            } else {
+                rawInfo.sherpaModelStatus
+            },
+        )
+    } else {
+        rawInfo
+    }
+    val tryOrder = SttEngine.tryOrder(null)
+    return SttEngineSelection.firstUsableEngine(tryOrder, enriched)
+        ?: tryOrder.firstOrNull { enriched.statusOf(it) != OnDeviceLanguageModelStatus.UNSUPPORTED }
+        ?: SttEngine.ML_KIT
 }

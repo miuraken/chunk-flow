@@ -10,6 +10,7 @@ import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.SyncError
 import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
+import com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
@@ -18,6 +19,7 @@ import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -28,11 +30,13 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.playback.PlaybackController
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
+import com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
 import com.miuraken.chunkflow.core.transcript.TranscriptError
@@ -378,6 +382,7 @@ data class PendingImportConfig(
         target = LanguageTag("ko"),
         base = LanguageTag("ja"),
     ),
+    val initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     val isDriveSyncFolder: Boolean = false,
     val treeUri: Uri? = null,
 )
@@ -391,6 +396,7 @@ data class PendingImportConfig(
 data class PendingDirectoryEdit(
     val currentCourse: String?,
     val initialLanguages: LanguagePair,
+    val initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
 )
 
 /**
@@ -489,6 +495,8 @@ data class LibraryPlaylistEntryUiModel(
  * @property selectedDirectoryName フォルダ指定で選択されたディレクトリ名。
  * @property collapsedDirectories 折りたたまれているディレクトリ名の集合。
  * @property enabledLanguages 設定画面で有効化された選択肢の言語一覧（既定は日本語・英語）。
+ * @property sttEngineByLanguage 言語ごとの既定文字起こしエンジンの設定。
+ * @property pendingEditItemSttOverride 編集中の単一教材のエンジン上書き設定。
  * @property currentDirectoryPath 現在開いているディレクトリの相対パス（ルート階層の場合は `null`）。
  * @property selectedDirectoryPaths 長押し複数選択モードで選択されているディレクトリパスの集合。
  * @property selectedItemIds 長押し複数選択モードで選択されている教材 ID の集合。
@@ -513,11 +521,13 @@ data class LibraryUiState(
     val pendingDeleteDirectoryPath: String? = null,
     val isPendingBatchDelete: Boolean = false,
     val pendingEditItem: AudioItem? = null,
+    val pendingEditItemSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
     val selectedDirectoryName: String? = null,
     val collapsedDirectories: Set<String?> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
+    val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     val showLanguageOnboardingDialog: Boolean = false,
     val currentDirectoryPath: String? = null,
     val selectedDirectoryPaths: Set<String> = emptySet(),
@@ -1075,6 +1085,7 @@ sealed interface LibraryEvent {
     data class ConfirmImportConfig(
         val course: String?,
         val languages: LanguagePair,
+        val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) : LibraryEvent
 
     /** 取り込み・同期フォルダの設定ダイアログをキャンセルする。 */
@@ -1110,6 +1121,9 @@ sealed interface LibraryEvent {
     /** 設定画面を開く。 */
     data object OpenSettings : LibraryEvent
 
+    /** 全体設定の「言語」タブを開く。 */
+    data object OpenLanguageSettings : LibraryEvent
+
     /** 教材のコース名・言語ペア編集ダイアログを開く（F2.3）。 */
     data class RequestEditMetadata(val item: AudioItem) : LibraryEvent
 
@@ -1118,6 +1132,7 @@ sealed interface LibraryEvent {
         val id: MediaId,
         val course: String?,
         val languages: LanguagePair,
+        val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) : LibraryEvent
 
     /** 教材のコース名・言語ペア編集ダイアログをキャンセルする。 */
@@ -1131,6 +1146,7 @@ sealed interface LibraryEvent {
         val currentCourse: String?,
         val newCourse: String?,
         val languages: LanguagePair,
+        val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) : LibraryEvent
 
     /** ディレクトリ（コース）単位の編集ダイアログをキャンセルする。 */
@@ -1161,6 +1177,7 @@ sealed interface LibraryEvent {
     data class CreateVirtualFolder(
         val folderName: String,
         val languages: LanguagePair,
+        val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) : LibraryEvent
 
     /** 複数の教材を指定したコース（フォルダ）へ移動する。 */
@@ -1250,6 +1267,7 @@ private data class LibraryRepositorySnapshot(
     val summaries: Map<MediaId, ItemAnalysisSummary> = emptyMap(),
     val missingAudioIds: Set<MediaId> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
+    val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     val showLanguageOnboardingDialog: Boolean = false,
 )
 
@@ -1261,6 +1279,7 @@ private data class DialogAndImportSnapshot(
     val pendingDeleteDirectoryPath: String? = null,
     val isPendingBatchDelete: Boolean = false,
     val pendingEditItem: AudioItem? = null,
+    val pendingEditItemSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
 )
@@ -1308,17 +1327,20 @@ class LibraryViewModel @Inject constructor(
     private val playbackController: PlaybackController,
     private val analysisRepository: AnalysisRepository,
     private val userSettingsRepository: UserSettingsRepository,
+    private val itemSttOverrideRepository: ItemSttOverrideRepository,
 ) : ViewModel() {
 
     constructor(
         libraryRepository: LibraryRepository,
         playbackController: PlaybackController,
         analysisRepository: AnalysisRepository = EmptyAnalysisRepository,
+        userSettingsRepository: UserSettingsRepository = FakeUserSettingsRepository(),
     ) : this(
         libraryRepository = libraryRepository,
         playbackController = playbackController,
         analysisRepository = analysisRepository,
-        userSettingsRepository = FakeUserSettingsRepository(),
+        userSettingsRepository = userSettingsRepository,
+        itemSttOverrideRepository = FakeItemSttOverrideRepository(),
     )
 
     private val importState = MutableStateFlow<LibraryImportUiState>(LibraryImportUiState.Idle)
@@ -1355,6 +1377,15 @@ class LibraryViewModel @Inject constructor(
             }
         }
     }
+
+    private val pendingEditItemSttOverrideFlow: Flow<ItemSttOverride> =
+        pendingEditItem.flatMapLatest { item ->
+            if (item == null) {
+                flowOf(ItemSttOverride.NONE)
+            } else {
+                itemSttOverrideRepository.observe(item.id)
+            }
+        }
 
     private val analysisSummaries: Flow<Map<MediaId, ItemAnalysisSummary>> =
         libraryRepository.observeItems().flatMapLatest { items ->
@@ -1444,12 +1475,13 @@ class LibraryViewModel @Inject constructor(
         },
         combine(
             pendingEditItem,
+            pendingEditItemSttOverrideFlow,
             pendingEditDirectory,
-        ) { editItem, editDir ->
-            editItem to editDir
+        ) { editItem, editItemOverride, editDir ->
+            Triple(editItem, editItemOverride, editDir)
         },
         pendingImportConfig,
-    ) { (currentImport, currentTranscript, currentSync), (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editDirTarget), importConfig ->
+    ) { (currentImport, currentTranscript, currentSync), (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig ->
         DialogAndImportSnapshot(
             importState = currentImport,
             transcriptImportState = currentTranscript,
@@ -1458,6 +1490,7 @@ class LibraryViewModel @Inject constructor(
             pendingDeleteDirectoryPath = deleteDirTarget,
             isPendingBatchDelete = batchDelete,
             pendingEditItem = editTarget,
+            pendingEditItemSttOverride = editItemOverride,
             pendingEditDirectory = editDirTarget,
             pendingImportConfig = importConfig,
         )
@@ -1525,6 +1558,7 @@ class LibraryViewModel @Inject constructor(
                 summaries = summaries,
                 missingAudioIds = missingAudioIds,
                 enabledLanguages = orderEnabledLanguages(userSettings.enabledLanguages),
+                sttEngineByLanguage = userSettings.sttEngineByLanguage,
                 showLanguageOnboardingDialog = !userSettings.hasCompletedLanguageOnboarding,
             )
         },
@@ -1540,6 +1574,7 @@ class LibraryViewModel @Inject constructor(
             summaries = repoSnapshot.summaries,
             missingAudioIds = repoSnapshot.missingAudioIds,
             enabledLanguages = repoSnapshot.enabledLanguages,
+            sttEngineByLanguage = repoSnapshot.sttEngineByLanguage,
             showLanguageOnboardingDialog = repoSnapshot.showLanguageOnboardingDialog,
             playbackStatus = playbackStatus,
             dialogAndImport = dialogAndImport,
@@ -1630,6 +1665,7 @@ class LibraryViewModel @Inject constructor(
                         treeUri = config.treeUri,
                         course = normalizedCourse,
                         languages = normalizedLanguages,
+                        sttOverride = event.sttOverride,
                     )
                 } else {
                     val targetCourse = normalizedCourse ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
@@ -1637,6 +1673,7 @@ class LibraryViewModel @Inject constructor(
                         uris = config.uris,
                         course = targetCourse,
                         languages = normalizedLanguages,
+                        sttOverride = event.sttOverride,
                     )
                 }
             }
@@ -1914,6 +1951,7 @@ class LibraryViewModel @Inject constructor(
                             base = normalizedBase?.let { LanguageTag(it) },
                         ),
                     )
+                    itemSttOverrideRepository.set(event.id, event.sttOverride)
                 }
             }
 
@@ -1934,13 +1972,33 @@ class LibraryViewModel @Inject constructor(
                 val initialPair = matchingItems.firstOrNull()?.item?.languagePair
                     ?: folderPair
                     ?: defaultLanguagePair
+                val firstItemId = matchingItems.firstOrNull()?.item?.id
                 pendingEditDirectory.value = PendingDirectoryEdit(
                     currentCourse = dirPath,
                     initialLanguages = initialPair,
+                    initialSttOverride = ItemSttOverride.NONE,
                 )
+                if (firstItemId != null) {
+                    viewModelScope.launch {
+                        val existingOverride = itemSttOverrideRepository.get(firstItemId)
+                        if (!existingOverride.isEmpty && pendingEditDirectory.value?.currentCourse == dirPath) {
+                            pendingEditDirectory.update { current ->
+                                current?.copy(initialSttOverride = existingOverride)
+                            }
+                        }
+                    }
+                }
             }
 
             is LibraryEvent.ConfirmEditDirectoryMetadata -> {
+                val targetItems = run {
+                    val dirPath = event.currentCourse?.trim('/')?.takeIf { it.isNotBlank() }
+                    if (dirPath != null) {
+                        uiState.value.itemsInDirectoryTree(dirPath)
+                    } else {
+                        uiState.value.items.filter { uiState.value.effectivePathOf(it) == null }
+                    }
+                }
                 pendingEditDirectory.value = null
                 val currentPath = event.currentCourse?.trim('/')?.takeIf { it.isNotBlank() }
                 val rawNew = event.newCourse?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
@@ -1982,6 +2040,9 @@ class LibraryViewModel @Inject constructor(
                         newCourse = resolvedNewCourse,
                         languages = normalizedLanguages,
                     )
+                    for (model in targetItems) {
+                        itemSttOverrideRepository.set(model.item.id, event.sttOverride)
+                    }
                 }
             }
 
@@ -2100,6 +2161,12 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            LibraryEvent.OpenLanguageSettings -> {
+                pendingImportConfig.value = null
+                pendingEditItem.value = null
+                pendingEditDirectory.value = null
+            }
+
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.RequestImportTranscript,
@@ -2152,6 +2219,7 @@ class LibraryViewModel @Inject constructor(
         treeUri: Uri,
         course: String?,
         languages: LanguagePair,
+        sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) {
         transcriptImportState.value = TranscriptImportUiState.Idle
         importJob?.cancel()
@@ -2161,6 +2229,11 @@ class LibraryViewModel @Inject constructor(
                 course = course,
                 languages = languages,
             ).collect { progress ->
+                if (progress is ImportProgress.Done && !sttOverride.isEmpty) {
+                    for (mediaId in progress.mediaIds) {
+                        itemSttOverrideRepository.set(mediaId, sttOverride)
+                    }
+                }
                 importState.value = when (progress) {
                     is ImportProgress.Copying -> LibraryImportUiState.Copying(progress.fraction)
 
@@ -2180,6 +2253,7 @@ class LibraryViewModel @Inject constructor(
         uris: List<Uri>,
         course: String?,
         languages: LanguagePair,
+        sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) {
         if (uris.isEmpty()) return
         val effectiveCourse = course?.trim()?.takeIf { it.isNotEmpty() }
@@ -2196,6 +2270,11 @@ class LibraryViewModel @Inject constructor(
                 course = effectiveCourse,
                 languages = languages,
             ).collect { progress ->
+                if (progress is ImportProgress.Done && !sttOverride.isEmpty) {
+                    for (mediaId in progress.mediaIds) {
+                        itemSttOverrideRepository.set(mediaId, sttOverride)
+                    }
+                }
                 importState.value = when (progress) {
                     is ImportProgress.Copying -> LibraryImportUiState.Copying(progress.fraction)
 
@@ -2361,6 +2440,7 @@ class LibraryViewModel @Inject constructor(
         summaries: Map<MediaId, ItemAnalysisSummary>,
         missingAudioIds: Set<MediaId>,
         enabledLanguages: List<LanguageTag>,
+        sttEngineByLanguage: Map<LanguageTag, SttEngine>,
         showLanguageOnboardingDialog: Boolean,
         playbackStatus: PlaybackStatus,
         dialogAndImport: DialogAndImportSnapshot,
@@ -2461,11 +2541,13 @@ class LibraryViewModel @Inject constructor(
             pendingDeleteDirectoryPath = dialogAndImport.pendingDeleteDirectoryPath,
             isPendingBatchDelete = dialogAndImport.isPendingBatchDelete,
             pendingEditItem = dialogAndImport.pendingEditItem,
+            pendingEditItemSttOverride = dialogAndImport.pendingEditItemSttOverride,
             pendingEditDirectory = dialogAndImport.pendingEditDirectory,
             pendingImportConfig = dialogAndImport.pendingImportConfig,
             selectedDirectoryName = navAndSelection.selectedDirectoryName,
             collapsedDirectories = navAndSelection.collapsedDirectories,
             enabledLanguages = enabledLanguages,
+            sttEngineByLanguage = sttEngineByLanguage,
             showLanguageOnboardingDialog = showLanguageOnboardingDialog,
             currentDirectoryPath = navAndSelection.currentDirectoryPath,
             selectedDirectoryPaths = navAndSelection.selectedDirectoryPaths,

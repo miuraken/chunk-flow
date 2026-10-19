@@ -9,6 +9,7 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.feature.library.LibraryRoute
 import com.miuraken.chunkflow.feature.player.PlayerRoute
 import com.miuraken.chunkflow.feature.settings.SettingsRoute
+import com.miuraken.chunkflow.feature.settings.SettingsTab
 
 /**
  * アプリの画面遷移（Navigation 3）。ライブラリ → プレイヤー / 設定。
@@ -26,18 +27,27 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
             entry<LibraryKey> {
                 LibraryRoute(
                     onOpenPlayer = { id -> backStack.add(PlayerKey(id.value)) },
-                    onOpenSettings = { backStack.add(SettingsKey) },
+                    onOpenSettings = { backStack.add(SettingsKey()) },
+                    onOpenLanguageSettings = {
+                        backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
+                    },
                 )
             }
             entry<PlayerKey> { key ->
                 PlayerRoute(
                     mediaId = MediaId(key.mediaId),
                     onBack = { backStack.removeLastOrNull() },
-                    onOpenPlaybackSettings = { backStack.add(SettingsKey) },
+                    onOpenPlaybackSettings = { backStack.add(SettingsKey()) },
+                    onOpenLanguageSettings = {
+                        backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
+                    },
                 )
             }
-            entry<SettingsKey> {
-                SettingsRoute(onBack = { backStack.removeLastOrNull() })
+            entry<SettingsKey> { key ->
+                SettingsRoute(
+                    onBack = { backStack.removeLastOrNull() },
+                    initialTab = key.initialTab,
+                )
             }
         },
     )
