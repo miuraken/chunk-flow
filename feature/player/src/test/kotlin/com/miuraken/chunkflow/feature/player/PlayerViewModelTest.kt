@@ -1839,14 +1839,14 @@ class PlayerViewModelTest {
     }
 
     @Test
-    fun `手動文字起こし開始と使用言語トグル_open直後は文字起こしが無効でToggleEnabledLanguageで使用言語を更新できる`() = runTest {
+    fun `手動文字起こし開始と使用言語トグル_autoStartTranscriptionOnOpenがオフのときはopen直後は文字起こしが無効でToggleEnabledLanguageで使用言語を更新できる`() = runTest {
         val sample = SampleMaterials.jaKo
         val item = sample.item
         val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
         val playback = FakePlaybackController()
         val settingsRepo = FakeUserSettingsRepository(
             UserSettings(
-                lookaheadTranscriptionEnabled = true,
+                autoStartTranscriptionOnOpen = false,
                 enabledLanguages = setOf(LanguageTag("en"), LanguageTag("ja")),
             ),
         )
@@ -1863,7 +1863,7 @@ class PlayerViewModelTest {
         )
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
-        // 1. 教材を open しても自動では文字起こしは開始されず、hasTranscript も false
+        // 1. autoStartTranscriptionOnOpen = false のとき、教材を open しても自動では文字起こしは開始されず、hasTranscript も false
         viewModel.open(item.id)
         assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
         assertFalse(viewModel.uiState.value.hasTranscript)
@@ -1881,6 +1881,53 @@ class PlayerViewModelTest {
         assertEquals(listOf(LanguageTag("ko")), viewModel.uiState.value.enabledLanguages)
         viewModel.onEvent(PlayerEvent.ToggleEnabledLanguage(LanguageTag("ko")))
         assertEquals(listOf(LanguageTag("ko")), viewModel.uiState.value.enabledLanguages)
+    }
+
+    @Test
+    fun `自動文字起こし開始_autoStartTranscriptionOnOpenがオンのとき分割と言語判定の完了後に自動で文字起こしを開始する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository(
+            UserSettings(autoStartTranscriptionOnOpen = true),
+        )
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            update(item.id) { entry ->
+                entry.copy(
+                    transcripts = emptyMap(),
+                    lookaheadStatus = entry.lookaheadStatus.copy(
+                        enabled = false,
+                        isLanguageDetectionRunning = true,
+                    ),
+                )
+            }
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. 言語判定中 (isLanguageDetectionRunning = true) の間はまだ文字起こしを開始しない
+        viewModel.open(item.id)
+        assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertTrue(analysisRepo.lookaheadTriggers.isEmpty())
+
+        // 2. 言語判定が完了すると自動で文字起こしが有効になり、先頭チャンクから先読みがトリガーされる
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(
+                    isLanguageDetectionRunning = false,
+                ),
+            )
+        }
+        assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertTrue(analysisRepo.lookaheadTriggers.contains(item.id to sample.chunks[0].id))
     }
 
     @Test

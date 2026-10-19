@@ -237,7 +237,8 @@ fun SettingsScreen(
 
                     SettingsTab.TRANSCRIPTION -> {
                         TranscriptionSettingsSection(
-                            lookaheadEnabled = state.lookaheadTranscriptionEnabled,
+                            autoStartTranscriptionOnOpen = state.autoStartTranscriptionOnOpen,
+                            backgroundTranscriptionEnabled = state.backgroundTranscriptionEnabled,
                             languageModels = state.languageModels,
                             enabledLanguages = state.enabledLanguages,
                             sttEngineByLanguage = state.sttEngineByLanguage,
@@ -701,7 +702,8 @@ private fun SegmentationDefaultsSection(
 
 @Composable
 private fun TranscriptionSettingsSection(
-    lookaheadEnabled: Boolean,
+    autoStartTranscriptionOnOpen: Boolean,
+    backgroundTranscriptionEnabled: Boolean,
     languageModels: List<OnDeviceLanguageModelInfo>,
     enabledLanguages: Set<LanguageTag>,
     sttEngineByLanguage: Map<LanguageTag, SttEngine>,
@@ -711,32 +713,50 @@ private fun TranscriptionSettingsSection(
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_transcription)) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .fillMaxWidth()
+                .toggleable(
+                    value = autoStartTranscriptionOnOpen,
+                    onValueChange = { enabled ->
+                        onEvent(SettingsEvent.SetAutoStartTranscriptionOnOpen(enabled))
+                    },
+                    role = Role.Checkbox,
+                )
+                .padding(vertical = 2.dp, horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.settings_lookahead_label),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
+            Checkbox(
+                checked = autoStartTranscriptionOnOpen,
+                onCheckedChange = null,
+            )
+            Text(
+                text = stringResource(R.string.settings_auto_start_transcription_on_open_label),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .toggleable(
+                    value = backgroundTranscriptionEnabled,
+                    onValueChange = { enabled ->
+                        onEvent(SettingsEvent.SetBackgroundTranscriptionEnabled(enabled))
+                    },
+                    role = Role.Checkbox,
                 )
-                Text(
-                    text = stringResource(R.string.settings_lookahead_description),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Switch(
-                checked = lookaheadEnabled,
-                onCheckedChange = { enabled ->
-                    onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(enabled))
-                },
+                .padding(vertical = 2.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(
+                checked = backgroundTranscriptionEnabled,
+                onCheckedChange = null,
+            )
+            Text(
+                text = stringResource(R.string.settings_background_transcription_enabled_label),
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(start = 8.dp),
             )
         }
     }

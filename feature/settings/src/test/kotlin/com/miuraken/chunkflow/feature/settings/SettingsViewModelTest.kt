@@ -255,24 +255,34 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `先読み文字起こし設定_既定で有効でありON_OFF切り替えがRepositoryとUiStateに反映される`() = runTest {
+    fun `先読み文字起こし設定_既定で有効であり自動開始とバックグラウンド文字起こしのON_OFF切り替えがRepositoryとUiStateに反映される`() = runTest {
         val repo = FakeUserSettingsRepository()
         val viewModel = SettingsViewModel(repo)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
-        // 既定値は ON (true)
+        // 既定値はすべて ON (true)
         assertTrue(viewModel.uiState.value.lookaheadTranscriptionEnabled)
         assertTrue(repo.state.value.lookaheadTranscriptionEnabled)
+        assertTrue(viewModel.uiState.value.autoStartTranscriptionOnOpen)
+        assertTrue(repo.state.value.autoStartTranscriptionOnOpen)
+        assertTrue(viewModel.uiState.value.backgroundTranscriptionEnabled)
+        assertTrue(repo.state.value.backgroundTranscriptionEnabled)
 
-        // OFF に切り替え
-        viewModel.onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(false))
-        assertFalse(viewModel.uiState.value.lookaheadTranscriptionEnabled)
-        assertFalse(repo.state.value.lookaheadTranscriptionEnabled)
+        // ファイルを開いたら自動開始を OFF / ON に切り替え
+        viewModel.onEvent(SettingsEvent.SetAutoStartTranscriptionOnOpen(false))
+        assertFalse(viewModel.uiState.value.autoStartTranscriptionOnOpen)
+        assertFalse(repo.state.value.autoStartTranscriptionOnOpen)
+        viewModel.onEvent(SettingsEvent.SetAutoStartTranscriptionOnOpen(true))
+        assertTrue(viewModel.uiState.value.autoStartTranscriptionOnOpen)
+        assertTrue(repo.state.value.autoStartTranscriptionOnOpen)
 
-        // ON に戻す
-        viewModel.onEvent(SettingsEvent.SetLookaheadTranscriptionEnabled(true))
-        assertTrue(viewModel.uiState.value.lookaheadTranscriptionEnabled)
-        assertTrue(repo.state.value.lookaheadTranscriptionEnabled)
+        // バックグラウンド文字起こしを OFF / ON に切り替え
+        viewModel.onEvent(SettingsEvent.SetBackgroundTranscriptionEnabled(false))
+        assertFalse(viewModel.uiState.value.backgroundTranscriptionEnabled)
+        assertFalse(repo.state.value.backgroundTranscriptionEnabled)
+        viewModel.onEvent(SettingsEvent.SetBackgroundTranscriptionEnabled(true))
+        assertTrue(viewModel.uiState.value.backgroundTranscriptionEnabled)
+        assertTrue(repo.state.value.backgroundTranscriptionEnabled)
     }
 
     @Test

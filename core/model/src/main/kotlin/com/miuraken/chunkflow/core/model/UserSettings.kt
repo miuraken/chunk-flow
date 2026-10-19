@@ -87,7 +87,9 @@ enum class PhoneticGuideKind {
  * @property enabledLanguages 設定画面やダイアログの言語選択肢として表示する言語の集合（言語設定タブで選ぶ。ADR-0011 §2.1）。
  *   保存されていないときの既定は、端末の設定言語と英語（[LanguageSettings.defaultEnabledLanguages]）。
  * @property showTargetRomanization 対象言語が非ラテン文字（日本語・中国語・ヒンディー語・韓国語など）のときに、アルファベットによる読み方（ローマ字・Pinyin・IAST など）をチャンクに付加して表示するかどうか。
- * @property lookaheadTranscriptionEnabled 再生中に未検出のチャンクの先読み文字起こしを自動的に行うかどうか（既定はオン `true`）。
+ * @property lookaheadTranscriptionEnabled 再生中に未検出のチャンクの先読み文字起こしを自動的に行うかどうか（常にオン `true`）。
+ * @property autoStartTranscriptionOnOpen ファイルを開いてチャンク分割・言語判定が終わったら文字起こしを自動で始めるかどうか（既定はオン `true`）。
+ * @property backgroundTranscriptionEnabled 再生画面を閉じた後もバックグラウンドでの文字起こしを継続するかどうか（既定はオン `true`）。
  * @property transcriptionEngine 端末内文字起こしで使用する音声認識ライブラリ（エンジン）の選択（既定は [OnDeviceTranscriptionEngine.AUTO]）。
  *   ADR-0011 の移行の途中の設定で、言語ごとの設定（[sttEngineByLanguage]）に切り替わったら消す。
  * @property sttEngineByLanguage 言語ごとに優先する文字起こしエンジン（ADR-0011 §2.2）。キーは [LanguageSettings.normalize] で
@@ -111,6 +113,8 @@ data class UserSettings(
     val enabledLanguages: Set<LanguageTag> = DEFAULT_ENABLED_LANGUAGES,
     val showTargetRomanization: Boolean = false,
     val lookaheadTranscriptionEnabled: Boolean = true,
+    val autoStartTranscriptionOnOpen: Boolean = lookaheadTranscriptionEnabled,
+    val backgroundTranscriptionEnabled: Boolean = true,
     val transcriptionEngine: OnDeviceTranscriptionEngine = OnDeviceTranscriptionEngine.AUTO,
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     val hasCompletedLanguageOnboarding: Boolean = false,

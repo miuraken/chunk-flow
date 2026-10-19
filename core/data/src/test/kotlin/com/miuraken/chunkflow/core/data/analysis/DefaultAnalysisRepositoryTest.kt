@@ -4492,4 +4492,83 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(LanguageTag("ko"), finalTranscripts[ChunkId(2L)]?.language)
         assertEquals(LanguageTag("ko"), finalTranscripts[ChunkId(3L)]?.language)
     }
+
+    @Test
+    fun `全体設定のbackgroundTranscriptionEnabledがオフのときは画面を閉じるとバックグラウンド文字起こしを行わない`() = runTest {
+        val mediaId = MediaId("bg_disabled_01")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Background Disabled Lesson",
+                durationMs = 10_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 1L, mediaId = mediaId.value, startMs = 0L, endMs = 4_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2L, mediaId = mediaId.value, startMs = 5_000L, endMs = 9_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        var transcribeCallCount = 0
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult {
+                transcribeCallCount += 1
+                return OnDeviceChunkTranscriptionResult(
+                    text = "hello",
+                    language = LanguageTag("en"),
+                    confidence = 0.9f,
+                    engineId = com.miuraken.chunkflow.core.model.EngineId("test"),
+                )
+            }
+        }
+        val settingsRepo = FakeUserSettingsRepository(
+            com.miuraken.chunkflow.core.model.UserSettings(backgroundTranscriptionEnabled = false),
+        )
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = dispatcher,
+            onDeviceChunkTranscriber = fakeTranscriber,
+            userSettingsRepository = settingsRepo,
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            computeDispatcher = dispatcher,
+        )
+
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        repository.setLookaheadEnabled(mediaId, true)
+        assertFalse(repository.observeLookaheadStatus(mediaId).first().backgroundEnabled)
+
+        // 画面を閉じた状態で triggerLookaheadAt を呼んでもバックグラウンド文字起こしは実行されない
+        repository.setMediaTranscriptionSessionOpen(mediaId, false)
+        repository.triggerLookaheadAt(mediaId, ChunkId(1L))
+        testScheduler.advanceUntilIdle()
+        assertEquals(0, transcribeCallCount)
+    }
 }

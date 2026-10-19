@@ -58,6 +58,7 @@ data class TranscriptionDiagnosticEntry(
  * @property skippedEmptyChunkIds 今セッションで一度認識を試みたものの無音・認識不能等で本文が得られなかったチャンク ID の集合。
  * @property diagnostics 直近の文字起こし診断・デバッグログ一覧（新しい順または時系列順）。
  * @property backgroundEnabled この教材を閉じる・別アプリへ移動した後も、優先度を下げてバックグラウンドで文字起こしを継続するかどうか（デフォルト `false`）。
+ * @property isLanguageDetectionRunning この教材でチャンクごとの事前言語判定（LID）が実行中かどうか（デフォルト `false`）。
  */
 data class LookaheadTranscriptionStatus(
     val enabled: Boolean = false,
@@ -74,4 +75,5 @@ data class LookaheadTranscriptionStatus(
     val skippedEmptyChunkIds: Set<ChunkId> = emptySet(),
     val diagnostics: List<TranscriptionDiagnosticEntry> = emptyList(),
     val backgroundEnabled: Boolean = false,
+    val isLanguageDetectionRunning: Boolean = false,
 )

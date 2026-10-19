@@ -86,7 +86,20 @@ class FakeUserSettingsRepository(
     }
 
     override suspend fun setLookaheadTranscriptionEnabled(enabled: Boolean) {
-        state.update { it.copy(lookaheadTranscriptionEnabled = enabled) }
+        state.update {
+            it.copy(
+                lookaheadTranscriptionEnabled = enabled,
+                autoStartTranscriptionOnOpen = enabled,
+            )
+        }
+    }
+
+    override suspend fun setAutoStartTranscriptionOnOpen(enabled: Boolean) {
+        state.update { it.copy(autoStartTranscriptionOnOpen = enabled) }
+    }
+
+    override suspend fun setBackgroundTranscriptionEnabled(enabled: Boolean) {
+        state.update { it.copy(backgroundTranscriptionEnabled = enabled) }
     }
 
     override suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) {

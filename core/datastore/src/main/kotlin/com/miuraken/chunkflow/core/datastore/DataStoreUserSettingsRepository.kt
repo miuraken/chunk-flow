@@ -188,6 +188,18 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setAutoStartTranscriptionOnOpen(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[KEY_AUTO_START_TRANSCRIPTION_ON_OPEN] = enabled
+        }
+    }
+
+    override suspend fun setBackgroundTranscriptionEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[KEY_BACKGROUND_TRANSCRIPTION_ENABLED] = enabled
+        }
+    }
+
     override suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) {
         dataStore.edit { prefs ->
             prefs[KEY_TRANSCRIPTION_ENGINE] = engine.name
@@ -306,8 +318,11 @@ class DataStoreUserSettingsRepository @Inject constructor(
             ),
             enabledLanguages = enabledLanguages,
             showTargetRomanization = this[KEY_SHOW_TARGET_ROMANIZATION] ?: defaults.showTargetRomanization,
-            lookaheadTranscriptionEnabled = this[KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED]
-                ?: defaults.lookaheadTranscriptionEnabled,
+            lookaheadTranscriptionEnabled = true,
+            autoStartTranscriptionOnOpen = this[KEY_AUTO_START_TRANSCRIPTION_ON_OPEN]
+                ?: defaults.autoStartTranscriptionOnOpen,
+            backgroundTranscriptionEnabled = this[KEY_BACKGROUND_TRANSCRIPTION_ENABLED]
+                ?: defaults.backgroundTranscriptionEnabled,
             transcriptionEngine = transcriptionEngine,
             sttEngineByLanguage = sttEngineByLanguage,
             hasCompletedLanguageOnboarding = hasCompletedLanguageOnboarding,
@@ -345,6 +360,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_LANGUAGE_ONBOARDING_COMPLETED = booleanPreferencesKey("language_onboarding_completed")
         val KEY_SHOW_TARGET_ROMANIZATION = booleanPreferencesKey("show_target_romanization")
         val KEY_LOOKAHEAD_TRANSCRIPTION_ENABLED = booleanPreferencesKey("lookahead_transcription_enabled")
+        val KEY_AUTO_START_TRANSCRIPTION_ON_OPEN = booleanPreferencesKey("auto_start_transcription_on_open")
+        val KEY_BACKGROUND_TRANSCRIPTION_ENABLED = booleanPreferencesKey("background_transcription_enabled")
         val KEY_TRANSCRIPTION_ENGINE = stringPreferencesKey("transcription_engine")
 
         /** 言語ごとに優先する文字起こしエンジン（`code=ENGINE` のカンマ区切り。ADR-0011 §2.2）。 */

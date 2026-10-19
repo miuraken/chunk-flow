@@ -130,9 +130,17 @@ data class SettingsUiState(
     val skipOriginalSilence: Boolean
         get() = settings.skipOriginalSilence
 
-    /** 端末内の先読み簡易文字起こしを既定で有効にするかどうか（既定は `true`）。 */
+    /** 端末内の先読み簡易文字起こしを既定で有効にするかどうか（常に `true`）。 */
     val lookaheadTranscriptionEnabled: Boolean
         get() = settings.lookaheadTranscriptionEnabled
+
+    /** ファイルを開いたら文字起こしを自動で始めるかどうか（既定は `true`）。 */
+    val autoStartTranscriptionOnOpen: Boolean
+        get() = settings.autoStartTranscriptionOnOpen
+
+    /** バックグラウンドでの文字起こしを有効にするかどうか（既定は `true`）。 */
+    val backgroundTranscriptionEnabled: Boolean
+        get() = settings.backgroundTranscriptionEnabled
 
     /** 端末内文字起こしで使用する認識ライブラリ（エンジン）。 */
     val transcriptionEngine: OnDeviceTranscriptionEngine
@@ -343,6 +351,12 @@ sealed interface SettingsEvent {
     /** 端末内の先読み簡易文字起こしの ON / OFF を切り替える。 */
     data class SetLookaheadTranscriptionEnabled(val enabled: Boolean) : SettingsEvent
 
+    /** ファイルを開いたら文字起こしを自動で始めるかどうかの ON / OFF を切り替える。 */
+    data class SetAutoStartTranscriptionOnOpen(val enabled: Boolean) : SettingsEvent
+
+    /** バックグラウンドでの文字起こしの ON / OFF を切り替える。 */
+    data class SetBackgroundTranscriptionEnabled(val enabled: Boolean) : SettingsEvent
+
     /** 端末内文字起こしで使用する認識ライブラリ（エンジン）を変更する。 */
     data class SetTranscriptionEngine(val engine: OnDeviceTranscriptionEngine) : SettingsEvent
 
@@ -543,6 +557,18 @@ class SettingsViewModel @Inject constructor(
             is SettingsEvent.SetLookaheadTranscriptionEnabled -> {
                 viewModelScope.launch {
                     userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
+                }
+            }
+
+            is SettingsEvent.SetAutoStartTranscriptionOnOpen -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setAutoStartTranscriptionOnOpen(event.enabled)
+                }
+            }
+
+            is SettingsEvent.SetBackgroundTranscriptionEnabled -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setBackgroundTranscriptionEnabled(event.enabled)
                 }
             }
 

@@ -59,6 +59,12 @@ interface UserSettingsRepository {
     /** 先読み文字起こしの有効・無効を更新する（既定は true）。 */
     suspend fun setLookaheadTranscriptionEnabled(enabled: Boolean) = Unit
 
+    /** ファイルを開いたら文字起こしを自動で始めるかどうかを更新する（既定は true）。 */
+    suspend fun setAutoStartTranscriptionOnOpen(enabled: Boolean) = Unit
+
+    /** バックグラウンドでの文字起こしを有効にするかどうかを更新する（既定は true）。 */
+    suspend fun setBackgroundTranscriptionEnabled(enabled: Boolean) = Unit
+
     /** 端末内文字起こしで使用する音声認識ライブラリ（エンジン）を更新する。 */
     suspend fun setTranscriptionEngine(engine: OnDeviceTranscriptionEngine) = Unit
 

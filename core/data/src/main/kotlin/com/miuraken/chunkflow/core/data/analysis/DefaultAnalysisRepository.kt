@@ -212,13 +212,96 @@ class DefaultAnalysisRepository(
     private val hasExplicitSessionTracking = AtomicBoolean(false)
     private val activeTranscriptionJobs = ConcurrentHashMap<MediaId, MutableSet<Job>>()
     private val targetLanguageOnlyMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
-    private val activePipelinedLidJobs = ConcurrentHashMap<MediaId, Job>()
+    private val activePipelinedLidJobs = ConcurrentHashMap<MediaId, CompletableDeferred<Unit>>()
     private val activeLanguageDetectionJobs = ConcurrentHashMap<MediaId, Job>()
     private val pipelinedLidProcessedChunkIds = ConcurrentHashMap<MediaId, MutableSet<Long>>()
+    private val globalBackgroundTranscriptionEnabled = AtomicBoolean(true)
+
+    init {
+        val settingsFlow = userSettingsRepository?.settings
+        if (settingsFlow != null) {
+            if (settingsFlow is kotlinx.coroutines.flow.StateFlow<*>) {
+                val initial = (settingsFlow.value as? com.miuraken.chunkflow.core.model.UserSettings)?.backgroundTranscriptionEnabled
+                if (initial != null) {
+                    globalBackgroundTranscriptionEnabled.set(initial)
+                }
+            }
+            backgroundScope.launch {
+                settingsFlow
+                    .map { it.backgroundTranscriptionEnabled }
+                    .distinctUntilChanged()
+                    .collect { enabled ->
+                        globalBackgroundTranscriptionEnabled.set(enabled)
+                        if (!enabled) {
+                            for (mediaId in backgroundTranscriptionMediaIds.toList()) {
+                                if (!isMediaOpenForTranscription(mediaId)) {
+                                    backgroundJobs.remove(mediaId)?.cancel()
+                                    cancelActiveTranscriptionJobs(
+                                        mediaId,
+                                        CancellationException("Global background transcription disabled"),
+                                    )
+                                    lookaheadStateFor(mediaId).update {
+                                        it.copy(
+                                            backgroundEnabled = false,
+                                            inFlightChunkId = null,
+                                            inFlightStep = null,
+                                            inFlightDetail = null,
+                                            inFlightStartedAtEpochMs = null,
+                                            isForcedChunkInFlight = false,
+                                            queuedChunkIds = emptySet(),
+                                        )
+                                    }
+                                } else {
+                                    lookaheadStateFor(mediaId).update {
+                                        it.copy(backgroundEnabled = false)
+                                    }
+                                }
+                            }
+                            if (activeOpenMediaIds.isEmpty()) {
+                                runCatching { onDeviceChunkTranscriber.releaseIdleResources() }
+                            }
+                        } else {
+                            for (mediaId in backgroundTranscriptionMediaIds.toList()) {
+                                if (lookaheadStateFor(mediaId).value.enabled) {
+                                    lookaheadStateFor(mediaId).update {
+                                        it.copy(backgroundEnabled = true)
+                                    }
+                                    if (!isMediaOpenForTranscription(mediaId)) {
+                                        startBackgroundTranscriptionLoop(mediaId)
+                                    }
+                                }
+                            }
+                        }
+                    }
+            }
+        }
+    }
+
+    private fun isGlobalBackgroundTranscriptionEnabled(): Boolean {
+        val settingsFlow = userSettingsRepository?.settings
+        if (settingsFlow is kotlinx.coroutines.flow.StateFlow<*>) {
+            val current = (settingsFlow.value as? com.miuraken.chunkflow.core.model.UserSettings)?.backgroundTranscriptionEnabled
+            if (current != null) {
+                globalBackgroundTranscriptionEnabled.set(current)
+                return current
+            }
+        }
+        return globalBackgroundTranscriptionEnabled.get()
+    }
+
+    private suspend fun refreshGlobalBackgroundTranscriptionEnabled(): Boolean {
+        val repo = userSettingsRepository ?: return globalBackgroundTranscriptionEnabled.get()
+        val enabled = runCatching { repo.settings.first().backgroundTranscriptionEnabled }
+            .getOrDefault(globalBackgroundTranscriptionEnabled.get())
+        globalBackgroundTranscriptionEnabled.set(enabled)
+        return enabled
+    }
+
+    private fun isBackgroundTranscriptionAllowedFor(id: MediaId): Boolean = isGlobalBackgroundTranscriptionEnabled() && backgroundTranscriptionMediaIds.contains(id)
 
     private fun isMediaOpenForTranscription(id: MediaId): Boolean = !hasExplicitSessionTracking.get() || activeOpenMediaIds.contains(id)
 
-    private fun canContinueTranscriptionForMedia(id: MediaId): Boolean = isMediaOpenForTranscription(id) || backgroundTranscriptionMediaIds.contains(id)
+    private fun canContinueTranscriptionForMedia(id: MediaId): Boolean = isMediaOpenForTranscription(id) || isBackgroundTranscriptionAllowedFor(id)
 
     private fun lookaheadMutexFor(id: MediaId): Mutex = lookaheadMediaMutexes.computeIfAbsent(id) { Mutex() }
 
@@ -562,6 +645,7 @@ class DefaultAnalysisRepository(
                 val lidParallelism = OnDeviceChunkTranscriber.recommendedLanguageDetectionParallelism()
 
                 val lidConsumerJob = if (lidLanguagePair != null && lidRequestChannel != null) {
+                    stateFlow.update { it.copy(isLanguageDetectionRunning = true) }
                     launch(computeDispatcher) {
                         val lidStartedAt = clock()
                         val pendingStreamLidResults =
@@ -651,6 +735,7 @@ class DefaultAnalysisRepository(
                                 chunkPersistenceMutex.withLock {
                                     flushPendingStreamLidResultsLocked()
                                 }
+                                stateFlow.update { it.copy(isLanguageDetectionRunning = false) }
                                 val done = lidCompletedCount.get()
                                 val total = lidTotalEnqueuedCount.get()
                                 if (total > 0) {
@@ -997,6 +1082,7 @@ class DefaultAnalysisRepository(
                                 throw AnalysisPreemptedException()
                             }
                             lidConsumerJob.join()
+                            activePipelinedLidJobs.remove(mediaId)?.complete(Unit)
 
                             val finalAutoChunks = chunkDao.getByMediaIdAndOrigin(
                                 mediaId.value,
@@ -1028,14 +1114,17 @@ class DefaultAnalysisRepository(
                             ) {
                                 triggerLookaheadAt(mediaId, resumeStartIndex.coerceAtLeast(0))
                             }
-                        } else if (
-                            mediaItem != null &&
-                            mediaItem.targetLang.isNotBlank() &&
-                            !mediaItem.baseLang.isNullOrBlank() &&
-                            !mediaItem.targetLang.equals(mediaItem.baseLang, ignoreCase = true) &&
-                            onDeviceChunkTranscriber !== NoOpOnDeviceChunkTranscriber
-                        ) {
-                            startLanguageDetectionInternal(mediaId, onlyMissingLanguage = false)
+                        } else {
+                            activePipelinedLidJobs.remove(mediaId)?.complete(Unit)
+                            if (
+                                mediaItem != null &&
+                                mediaItem.targetLang.isNotBlank() &&
+                                !mediaItem.baseLang.isNullOrBlank() &&
+                                !mediaItem.targetLang.equals(mediaItem.baseLang, ignoreCase = true) &&
+                                onDeviceChunkTranscriber !== NoOpOnDeviceChunkTranscriber
+                            ) {
+                                startLanguageDetectionInternal(mediaId, onlyMissingLanguage = false)
+                            }
                         }
                     } else {
                         pcmWindowBuffer?.clear()
@@ -1185,148 +1274,151 @@ class DefaultAnalysisRepository(
 
     private fun startLanguageDetectionInternal(id: MediaId, onlyMissingLanguage: Boolean) {
         activeLanguageDetectionJobs.remove(id)?.cancel()
+        val stateFlow = lookaheadStateFor(id)
+        stateFlow.update { it.copy(isLanguageDetectionRunning = true) }
         val job = backgroundScope.launch(ioDispatcher) {
-            val mediaItem = mediaItemDao.getById(id.value) ?: return@launch
-            val target = mediaItem.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
-                ?: return@launch
-            val base = mediaItem.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
-            val languagePair = LanguagePair(target = target, base = base)
-            val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
-            if (audioFile == null || !audioFile.isFile) return@launch
+            try {
+                val mediaItem = mediaItemDao.getById(id.value) ?: return@launch
+                val target = mediaItem.targetLang.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                    ?: return@launch
+                val base = mediaItem.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag)
+                val languagePair = LanguagePair(target = target, base = base)
+                val audioFile = resolveReadableAudioFile(id, mediaFileResolver, mediaItemDao, mediaItem, context)
+                if (audioFile == null || !audioFile.isFile) return@launch
 
-            // 初回デコード中の並列言語判定パイプラインが実行中の場合は、その完了を待ってから未処理チャンクのみを対象にする
-            activePipelinedLidJobs[id]?.join()
+                // 初回デコード中の並列言語判定パイプラインが実行中の場合は、その完了を待ってから未処理チャンクのみを対象にする
+                activePipelinedLidJobs[id]?.join()
 
-            val chunkSource = itemStateDao.getByMediaId(id.value)?.chunkSource ?: ChunkOrigin.AUTO.name
-            val allChunks = chunkDao.observeByMediaId(id.value).first()
-            val activeChunks = allChunks.filter { it.origin == chunkSource }.ifEmpty { allChunks }
-            if (activeChunks.isEmpty()) return@launch
+                val chunkSource = itemStateDao.getByMediaId(id.value)?.chunkSource ?: ChunkOrigin.AUTO.name
+                val allChunks = chunkDao.observeByMediaId(id.value).first()
+                val activeChunks = allChunks.filter { it.origin == chunkSource }.ifEmpty { allChunks }
+                if (activeChunks.isEmpty()) return@launch
 
-            val alreadyProcessedByPipelinedLid = pipelinedLidProcessedChunkIds[id].orEmpty()
-            val transcriptsByChunkId = transcriptDao.observeByMediaId(id.value).first().associateBy { it.chunkId }
-            val targetChunks = activeChunks.filter { chunk ->
-                if (chunk.id in alreadyProcessedByPipelinedLid) {
-                    return@filter false
-                }
-                val existing = transcriptsByChunkId[chunk.id]
-                if (onlyMissingLanguage) {
-                    existing == null || (
-                        existing.text.isBlank() &&
-                            (existing.language.isNullOrBlank() || existing.language.equals("und", ignoreCase = true)) &&
-                            !(existing.userEdited && existing.language == null)
-                        )
-                } else {
-                    existing == null ||
-                        (existing.isLanguageIdOnly() && !existing.userEdited) ||
-                        (
+                val alreadyProcessedByPipelinedLid = pipelinedLidProcessedChunkIds[id].orEmpty()
+                val transcriptsByChunkId = transcriptDao.observeByMediaId(id.value).first().associateBy { it.chunkId }
+                val targetChunks = activeChunks.filter { chunk ->
+                    if (chunk.id in alreadyProcessedByPipelinedLid) {
+                        return@filter false
+                    }
+                    val existing = transcriptsByChunkId[chunk.id]
+                    if (onlyMissingLanguage) {
+                        existing == null || (
                             existing.text.isBlank() &&
                                 (existing.language.isNullOrBlank() || existing.language.equals("und", ignoreCase = true)) &&
                                 !(existing.userEdited && existing.language == null)
                             )
-                }
-            }
-            if (targetChunks.isEmpty()) {
-                val stateFlow = lookaheadStateFor(id)
-                val resumeStartIndex = latestLookaheadChunkIndex[id]
-                if (resumeStartIndex != null && stateFlow.value.enabled && canContinueTranscriptionForMedia(id)) {
-                    triggerLookaheadAt(id, resumeStartIndex.coerceAtLeast(0))
-                }
-                return@launch
-            }
-
-            // 第1段階（高速一括言語判定）を即座に走らせるため、低優先度の先読み音声認識があれば中断する
-            runCatching {
-                onDeviceChunkTranscriber.cancelActiveTranscription(onlyLowPriority = true)
-            }
-
-            val stateFlow = lookaheadStateFor(id)
-            val totalTargets = targetChunks.size
-            var completed = 0
-            val parallelism = OnDeviceChunkTranscriber.recommendedLanguageDetectionParallelism()
-            val languageDetectionStartedAt = clock()
-            runCatching {
-                onDeviceChunkTranscriber.recordExternalDiagnostic(
-                    stage = "LID_ONLY",
-                    message = "言語判定のみを開始 ($totalTargets チャンク、最大 $parallelism 並列)",
-                )
-            }
-
-            val lidFlushMutex = Mutex()
-            val pendingLidUpserts = LinkedHashMap<Long, OnDeviceChunkTranscriptionResult>()
-            val pendingLidDeletes = LinkedHashSet<Long>()
-            var lastLidFlushMs = languageDetectionStartedAt
-
-            suspend fun flushPendingBatchLocked() {
-                if (pendingLidUpserts.isEmpty() && pendingLidDeletes.isEmpty()) return
-                val upsertsSnapshot = LinkedHashMap(pendingLidUpserts)
-                val deletesSnapshot = LinkedHashSet(pendingLidDeletes)
-                pendingLidUpserts.clear()
-                pendingLidDeletes.clear()
-                withContext(NonCancellable) {
-                    flushPendingLidTranscriptWrites(
-                        pendingUpserts = upsertsSnapshot,
-                        pendingDeletes = deletesSnapshot,
-                    )
-                }
-            }
-
-            try {
-                onDeviceChunkTranscriber.detectChunkLanguages(
-                    audioFile = audioFile,
-                    chunks = targetChunks.map { ChunkTimeRange(startMs = it.startMs, endMs = it.endMs) },
-                    languagePair = languagePair,
-                    parallelism = parallelism,
-                    computeDispatcher = computeDispatcher,
-                ) { index, detected ->
-                    val chunk = targetChunks[index]
-                    lidFlushMutex.withLock {
-                        if (detected?.language != null) {
-                            pendingLidUpserts[chunk.id] = detected
-                            pendingLidDeletes.remove(chunk.id)
-                        } else {
-                            pendingLidUpserts.remove(chunk.id)
-                            pendingLidDeletes.add(chunk.id)
-                        }
-                        completed += 1
-                        val nowMs = clock()
-                        val isClockAdvancing = nowMs > languageDetectionStartedAt
-                        val pendingCount = pendingLidUpserts.size + pendingLidDeletes.size
-                        val shouldFlush = !isClockAdvancing ||
-                            nowMs - lastLidFlushMs >= LID_DB_BATCH_FLUSH_INTERVAL_MS ||
-                            pendingCount >= LID_DB_BATCH_MAX_SIZE
-                        if (shouldFlush) {
-                            flushPendingBatchLocked()
-                            lastLidFlushMs = nowMs
-                        }
+                    } else {
+                        existing == null ||
+                            (existing.isLanguageIdOnly() && !existing.userEdited) ||
+                            (
+                                existing.text.isBlank() &&
+                                    (existing.language.isNullOrBlank() || existing.language.equals("und", ignoreCase = true)) &&
+                                    !(existing.userEdited && existing.language == null)
+                                )
                     }
                 }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (e: Exception) {
+                if (targetChunks.isEmpty()) {
+                    return@launch
+                }
+
+                // 第1段階（高速一括言語判定）を即座に走らせるため、低優先度の先読み音声認識があれば中断する
+                runCatching {
+                    onDeviceChunkTranscriber.cancelActiveTranscription(onlyLowPriority = true)
+                }
+
+                val totalTargets = targetChunks.size
+                var completed = 0
+                val parallelism = OnDeviceChunkTranscriber.recommendedLanguageDetectionParallelism()
+                val languageDetectionStartedAt = clock()
                 runCatching {
                     onDeviceChunkTranscriber.recordExternalDiagnostic(
                         stage = "LID_ONLY",
-                        message = "言語判定のみを中断 (${e.javaClass.simpleName})",
-                        isWarningOrError = true,
+                        message = "言語判定のみを開始 ($totalTargets チャンク、最大 $parallelism 並列)",
                     )
                 }
-            } finally {
-                withContext(NonCancellable) {
-                    lidFlushMutex.withLock {
-                        flushPendingBatchLocked()
+
+                val lidFlushMutex = Mutex()
+                val pendingLidUpserts = LinkedHashMap<Long, OnDeviceChunkTranscriptionResult>()
+                val pendingLidDeletes = LinkedHashSet<Long>()
+                var lastLidFlushMs = languageDetectionStartedAt
+
+                suspend fun flushPendingBatchLocked() {
+                    if (pendingLidUpserts.isEmpty() && pendingLidDeletes.isEmpty()) return
+                    val upsertsSnapshot = LinkedHashMap(pendingLidUpserts)
+                    val deletesSnapshot = LinkedHashSet(pendingLidDeletes)
+                    pendingLidUpserts.clear()
+                    pendingLidDeletes.clear()
+                    withContext(NonCancellable) {
+                        flushPendingLidTranscriptWrites(
+                            pendingUpserts = upsertsSnapshot,
+                            pendingDeletes = deletesSnapshot,
+                        )
                     }
-                    updateQueuedChunkIdsState(id)
-                    persistTranscriptBackupFile(id)
-                    val elapsedMs = (clock() - languageDetectionStartedAt).coerceAtLeast(0L)
-                    val elapsedTenths = (elapsedMs + 50L) / 100L
+                }
+
+                try {
+                    onDeviceChunkTranscriber.detectChunkLanguages(
+                        audioFile = audioFile,
+                        chunks = targetChunks.map { ChunkTimeRange(startMs = it.startMs, endMs = it.endMs) },
+                        languagePair = languagePair,
+                        parallelism = parallelism,
+                        computeDispatcher = computeDispatcher,
+                    ) { index, detected ->
+                        val chunk = targetChunks[index]
+                        lidFlushMutex.withLock {
+                            if (detected?.language != null) {
+                                pendingLidUpserts[chunk.id] = detected
+                                pendingLidDeletes.remove(chunk.id)
+                            } else {
+                                pendingLidUpserts.remove(chunk.id)
+                                pendingLidDeletes.add(chunk.id)
+                            }
+                            completed += 1
+                            val nowMs = clock()
+                            val isClockAdvancing = nowMs > languageDetectionStartedAt
+                            val pendingCount = pendingLidUpserts.size + pendingLidDeletes.size
+                            val shouldFlush = !isClockAdvancing ||
+                                nowMs - lastLidFlushMs >= LID_DB_BATCH_FLUSH_INTERVAL_MS ||
+                                pendingCount >= LID_DB_BATCH_MAX_SIZE
+                            if (shouldFlush) {
+                                flushPendingBatchLocked()
+                                lastLidFlushMs = nowMs
+                            }
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
                     runCatching {
                         onDeviceChunkTranscriber.recordExternalDiagnostic(
                             stage = "LID_ONLY",
-                            message = "言語判定のみを終了 ($completed / $totalTargets チャンク、" +
-                                "${elapsedTenths / 10}.${elapsedTenths % 10} 秒、" +
-                                "平均 ${elapsedMs / completed.coerceAtLeast(1)} ms/チャンク)",
+                            message = "言語判定のみを中断 (${e.javaClass.simpleName})",
+                            isWarningOrError = true,
                         )
                     }
+                } finally {
+                    withContext(NonCancellable) {
+                        lidFlushMutex.withLock {
+                            flushPendingBatchLocked()
+                        }
+                        updateQueuedChunkIdsState(id)
+                        persistTranscriptBackupFile(id)
+                        val elapsedMs = (clock() - languageDetectionStartedAt).coerceAtLeast(0L)
+                        val elapsedTenths = (elapsedMs + 50L) / 100L
+                        runCatching {
+                            onDeviceChunkTranscriber.recordExternalDiagnostic(
+                                stage = "LID_ONLY",
+                                message = "言語判定のみを終了 ($completed / $totalTargets チャンク、" +
+                                    "${elapsedTenths / 10}.${elapsedTenths % 10} 秒、" +
+                                    "平均 ${elapsedMs / completed.coerceAtLeast(1)} ms/チャンク)",
+                            )
+                        }
+                    }
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    activeLanguageDetectionJobs.remove(id)
+                    stateFlow.update { it.copy(isLanguageDetectionRunning = false) }
                 }
             }
 
@@ -1820,6 +1912,7 @@ class DefaultAnalysisRepository(
 
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
         explicitlyConfiguredLookaheadMediaIds.add(id)
+        val bgAllowed = refreshGlobalBackgroundTranscriptionEnabled()
         if (enabled) {
             backgroundTranscriptionMediaIds.add(id)
             attemptedEmptyChunkIds.remove(id)
@@ -1848,7 +1941,7 @@ class DefaultAnalysisRepository(
         lookaheadStateFor(id).update { current ->
             current.copy(
                 enabled = enabled,
-                backgroundEnabled = enabled,
+                backgroundEnabled = enabled && bgAllowed,
                 engineAvailable = available,
                 inFlightChunkId = if (enabled) current.inFlightChunkId else null,
                 inFlightStep = if (enabled) current.inFlightStep else null,
@@ -1859,7 +1952,7 @@ class DefaultAnalysisRepository(
                 skippedEmptyChunkIds = currentSkippedChunkIds(id),
             )
         }
-        if (enabled && id in backgroundTranscriptionMediaIds && !isMediaOpenForTranscription(id)) {
+        if (enabled && isBackgroundTranscriptionAllowedFor(id) && !isMediaOpenForTranscription(id)) {
             startBackgroundTranscriptionLoop(id)
         }
     }
@@ -1871,8 +1964,9 @@ class DefaultAnalysisRepository(
             backgroundTranscriptionMediaIds.remove(id)
             backgroundDeferredEmptyChunkIds.remove(id)
         }
-        lookaheadStateFor(id).update { it.copy(backgroundEnabled = enabled) }
-        if (!enabled && !isMediaOpenForTranscription(id)) {
+        val effectiveBg = enabled && refreshGlobalBackgroundTranscriptionEnabled()
+        lookaheadStateFor(id).update { it.copy(backgroundEnabled = effectiveBg) }
+        if (!effectiveBg && !isMediaOpenForTranscription(id)) {
             backgroundJobs.remove(id)?.cancel()
             cancelActiveTranscriptionJobs(id, CancellationException("Background transcription disabled"))
             lookaheadStateFor(id).update {
@@ -1885,16 +1979,16 @@ class DefaultAnalysisRepository(
                     queuedChunkIds = emptySet(),
                 )
             }
-            if (activeOpenMediaIds.isEmpty() && backgroundTranscriptionMediaIds.isEmpty()) {
+            if (activeOpenMediaIds.isEmpty() && backgroundTranscriptionMediaIds.none { isBackgroundTranscriptionAllowedFor(it) }) {
                 runCatching { onDeviceChunkTranscriber.releaseIdleResources() }
             }
-        } else if (enabled && lookaheadStateFor(id).value.enabled && !isMediaOpenForTranscription(id)) {
+        } else if (effectiveBg && lookaheadStateFor(id).value.enabled && !isMediaOpenForTranscription(id)) {
             startBackgroundTranscriptionLoop(id)
         }
     }
 
     private fun startBackgroundTranscriptionLoop(id: MediaId) {
-        if (id !in backgroundTranscriptionMediaIds || !lookaheadStateFor(id).value.enabled) return
+        if (!isBackgroundTranscriptionAllowedFor(id) || !lookaheadStateFor(id).value.enabled) return
         val existingJob = backgroundJobs[id]
         if (existingJob != null && existingJob.isActive) return
         val job = backgroundScope.launch {
@@ -1933,6 +2027,7 @@ class DefaultAnalysisRepository(
                 current.copy(
                     enabled = false,
                     backgroundEnabled = false,
+                    isLanguageDetectionRunning = false,
                     engineAvailable = available,
                     inFlightChunkId = null,
                     inFlightStep = null,
@@ -1959,9 +2054,10 @@ class DefaultAnalysisRepository(
                 if (otherId != id) {
                     pipelineGate.setMediaOpen(otherId, false)
                     pendingHighPriorityChunkIds[otherId]?.clear()
-                    if (otherId in backgroundTranscriptionMediaIds && lookaheadStateFor(otherId).value.enabled) {
+                    if (isBackgroundTranscriptionAllowedFor(otherId) && lookaheadStateFor(otherId).value.enabled) {
                         startBackgroundTranscriptionLoop(otherId)
                     } else {
+                        backgroundJobs.remove(otherId)?.cancel()
                         lookaheadStateFor(otherId).update { current ->
                             current.copy(queuedChunkIds = emptySet())
                         }
@@ -1972,14 +2068,15 @@ class DefaultAnalysisRepository(
             activeOpenMediaIds.remove(id)
             pipelineGate.setMediaOpen(id, false)
             pendingHighPriorityChunkIds[id]?.clear()
-            if (id in backgroundTranscriptionMediaIds && lookaheadStateFor(id).value.enabled) {
+            if (isBackgroundTranscriptionAllowedFor(id) && lookaheadStateFor(id).value.enabled) {
                 startBackgroundTranscriptionLoop(id)
             } else {
+                backgroundJobs.remove(id)?.cancel()
                 lookaheadStateFor(id).update { current ->
                     current.copy(queuedChunkIds = emptySet())
                 }
             }
-            if (activeOpenMediaIds.isEmpty() && backgroundTranscriptionMediaIds.isEmpty()) {
+            if (activeOpenMediaIds.isEmpty() && backgroundTranscriptionMediaIds.none { isBackgroundTranscriptionAllowedFor(it) }) {
                 // プレイヤー画面を閉じたら、チャンク切り出し用に開いたままの音声ファイルを閉じる（削除された教材の容量も解放される）
                 runCatching { onDeviceChunkTranscriber.releaseIdleResources() }
             }
@@ -2799,6 +2896,13 @@ class DefaultAnalysisRepository(
             withTrackedTranscriptionJob(id) {
                 latestLookaheadChunkIndex[id] = currentChunkIndex
                 updateQueuedChunkIdsState(id)
+                if (
+                    activePipelinedLidJobs[id]?.isActive == true ||
+                    activeLanguageDetectionJobs[id]?.isActive == true ||
+                    lookaheadStateFor(id).value.isLanguageDetectionRunning
+                ) {
+                    return@withTrackedTranscriptionJob
+                }
 
                 lookaheadMutexFor(id).withLock {
                     val stateFlow = lookaheadStateFor(id)

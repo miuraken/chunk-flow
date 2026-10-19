@@ -97,10 +97,17 @@ class DataStoreUserSettingsRepositoryTest {
         assertEquals(false, repository.settings.first().showTargetRomanization)
 
         assertEquals(true, repository.settings.first().lookaheadTranscriptionEnabled)
-        repository.setLookaheadTranscriptionEnabled(false)
-        assertEquals(false, repository.settings.first().lookaheadTranscriptionEnabled)
-        repository.setLookaheadTranscriptionEnabled(true)
-        assertEquals(true, repository.settings.first().lookaheadTranscriptionEnabled)
+        assertEquals(true, repository.settings.first().autoStartTranscriptionOnOpen)
+        assertEquals(true, repository.settings.first().backgroundTranscriptionEnabled)
+        repository.setAutoStartTranscriptionOnOpen(false)
+        assertEquals(false, repository.settings.first().autoStartTranscriptionOnOpen)
+        repository.setAutoStartTranscriptionOnOpen(true)
+        assertEquals(true, repository.settings.first().autoStartTranscriptionOnOpen)
+
+        repository.setBackgroundTranscriptionEnabled(false)
+        assertEquals(false, repository.settings.first().backgroundTranscriptionEnabled)
+        repository.setBackgroundTranscriptionEnabled(true)
+        assertEquals(true, repository.settings.first().backgroundTranscriptionEnabled)
 
         assertEquals(OnDeviceTranscriptionEngine.AUTO, repository.settings.first().transcriptionEngine)
         repository.setTranscriptionEngine(OnDeviceTranscriptionEngine.SHERPA_ONNX)

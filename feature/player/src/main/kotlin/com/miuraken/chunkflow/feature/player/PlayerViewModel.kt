@@ -1220,6 +1220,7 @@ class PlayerViewModel @Inject constructor(
     private val currentMediaId = MutableStateFlow<MediaId?>(null)
     private val localUiState = MutableStateFlow(LocalUiSnapshot())
     private val perMediaLookaheadEnabled = MutableStateFlow<Map<MediaId, Boolean>>(emptyMap())
+    private val prioritizedMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private var lastOpenedMediaId: MediaId? = null
 
     /** 言語バッジのトグル後、文字起こしのやり直しを待っているチャンクごとのジョブ（最後のトグルから 1 秒後に実行）。 */
@@ -1515,6 +1516,41 @@ class PlayerViewModel @Inject constructor(
                     }
                 }
         }
+
+        // 「ファイルを開いたら文字起こしを自動で始める」が有効な場合、チャンク分割と言語判定が完了した時点で文字起こしを自動開始する
+        viewModelScope.launch {
+            combine(
+                currentMediaId,
+                perMediaLookaheadEnabled,
+                prioritizedMediaIds,
+                userSettingsRepository.settings.map { it.autoStartTranscriptionOnOpen }.distinctUntilChanged(),
+                currentAnalysisSnapshot,
+            ) { mediaId, perMediaMap, prioritizedSet, autoStartOnOpen, snapshot ->
+                if (mediaId == null) return@combine null
+                if (perMediaMap.containsKey(mediaId)) return@combine null
+                if (!autoStartOnOpen) return@combine null
+                if (mediaId !in prioritizedSet) return@combine null
+                if (snapshot.chunks.isEmpty()) return@combine null
+                if (snapshot.status[AnalysisStage.FEATURES] is StageStatus.Running) return@combine null
+                if (snapshot.status[AnalysisStage.SEGMENTATION] is StageStatus.Running) return@combine null
+                if (snapshot.lookaheadStatus.isLanguageDetectionRunning) return@combine null
+                val hasUntranscribedChunk = snapshot.chunks.any { chunk ->
+                    !chunk.isSkipped && snapshot.transcripts[chunk.id]?.text.isNullOrBlank()
+                }
+                if (!hasUntranscribedChunk) return@combine null
+                mediaId
+            }
+                .distinctUntilChanged()
+                .collect { readyMediaId ->
+                    if (readyMediaId != null && !perMediaLookaheadEnabled.value.containsKey(readyMediaId)) {
+                        perMediaLookaheadEnabled.update { it + (readyMediaId to true) }
+                        if (lastOpenedMediaId == readyMediaId) {
+                            localUiState.update { it.copy(isLookaheadEnabled = true) }
+                            syncLookaheadState(readyMediaId, true)
+                        }
+                    }
+                }
+        }
     }
 
     /** 指定した教材を開いて再生準備を行う。[initialChunkId] が指定された場合は該当チャンクの先頭へ一時停止状態で移動する。 */
@@ -1545,6 +1581,7 @@ class PlayerViewModel @Inject constructor(
         retranscribeJob = null
         chunkSeekPrioritizeJob?.cancel()
         chunkSeekPrioritizeJob = null
+        prioritizedMediaIds.update { it - mediaId }
         val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
         localUiState.value = LocalUiSnapshot(isLookaheadEnabled = enabled)
         syncLookaheadState(mediaId, enabled)
@@ -1595,7 +1632,11 @@ class PlayerViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            analysisRepository.prioritizeOpenedMediaAnalysis(mediaId)
+            try {
+                analysisRepository.prioritizeOpenedMediaAnalysis(mediaId)
+            } finally {
+                prioritizedMediaIds.update { it + mediaId }
+            }
         }
     }
 
@@ -2315,9 +2356,6 @@ class PlayerViewModel @Inject constructor(
                     )
                 }
                 perMediaLookaheadEnabled.update { it + (id to event.enabled) }
-                viewModelScope.launch {
-                    userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
-                }
                 syncLookaheadState(id, event.enabled)
             }
 
@@ -2420,7 +2458,6 @@ class PlayerViewModel @Inject constructor(
                 }
                 perMediaLookaheadEnabled.update { it + (id to false) }
                 viewModelScope.launch {
-                    userSettingsRepository.setLookaheadTranscriptionEnabled(false)
                     analysisRepository.setLookaheadEnabled(id, false)
                     analysisRepository.resetTranscription(id)
                 }
@@ -3163,6 +3200,17 @@ class PlayerViewModel @Inject constructor(
                 val initialChunkId = playbackController.status.value.currentChunkId
                     ?: initialChunks.firstOrNull { isChunkUndetected(it) }?.id
                     ?: initialChunks.firstOrNull()?.id
+                    ?: run {
+                        val repoChunks = analysisRepository.observeChunks(mediaId).firstOrNull().orEmpty()
+                        val repoTranscripts = analysisRepository.observeTranscripts(mediaId).firstOrNull().orEmpty()
+                        repoChunks.firstOrNull { chunk ->
+                            val transcript = repoTranscripts[chunk.id]
+                            transcript?.text.isNullOrBlank() ||
+                                transcript.language == null ||
+                                transcript.language?.value.isNullOrBlank() ||
+                                transcript.language?.value.equals("und", ignoreCase = true)
+                        }?.id ?: repoChunks.firstOrNull()?.id
+                    }
                 requestedStartIds.add(initialChunkId)
                 analysisRepository.triggerLookaheadAt(mediaId, initialChunkId)
 

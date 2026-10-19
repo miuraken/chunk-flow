@@ -27,6 +27,8 @@
     <string name="settings_section_transcription">On-Device Transcription</string>
     <string name="settings_lookahead_label">Enable lookahead transcription</string>
     <string name="settings_lookahead_description">Automatically transcribes chunks and detects languages on-device while playing or selecting chunks.</string>
+    <string name="settings_auto_start_transcription_on_open_label">Automatically start transcription when opening a file</string>
+    <string name="settings_background_transcription_enabled_label">Transcribe in the background</string>
     <string name="settings_section_transcription_engine">Transcription Engine</string>
     <string name="settings_transcription_engine_description">Select the library used for on-device speech transcription.</string>
     <string name="settings_engine_auto_title">Auto (OS Default + sherpa-onnx Fallback)</string>
