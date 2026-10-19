@@ -407,7 +407,9 @@ class ChunkScheduler(
         val oldRepeatCheckedOnly = practiceSettings.repeatCheckedOnly
         practiceSettings = newSettings
 
-        if (newSettings.repeatChunkIds.size >= 2) {
+        if (newSettings.repeatChunkIds.size >= 2 ||
+            (newSettings.temporaryRepeatChunkId != null && newSettings.repeatCheckedOnly)
+        ) {
             singleChunkPlaybackId = null
         }
 

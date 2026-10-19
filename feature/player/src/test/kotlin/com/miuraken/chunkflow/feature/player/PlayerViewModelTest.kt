@@ -2286,4 +2286,136 @@ class PlayerViewModelTest {
         assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
         assertEquals(setOf(c0), viewModel.uiState.value.practice.repeatChunkIds)
     }
+
+    @Test
+    fun `リピートの一時チェック_未チェック時にリピートONで再生中チャンクに一時チェックが入り解除で一時チェックのみ消える`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c1 = sample.chunks[1].id
+        // チャンク 1 を再生中にする
+        playback.statusState.value = playback.statusState.value.copy(
+            isPlaying = true,
+            currentChunkId = c1,
+        )
+        assertEquals(1, viewModel.uiState.value.activeChunkIndex)
+        assertTrue(viewModel.uiState.value.practice.repeatChunkIds.isEmpty())
+        assertNull(viewModel.uiState.value.practice.temporaryRepeatChunkId)
+
+        // どのチャンクもチェックされていない状態でリピートバッジを ON にする
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+
+        // 再生中のチャンク c1 に一時チェック（見た目は通常のチェックと同じ isRepeatChecked = true）が入りリピート有効になる
+        assertTrue(viewModel.uiState.value.practice.repeatCheckedOnly)
+        assertEquals(setOf(c1), viewModel.uiState.value.practice.repeatChunkIds)
+        assertEquals(c1, viewModel.uiState.value.practice.temporaryRepeatChunkId)
+        assertTrue(viewModel.uiState.value.chunks[1].isRepeatChecked)
+        assertFalse(viewModel.uiState.value.chunks[0].isRepeatChecked)
+
+        // リピートバッジを再び押してリピートを解除すると、一時チェックも解除される
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertFalse(viewModel.uiState.value.practice.repeatCheckedOnly)
+        assertTrue(viewModel.uiState.value.practice.repeatChunkIds.isEmpty())
+        assertNull(viewModel.uiState.value.practice.temporaryRepeatChunkId)
+        assertFalse(viewModel.uiState.value.chunks[1].isRepeatChecked)
+    }
+
+    @Test
+    fun `リピートの一時チェック_一時チェックをリピート中に他のチャンクをタップすると一時チェックが新しいチャンクへ移る`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c0 = sample.chunks[0].id
+        val c2 = sample.chunks[2].id
+        val c3 = sample.chunks[3].id
+        playback.statusState.value = playback.statusState.value.copy(
+            isPlaying = true,
+            currentChunkId = c0,
+        )
+
+        // 未チェック時にリピート ON -> c0 に一時チェックが付く
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertEquals(setOf(c0), viewModel.uiState.value.practice.repeatChunkIds)
+        assertEquals(c0, viewModel.uiState.value.practice.temporaryRepeatChunkId)
+
+        // 一時チェックのリピート中にチャンク c2 をタップ -> 一時チェックが c2 へ移る（高々 1 つ）
+        viewModel.onEvent(PlayerEvent.SeekToChunk(c2))
+        assertEquals(setOf(c2), viewModel.uiState.value.practice.repeatChunkIds)
+        assertEquals(c2, viewModel.uiState.value.practice.temporaryRepeatChunkId)
+        assertFalse(viewModel.uiState.value.chunks[0].isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks[2].isRepeatChecked)
+        assertTrue(viewModel.uiState.value.practice.repeatCheckedOnly)
+
+        // さらにチャンク c3 をタップ -> 一時チェックが c3 へ移る
+        viewModel.onEvent(PlayerEvent.SeekToChunk(c3))
+        assertEquals(setOf(c3), viewModel.uiState.value.practice.repeatChunkIds)
+        assertEquals(c3, viewModel.uiState.value.practice.temporaryRepeatChunkId)
+        assertFalse(viewModel.uiState.value.chunks[2].isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks[3].isRepeatChecked)
+
+        // リピート解除すると移った先の一時チェック c3 が解除される
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertFalse(viewModel.uiState.value.practice.repeatCheckedOnly)
+        assertTrue(viewModel.uiState.value.practice.repeatChunkIds.isEmpty())
+        assertNull(viewModel.uiState.value.practice.temporaryRepeatChunkId)
+    }
+
+    @Test
+    fun `リピートの一時チェック_他のチャンクにチェックが入ると恒久チェックに移行しリピート解除でも消えない`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c0 = sample.chunks[0].id
+        val c2 = sample.chunks[2].id
+        val c3 = sample.chunks[3].id
+        playback.statusState.value = playback.statusState.value.copy(
+            isPlaying = true,
+            currentChunkId = c0,
+        )
+
+        // 未チェック時にリピート ON -> c0 に一時チェックが付く
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertEquals(setOf(c0), viewModel.uiState.value.practice.repeatChunkIds)
+        assertEquals(c0, viewModel.uiState.value.practice.temporaryRepeatChunkId)
+
+        // 別のチャンク c2 にチェックを入れる -> c0 の一時チェックは恒久的なチェックに移行する (temporaryRepeatChunkId = null)
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c2))
+        assertEquals(setOf(c0, c2), viewModel.uiState.value.practice.repeatChunkIds)
+        assertNull(viewModel.uiState.value.practice.temporaryRepeatChunkId)
+
+        // 恒久チェックに移行した後は、他のチャンク c3 をタップしてもチェックは移動しない
+        viewModel.onEvent(PlayerEvent.SeekToChunk(c3))
+        assertEquals(setOf(c0, c2), viewModel.uiState.value.practice.repeatChunkIds)
+
+        // リピートバッジを再度押してリピートを解除しても、恒久的なチェック (c0, c2) は両方維持される
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertFalse(viewModel.uiState.value.practice.repeatCheckedOnly)
+        assertEquals(setOf(c0, c2), viewModel.uiState.value.practice.repeatChunkIds)
+        assertTrue(viewModel.uiState.value.chunks[0].isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks[2].isRepeatChecked)
+    }
 }

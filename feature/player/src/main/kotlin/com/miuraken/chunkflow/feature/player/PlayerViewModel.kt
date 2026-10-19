@@ -1603,30 +1603,52 @@ class PlayerViewModel @Inject constructor(
                         loop = event.loopMode,
                         repeatChunkIds = if (event.loopMode is LoopMode.Off) emptySet() else it.repeatChunkIds,
                         repeatCheckedOnly = if (event.loopMode is LoopMode.Off) false else it.repeatCheckedOnly,
+                        temporaryRepeatChunkId = if (event.loopMode is LoopMode.Off) null else it.temporaryRepeatChunkId,
                     )
                 }
             }
 
             PlayerEvent.ToggleRepeat -> {
+                val chunks = uiState.value.chunks
+                val posMs = playbackController.position.currentPositionMs()
                 val activeChunkId = uiState.value.activeChunkIndex
-                    ?.let { idx -> uiState.value.chunks.getOrNull(idx)?.id }
-                    ?: uiState.value.chunks.firstOrNull()?.id
+                    ?.let { idx -> chunks.getOrNull(idx)?.id }
+                    ?: chunks.firstOrNull { posMs >= it.startMs && posMs < it.endMs }?.id
+                    ?: chunks.firstOrNull { posMs in it.startMs..it.endMs }?.id
+                    ?: chunks.firstOrNull { !it.isSkipped }?.id
+                    ?: chunks.firstOrNull()?.id
                 playbackController.updatePractice { current ->
                     val isCurrentlyOn = current.loop !is LoopMode.Off || current.repeatCheckedOnly
                     if (isCurrentlyOn) {
+                        val tempId = current.temporaryRepeatChunkId
+                        val nextRepeatIds = if (tempId != null) {
+                            current.repeatChunkIds - tempId
+                        } else {
+                            current.repeatChunkIds
+                        }
                         current.copy(
                             loop = LoopMode.Off,
                             repeatCheckedOnly = false,
+                            repeatChunkIds = nextRepeatIds,
+                            temporaryRepeatChunkId = null,
                         )
                     } else if (current.repeatChunkIds.isNotEmpty()) {
-                        current.copy(repeatCheckedOnly = true)
+                        current.copy(
+                            repeatCheckedOnly = true,
+                            temporaryRepeatChunkId = null,
+                        )
                     } else if (activeChunkId != null) {
                         current.copy(
-                            loop = LoopMode.SingleChunk(chunkId = activeChunkId, times = null),
+                            loop = LoopMode.Off,
+                            repeatChunkIds = setOf(activeChunkId),
                             repeatCheckedOnly = true,
+                            temporaryRepeatChunkId = activeChunkId,
                         )
                     } else {
-                        current.copy(repeatCheckedOnly = true)
+                        current.copy(
+                            repeatCheckedOnly = true,
+                            temporaryRepeatChunkId = null,
+                        )
                     }
                 }
             }
@@ -1711,10 +1733,17 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.ToggleChunkRepeat -> {
                 playbackController.updatePractice { current ->
-                    val nextIds = if (event.chunkId in current.repeatChunkIds) {
+                    val isUnchecking = event.chunkId in current.repeatChunkIds
+                    val nextIds = if (isUnchecking) {
                         current.repeatChunkIds - event.chunkId
                     } else {
                         current.repeatChunkIds + event.chunkId
+                    }
+                    val nextTemporaryId = when {
+                        current.temporaryRepeatChunkId == null -> null
+                        !isUnchecking && event.chunkId != current.temporaryRepeatChunkId -> null
+                        isUnchecking && event.chunkId == current.temporaryRepeatChunkId -> null
+                        else -> current.temporaryRepeatChunkId
                     }
                     val nextLoop = if (
                         nextIds.isNotEmpty() &&
@@ -1727,6 +1756,7 @@ class PlayerViewModel @Inject constructor(
                     current.copy(
                         loop = nextLoop,
                         repeatChunkIds = nextIds,
+                        temporaryRepeatChunkId = nextTemporaryId,
                     )
                 }
             }
@@ -1741,6 +1771,12 @@ class PlayerViewModel @Inject constructor(
                     if (nextIds == current.repeatChunkIds) {
                         current
                     } else {
+                        val nextTemporaryId = when {
+                            current.temporaryRepeatChunkId == null -> null
+                            event.selected && event.chunkId != current.temporaryRepeatChunkId -> null
+                            !event.selected && event.chunkId == current.temporaryRepeatChunkId -> null
+                            else -> current.temporaryRepeatChunkId
+                        }
                         val nextLoop = if (
                             nextIds.isNotEmpty() &&
                             (current.loop is LoopMode.SingleChunk || current.loop is LoopMode.ChunkRange)
@@ -1752,6 +1788,7 @@ class PlayerViewModel @Inject constructor(
                         current.copy(
                             loop = nextLoop,
                             repeatChunkIds = nextIds,
+                            temporaryRepeatChunkId = nextTemporaryId,
                         )
                     }
                 }
@@ -1759,7 +1796,11 @@ class PlayerViewModel @Inject constructor(
 
             PlayerEvent.ClearChunkSelection -> {
                 playbackController.updatePractice { current ->
-                    if (current.repeatChunkIds.isEmpty()) current else current.copy(repeatChunkIds = emptySet())
+                    if (current.repeatChunkIds.isEmpty() && current.temporaryRepeatChunkId == null) {
+                        current
+                    } else {
+                        current.copy(repeatChunkIds = emptySet(), temporaryRepeatChunkId = null)
+                    }
                 }
             }
 
@@ -1784,7 +1825,9 @@ class PlayerViewModel @Inject constructor(
                         val merged = analysisRepository.mergeChunks(id, chunkIds)
                         if (merged) {
                             // 連結するとチャンクの ID が変わるため、選択を外す
-                            playbackController.updatePractice { it.copy(repeatChunkIds = emptySet()) }
+                            playbackController.updatePractice {
+                                it.copy(repeatChunkIds = emptySet(), temporaryRepeatChunkId = null)
+                            }
                         }
                     }
                 }
@@ -2055,7 +2098,12 @@ class PlayerViewModel @Inject constructor(
                                 .filter { (it.startMs to it.endMs) in selectedRanges }
                                 .map { it.id }
                                 .toSet()
-                            playbackController.updatePractice { it.copy(repeatChunkIds = preservedIds) }
+                            playbackController.updatePractice { current ->
+                                current.copy(
+                                    repeatChunkIds = preservedIds,
+                                    temporaryRepeatChunkId = current.temporaryRepeatChunkId?.takeIf { it in preservedIds },
+                                )
+                            }
                         }
                     }
                 }
@@ -2925,7 +2973,14 @@ class PlayerViewModel @Inject constructor(
                         .map { it.id }
                         .toSet()
                     playbackController.updatePractice { current ->
-                        if (current.repeatChunkIds.isEmpty()) current else current.copy(repeatChunkIds = preservedIds)
+                        if (current.repeatChunkIds.isEmpty()) {
+                            current
+                        } else {
+                            current.copy(
+                                repeatChunkIds = preservedIds,
+                                temporaryRepeatChunkId = current.temporaryRepeatChunkId?.takeIf { it in preservedIds },
+                            )
+                        }
                     }
                 }
             }
@@ -3075,21 +3130,30 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekToChunk(chunkId: ChunkId) {
-        val wasPlaying = playbackController.status.value.isPlaying
+        playbackController.updatePractice { current ->
+            val tempId = current.temporaryRepeatChunkId
+            val isRepeatActive = current.repeatCheckedOnly || current.loop !is LoopMode.Off
+            if (tempId != null && isRepeatActive && chunkId != tempId) {
+                current.copy(
+                    repeatChunkIds = (current.repeatChunkIds - tempId) + chunkId,
+                    temporaryRepeatChunkId = chunkId,
+                )
+            } else {
+                current
+            }
+        }
         playbackController.seekToChunk(chunkId)
         if (playbackController is FakePlaybackController) {
             val targetChunk = uiState.value.chunks.firstOrNull { it.id == chunkId }
             if (targetChunk != null) {
                 playbackController.position.positionMs = targetChunk.startMs
             }
-            if (!wasPlaying) {
-                playbackController.statusState.update {
-                    it.copy(
-                        isPlaying = true,
-                        currentChunkId = chunkId,
-                        autoPauseEndsAtMs = null,
-                    )
-                }
+            playbackController.statusState.update {
+                it.copy(
+                    isPlaying = true,
+                    currentChunkId = chunkId,
+                    autoPauseEndsAtMs = null,
+                )
             }
         }
         val id = resolveActiveMediaId()

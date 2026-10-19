@@ -377,10 +377,12 @@ class MediaControllerPlaybackController(
             val targetChunk = currentChunks.firstOrNull { it.id == chunkId } ?: return@launch
             val lp = learningPlayerInstance
             val scheduler = chunkScheduler
-            val repeatChunkIds = practiceController.settings.value.repeatChunkIds
-            val isMultiSelectedTarget = repeatChunkIds.size >= 2 && chunkId in repeatChunkIds
+            val practice = practiceController.settings.value
+            val repeatChunkIds = practice.repeatChunkIds
+            val isSelectedRepeatTarget = chunkId in repeatChunkIds &&
+                (repeatChunkIds.size >= 2 || (practice.repeatCheckedOnly && practice.temporaryRepeatChunkId == chunkId))
 
-            if (isMultiSelectedTarget) {
+            if (isSelectedRepeatTarget) {
                 if (scheduler != null) {
                     scheduler.playFromSelectedChunk(chunkId)
                 } else {
