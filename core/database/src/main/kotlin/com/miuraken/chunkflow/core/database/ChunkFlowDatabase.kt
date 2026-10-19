@@ -8,7 +8,6 @@ import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
 import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
-import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
@@ -18,7 +17,6 @@ import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
-import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
@@ -39,13 +37,12 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         ChunkEntity::class,
         TranscriptEntity::class,
         BookmarkEntity::class,
-        DriveFileEntity::class,
         ItemSttOverrideEntity::class,
         CourseFolderEntity::class,
         PlaylistEntity::class,
         PlaylistItemEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -66,9 +63,6 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
 
     /** `bookmark` テーブルの DAO。 */
     abstract fun bookmarkDao(): BookmarkDao
-
-    /** `drive_file` テーブルの DAO。 */
-    abstract fun driveFileDao(): DriveFileDao
 
     /** `item_stt_override` テーブルの DAO（ADR-0011 §2.3）。 */
     abstract fun itemSttOverrideDao(): ItemSttOverrideDao
@@ -164,6 +158,26 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             }
         }
 
+        /** バージョン 6 から 7 へのマイグレーション（`drive_file` テーブルと `course_folder.drive_folder_id` 列を削除）。 */
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS `drive_file`")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `course_folder_new` (" +
+                        "`course_path` TEXT NOT NULL, `kind` TEXT NOT NULL, `target_lang` TEXT NOT NULL, " +
+                        "`base_lang` TEXT, `tree_uri` TEXT, " +
+                        "`last_scanned_at` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`course_path`))",
+                )
+                db.execSQL(
+                    "INSERT INTO `course_folder_new` (`course_path`, `kind`, `target_lang`, `base_lang`, `tree_uri`, `last_scanned_at`) " +
+                        "SELECT `course_path`, `kind`, `target_lang`, `base_lang`, `tree_uri`, `last_scanned_at` " +
+                        "FROM `course_folder` WHERE `kind` != 'GOOGLE_DRIVE_FOLDER'",
+                )
+                db.execSQL("DROP TABLE `course_folder`")
+                db.execSQL("ALTER TABLE `course_folder_new` RENAME TO `course_folder`")
+            }
+        }
+
         /** アプリで使うすべてのマイグレーション（古い順）。データベースを開くときに渡す。 */
         val ALL_MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2,
@@ -171,6 +185,7 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             MIGRATION_3_4,
             MIGRATION_4_5,
             MIGRATION_5_6,
+            MIGRATION_6_7,
         )
     }
 }

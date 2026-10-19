@@ -7,7 +7,6 @@ import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
 import com.miuraken.chunkflow.core.database.dao.BookmarkDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
-import com.miuraken.chunkflow.core.database.dao.DriveFileDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
@@ -60,10 +59,6 @@ object DatabaseModule {
     /** [BookmarkDao] を提供する。 */
     @Provides
     fun providesBookmarkDao(database: ChunkFlowDatabase): BookmarkDao = database.bookmarkDao()
-
-    /** [DriveFileDao] を提供する。 */
-    @Provides
-    fun providesDriveFileDao(database: ChunkFlowDatabase): DriveFileDao = database.driveFileDao()
 
     /** [ItemSttOverrideDao] を提供する（ADR-0011 §2.3）。 */
     @Provides

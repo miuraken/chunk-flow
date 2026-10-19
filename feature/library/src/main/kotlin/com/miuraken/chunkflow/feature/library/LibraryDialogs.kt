@@ -296,7 +296,7 @@ internal fun ImportConfigDialog(
     availableFolders: List<String> = listOf(LibraryCourseFolder.DEFAULT_IMPORTED_COURSE),
     onCreateVirtualFolder: (String, LanguagePair, ItemSttOverride) -> Unit = { _, _, _ -> },
 ) {
-    val isFileImport = !config.isDriveSyncFolder && config.treeUri == null
+    val isFileImport = config.treeUri == null
     var courseText by remember(config) {
         mutableStateOf(
             if (isFileImport) {
@@ -333,21 +333,9 @@ internal fun ImportConfigDialog(
         }
     }
 
-    val dialogTitle = if (config.isDriveSyncFolder) {
-        stringResource(R.string.library_drive_sync_config_title)
-    } else {
-        stringResource(R.string.library_import_config_title)
-    }
-    val dialogHint = if (config.isDriveSyncFolder) {
-        stringResource(R.string.library_drive_sync_config_hint)
-    } else {
-        stringResource(R.string.library_import_config_hint, config.uris.size)
-    }
-    val confirmLabel = if (config.isDriveSyncFolder) {
-        stringResource(R.string.library_drive_sync_config_confirm)
-    } else {
-        stringResource(R.string.library_import_config_confirm)
-    }
+    val dialogTitle = stringResource(R.string.library_import_config_title)
+    val dialogHint = stringResource(R.string.library_import_config_hint, config.uris.size)
+    val confirmLabel = stringResource(R.string.library_import_config_confirm)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -625,7 +613,6 @@ internal fun EditItemMetadataDialog(
     onDismiss: () -> Unit,
     initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
-    onDeleteLocalAudioCopy: (() -> Unit)? = null,
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
     onOpenLanguageSettings: () -> Unit = {},
 ) {
@@ -665,23 +652,6 @@ internal fun EditItemMetadataDialog(
                     onOpenLanguageSettings = onOpenLanguageSettings,
                     confirmTargetLangChange = true,
                 )
-
-                if (onDeleteLocalAudioCopy != null) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-                    OutlinedButton(
-                        onClick = onDeleteLocalAudioCopy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Delete,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(text = stringResource(R.string.library_edit_delete_local_audio_copy_button))
-                    }
-                }
             }
         },
         confirmButton = {

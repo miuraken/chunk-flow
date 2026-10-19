@@ -23,7 +23,6 @@ import com.miuraken.chunkflow.core.data.library.MediaFileLocator
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
-import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -727,9 +726,6 @@ class MediaControllerPlaybackController(
             ?: File(context.filesDir, "media/${item.id.value}").takeIf { it.isFile }
         if (managedFile != null && managedFile.exists()) {
             return Uri.fromFile(managedFile)
-        }
-        if (item.storageState == AudioStorageState.DRIVE_REMOTE_ONLY) {
-            return null
         }
         val localPath = item.localFilePath?.takeIf { it.isNotBlank() }
         if (localPath != null) {

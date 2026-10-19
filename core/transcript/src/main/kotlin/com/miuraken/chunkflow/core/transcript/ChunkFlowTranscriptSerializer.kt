@@ -19,7 +19,7 @@ import kotlinx.serialization.json.Json
  * 準拠した UTF-8（Unicode NFC 正規化済み）JSON 文字列またはバイト列へ直列化するクラス（§7.4.3、§7.4.6、§7.5）。
  *
  * 端末内の先読み文字起こし（F6.2）や手動修正（F7.5）、字幕ファイルからの変換で生成・更新された文字起こしを
- * ローカルの `.chunkflow.json` や Google Drive の `<course>/transcription/<stem>.chunkflow.json` に保存する際に使用する。
+ * ローカルの `.chunkflow.json` に保存する際に使用する。
  */
 @OptIn(ExperimentalSerializationApi::class)
 class ChunkFlowTranscriptSerializer(

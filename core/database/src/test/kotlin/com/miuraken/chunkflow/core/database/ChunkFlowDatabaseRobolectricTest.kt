@@ -9,7 +9,6 @@ import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
-import com.miuraken.chunkflow.core.database.entity.DriveFileEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
@@ -164,19 +163,8 @@ class ChunkFlowDatabaseRobolectricTest {
         assertEquals("zh", afterBulk?.language)
         assertEquals(true, afterBulk?.userEdited)
 
-        // bookmark + drive_file + item_stt_override
+        // bookmark + item_stt_override
         db.bookmarkDao().insert(BookmarkEntity(mediaId = mediaId, positionMs = 1_500L, note = "重要"))
-        db.driveFileDao().upsert(
-            DriveFileEntity(
-                driveFileId = "drive-1",
-                kind = "AUDIO",
-                course = "korean-course",
-                modifiedTime = 5_000L,
-                sha256 = "c".repeat(64),
-                mediaId = mediaId,
-            ),
-        )
-        assertEquals(1, db.driveFileDao().getByMediaId(mediaId).size)
         assertTrue(
             db.itemSttOverrideDao().setIfMediaExists(
                 ItemSttOverrideEntity(
@@ -202,7 +190,6 @@ class ChunkFlowDatabaseRobolectricTest {
         assertEquals(emptyList(), db.chunkDao().getByMediaIdAndOrigin(mediaId, "IMPORTED"))
         assertEquals(emptyList(), db.transcriptDao().observeByMediaId(mediaId).first())
         assertEquals(emptyList(), db.bookmarkDao().getByMediaId(mediaId))
-        assertEquals(emptyList(), db.driveFileDao().getAll())
         assertNull(db.itemSttOverrideDao().getByMediaId(mediaId))
     }
 

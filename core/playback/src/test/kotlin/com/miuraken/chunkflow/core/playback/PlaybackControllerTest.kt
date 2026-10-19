@@ -17,7 +17,6 @@ import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
-import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
@@ -881,7 +880,6 @@ class PlaybackControllerTest {
 
         override fun import(uris: List<Uri>): Flow<ImportProgress> = flowOf()
         override suspend fun importTranscript(uri: Uri): TranscriptImportResult = TranscriptImportResult.Invalid(TranscriptError.UNKNOWN_FORMAT)
-        override fun syncFromDrive(): Flow<SyncProgress> = flowOf()
         override suspend fun delete(id: MediaId) {}
     }
 

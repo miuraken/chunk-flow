@@ -30,7 +30,5 @@ Pixel 実機（Pixel 8 クラス）がつながったら行う計測と、人間
 | D10 | 前 / 次ボタン | Bluetooth イヤホン（または有線のリモコン）の前 / 次でチャンクを移動できるか | S2 §7 の 6 | 0007、§7.2.3 |
 | D11 | AAC のシーク後の誤差 | +23.2ms（シーク後だけ）が実機でも同じか | S2 §7 の 2 | 0008 |
 | D12 | 耳で聞こえる位置 | AudioTrack の出力遅延を含めた位置とのずれ | 未作成 | 0008 |
-| H1 | Drive での選択（人間） | SAF での複数選択、JSON の MIME、フォルダをまたいだ選択、フォルダ選択（`OpenDocumentTree`）の可否、オフライン | S2 §5 | §7.1 |
-| H2 | Drive API（人間の準備の後） | 認可の流れ、未確認のアプリの警告、`sha256Checksum`、承認の取り消し | S2 §6 | §7.1、§12 |
 | H3 | 言語の確認表（人間） | 実際の教材 3 本の正解率（1 秒以上 / 未満）。平滑化・ヒンディー語の判断の材料 | S1-real-materials §5 | 0009 |
 | H4 | NVIDIA の PC（人間） | Linux / WSL2 での `uv sync` と pytest、faster-whisper の RTF、mlx との結果の差、turbo の `yue` の確率 | S1-pipeline-prototype §6 | 0009 |

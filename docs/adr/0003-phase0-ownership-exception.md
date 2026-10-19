@@ -17,7 +17,7 @@ Phase 0 の基盤づくり（ブランチ `agent/lead/phase0-foundation`）に�
 | 担当 | 置いたファイル | 内容 |
 | --- | --- | --- |
 | playback | `core/playback/.../PlaybackController.kt` | §6.3 の `PlaybackController`、`PositionProvider`、`PlaybackStatus`、`PlaybackError` の**宣言だけ** |
-| playback | `core/data/.../library/LibraryRepository.kt` | §6.3 の `LibraryRepository` と `ImportProgress` / `SyncProgress` / `TranscriptImportResult` などの**宣言だけ** |
+| playback | `core/data/.../library/LibraryRepository.kt` | §6.3 の `LibraryRepository` と `ImportProgress` / `TranscriptImportResult` などの**宣言だけ** |
 | audio-analysis | `core/data/.../analysis/AnalysisRepository.kt` | §6.3 の `AnalysisRepository` の**宣言だけ** |
 | transcriber | `core/transcript/.../TranscriptParser.kt` | §6.3 の `TranscriptParser` と `TranscriptDocument` などの**宣言だけ** |
 | ui | `core/designsystem/` | 最小限のテーマ（`ChunkFlowTheme`、代替の配色）と `@ChunkFlowPreviews` |

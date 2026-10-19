@@ -32,7 +32,7 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 class ChunkFlowTranscriptParser : TranscriptParser {
 
-    // TODO(security): 文字起こしファイルの署名による改ざんの検知は行わない。自分の PC と自分の Google Drive の間でだけ受け渡すため。内容が不正な場合の影響は、検証と上限で抑える。
+    // TODO(security): 文字起こしファイルの署名による改ざんの検知は行わない。自分の PC と自分の端末の間でだけ受け渡すため。内容が不正な場合の影響は、検証と上限で抑える。
 
     override fun parse(bytes: ByteArray, fileName: String): TranscriptParseResult {
         if (fileName.isNotBlank() && !isSupportedJsonFileName(fileName)) {

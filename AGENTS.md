@@ -25,7 +25,7 @@
 | エージェント | 書き込める範囲 |
 | --- | --- |
 | `lead` | `build-logic/`、`gradle/`、すべての `*.gradle.kts`、リポジトリ直下の設定ファイル（`settings.gradle.kts`、`gradle.properties`、`.github/`、`.editorconfig`、`.gitignore` など）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`（下の例外を除く）、`AGENTS.md`、`_agents/`、`design_doc.md` |
-| `playback` | `core/playback/`、`core/drive/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` |
+| `playback` | `core/playback/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` |
 | `audio-analysis` | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md` |
 | `transcriber` | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md`、`spikes/textai/`、`docs/spikes/S4-*.md` |
 | `ui` | `feature/`、`core/designsystem/`（スクリーンショットテストの基準画像を含む） |
@@ -82,7 +82,7 @@
 
 - **再生を最優先する**: 解析や取り込みが、再生の開始や操作を止めてはいけません。
 - **再生位置は UiState に入れない**: 高頻度で変わる位置は `PositionProvider` から描画フェーズで読みます（§6.2）。
-- **ExoPlayer に触るのは `core:playback` だけ**、**ネットワークに触るのは `core:drive` だけ**。
+- **ExoPlayer に触るのは `core:playback` だけ**、**ネットワークに触るのは `core:media`（モデル取得）だけ**。
 - **純 Kotlin のモジュール**（`core:model`、`core:audio`、`core:transcript`）に Android の API を持ち込みません。
 - **チャンクの作り直しは 1 つのトランザクションで**、挿入 → 文字起こしの付け替え → 古いチャンクの削除の順に行います（§6.4）。
 - **Dispatcher は DI で注入**し、テストで差し替えられるようにします。
@@ -113,10 +113,10 @@ UI を変えたときの確認方法は設計書 §10.5 に従います。要点
 
 設計書 §8 のルールに従います。特に次の点は必ず守ってください。
 
-- 秘密情報（署名鍵、OAuth のクライアント情報、トークン）をコミットしません。ログにも出しません。
+- 秘密情報（署名鍵、トークンなど）をコミットしません。ログにも出しません。
 - **実際の教材の音声や文字起こしをコミットしません**（著作権のため）。テスト用の音源はスクリプトで生成します。
 - リリースビルドで、ファイル名・URI・文字起こしの本文をログに出しません。
-- 取り込むファイル（音声・JSON・SRT など）と Drive からのデータは、すべて信頼できない入力として扱い、サイズの上限と検証を通します。
+- 取り込むファイル（音声・JSON・SRT など）は、すべて信頼できない入力として扱い、サイズの上限と検証を通します。
 - 意図的に見送る対策は、コードに `TODO(security): <理由>` を残します。
 - 権限を増やすときは、理由を ADR に残します（§8.2 の一覧から増やさない）。
 

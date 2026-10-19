@@ -1059,7 +1059,7 @@ sealed interface PlayerEvent {
     /** [language] の端末内音声認識モデルのダウンロードを OS に要求する（モデルが未ダウンロードのとき）。 */
     data class RequestRecognitionModelDownload(val language: LanguageTag) : PlayerEvent
 
-    /** 文字起こしをローカル `.chunkflow.json` に書き出す（Drive 自動同期対象）。 */
+    /** 文字起こしをローカル `.chunkflow.json` に書き出す。 */
     data object ExportLocalTranscriptJson : PlayerEvent
 
     /** 文字起こし・字幕ファイルを指定フォーマットで SAF の [uri] へ書き出す（F7.5）。 */

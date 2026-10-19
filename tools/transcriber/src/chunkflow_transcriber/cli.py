@@ -4,7 +4,7 @@
         [--model large-v3-turbo] [--engine auto|mlx|faster-whisper] [--force]
 
 JSON がすでにある音声は飛ばす（`--force` で作り直す）。古い版のツールで作った JSON は作り直す。
-最後に、作成した JSON の一覧とアップロード先（`<コース>/transcription/`）を表示する。
+最後に、作成した JSON の一覧と出力先（`<コース>/transcription/`）を表示する。
 """
 
 from __future__ import annotations
@@ -187,12 +187,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if written:
         print(
-            "\n作成した JSON（Google Drive の同じコースの transcription/ にアップロードしてください）:"
+            "\n作成した JSON（端末の同じコースの transcription/ に配置するか、アプリから取り込んでください）:"
         )
         for p in written:
             print(f"  {p}")
         for d in sorted({p.parent for p in written}):
-            print(f"アップロード先: {d.parent.name}/transcription/")
+            print(f"出力先: {d.parent.name}/transcription/")
     else:
         print("作成した JSON はありません。")
     print(f"(chunkflow-transcribe {__version__})")

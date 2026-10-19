@@ -23,8 +23,6 @@
 | シーク後の一定のずれ | シーク後は MP3 が +13.1ms、AAC が +23.2ms で一定（デコーダの遅延のぶん）。先頭から再生したときとは 25ms ほど違う | 形式ごとの固定の補正値で吸収できる（§7.4.6 の時刻の補正、S3 と合わせて決める） |
 | 3. 自動ポーズからの再開 | MediaSessionService 上で動作を確認（遅れ 1〜62ms）。**エミュレータは CPU が眠らない**（睡眠 0ms）ので、WakeLock の有無の差は測れない | 実機待ち（計測の仕組みは用意済み） |
 | 前 / 次の再割り当て | `cmd media_session dispatch next/previous` がチャンク移動になった。next は引数 `(C.INDEX_UNSET, C.TIME_UNSET)`、previous は `(0, 0)` で届いた。ロック画面のメディア操作にも前 / 次が出た | §7.2.3 のとおりでよい |
-| 4. Drive での選択 | 画面は用意した。エミュレータでは未確認（§5） | 人間が手順書で確認する |
-| 5. Drive API | 実装していない。準備の手順をまとめた（§6） | — |
 
 ## 1. 計測の仕組み
 
@@ -70,7 +68,7 @@
 - **再開まで**: flush から、次の区間の最初のバッファが AudioSink に届くまでの実時間（音が途切れる時間の下限）。
 
 「鳴っている位置」は AudioTrack の再生位置とレイテンシの推定に基づく ExoPlayer の推定値で、**スピーカーから実際に出た音ではない**。
-実際の行き過ぎは、実機で `loop.m4a` を再生して録音し、B の後の目盛りがいくつ聞こえるかで数える（§7）。
+実際の行き過ぎは、実機で `loop.m4a` を再生して録音し、B の後の目盛りがいくつ聞こえるかで数える（§5）。
 
 ## 2. 結果: PlayerMessage によるループ（S2 の 1）
 
@@ -180,7 +178,7 @@ DataSource（`measure/IndexSeekDataSource.kt`）を作り、`FLAG_ENABLE_INDEX_S
 | (a) MP4 へ詰め替え | 正確（+13.1 一定） | MediaMuxer / Mp4Muxer は MP3 を受け付けない → **自前の MP4 ライタが必要** | 再生時の処理なし、長さも正しい | 実装量、保存するファイルが元と変わる（SHA-256 と別に持つ必要） |
 | (b) M4A（AAC）へ変換 | 正確（+23.2 一定） | Media3 Transformer（依存の追加が必要。未検証） | 標準的 | 再エンコードで音質劣化、時間と電池、ファイルが変わる |
 | (c) 自前の索引 | 未実装 | 解析のデコードで全フレームの位置を記録し、独自の Extractor / SeekMap を書く | 最初の遠いシークも速い | Extractor の実装量（ギャップレス、ID3 など） |
-| (c') **IndexSeekDataSource**（試作） | **正確（一定）** | DataSource の差し替えだけ（約 100 行） | ファイルを書き換えない（SHA-256 も Drive の `sha256Checksum` もそのまま）。3 種すべてに効く | 長さが不明になる、最初の遠いシークが遅い、Media3 の内部の挙動（ヘッダの扱い）に依存 |
+| (c') **IndexSeekDataSource**（試作） | **正確（一定）** | DataSource の差し替えだけ（約 100 行） | ファイルを書き換えない（SHA-256 もそのまま）。3 種すべてに効く | 長さが不明になる、最初の遠いシークが遅い、Media3 の内部の挙動（ヘッダの扱い）に依存 |
 
 **提案**: VBR（と、念のため CBR も含めたすべての MP3）に (c') を使うのが、実装量と効果の釣り合いが最もよい。
 最初の遠いシークの遅さが実機で問題になる場合だけ (c) に進む。CBR の Info ヘッダ付きでも、既定では ±18ms ほど位置に比例してずれる（10 分で約 30ms）ので、MP3 は形式を問わず (c') に通すと、時間軸のずれが一定値だけになる。
@@ -228,76 +226,7 @@ DataSource（`measure/IndexSeekDataSource.kt`）を作り、`FLAG_ENABLE_INDEX_S
 - `getState()` で前 / 次のコマンドを足すと、単一の音声でもロック画面のメディア操作に前 / 次のボタンが出た。
 - LearningPlayer から `exo.seekTo()` したシークは、ChunkScheduler では「ユーザーのシーク」として扱われ、予約し直された。
 
-## 5. Google Drive での選択（S2 の 4）— 人間が試す手順
-
-計測アプリの画面に「複数選択」（`OpenMultipleDocuments`、MIME は `*/*`）と「フォルダ選択」（`OpenDocumentTree`）のボタンを置いた。
-結果は画面と `files/results/picker-docs-*.txt` / `picker-tree-*.txt` に出る（表示名・`getType` の MIME・Document の MIME・サイズ・フラグ・プロバイダ）。
-エミュレータでは、画面のロック（パターン）のため操作できず**未確認**（ビルドと起動のみ確認）。
-
-### 準備
-
-1. Drive に `ChunkFlow/テスト/` を作り、次を置く（中身は何でもよい。テスト音源の `aac.m4a`、`cbr.mp3` と、適当な `a.chunkflow.json` を `transcription/` の下に）。
-   ```text
-   ChunkFlow/テスト/aac.m4a
-   ChunkFlow/テスト/cbr.mp3
-   ChunkFlow/テスト/transcription/a.chunkflow.json
-   ```
-2. 実機に計測アプリを入れる: `python3 spikes/playback/testdata/generate_testdata.py && spikes/playback/testdata/install_and_push.sh`
-3. 実機の Drive アプリで、上のアカウントにログインしておく。
-
-### 手順と記録すること
-
-1. 「複数選択」→ ファイル選択画面の左のメニューで「ドライブ」を選び、`ChunkFlow/テスト/` で **`aac.m4a` と `cbr.mp3` を長押しで 2 つ選ぶ** → 「選択」。
-   - 記録: 複数選択できたか / 結果の `選ばれた数` / 各ファイルの `authority`（`com.google.android.apps.docs.storage` の見込み）と `getType`。
-2. 「複数選択」→ `transcription/a.chunkflow.json` を選ぶ。
-   - 記録: **JSON の MIME**（`getType` と `mime_type` の列。`application/json` / `application/octet-stream` / `text/plain` など）。
-3. 「複数選択」で、`ChunkFlow/テスト/` の音声と `transcription/` の JSON を**1 回の選択でまとめて選べるか**（フォルダをまたげるか）。
-4. 「フォルダ選択」→ 左のメニューに**「ドライブ」が出るか**。出たら `ChunkFlow/テスト/` を選び、「このフォルダを使用」→ 許可。
-   - 記録: Drive が選べたか / 結果に中身（2 階層）が一覧されたか / 一覧できない場合のメッセージ。
-5. 機内モードにして 1. を繰り返す（オフラインのときのエラーの出方。§7.1）。
-6. `adb pull /sdcard/Android/data/com.miuraken.chunkflow.spike.playback/files/results/ .` で結果を回収して送る。
-
-## 6. Drive API（S2 の 5）— 準備（今回は実装しない）
-
-### 6.1 Google Cloud 側の設定（人間）
-
-1. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクトを作る（例: `chunkflow-personal`）。
-2. 「API とサービス」→「ライブラリ」で **Google Drive API** を有効にする。
-3. 「Google Auth Platform」→「ブランディング」でアプリ名・サポートのメールを入れる（個人利用なのでロゴや審査は不要）。
-4. 「対象」でユーザーの種類を **外部** にし、**公開ステータスを「本番環境」** にする（「テスト」のままだと承認が 7 日で切れることがある。§12）。
-   制限付きのスコープ（`drive.readonly`）を使うため、確認（審査）を受けないかぎり同意画面に「Google はこのアプリを確認していません」の警告が出る。個人利用なので警告を承知で進む（§12）。
-   未確認のアプリにはユーザー数の上限（100 人）があるが、個人利用では問題にならない。
-5. 「データアクセス」でスコープ `https://www.googleapis.com/auth/drive.readonly` を加える。
-6. 「クライアント」→「クライアントを作成」→ 種類 **Android**。パッケージ名と署名鍵の SHA-1 を入れる。
-   - S2 の試作: パッケージ名 `com.miuraken.chunkflow.spike.playback`（スパイクのアプリで試す場合）または `com.miuraken.chunkflow`、
-     デバッグ鍵の SHA-1（`keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android`）。
-   - 本番: リリース鍵の SHA-1 で別のクライアントを作る。
-   - Android クライアントには秘密情報（client secret）はなく、アプリに埋め込む値もない（パッケージ名と署名で識別される）。`google-services.json` も不要。
-7. （任意）サーバーで使わないので「ウェブ アプリケーション」のクライアントは不要（オフラインアクセス・リフレッシュトークンを使わない。§7.1 のとおりトークンは保存しない）。
-
-### 6.2 必要な依存（lead への依頼の下書き）
-
-| 依存 | 版（確認時点） | 用途 | ライセンス | 備考 |
-| --- | --- | --- | --- | --- |
-| `com.google.android.gms:play-services-auth` | 22.0.0（dl.google.com の maven-metadata、キャッシュの可能性あり。追加の時点で再確認） | `Identity.getAuthorizationClient()` / `AuthorizationRequest` でアクセストークンを得る | Android SDK License（Google Play 開発者サービスの利用規約）。**OSS ではない** | Google Play 開発者サービスが入った端末が必要（Pixel は可） |
-| HTTP クライアント | 例: OkHttp 5 系（未確認） / もしくは `HttpURLConnection` | Drive API v3 の REST（`files.list`、`files.get?alt=media`） | OkHttp は Apache-2.0 | 依存を増やしたくなければ `HttpURLConnection` + kotlinx-serialization で足りる（呼ぶ API は 2 つだけ） |
-| （テスト）`com.squareup.okhttp3:mockwebserver` | 未確認 | Drive のテスト（playback.md） | Apache-2.0 | |
-| 使わない: `google-api-client-android`、`google-api-services-drive` | — | — | Apache-2.0 | 依存が大きく（Apache HTTP、Guava など）、REST 2 本には過剰 |
-
-### 6.3 試作で確かめる項目
-
-1. 認可の流れ: `AuthorizationClient.authorize()` → `hasResolution()` のとき `PendingIntent` を開く → 同意画面（**未確認のアプリの警告**の文言と、進むまでの操作数）→ アクセストークン。
-2. 2 回目以降に同意画面なしでトークンが得られるか。トークンの有効期限（約 1 時間）と、期限切れのときの再取得。
-3. 承認の取り消し（myaccount.google.com の「サードパーティ製のアプリとサービス」から削除）→ 次の同期で `NOT_AUTHORIZED` → 承認し直せるか。
-4. `files.list`（`q='<folderId>' in parents and trashed=false`、`fields=files(id,name,mimeType,size,modifiedTime,sha256Checksum)`）で、
-   **`sha256Checksum` が音声と JSON の両方で返るか**（Drive に直接アップロードしたバイナリでは返る見込み。Google ドキュメント形式には付かない）。
-   値がアプリの SHA-256（小文字の 16 進）と一致するか。
-5. JSON の `mimeType`（Drive がアップロード時に付ける値。§5 の SAF の結果と比べる）。
-6. `files.get?alt=media` のダウンロード（`size` の確認 → 一時ファイル → 取り込み処理）、途中でキャンセル・回線断。
-7. 共有ドライブ・ショートカットを `ChunkFlow/` に置いた場合の扱い（対象外にするか）。
-8. 「本番」の公開ステータスで、7 日以上たっても承認が切れないか（長期の確認）。
-
-## 7. 実機待ちの項目と手順
+## 5. 実機待ちの項目と手順
 
 実機がつながったら、次の順に行う（所要 約 20 分 + 画面オフの放置）。
 
@@ -311,10 +240,9 @@ DataSource（`measure/IndexSeekDataSource.kt`）を作り、`FLAG_ENABLE_INDEX_S
    次に `autopause_wl` で同じことをする。`results/autopause-*.csv` の `lateMs`（遅れ）と `sleptMs`（眠っていた時間）を比べる。
    余裕があれば `adb shell dumpsys deviceidle force-idle` で Doze の状態でも行う。
 6. **前 / 次**: Bluetooth イヤホン（または有線のリモコン）の前 / 次ボタンで、チャンクの移動になるか（ログの `[learning]`）。
-7. **Drive での選択**: §5 の手順。
-8. 結果を `adb pull /sdcard/Android/data/com.miuraken.chunkflow.spike.playback/files/results/ .` で回収する。
+7. 結果を `adb pull /sdcard/Android/data/com.miuraken.chunkflow.spike.playback/files/results/ .` で回収する。
 
-## 8. 設計への提案（lead と依頼者の判断用）
+## 6. 設計への提案（lead と依頼者の判断用）
 
 1. **§7.2.2 に追記**: ExoPlayer を `experimentalSetDynamicSchedulingEnabled(false)` で作る。理由: 既定（true）では PlayerMessage の配信が数十〜数百 ms 遅れ、
    M2 の「行き過ぎ 50ms 未満」を満たさない。`@ExperimentalApi`（`@OptIn` が必要。Lint の `UnsafeOptInUsageError`）の API なので、Media3 を上げるときに確認する。電池への影響（再生中の起床が 10ms ごとになる）は実機で確認する。
@@ -331,12 +259,10 @@ DataSource（`measure/IndexSeekDataSource.kt`）を作り、`FLAG_ENABLE_INDEX_S
 7. **計測の注意**（スパイク・テストの書き方）: 共用のエミュレータでは、別のアプリが前面に出るとこのアプリが凍結される（ActivityManager の freezer）。
    長い計測は前面サービスの中で行う（`MeasureService`）。`adb shell mkdir` で `Android/data/<pkg>/files/` の下にフォルダを作るとアプリから読めない。
 
-## 9. 未確認のこと
+## 7. 未確認のこと
 
-- 実機での全項目（§7）。
+- 実機での全項目（§5）。
 - 自動ポーズ中の CPU スリープによる遅れと、WakeLock の効果（エミュレータでは CPU が眠らない）。
-- Drive の SAF での複数選択・JSON の MIME・フォルダ選択（§5）。
-- Drive API の認可の流れ、未確認のアプリの警告、`sha256Checksum` の有無（§6。OAuth クライアントがまだない）。
 - `dynamicScheduling=false` の電池への影響。
 - Media3 Transformer での M4A への変換（(b) 案）は試していない（依存の追加が必要）。
 - LAME ヘッダ付きの MP3 で先頭からの再生が −12ms になる理由（デコーダの遅延の二重の補正という推測）。

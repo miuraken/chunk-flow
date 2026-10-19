@@ -297,13 +297,13 @@ fun MissingLanguageHintText(
 /**
  * 対象となる言語が選択肢にない場合に「全体設定>言語」を案内するテキスト。
  *
- * @param onOpenLanguageSettingsModal 互換用のコールバック（リンクなし表示のため未使用）
  * @param modifier レイアウト修飾子
+ * @param onOpenLanguageSettingsModal 互換用のコールバック（リンクなし表示のため未使用）
  */
 @Composable
 fun MissingLanguageHintWithModalLink(
-    onOpenLanguageSettingsModal: () -> Unit = {},
     modifier: Modifier = Modifier,
+    onOpenLanguageSettingsModal: () -> Unit = {},
 ) {
     MissingLanguageHintText(modifier = modifier)
 }

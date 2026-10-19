@@ -9,7 +9,7 @@ import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 
 /**
- * ライブラリに登録されたフォルダ（コース・仮想ディレクトリ・Drive フォルダ）の設定情報（`course_folder` テーブル）。
+ * ライブラリに登録されたフォルダ（コース・仮想ディレクトリ）の設定情報（`course_folder` テーブル）。
  */
 @Entity(tableName = "course_folder")
 data class CourseFolderEntity(
@@ -24,8 +24,6 @@ data class CourseFolderEntity(
     val baseLang: String? = null,
     @ColumnInfo(name = "tree_uri")
     val treeUri: String? = null,
-    @ColumnInfo(name = "drive_folder_id")
-    val driveFolderId: String? = null,
     @ColumnInfo(name = "last_scanned_at", defaultValue = "0")
     val lastScannedAt: Long = 0L,
 )
@@ -39,7 +37,6 @@ fun CourseFolderEntity.toExternalModel(): LibraryCourseFolder = LibraryCourseFol
         base = baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag),
     ),
     treeUri = treeUri,
-    driveFolderId = driveFolderId,
     lastScannedAtEpochMs = lastScannedAt,
 )
 
@@ -50,6 +47,5 @@ fun LibraryCourseFolder.toEntity(): CourseFolderEntity = CourseFolderEntity(
     targetLang = languagePair.target.value,
     baseLang = languagePair.base?.value,
     treeUri = treeUri,
-    driveFolderId = driveFolderId,
     lastScannedAt = lastScannedAtEpochMs,
 )

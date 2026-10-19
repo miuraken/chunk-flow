@@ -2,8 +2,6 @@ package com.miuraken.chunkflow.core.testing.fixture
 
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
-import com.miuraken.chunkflow.core.data.library.SyncError
-import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.model.AudioItem
 
 /** ライブラリ画面向けのフィクスチャ（§10.5.1）。 */
@@ -20,14 +18,5 @@ object SampleLibraries {
         ImportProgress.Copying(0.35f),
         ImportProgress.Done(listOf(SampleMaterials.jaKo.item.id), duplicates = 1, transcriptsAttached = 1),
         ImportProgress.Failed(ImportError.NO_SPACE),
-    )
-
-    /** 同期中 / 同期の失敗の例。 */
-    val syncProgress: List<SyncProgress> = listOf(
-        SyncProgress.Listing,
-        SyncProgress.Downloading(done = 2, total = 5),
-        SyncProgress.Done(newAudio = 3, newTranscripts = 2, failed = 0),
-        SyncProgress.Failed(SyncError.NOT_AUTHORIZED),
-        SyncProgress.Failed(SyncError.NETWORK),
     )
 }

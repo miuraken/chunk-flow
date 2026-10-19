@@ -17,7 +17,6 @@ dependencies {
     implementation(project(":core:database"))
     implementation(project(":core:datastore"))
     implementation(project(":core:media"))
-    implementation(project(":core:drive"))
     implementation(project(":core:audio"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.media3.common)

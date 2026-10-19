@@ -14,7 +14,7 @@ import java.io.RandomAccessFile
  * ファイル長を [C.LENGTH_UNSET] として返すことで Media3 の `Mp3Extractor`（`FLAG_ENABLE_INDEX_SEEKING`）に
  * `IndexSeeker` を使わせる [DataSource]（§7.2.2、ADR 0006）。
  *
- * ファイル自体は一切書き換えないため、SHA-256 や Google Drive のチェックサムは変化しない。
+ * ファイル自体は一切書き換えないため、SHA-256 は変化しない。
  */
 @OptIn(UnstableApi::class)
 class IndexSeekDataSource(

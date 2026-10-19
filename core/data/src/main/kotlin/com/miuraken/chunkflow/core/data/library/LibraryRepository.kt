@@ -22,7 +22,7 @@ interface LibraryRepository {
     /** すべての教材を購読する。 */
     fun observeItems(): Flow<List<AudioItem>>
 
-    /** 登録されているすべてのコースフォルダ（ローカルフォルダ・仮想フォルダ・Drive フォルダ）を購読する。 */
+    /** 登録されているすべてのコースフォルダ（ローカルフォルダ・仮想フォルダ）を購読する。 */
     fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = flowOf(emptyList())
 
     /** 教材 1 件を購読する。削除されたら `null` を流す。 */
@@ -61,7 +61,7 @@ interface LibraryRepository {
      * コース名（フォルダ名）と言語ペアを共通設定して、音声と文字起こしファイルをまとめて取り込む。
      *
      * @param uris SAF の `content://` URI（または Tree URI）。
-     * @param course 取り込む教材に設定するコース名（`null` の場合は URI から推定または既定の `"imported"`）。
+     * @param course 取り込む教材に設定するコース名（`null` の場合は URI から推定または既定の `"default"`）。
      * @param languages 取り込む教材に共通で設定する言語ペア（`null` の場合は既定の言語ペア）。
      */
     fun import(
@@ -71,7 +71,7 @@ interface LibraryRepository {
     ): Flow<ImportProgress> = import(uris)
 
     /**
-     * ローカルフォルダ（SAF Tree URI）をリンクし、再帰的に音声ファイルと `.chunkflow/` を走査して登録する。
+     * ローカルフォルダ（SAF Tree URI）をリンクし、再帰的に音声ファイルを走査して登録する。
      * 音声ファイルのコピーは作らず、元の URI / ファイルパスへの参照を保持する。
      */
     fun linkLocalDirectory(
@@ -82,7 +82,6 @@ interface LibraryRepository {
 
     /**
      * 登録済みのローカルフォルダを再スキャンし、新規ファイルの追加や消失したファイルの DB 削除を行う。
-     * `.chunkflow/` 内の解析・文字起こしデータは削除しない。
      *
      * @param coursePath 対象のコースパス（`null` の場合はすべてのローカルフォルダを再スキャン）。
      */
@@ -118,34 +117,6 @@ interface LibraryRepository {
      * 指定した教材 [id] の文字起こしをすべてリセットし、保存済みの文字起こしファイルも削除する。
      */
     suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean = false
-
-    /** Drive の `ChunkFlow/` フォルダからファイル一覧とメタデータ・文字起こしを同期する（§7.1）。認可が必要なら [SyncError.NOT_AUTHORIZED] で終わる。 */
-    fun syncFromDrive(): Flow<SyncProgress>
-
-    /**
-     * Google Drive 上の教材（`DRIVE_REMOTE_ONLY`）の音声ファイルをオンデマンドでローカルへダウンロードする。
-     */
-    suspend fun downloadDriveAudio(id: MediaId): Boolean = false
-
-    /**
-     * Google Drive 由来の教材のローカル音声コピーだけを削除し、`DRIVE_REMOTE_ONLY`（未ダウンロード状態）に戻す。
-     * チャンクや文字起こし、学習進捗は保持する。
-     */
-    suspend fun deleteLocalAudioCopy(id: MediaId): Boolean = false
-
-    /**
-     * Drive 同期対象のフォルダ（Tree URI）が設定されているかどうかを返す。
-     */
-    suspend fun hasLinkedSyncFolder(): Boolean = false
-
-    /**
-     * Drive 同期対象のフォルダ（Tree URI）を登録し、言語ペアとコース名を保存して同期を実行する。
-     */
-    fun syncFromLinkedFolder(
-        treeUri: Uri? = null,
-        course: String? = null,
-        languages: LanguagePair? = null,
-    ): Flow<SyncProgress> = syncFromDrive()
 
     /** 教材のコース名と言語ペアを更新する（F1.3、F1.4）。 */
     suspend fun updateItemMetadata(
@@ -245,7 +216,7 @@ interface LibraryRepository {
     suspend fun reorderAllFiles(orderedMediaIds: List<MediaId>) = Unit
 
     /**
-     * 教材の文字起こし（手動修正された言語ラベルを含む）を `.chunkflow.json` 形式でローカル原本ファイルへ書き出す（§7.2 書き戻し準備）。
+     * 教材の文字起こし（手動修正された言語ラベルを含む）を `.chunkflow.json` 形式でアプリ内部ファイルへ書き出す。
      *
      * @return 書き出しに成功した場合は `true`、書き出す文字起こしがない場合は `false`。
      */
@@ -320,59 +291,6 @@ enum class ImportError {
 
     /** サイズの上限を超えた。 */
     TOO_LARGE,
-
-    /** 空き容量が足りない。 */
-    NO_SPACE,
-
-    /** 読み書きに失敗した。 */
-    IO,
-
-    /** キャンセルされた。 */
-    CANCELLED,
-}
-
-/** Drive との同期の進捗。 */
-sealed interface SyncProgress {
-    /** Drive のファイルを一覧している。 */
-    data object Listing : SyncProgress
-
-    /**
-     * ダウンロード中。
-     *
-     * @property done ダウンロードを終えたファイルの数。
-     * @property total ダウンロードするファイルの数。
-     */
-    data class Downloading(val done: Int, val total: Int) : SyncProgress
-
-    /**
-     * 完了した。
-     *
-     * @property newAudio 追加した音声の数。
-     * @property newTranscripts 追加・更新した文字起こしの数。
-     * @property failed 失敗したファイルの数。
-     * @property uploadedTranscripts Drive へ書き戻した（アップロードした）文字起こしの数。
-     */
-    data class Done(
-        val newAudio: Int,
-        val newTranscripts: Int,
-        val failed: Int,
-        val uploadedTranscripts: Int = 0,
-    ) : SyncProgress
-
-    /** 失敗した。 */
-    data class Failed(val error: SyncError) : SyncProgress
-}
-
-/** 同期の失敗の種別。 */
-enum class SyncError {
-    /** 認可が必要（UI が認可の画面を開いてから、同期をやり直す）。 */
-    NOT_AUTHORIZED,
-
-    /** ネットワークのエラー。 */
-    NETWORK,
-
-    /** Drive に `ChunkFlow/` フォルダがない。 */
-    FOLDER_NOT_FOUND,
 
     /** 空き容量が足りない。 */
     NO_SPACE,

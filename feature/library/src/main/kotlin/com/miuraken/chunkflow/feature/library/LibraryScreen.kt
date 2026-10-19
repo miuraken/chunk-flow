@@ -121,7 +121,6 @@ import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.data.library.ImportError
-import com.miuraken.chunkflow.core.data.library.SyncError
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
 import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithModalLink
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -132,7 +131,6 @@ import com.miuraken.chunkflow.core.designsystem.util.formatCompactSpeed
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AudioItem
-import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -288,33 +286,6 @@ fun LibraryRoute(
         }
     }
 
-    val driveSyncFolderLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree(),
-    ) { treeUri ->
-        if (treeUri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-                )
-            }.onFailure {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        treeUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
-                }
-            }
-            val scanned = scanDocumentTree(context.contentResolver, treeUri)
-            viewModel.onEvent(
-                LibraryEvent.SelectDriveSyncFolder(
-                    directoryName = scanned.directoryName,
-                    treeUri = treeUri,
-                ),
-            )
-        }
-    }
-
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -323,20 +294,11 @@ fun LibraryRoute(
         }
     }
 
-    LaunchedEffect(state.syncState) {
-        val currentSync = state.syncState
-        if (currentSync is DriveSyncUiState.Error && currentSync.error == SyncError.NOT_AUTHORIZED) {
-            driveSyncFolderLauncher.launch(null)
-        }
-    }
-
     LibraryScreen(
         state = state,
         onEvent = { event ->
             when (event) {
                 LibraryEvent.RequestImportDirectory -> directoryPickerLauncher.launch(null)
-
-                LibraryEvent.RequestSelectDriveSyncFolder -> driveSyncFolderLauncher.launch(null)
 
                 LibraryEvent.RequestImport -> filePickerLauncher.launch(
                     arrayOf("audio/*"),
@@ -368,7 +330,7 @@ fun LibraryRoute(
 }
 
 /**
- * ライブラリ画面（ディレクトリ構成・Drive 同期・メタデータ編集に対応し、状態を受け取って描くだけの Composable。§7.5.1、§10.5.1）。
+ * ライブラリ画面（ディレクトリ構成・メタデータ編集に対応し、状態を受け取って描くだけの Composable。§7.5.1、§10.5.1）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -590,8 +552,6 @@ fun LibraryScreen(
         ) {
             ImportStatusBanner(
                 importState = state.importState,
-                syncState = state.syncState,
-                onSelectDriveSyncFolder = { onEvent(LibraryEvent.RequestSelectDriveSyncFolder) },
                 onOpenItem = { mediaId -> onEvent(LibraryEvent.OpenItem(mediaId)) },
                 onDismiss = { onEvent(LibraryEvent.DismissImportStatus) },
             )
@@ -609,7 +569,6 @@ fun LibraryScreen(
                 LibraryEmptyContent(
                     onImportDirectoryClick = { onEvent(LibraryEvent.RequestImportDirectory) },
                     onImportFilesClick = { onEvent(LibraryEvent.RequestImport) },
-                    onSyncDriveClick = { onEvent(LibraryEvent.SyncFromDrive) },
                     modifier = Modifier.weight(1f),
                 )
             } else {
@@ -743,11 +702,6 @@ fun LibraryScreen(
             item = itemToEdit,
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
-            onDeleteLocalAudioCopy = if (itemToEdit.storageState == AudioStorageState.DRIVE_DOWNLOADED) {
-                { onEvent(LibraryEvent.DeleteLocalAudioCopy(itemToEdit.id)) }
-            } else {
-                null
-            },
             onConfirm = { course, languages, sttOverride ->
                 onEvent(
                     LibraryEvent.ConfirmEditMetadata(
@@ -978,9 +932,6 @@ private fun LibraryFoldersTabContent(
                             },
                             onEditMetadataClick = {
                                 onEvent(LibraryEvent.RequestEditMetadata(itemModel.item))
-                            },
-                            onDownloadDriveAudioClick = {
-                                onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
                             },
                             isFavorite = itemModel.item.id in state.favoriteItemIds,
                             onToggleFavoriteClick = {
@@ -1330,9 +1281,6 @@ private fun LibraryFilesTabContent(
                                 onDeleteClick = {
                                     onEvent(LibraryEvent.RequestDelete(itemModel.item))
                                 },
-                                onDownloadDriveAudioClick = {
-                                    onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
-                                },
                                 isFavorite = itemModel.item.id in state.favoriteItemIds,
                                 onToggleFavoriteClick = {
                                     onEvent(LibraryEvent.ToggleFavorite(itemModel.item.id))
@@ -1508,9 +1456,6 @@ private fun LibraryPlaylistsTabContent(
                                     },
                                     onDeleteClick = {
                                         onEvent(LibraryEvent.RequestDelete(itemModel.item))
-                                    },
-                                    onDownloadDriveAudioClick = {
-                                        onEvent(LibraryEvent.DownloadDriveAudio(itemModel.item.id))
                                     },
                                     isFavorite = itemModel.item.id in state.favoriteItemIds,
                                     onToggleFavoriteClick = {
@@ -1999,10 +1944,8 @@ private fun FolderKindBadge(
 @Composable
 private fun ImportStatusBanner(
     importState: LibraryImportUiState,
-    syncState: DriveSyncUiState,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    onSelectDriveSyncFolder: () -> Unit = {},
     onOpenItem: (MediaId) -> Unit = {},
 ) {
     when (importState) {
@@ -2133,108 +2076,6 @@ private fun ImportStatusBanner(
             )
         }
     }
-
-    when (syncState) {
-        DriveSyncUiState.Idle -> Unit
-
-        DriveSyncUiState.Listing -> {
-            Surface(
-                modifier = modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text(
-                        text = stringResource(R.string.library_drive_sync_listing),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
-            }
-        }
-
-        is DriveSyncUiState.Downloading -> {
-            val fraction = if (syncState.total > 0) {
-                (syncState.done.toFloat() / syncState.total.toFloat()).coerceIn(0f, 1f)
-            } else {
-                null
-            }
-            Surface(
-                modifier = modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text(
-                        text = stringResource(
-                            R.string.library_drive_sync_downloading,
-                            syncState.done,
-                            syncState.total,
-                        ),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (fraction != null) {
-                        LinearProgressIndicator(
-                            progress = { fraction },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                }
-            }
-        }
-
-        is DriveSyncUiState.Done -> {
-            val message = if (syncState.uploadedTranscripts > 0) {
-                stringResource(
-                    R.string.library_drive_sync_done_with_uploads,
-                    syncState.newAudio,
-                    syncState.newTranscripts,
-                    syncState.uploadedTranscripts,
-                )
-            } else {
-                stringResource(
-                    R.string.library_drive_sync_done,
-                    syncState.newAudio,
-                    syncState.newTranscripts,
-                )
-            }
-            StatusBannerCard(
-                message = message,
-                isError = false,
-                onDismiss = onDismiss,
-                modifier = modifier,
-            )
-        }
-
-        is DriveSyncUiState.Error -> {
-            val errorText = when (syncState.error) {
-                SyncError.NOT_AUTHORIZED -> stringResource(R.string.library_drive_sync_error_not_authorized)
-                SyncError.NETWORK -> stringResource(R.string.library_drive_sync_error_network)
-                SyncError.FOLDER_NOT_FOUND -> stringResource(R.string.library_drive_sync_error_folder_not_found)
-                SyncError.NO_SPACE -> stringResource(R.string.library_drive_sync_error_no_space)
-                SyncError.IO -> stringResource(R.string.library_drive_sync_error_io)
-                SyncError.CANCELLED -> stringResource(R.string.library_drive_sync_error_cancelled)
-            }
-            val needsFolderAction = syncState.error == SyncError.NOT_AUTHORIZED ||
-                syncState.error == SyncError.FOLDER_NOT_FOUND
-            StatusBannerCard(
-                message = errorText,
-                isError = true,
-                onDismiss = onDismiss,
-                actionLabel = if (needsFolderAction) {
-                    stringResource(R.string.library_drive_sync_select_folder_action)
-                } else {
-                    null
-                },
-                onAction = if (needsFolderAction) onSelectDriveSyncFolder else null,
-                modifier = modifier,
-            )
-        }
-    }
 }
 
 @Composable
@@ -2243,8 +2084,6 @@ private fun StatusBannerCard(
     isError: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    actionLabel: String? = null,
-    onAction: (() -> Unit)? = null,
 ) {
     val containerColor = if (isError) {
         MaterialTheme.colorScheme.errorContainer
@@ -2276,14 +2115,6 @@ private fun StatusBannerCard(
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
             )
-            if (actionLabel != null && onAction != null) {
-                TextButton(onClick = onAction) {
-                    Text(
-                        text = actionLabel,
-                        color = contentColor,
-                    )
-                }
-            }
             IconButton(onClick = onDismiss) {
                 Icon(
                     imageVector = ChunkFlowIcons.Close,
@@ -2298,7 +2129,6 @@ private fun StatusBannerCard(
 private fun LibraryEmptyContent(
     onImportDirectoryClick: () -> Unit,
     onImportFilesClick: () -> Unit,
-    onSyncDriveClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -2343,15 +2173,6 @@ private fun LibraryEmptyContent(
             Spacer(modifier = Modifier.width(8.dp))
             Text(text = stringResource(R.string.library_empty_import_action))
         }
-        OutlinedButton(onClick = onSyncDriveClick) {
-            Icon(
-                imageVector = ChunkFlowIcons.Sync,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(text = stringResource(R.string.library_drive_sync_button))
-        }
     }
 }
 
@@ -2366,7 +2187,6 @@ private fun LibraryItemRow(
     onEditMetadataClick: () -> Unit,
     modifier: Modifier = Modifier,
     onDeleteClick: () -> Unit = {},
-    onDownloadDriveAudioClick: () -> Unit = {},
     isFavorite: Boolean = false,
     onToggleFavoriteClick: (() -> Unit)? = null,
     onRemoveFromPlaylistClick: (() -> Unit)? = null,
@@ -2467,31 +2287,7 @@ private fun LibraryItemRow(
                             maxLines = 1,
                         )
                     }
-                    if (item.isRemoteOnly) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                            shape = MaterialTheme.shapes.extraSmall,
-                            modifier = Modifier.clickable(onClick = onDownloadDriveAudioClick),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    imageVector = ChunkFlowIcons.Download,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(12.dp),
-                                )
-                                Text(
-                                    text = stringResource(R.string.library_item_drive_remote_only_badge),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                )
-                            }
-                        }
-                    } else if (itemModel.isAudioMissing) {
+                    if (itemModel.isAudioMissing) {
                         Surface(
                             color = MaterialTheme.colorScheme.errorContainer,
                             contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -4262,7 +4058,6 @@ private fun LibraryScreenImportConfigDialogPreview() {
                         target = LanguageTag("ko"),
                         base = LanguageTag("ja"),
                     ),
-                    isDriveSyncFolder = false,
                 ),
             ),
             onEvent = {},

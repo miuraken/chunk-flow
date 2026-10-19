@@ -16,8 +16,6 @@ import com.miuraken.chunkflow.core.model.Bookmark
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
-import com.miuraken.chunkflow.core.model.DriveFile
-import com.miuraken.chunkflow.core.model.DriveFileKind
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.ItemSttOverride
@@ -102,7 +100,7 @@ class DatabaseEntityAndTransactionTest {
     }
 
     @Test
-    fun `ChunkEntityとTranscriptEntityとBookmarkEntityとDriveFileEntityの相互変換が往復する`() {
+    fun `ChunkEntityとTranscriptEntityとBookmarkEntityの相互変換が往復する`() {
         val chunk = Chunk(id = ChunkId(42L), startMs = 1_000L, endMs = 3_500L, origin = ChunkOrigin.IMPORTED)
         assertEquals(chunk, chunk.toEntity(mediaId).toExternalModel())
 
@@ -120,16 +118,6 @@ class DatabaseEntityAndTransactionTest {
 
         val bookmark = Bookmark(id = 7L, mediaId = mediaId, positionMs = 2_500L, note = "復習", createdAtEpochMs = 500L)
         assertEquals(bookmark, bookmark.toEntity().toExternalModel())
-
-        val driveFile = DriveFile(
-            driveFileId = "drive-123",
-            kind = DriveFileKind.TRANSCRIPT,
-            course = "cantonese-course",
-            modifiedTimeEpochMs = 777L,
-            sha256 = "b".repeat(64),
-            mediaId = mediaId,
-        )
-        assertEquals(driveFile, driveFile.toEntity().toExternalModel())
 
         val sttOverride = ItemSttOverride(
             targetEngine = SttEngine.ML_KIT,

@@ -44,14 +44,13 @@ Chunk Flow は、語学学習のリスニング・リピーティング・シャ
 ├── feature/                # 画面単位の UI モジュール（Compose Screen + ViewModel）
 │   ├── library/            #   教材ライブラリ一覧、フォルダ階層・最近開いたファイル表示、取り込み、コース・言語設定
 │   ├── player/             #   プレイヤー画面（全体/拡大波形、再生制御、チャンク一覧・編集・スクリプト・翻訳表示）
-│   └── settings/           #   アプリ設定画面（再生・自動ポーズ・音声認識エンジン・モデル管理・Drive 同期・バックアップ）
+│   └── settings/           #   アプリ設定画面（再生・自動ポーズ・音声認識エンジン・モデル管理・バックアップ）
 ├── core/                   # 共通基盤モジュール群
 │   ├── model/              #   ドメインモデル（純 Kotlin / JVM、Android 非依存）
 │   ├── audio/              #   波形縮約、特徴量計算、適応型無音検出（VAD）、チャンク分割、リサンプラ（純 Kotlin / JVM）
 │   ├── transcript/         #   文字起こし（Chunk Flow JSON / SRT / WebVTT / LRC）の解析・検証・発音ガイド変換（純 Kotlin / JVM）
 │   ├── media/              #   MediaCodec デコード、メタデータ取得、端末内音声認識（ML Kit / SpeechRecognizer / sherpa-onnx）・Whisper Tiny 2言語判定・ML Kit 翻訳
 │   ├── playback/           #   PlaybackService、LearningPlayer、ChunkScheduler、PlaybackController
-│   ├── drive/              #   Google Drive 同期（OAuth 認可、Drive API クライアント、オンデマンド取得・文字起こし書き戻し）
 │   ├── database/           #   Room データベース（Entity / DAO / Migration）
 │   ├── datastore/          #   DataStore Preferences によるユーザー設定の永続化
 │   ├── data/               #   Repository 実装（Library / Analysis / Transcript / Translation）、ファイル取り込み、Worker 群
@@ -90,7 +89,7 @@ Chunk Flow は、語学学習のリスニング・リピーティング・シャ
 
 3. **モジュールの依存制約と純 Kotlin モジュール**
    - `:core:model`、`:core:audio`、`:core:transcript` は Android SDK に依存しない純 Kotlin（JVM）モジュールです。これらに `android.*` や `androidx.*` の API を持ち込まないでください。
-   - ExoPlayer を直接参照するのは `:core:playback` のみ、ネットワーク通信を行うのは `:core:drive` のみです。
+   - ExoPlayer を直接参照するのは `:core:playback` のみ、ネットワーク通信を行うのは `:core:media`（音声認識・言語判定モデルの取得）のみです。
 
 4. **コード整形と静的解析（ビルドゲート）**
    - 全モジュールで Android Lint の `warningsAsErrors = true` が有効です。

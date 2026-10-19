@@ -9,12 +9,6 @@ enum class AudioStorageState {
 
     /** ローカルファイルシステム（SAF フォルダ・ファイル）をコピーせず直接参照している状態。 */
     LOCAL_REFERENCE,
-
-    /** Google Drive 上の項目で、音声本体はまだローカルにダウンロードされていない状態。 */
-    DRIVE_REMOTE_ONLY,
-
-    /** Google Drive 上の項目で、音声本体をアプリ内部キャッシュへダウンロード済みの状態。 */
-    DRIVE_DOWNLOADED,
 }
 
 /**
@@ -32,7 +26,7 @@ enum class AudioStorageState {
  * @property importedAtEpochMs 取り込んだ時刻（UNIX エポックからのミリ秒）。
  * @property sourceUri ローカルの元ファイルを参照する SAF / ファイル URI 文字列（コピーを作らない場合）。
  * @property localFilePath ローカルファイルシステム上の実ファイルパス（解決できた場合）。
- * @property storageState 音声実体の保持状態（ローカル参照 / アプリ管理 / Drive 未DL / Drive DL済み）。
+ * @property storageState 音声実体の保持状態（ローカル参照 / アプリ管理）。
  */
 data class AudioItem(
     val id: MediaId,
@@ -48,13 +42,4 @@ data class AudioItem(
     val sourceUri: String? = null,
     val localFilePath: String? = null,
     val storageState: AudioStorageState = AudioStorageState.APP_MANAGED,
-) {
-    /** 音声本体が未ダウンロード（Google Drive リモートのみ）かどうか。 */
-    val isRemoteOnly: Boolean
-        get() = storageState == AudioStorageState.DRIVE_REMOTE_ONLY
-
-    /** Google Drive 由来の教材かどうか。 */
-    val isFromDrive: Boolean
-        get() = storageState == AudioStorageState.DRIVE_REMOTE_ONLY ||
-            storageState == AudioStorageState.DRIVE_DOWNLOADED
-}
+)

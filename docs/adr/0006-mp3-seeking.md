@@ -23,7 +23,7 @@ S2 の結果（Media3 1.11.1）:
 ## 決定
 
 1. **すべての MP3 を、読み出し時にヘッダを隠す DataSource（S2 の試作 `IndexSeekDataSource` 相当）を通して再生し、`Mp3Extractor` の
-   `FLAG_ENABLE_INDEX_SEEKING` と組み合わせる。** DataSource は次の 2 つだけを行う。ファイルは書き換えない（SHA-256 も Drive の `sha256Checksum` も変わらない）。
+   `FLAG_ENABLE_INDEX_SEEKING` と組み合わせる。** DataSource は次の 2 つだけを行う。ファイルは書き換えない（SHA-256 も変わらない）。
    1. 先頭フレームの `Xing` / `Info` / `VBRI` の識別子を 0 で隠す（CBR とみなさせる）。
    2. `open()` でファイル長を `C.LENGTH_UNSET` として返す（長さが不明なので IndexSeeker が使われる）。
    - S2 では 3 種（VBR + Xing、ヘッダのない VBR、CBR）とも、先頭から再生したときとシーク後の誤差が**同じ一定の値**になった

@@ -7,8 +7,6 @@ import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
-import com.miuraken.chunkflow.core.data.library.SyncError
-import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
@@ -289,47 +287,6 @@ data class LibraryImportedFileUiModel(
 )
 
 /**
- * Google Drive 同期の UI 状態（F1.5、§7.1）。
- */
-sealed interface DriveSyncUiState {
-    /** 同期を行っていない。 */
-    data object Idle : DriveSyncUiState
-
-    /** Drive のファイル一覧を取得中。 */
-    data object Listing : DriveSyncUiState
-
-    /**
-     * ダウンロード中。
-     *
-     * @property done 完了したファイル数。
-     * @property total 対象の総ファイル数。
-     */
-    data class Downloading(val done: Int, val total: Int) : DriveSyncUiState
-
-    /**
-     * 同期が完了した。
-     *
-     * @property newAudio 追加した音声数。
-     * @property newTranscripts 追加・更新した文字起こし数。
-     * @property failed 失敗したファイル数。
-     * @property uploadedTranscripts Drive へアップロード（書き戻し）したローカル文字起こし数。
-     */
-    data class Done(
-        val newAudio: Int,
-        val newTranscripts: Int,
-        val failed: Int,
-        val uploadedTranscripts: Int = 0,
-    ) : DriveSyncUiState
-
-    /**
-     * 同期に失敗した。
-     *
-     * @property error 失敗の種別。
-     */
-    data class Error(val error: SyncError) : DriveSyncUiState
-}
-
-/**
  * ライブラリ画面下部のミニプレイヤーの状態（§7.5.1）。
  *
  * @property mediaId 現在開いている（または前回最後に開いていた）教材の ID。
@@ -354,7 +311,6 @@ data class MiniPlayerUiState(
  * @property uris 取り込み対象の URI 一覧。
  * @property initialCourse 初期コース名（ディレクトリ名など）。
  * @property initialLanguages 初期言語ペア（対象言語・ベース言語）。
- * @property isDriveSyncFolder Drive 同期フォルダの連携設定かどうか。
  */
 data class PendingImportConfig(
     val uris: List<Uri>,
@@ -364,7 +320,6 @@ data class PendingImportConfig(
         base = LanguageTag("ja"),
     ),
     val initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
-    val isDriveSyncFolder: Boolean = false,
     val treeUri: Uri? = null,
 )
 
@@ -509,14 +464,13 @@ data class LibraryBookmarkedFileUiModel(
  *
  * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無・聴取完了・最終アクセス日時を含む）。
  * @property importState 音声・フォルダ取り込みの進捗・エラー状態。
- * @property syncState Google Drive 同期の進捗・エラー状態。
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
  * @property pendingDeleteItem 削除確認ダイアログで対象になっている単一教材（表示中でなければ `null`）。
  * @property pendingDeleteDirectoryPath 削除確認ダイアログで対象になっているディレクトリパス（表示中でなければ `null`）。
  * @property isPendingBatchDelete 複数選択項目の削除確認ダイアログを表示中かどうか。
  * @property pendingEditItem コース・言語ペア編集ダイアログで対象になっている教材（表示中でなければ `null`）。
  * @property pendingEditDirectory ディレクトリ一括のコース・言語ペア編集ダイアログ状態（表示中でなければ `null`）。
- * @property pendingImportConfig 取り込み・同期フォルダ選択後の共通設定ダイアログ状態（表示中でなければ `null`）。
+ * @property pendingImportConfig 取り込みフォルダ選択後の共通設定ダイアログ状態（表示中でなければ `null`）。
  * @property selectedDirectoryName フォルダ指定で選択されたディレクトリ名。
  * @property collapsedDirectories 折りたたまれているディレクトリ名の集合。
  * @property enabledLanguages 設定画面で有効化された選択肢の言語一覧（既定は日本語・英語）。
@@ -546,7 +500,6 @@ data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
     val courseFolders: List<LibraryCourseFolder> = emptyList(),
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
-    val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
     val pendingDeleteDirectoryPath: String? = null,
@@ -1167,30 +1120,18 @@ sealed interface LibraryEvent {
     /** SAF で選択された URI の一覧を取り込む。 */
     data class ImportUris(val uris: List<Uri>) : LibraryEvent
 
-    /** Google Drive の `ChunkFlow/` フォルダと同期する（F1.5）。 */
-    data object SyncFromDrive : LibraryEvent
-
-    /** SAF フォルダピッカーを開いて Drive 同期フォルダを選択する。 */
-    data object RequestSelectDriveSyncFolder : LibraryEvent
-
-    /** Drive 同期用のフォルダ（Tree URI）が選択されたときに設定ダイアログを開く。 */
-    data class SelectDriveSyncFolder(val directoryName: String?, val treeUri: Uri) : LibraryEvent
-
-    /** 取り込み・同期フォルダの設定ダイアログ（コース名・対象言語・ベース言語）を確定して実行する。 */
+    /** 取り込みフォルダの設定ダイアログ（コース名・対象言語・ベース言語）を確定して実行する。 */
     data class ConfirmImportConfig(
         val course: String?,
         val languages: LanguagePair,
         val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
     ) : LibraryEvent
 
-    /** 取り込み・同期フォルダの設定ダイアログをキャンセルする。 */
+    /** 取り込みフォルダの設定ダイアログをキャンセルする。 */
     data object CancelImportConfig : LibraryEvent
 
-    /** 取り込み・同期の完了・エラーバナーを閉じる。 */
+    /** 取り込みの完了・エラーバナーを閉じる。 */
     data object DismissImportStatus : LibraryEvent
-
-    /** Google Drive 同期バナーを閉じる。 */
-    data object DismissSyncStatus : LibraryEvent
 
     /** ディレクトリ（フォルダ）セクションの展開・折りたたみを切り替える。 */
     data class ToggleDirectory(val directoryName: String?) : LibraryEvent
@@ -1280,12 +1221,6 @@ sealed interface LibraryEvent {
         val ids: Set<MediaId>,
         val targetCourse: String?,
     ) : LibraryEvent
-
-    /** Google Drive 上の未ダウンロード教材（`DRIVE_REMOTE_ONLY`）の音声ファイルをオンデマンドでダウンロードする。 */
-    data class DownloadDriveAudio(val id: MediaId) : LibraryEvent
-
-    /** Google Drive 由来教材のローカル音声コピーを削除し、`DRIVE_REMOTE_ONLY` に戻す。 */
-    data class DeleteLocalAudioCopy(val id: MediaId) : LibraryEvent
 
     /** 全体設定で選択可能な有効言語の ON / OFF を切り替える（最低 1 言語は維持）。 */
     data class ToggleEnabledLanguage(val language: LanguageTag) : LibraryEvent
@@ -1423,7 +1358,6 @@ private data class LibraryRepositorySnapshot(
 
 private data class DialogAndImportSnapshot(
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
-    val syncState: DriveSyncUiState = DriveSyncUiState.Idle,
     val pendingDeleteItem: AudioItem? = null,
     val pendingDeleteDirectoryPath: String? = null,
     val isPendingBatchDelete: Boolean = false,
@@ -1496,7 +1430,6 @@ class LibraryViewModel @Inject constructor(
     )
 
     private val importState = MutableStateFlow<LibraryImportUiState>(LibraryImportUiState.Idle)
-    private val syncState = MutableStateFlow<DriveSyncUiState>(DriveSyncUiState.Idle)
     private val pendingDeleteItem = MutableStateFlow<AudioItem?>(null)
     private val pendingDeleteDirectoryPath = MutableStateFlow<String?>(null)
     private val isPendingBatchDelete = MutableStateFlow(false)
@@ -1521,7 +1454,6 @@ class LibraryViewModel @Inject constructor(
         base = LanguageTag("ja"),
     )
     private var importJob: Job? = null
-    private var syncJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -1635,12 +1567,7 @@ class LibraryViewModel @Inject constructor(
         }
 
     private val dialogAndImportFlow: Flow<DialogAndImportSnapshot> = combine(
-        combine(
-            importState,
-            syncState,
-        ) { currentImport, currentSync ->
-            currentImport to currentSync
-        },
+        importState,
         combine(
             pendingDeleteItem,
             pendingDeleteDirectoryPath,
@@ -1656,10 +1583,9 @@ class LibraryViewModel @Inject constructor(
             Triple(editItem, editItemOverride, editDir)
         },
         pendingImportConfig,
-    ) { (currentImport, currentSync), (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig ->
+    ) { currentImport, (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig ->
         DialogAndImportSnapshot(
             importState = currentImport,
-            syncState = currentSync,
             pendingDeleteItem = deleteTarget,
             pendingDeleteDirectoryPath = deleteDirTarget,
             isPendingBatchDelete = batchDelete,
@@ -1794,7 +1720,6 @@ class LibraryViewModel @Inject constructor(
                         uris = effectiveUris,
                         initialCourse = trimmedDir ?: currentDirectoryPath.value ?: selectedDirectoryName.value,
                         initialLanguages = defaultLanguagePair,
-                        isDriveSyncFolder = false,
                         treeUri = event.treeUri,
                     )
                 }
@@ -1806,23 +1731,9 @@ class LibraryViewModel @Inject constructor(
                         uris = event.uris,
                         initialCourse = LibraryCourseFolder.DEFAULT_IMPORTED_COURSE,
                         initialLanguages = defaultLanguagePair,
-                        isDriveSyncFolder = false,
                         treeUri = null,
                     )
                 }
-            }
-
-            is LibraryEvent.SelectDriveSyncFolder -> {
-                val trimmedDir = event.directoryName?.trim()?.ifBlank { null }
-                if (trimmedDir != null) {
-                    selectedDirectoryName.value = trimmedDir
-                }
-                pendingImportConfig.value = PendingImportConfig(
-                    uris = listOf(event.treeUri),
-                    initialCourse = trimmedDir ?: currentDirectoryPath.value ?: selectedDirectoryName.value ?: "ChunkFlow",
-                    initialLanguages = defaultLanguagePair,
-                    isDriveSyncFolder = true,
-                )
             }
 
             is LibraryEvent.ConfirmImportConfig -> {
@@ -1842,13 +1753,7 @@ class LibraryViewModel @Inject constructor(
                 viewModelScope.launch {
                     userSettingsRepository.setDefaultLanguagePair(normalizedLanguages)
                 }
-                if (config.isDriveSyncFolder) {
-                    syncFromLinkedFolder(
-                        treeUri = config.treeUri ?: config.uris.firstOrNull(),
-                        course = normalizedCourse,
-                        languages = normalizedLanguages,
-                    )
-                } else if (config.treeUri != null) {
+                if (config.treeUri != null) {
                     linkLocalDirectory(
                         treeUri = config.treeUri,
                         course = normalizedCourse,
@@ -1870,15 +1775,8 @@ class LibraryViewModel @Inject constructor(
                 pendingImportConfig.value = null
             }
 
-            LibraryEvent.SyncFromDrive -> syncFromDrive()
-
             LibraryEvent.DismissImportStatus -> {
                 importState.value = LibraryImportUiState.Idle
-                syncState.value = DriveSyncUiState.Idle
-            }
-
-            LibraryEvent.DismissSyncStatus -> {
-                syncState.value = DriveSyncUiState.Idle
             }
 
             is LibraryEvent.ToggleDirectory -> {
@@ -2332,19 +2230,6 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
-            is LibraryEvent.DownloadDriveAudio -> {
-                viewModelScope.launch {
-                    libraryRepository.downloadDriveAudio(event.id)
-                }
-            }
-
-            is LibraryEvent.DeleteLocalAudioCopy -> {
-                pendingEditItem.value = null
-                viewModelScope.launch {
-                    libraryRepository.deleteLocalAudioCopy(event.id)
-                }
-            }
-
             is LibraryEvent.ToggleEnabledLanguage -> {
                 val normalized = LanguageSettings.normalize(event.language)
                 if (normalized.value.isBlank()) return
@@ -2471,7 +2356,6 @@ class LibraryViewModel @Inject constructor(
 
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
-            LibraryEvent.RequestSelectDriveSyncFolder,
             LibraryEvent.OpenSettings,
             -> Unit
         }
@@ -2824,50 +2708,6 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    private fun syncFromDrive() {
-        syncJob?.cancel()
-        syncJob = viewModelScope.launch {
-            libraryRepository.syncFromDrive().collect { progress ->
-                syncState.value = mapSyncProgress(progress)
-            }
-        }
-    }
-
-    private fun syncFromLinkedFolder(
-        treeUri: Uri?,
-        course: String?,
-        languages: LanguagePair,
-    ) {
-        syncJob?.cancel()
-        syncJob = viewModelScope.launch {
-            libraryRepository.syncFromLinkedFolder(
-                treeUri = treeUri,
-                course = course,
-                languages = languages,
-            ).collect { progress ->
-                syncState.value = mapSyncProgress(progress)
-            }
-        }
-    }
-
-    private fun mapSyncProgress(progress: SyncProgress): DriveSyncUiState = when (progress) {
-        SyncProgress.Listing -> DriveSyncUiState.Listing
-
-        is SyncProgress.Downloading -> DriveSyncUiState.Downloading(
-            done = progress.done,
-            total = progress.total,
-        )
-
-        is SyncProgress.Done -> DriveSyncUiState.Done(
-            newAudio = progress.newAudio,
-            newTranscripts = progress.newTranscripts,
-            failed = progress.failed,
-            uploadedTranscripts = progress.uploadedTranscripts,
-        )
-
-        is SyncProgress.Failed -> DriveSyncUiState.Error(progress.error)
-    }
-
     private fun confirmDelete() {
         val currentState = uiState.value
         val targets = currentState.pendingDeleteTargetItems
@@ -3003,7 +2843,7 @@ class LibraryViewModel @Inject constructor(
             )
         } else {
             val lastAccessedItem = uiItems
-                .filter { it.lastAccessedAtEpochMs != null && !it.isAudioMissing && !it.item.isRemoteOnly }
+                .filter { it.lastAccessedAtEpochMs != null && !it.isAudioMissing }
                 .maxWithOrNull(
                     compareBy<LibraryItemUiModel> { it.lastAccessedAtEpochMs ?: 0L }
                         .thenBy { it.item.id.value },
@@ -3047,7 +2887,6 @@ class LibraryViewModel @Inject constructor(
             items = uiItems,
             courseFolders = courseFolders,
             importState = dialogAndImport.importState,
-            syncState = dialogAndImport.syncState,
             miniPlayer = miniPlayer,
             pendingDeleteItem = dialogAndImport.pendingDeleteItem,
             pendingDeleteDirectoryPath = dialogAndImport.pendingDeleteDirectoryPath,

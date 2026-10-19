@@ -1483,22 +1483,22 @@ class OnDeviceSpeechTranscriberTest {
             "https://huggingface.co/test/tokens.txt" to tokPayload,
         )
         var downloadCallCount = 0
-        val fakeDownloader = object : com.miuraken.chunkflow.core.drive.ModelArtifactDownloader {
+        val fakeDownloader = object : ModelArtifactDownloader {
             override suspend fun downloadVerifiedFile(
                 url: String,
                 destFile: File,
                 expectedSizeBytes: Long?,
                 expectedSha256Hex: String?,
                 maxSizeBytes: Long,
-            ): com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult {
+            ): ModelArtifactDownloadResult {
                 downloadCallCount += 1
                 val payload = filesByUrl[url]
-                    ?: return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Failure(
-                        com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Failure.Reason.HTTP_ERROR,
+                    ?: return ModelArtifactDownloadResult.Failure(
+                        ModelArtifactDownloadResult.Failure.Reason.HTTP_ERROR,
                     )
                 destFile.parentFile?.mkdirs()
                 destFile.writeBytes(payload)
-                return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Success(
+                return ModelArtifactDownloadResult.Success(
                     bytesWritten = payload.size.toLong(),
                     sha256Hex = "0".repeat(64),
                 )
@@ -1619,17 +1619,17 @@ class OnDeviceSpeechTranscriberTest {
                 expectedSha256Hex = null,
             ),
         )
-        val fakeDownloader = object : com.miuraken.chunkflow.core.drive.ModelArtifactDownloader {
+        val fakeDownloader = object : ModelArtifactDownloader {
             override suspend fun downloadVerifiedFile(
                 url: String,
                 destFile: File,
                 expectedSizeBytes: Long?,
                 expectedSha256Hex: String?,
                 maxSizeBytes: Long,
-            ): com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult {
+            ): ModelArtifactDownloadResult {
                 destFile.parentFile?.mkdirs()
                 destFile.writeBytes(byteArrayOf(1, 2, 3))
-                return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Success(3L, "0".repeat(64))
+                return ModelArtifactDownloadResult.Success(3L, "0".repeat(64))
             }
         }
         val sherpaManager = SherpaOnnxModelManager(
@@ -1709,17 +1709,17 @@ class OnDeviceSpeechTranscriberTest {
                 expectedSha256Hex = null,
             ),
         )
-        val fakeDownloader = object : com.miuraken.chunkflow.core.drive.ModelArtifactDownloader {
+        val fakeDownloader = object : ModelArtifactDownloader {
             override suspend fun downloadVerifiedFile(
                 url: String,
                 destFile: File,
                 expectedSizeBytes: Long?,
                 expectedSha256Hex: String?,
                 maxSizeBytes: Long,
-            ): com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult {
+            ): ModelArtifactDownloadResult {
                 destFile.parentFile?.mkdirs()
                 destFile.writeBytes(byteArrayOf(1, 2, 3))
-                return com.miuraken.chunkflow.core.drive.ModelArtifactDownloadResult.Success(3L, "0".repeat(64))
+                return ModelArtifactDownloadResult.Success(3L, "0".repeat(64))
             }
         }
         val sherpaManager = SherpaOnnxModelManager(

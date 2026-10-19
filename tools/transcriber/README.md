@@ -73,8 +73,8 @@ chunkflow-transcribe <コースフォルダ（複数可） | 音声ファイル>
 - コースフォルダの直下の音声（mp3、m4a、wav、flac、ogg、opus など）だけを処理します（サブフォルダと
   `transcription/` は見ません）。
 - JSON がすでにある音声は飛ばします（`--force` で作り直します）。別の版のツールで作った JSON は作り直します。
-- 最後に、作成した JSON の一覧とアップロード先（`<コース>/transcription/`）を表示します。Google Drive の
-  同じコースの `transcription/` に手動でアップロードしてください（§7.4.2）。
+- 最後に、作成した JSON の一覧と出力先（`<コース>/transcription/`）を表示します。端末内の同じコースフォルダの
+  `transcription/` に配置するか、アプリから取り込んでください（§7.4.2）。
 - 出力は `docs/format/chunkflow-transcript-v1.schema.json` で検証してから置きます。Schema が見つからない
   場合は警告を出して Schema による検証を飛ばします（形式の規則の確認は常に行います）。
 

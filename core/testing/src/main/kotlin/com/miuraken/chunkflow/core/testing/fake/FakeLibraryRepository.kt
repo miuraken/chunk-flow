@@ -3,10 +3,8 @@ package com.miuraken.chunkflow.core.testing.fake
 import android.net.Uri
 import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
-import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AudioItem
-import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -25,7 +23,7 @@ import kotlinx.coroutines.flow.update
 /**
  * テストとプレビュー用の [LibraryRepository]。
  *
- * 教材の一覧と教材ごとの状態はメモリ上に持つ。取り込みと同期の結果は [importResult] / [importTranscriptResult] / [syncResult] で決める。
+ * 教材の一覧と教材ごとの状態はメモリ上に持つ。取り込みの結果は [importResult] / [importTranscriptResult] で決める。
  */
 class FakeLibraryRepository(
     initialItems: List<AudioItem> = emptyList(),
@@ -60,15 +58,6 @@ class FakeLibraryRepository(
     /** [rescanLocalDirectories] が返す更新件数。 */
     var rescanResultCount: Int = 0
 
-    /** [syncFromLinkedFolder] で登録された同期対象フォルダの Tree URI。 */
-    var linkedSyncFolderUri: Uri? = null
-
-    /** [syncFromLinkedFolder] で登録されたコース名。 */
-    var linkedSyncCourse: String? = null
-
-    /** [syncFromLinkedFolder] で登録された言語ペア。 */
-    var linkedSyncLanguages: LanguagePair? = null
-
     /** [import] が流す進捗を決める。既定はすぐに「0 件で完了」。 */
     var importResult: (List<Uri>) -> Flow<ImportProgress> = {
         flowOf(ImportProgress.Copying(0f), ImportProgress.Done(emptyList(), duplicates = 0, transcriptsAttached = 0))
@@ -89,14 +78,6 @@ class FakeLibraryRepository(
     /** [resetTranscriptsAndDeleteFiles] の呼び出し履歴（別名）。 */
     val resetTranscriptsRequests: MutableList<MediaId>
         get() = resetTranscriptMediaIds
-
-    /** [syncFromDrive] が流す進捗を決める。既定はすぐに「0 件で完了」。 */
-    var syncResult: () -> Flow<SyncProgress> = {
-        flowOf(
-            SyncProgress.Listing,
-            SyncProgress.Done(newAudio = 0, newTranscripts = 0, failed = 0, uploadedTranscripts = 0),
-        )
-    }
 
     /** [exportLocalTranscriptJson] が返す結果。 */
     var exportTranscriptResult: Boolean = true
@@ -240,7 +221,6 @@ class FakeLibraryRepository(
                     kind = existing?.kind ?: LibraryFolderKind.VIRTUAL_DIRECTORY,
                     languagePair = languages,
                     treeUri = existing?.treeUri,
-                    driveFolderId = existing?.driveFolderId,
                     lastScannedAtEpochMs = existing?.lastScannedAtEpochMs ?: 0L,
                 )
         }
@@ -277,58 +257,6 @@ class FakeLibraryRepository(
     override suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean {
         resetTranscriptMediaIds += id
         return resetTranscriptsResult
-    }
-
-    override fun syncFromDrive(): Flow<SyncProgress> = syncResult()
-
-    override suspend fun downloadDriveAudio(id: MediaId): Boolean {
-        var found = false
-        items.update { list ->
-            list.map { item ->
-                if (item.id == id) {
-                    found = true
-                    item.copy(storageState = AudioStorageState.DRIVE_DOWNLOADED)
-                } else {
-                    item
-                }
-            }
-        }
-        missingAudioIds.update { it - id }
-        return found
-    }
-
-    override suspend fun deleteLocalAudioCopy(id: MediaId): Boolean {
-        var found = false
-        items.update { list ->
-            list.map { item ->
-                if (item.id == id) {
-                    found = true
-                    item.copy(storageState = AudioStorageState.DRIVE_REMOTE_ONLY)
-                } else {
-                    item
-                }
-            }
-        }
-        return found
-    }
-
-    override suspend fun hasLinkedSyncFolder(): Boolean = linkedSyncFolderUri != null
-
-    override fun syncFromLinkedFolder(
-        treeUri: Uri?,
-        course: String?,
-        languages: LanguagePair?,
-    ): Flow<SyncProgress> {
-        if (treeUri != null) {
-            linkedSyncFolderUri = treeUri
-        }
-        if (course != null) {
-            linkedSyncCourse = course
-        }
-        if (languages != null) {
-            linkedSyncLanguages = languages
-        }
-        return syncFromDrive()
     }
 
     override suspend fun updateItemMetadata(

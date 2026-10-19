@@ -2,8 +2,6 @@ package com.miuraken.chunkflow.core.media
 
 import android.content.Context
 import android.util.Log
-import com.miuraken.chunkflow.core.drive.ModelArtifactDownloadSpec
-import com.miuraken.chunkflow.core.drive.ModelArtifactDownloader
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import dagger.hilt.android.qualifiers.ApplicationContext

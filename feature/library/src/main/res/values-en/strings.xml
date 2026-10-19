@@ -53,18 +53,7 @@
     <string name="library_mini_player_play">Play</string>
     <string name="library_mini_player_pause">Pause</string>
     <string name="library_mini_player_open">Open player: %1$s</string>
-    <!-- M3: Google Drive sync & course/language metadata editing -->
-    <string name="library_drive_sync_button">Drive sync</string>
-    <string name="library_drive_sync_listing">Listing files in Google Drive…</string>
-    <string name="library_drive_sync_downloading">Syncing with Google Drive… (%1$d/%2$d)</string>
-    <string name="library_drive_sync_done">Drive sync complete: +%1$d audio, +%2$d transcripts</string>
-    <string name="library_drive_sync_done_with_uploads">Drive sync complete: +%1$d audio, +%2$d transcripts (uploaded %3$d to Drive)</string>
-    <string name="library_drive_sync_error_not_authorized">Google Drive authorization is required.</string>
-    <string name="library_drive_sync_error_network">Network error while syncing with Google Drive.</string>
-    <string name="library_drive_sync_error_folder_not_found">ChunkFlow/ folder was not found in Google Drive.</string>
-    <string name="library_drive_sync_error_no_space">Not enough storage space to complete Drive sync.</string>
-    <string name="library_drive_sync_error_io">Failed to read or write synced files.</string>
-    <string name="library_drive_sync_error_cancelled">Google Drive sync was cancelled.</string>
+    <!-- M3: Course/language metadata editing -->
     <string name="library_edit_metadata_cd">Edit course and language pair</string>
     <string name="library_edit_course_label">Course (folder) name</string>
     <string name="library_edit_target_lang_label">Target language</string>
@@ -87,18 +76,11 @@
     <string name="library_import_config_title">Import settings (languages &amp; course)</string>
     <string name="library_import_config_hint">Choose the shared course name, target language, and base language for the %1$d selected item(s).</string>
     <string name="library_import_config_confirm">Import with these settings</string>
-    <string name="library_drive_sync_config_title">Drive sync folder settings</string>
-    <string name="library_drive_sync_config_hint">Choose the course name, target language, and base language for the selected sync folder.</string>
-    <string name="library_drive_sync_config_confirm">Sync with these settings</string>
-    <string name="library_drive_sync_select_folder_action">Select sync folder</string>
     <string name="library_rescan_directories_button">Rescan folders</string>
     <string name="library_create_virtual_folder_button">New folder</string>
     <string name="library_create_virtual_folder_dialog_title">Create virtual folder</string>
     <string name="library_create_virtual_folder_name_label">Folder name (e.g. imported / Korean Basics)</string>
     <string name="library_create_virtual_folder_confirm">Create</string>
-    <string name="library_item_drive_remote_only_badge">Drive (not downloaded)</string>
-    <string name="library_item_drive_download_button">Download audio</string>
-    <string name="library_edit_delete_local_audio_copy_button">Delete local audio cache (keep on Drive)</string>
     <string name="library_recent_files_title">Recently opened files</string>
     <string name="library_refresh_cd">Rescan and refresh folders</string>
     <string name="library_add_folder_cd">Add folder</string>

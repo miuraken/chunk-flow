@@ -6,7 +6,7 @@ import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 
 /**
- * システムのファイル選択画面（SAF）で選んだものを調べる（S2 の 4: Google Drive での選択）。
+ * システムのファイル選択画面（SAF）で選んだものを調べる（S2 の 4: SAF での選択）。
  *
  * 表示名・MIME（`ContentResolver.getType` と Document の列の両方）・サイズ・プロバイダ（authority）を出す。
  * スパイク専用。本体ではファイル名・URI をリリースビルドのログに出さない（§8）。

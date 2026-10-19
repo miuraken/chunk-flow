@@ -20,7 +20,7 @@ Phase 0（設計書 §11）で、Gradle マルチモジュールの骨格・Vers
 | アプリ | `:app` | `chunkflow.android.application.compose` + `chunkflow.hilt` |
 | 画面 | `:feature:library` / `:player` / `:settings` | `chunkflow.android.feature`（library + compose + hilt、core:model / designsystem / testing への依存） |
 | 純 Kotlin | `:core:model` / `:core:audio` / `:core:transcript` | `chunkflow.jvm.library`（Kotlin JVM + Android Lint） |
-| Android ライブラリ | `:core:media` / `:drive` / `:playback` / `:datastore` / `:testing` | `chunkflow.android.library` |
+| Android ライブラリ | `:core:media` / `:playback` / `:datastore` / `:testing` | `chunkflow.android.library` |
 | Android ライブラリ | `:core:database` | `chunkflow.android.library` + `chunkflow.room` |
 | Android ライブラリ | `:core:data` | `chunkflow.android.library` + `chunkflow.hilt` |
 | Compose ライブラリ | `:core:designsystem` | `chunkflow.android.library.compose` |
@@ -34,8 +34,8 @@ flowchart LR
     featureLibrary & featurePlayer & featureSettings --> designsystem & testing["core:testing"] & model["core:model"]
     testing --> playback & data & transcript["core:transcript"]
     playback --> data
-    data --> transcript & database["core:database"] & datastore["core:datastore"] & media["core:media"] & drive["core:drive"] & audio["core:audio"]
-    transcript & audio & media & drive & database & datastore --> model
+    data --> transcript & database["core:database"] & datastore["core:datastore"] & media["core:media"] & audio["core:audio"]
+    transcript & audio & media & database & datastore --> model
 ```
 
 - feature 同士は依存しない。画面遷移のキー（`NavKey`）と組み立ては `:app` に置く。

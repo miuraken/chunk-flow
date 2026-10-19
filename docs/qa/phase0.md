@@ -46,7 +46,7 @@
   - 不変条件（`Waveform` の `peak.size == rms.size`、`Chunk` と `LoopMode.AbRange` の `startMs < endMs`）が `init { require(...) }` で保護され、`ModelInvariantsTest` で検証されている。
 - **主要インターフェース（§6.3）**:
   - `PlaybackController` / `PositionProvider` / `PlaybackStatus` / `PlaybackError`（`core:playback`）
-  - `LibraryRepository` / `ImportProgress` / `ImportError` / `SyncProgress` / `SyncError` / `TranscriptImportResult`（`core:data`）
+  - `LibraryRepository` / `ImportProgress` / `ImportError` / `TranscriptImportResult`（`core:data`）
   - `AnalysisRepository`（`core:data`）
   - `TranscriptParser` / `TranscriptParseResult` / `TranscriptError` / `TranscriptDocument` / `TranscriptSegment`（`core:transcript`）
   - すべて設計書 §6.3 のシグネチャ・型と一致し、日本語 KDoc が付与されている。
@@ -94,7 +94,6 @@ Phase 0 のスパイク（S1〜S3）は Mac（M3 Pro）および Android エミ�
 | --- | --- | --- | --- |
 | デコード・時間軸（S3） | D1〜D4, D6 | Pixel 実機での 30 分音声のデコード + 解析速度（目標 60 秒以内）、非同期モードのフレーム欠け有無、ハードウェア / Codec2 デコーダの遅延（529 サンプル差・ヘッダ隠し時の MPEG-1 `+1,728` / MPEG-2 `+1,152` サンプル）、`MediaExtractorCompat` + FLAC の EOS 挙動 | M2（解析パイプライン実装時） |
 | シーク・境界・電池・自動ポーズ（S2） | D5, D7〜D12 | Pixel 実機での `IndexSeekDataSource` のシーク誤差と初回遠距離シーク待ち時間、`dynamicScheduling=false` でのループ行き過ぎ（推定値と実音録音での 50ms 未満確認）と再生中の電池消費、画面オフ・Doze 時の自動ポーズ再開精度（`PARTIAL_WAKE_LOCK` の効果）、Bluetooth イヤホンの前 / 次ボタン、AAC シーク後誤差、AudioTrack 出力遅延 | M1（基本再生・電池・シーク）/ M2（ループ・自動ポーズ・イヤホン） |
-| Google Drive 連携（S2） | H1, H2 | 実機 SAF の Google Drive プロバイダでの複数選択・JSON の MIME・フォルダ選択可否・オフライン挙動（H1）、および Google Cloud OAuth クライアント登録後の Drive API 認可・`sha256Checksum` 検証（H2） | M1〜M2（SAF 取り込み）/ M3（Drive 手動同期） |
 | PC ツール実教材評価・別環境（S1） | H3, H4 | 人間による言語確認表（`*.review.csv`）の記入と正解率算出（H3）、および Linux / WSL2（NVIDIA GPU）での `uv sync`・`pytest`・`faster-whisper` の RTF と結果比較（H4） | M2〜M3（PC ツール・言語フィルタ） |
 
 ### 4.2 今後のチューニング参考項目（詳細は `design_doc.md` §13・ADR 0005〜0009 を参照）

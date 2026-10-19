@@ -1,4 +1,4 @@
-// スパイク S2（担当: playback）: PlayerMessage によるループの精度、MP3 のシーク精度、自動ポーズからの再開、Drive の選択・同期の試作。
+// スパイク S2（担当: playback）: PlayerMessage によるループの精度、MP3 のシーク精度、自動ポーズからの再開、SAF 選択の試作。
 // 独立したアプリ（本体と同じ端末に入れられる）。本体のモジュールからこのモジュールへは依存しない（ADR 0003）。
 plugins {
     alias(libs.plugins.chunkflow.android.application.compose)

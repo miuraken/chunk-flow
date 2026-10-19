@@ -4,8 +4,6 @@ import android.net.StubUri
 import androidx.lifecycle.SavedStateHandle
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.data.library.ImportProgress
-import com.miuraken.chunkflow.core.data.library.SyncError
-import com.miuraken.chunkflow.core.data.library.SyncProgress
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
@@ -85,7 +83,6 @@ class LibraryViewModelTest {
         repo.importResult = { flowOf(ImportProgress.Copying(0.5f)) }
         viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
         assertSame(fakeUri, viewModel.uiState.value.pendingImportConfig?.uris?.single())
-        assertFalse(viewModel.uiState.value.pendingImportConfig?.isDriveSyncFolder ?: true)
 
         viewModel.onEvent(
             LibraryEvent.ConfirmImportConfig(
@@ -131,56 +128,6 @@ class LibraryViewModelTest {
 
         viewModel.onEvent(LibraryEvent.DismissImportStatus)
         assertEquals(LibraryImportUiState.Idle, viewModel.uiState.value.importState)
-    }
-
-    @Test
-    fun `SelectDriveSyncFolder_設定ダイアログで同期フォルダとコースと言語ペアを登録して同期を実行する`() = runTest {
-        val repo = FakeLibraryRepository()
-        val playback = FakePlaybackController()
-        val viewModel = LibraryViewModel(repo, playback)
-        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
-
-        val treeUri = StubUri.create()
-        val syncPair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja"))
-        repo.syncResult = {
-            flowOf(SyncProgress.Done(newAudio = 3, newTranscripts = 2, failed = 0, uploadedTranscripts = 0))
-        }
-
-        viewModel.onEvent(
-            LibraryEvent.SelectDriveSyncFolder(
-                directoryName = "ChunkFlowSync",
-                treeUri = treeUri,
-            ),
-        )
-        assertEquals("ChunkFlowSync", viewModel.uiState.value.pendingImportConfig?.initialCourse)
-        assertEquals(true, viewModel.uiState.value.pendingImportConfig?.isDriveSyncFolder)
-
-        // キャンセル時は同期せず閉じる
-        viewModel.onEvent(LibraryEvent.CancelImportConfig)
-        assertNull(viewModel.uiState.value.pendingImportConfig)
-        assertNull(repo.linkedSyncFolderUri)
-
-        // 再度選択して確定すると syncFromLinkedFolder が呼ばれる
-        viewModel.onEvent(
-            LibraryEvent.SelectDriveSyncFolder(
-                directoryName = "ChunkFlowSync",
-                treeUri = treeUri,
-            ),
-        )
-        viewModel.onEvent(
-            LibraryEvent.ConfirmImportConfig(
-                course = "中国語リスニング",
-                languages = syncPair,
-            ),
-        )
-        assertNull(viewModel.uiState.value.pendingImportConfig)
-        assertSame(treeUri, repo.linkedSyncFolderUri)
-        assertEquals("中国語リスニング", repo.linkedSyncCourse)
-        assertEquals(syncPair, repo.linkedSyncLanguages)
-        assertEquals(
-            DriveSyncUiState.Done(newAudio = 3, newTranscripts = 2, failed = 0, uploadedTranscripts = 0),
-            viewModel.uiState.value.syncState,
-        )
     }
 
     @Test
@@ -313,44 +260,6 @@ class LibraryViewModelTest {
 
         viewModel.onEvent(LibraryEvent.ToggleMiniPlayerPlayPause)
         assertEquals(false, viewModel.uiState.value.miniPlayer?.isPlaying)
-    }
-
-    @Test
-    fun `SyncFromDrive_一覧取得から進捗と完了と失敗まで反映しバナー消去でIdleに戻る`() = runTest {
-        val repo = FakeLibraryRepository()
-        val playback = FakePlaybackController()
-        val viewModel = LibraryViewModel(repo, playback)
-        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
-
-        repo.syncResult = { flowOf(SyncProgress.Listing) }
-        viewModel.onEvent(LibraryEvent.SyncFromDrive)
-        assertEquals(DriveSyncUiState.Listing, viewModel.uiState.value.syncState)
-
-        repo.syncResult = { flowOf(SyncProgress.Downloading(done = 1, total = 3)) }
-        viewModel.onEvent(LibraryEvent.SyncFromDrive)
-        assertEquals(
-            DriveSyncUiState.Downloading(done = 1, total = 3),
-            viewModel.uiState.value.syncState,
-        )
-
-        repo.syncResult = {
-            flowOf(SyncProgress.Done(newAudio = 2, newTranscripts = 1, failed = 0, uploadedTranscripts = 1))
-        }
-        viewModel.onEvent(LibraryEvent.SyncFromDrive)
-        assertEquals(
-            DriveSyncUiState.Done(newAudio = 2, newTranscripts = 1, failed = 0, uploadedTranscripts = 1),
-            viewModel.uiState.value.syncState,
-        )
-
-        repo.syncResult = { flowOf(SyncProgress.Failed(SyncError.NOT_AUTHORIZED)) }
-        viewModel.onEvent(LibraryEvent.SyncFromDrive)
-        assertEquals(
-            DriveSyncUiState.Error(SyncError.NOT_AUTHORIZED),
-            viewModel.uiState.value.syncState,
-        )
-
-        viewModel.onEvent(LibraryEvent.DismissSyncStatus)
-        assertEquals(DriveSyncUiState.Idle, viewModel.uiState.value.syncState)
     }
 
     @Test
@@ -764,34 +673,6 @@ class LibraryViewModelTest {
         assertEquals("中国語会話", movedItem.course)
         assertEquals(folderLang, movedItem.languagePair)
         assertEquals(1, viewModel.uiState.value.currentDirectories.first { it.name == "中国語会話" }.items.size)
-    }
-
-    @Test
-    fun `Drive音声のオンデマンドDLとローカル音声キャッシュ削除_DownloadDriveAudioとDeleteLocalAudioCopyでstorageStateが切り替わる`() = runTest {
-        val remoteItem = SampleMaterials.jaKo.item.copy(
-            id = com.miuraken.chunkflow.core.model.MediaId("drive-1"),
-            storageState = com.miuraken.chunkflow.core.model.AudioStorageState.DRIVE_REMOTE_ONLY,
-        )
-        val repo = FakeLibraryRepository(initialItems = listOf(remoteItem))
-        val playback = FakePlaybackController()
-        val viewModel = LibraryViewModel(repo, playback)
-        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
-
-        assertTrue(viewModel.uiState.value.items.single().item.isRemoteOnly)
-
-        // 1. DownloadDriveAudio で DRIVE_DOWNLOADED になる
-        viewModel.onEvent(LibraryEvent.DownloadDriveAudio(remoteItem.id))
-        assertEquals(
-            com.miuraken.chunkflow.core.model.AudioStorageState.DRIVE_DOWNLOADED,
-            viewModel.uiState.value.items.single().item.storageState,
-        )
-
-        // 2. DeleteLocalAudioCopy で再び DRIVE_REMOTE_ONLY に戻る
-        viewModel.onEvent(LibraryEvent.DeleteLocalAudioCopy(remoteItem.id))
-        assertEquals(
-            com.miuraken.chunkflow.core.model.AudioStorageState.DRIVE_REMOTE_ONLY,
-            viewModel.uiState.value.items.single().item.storageState,
-        )
     }
 
     @Test

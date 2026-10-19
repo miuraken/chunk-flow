@@ -13,10 +13,10 @@
 
 | 版 | 内容 |
 | --- | --- |
-| v0.1〜v0.5 | 初版〜Phase 0 準備（個人利用化、PC Whisper + Drive 連携、複数チャンクリピート、UI 確認フロー策定） |
+| v0.1〜v0.5 | 初版〜Phase 0 準備（個人利用化、PC Whisper 連携、複数チャンクリピート、UI 確認フロー策定） |
 | v0.6 | Phase 0 の技術検証で確定した設計判断（ADR 0001〜0009）を反映 |
 | v0.7 | 端末内の先読み文字起こし・強制文字起こし（量子化 Whisper Tiny 2 言語判定、ADR 0010）、一時停止中のチャンクタップ単発再生、チャンク別リピートチェックボックス（`repeatChunkIds`）、言語役割別カラーパレット、発音ガイドを反映 |
-| v0.8 | 端末内音声認識の 3 エンジン構成（ML Kit GenAI Speech Recognition 既定 / Android `SpeechRecognizer` / `sherpa-onnx`、言語別・教材別エンジン設定、ファイル単位バックグラウンド文字起こし、ADR 0011）、ML Kit 端末内翻訳、ローカルフォルダのゼロコピー参照と `.chunkflow/` メタデータ保存・Drive 双方向同期、ライブラリ画面下部の「最近開いたファイル」（最大 5 件）と永続ミニプレイヤー再開、再生位置での分割（無音トリミング付き）・チャンク解除を反映 |
+| v0.8 | 端末内音声認識の 3 エンジン構成（ML Kit GenAI Speech Recognition 既定 / Android `SpeechRecognizer` / `sherpa-onnx`、言語別・教材別エンジン設定、ファイル単位バックグラウンド文字起こし、ADR 0011）、ML Kit 端末内翻訳、ローカルフォルダのゼロコピー参照と `.chunkflow/` メタデータ保存、ライブラリ画面下部の「最近開いたファイル」（最大 5 件）と永続ミニプレイヤー再開、再生位置での分割（無音トリミング付き）・チャンク解除を反映 |
 
 本書は、人間と AI エージェントの双方が参照する設計の単一の情報源です。重要な判断は ADR（`docs/adr/`）に切り出し、本書には結論と理由の要約を残します。
 
@@ -27,7 +27,7 @@
 | # | 論点 | 決定 | 主な理由 | 詳細 |
 | --- | --- | --- | --- | --- |
 | D1 | 解析と再生の関係 | 取り込み直後から再生できる。解析（波形 → チャンク）はバックグラウンドで実行し、できた順に画面へ反映する | 解析が終わるまで操作できない画面は体験を大きく損なう | §5.3 |
-| D2 | 音声ファイルとメタデータの保存先 | ローカルフォルダ同期時は元ファイルをコピーせず直接参照（ゼロコピー）し、同階層の `.chunkflow/` に文字起こし・チャンク JSON を保存する。単発取り込みや Drive キャッシュ時はアプリ専用の内部ストレージ `filesDir/media/` を使う | ローカル教材の二重保存による容量圧迫を防ぎつつ、PC や Google Drive と `.chunkflow/` 経由で解析・文字起こし結果を共有できる | §7.1 |
+| D2 | 音声ファイルとメタデータの保存先 | ローカルフォルダ同期時は元ファイルをコピーせず直接参照（ゼロコピー）し、同階層の `.chunkflow/` に文字起こし・チャンク JSON を保存する。単発取り込み時はアプリ専用の内部ストレージ `filesDir/media/` を使う | ローカル教材の二重保存による容量圧迫を防ぎつつ、PC と `.chunkflow/` 経由で解析・文字起こし結果を共有できる | §7.1 |
 | D3 | チャンク境界での制御 | `PlaybackService` 内で ExoPlayer の `PlayerMessage` を使い、次の境界を予約して処理する | 100ms ポーリングでは最大 100ms 行き過ぎ、次の単語の頭が聞こえてしまう | §7.2.4 |
 | D4 | 前/次ボタン（イヤホン・通知・アプリ内） | `ForwardingSimpleBasePlayer` で「前/次のチャンク」に再割り当てする | 画面オフの「ながら学習」で最も使う操作。標準コマンドに載せれば全経路で動作が一致する | §7.2.3 |
 | D5 | 波形データ | 10ms/ビンの固定時間分解能（dB スケール）で保存し、表示時に縮約する | 全体を 1,000 点に固定すると 30 分音声で 1 点 = 1.8 秒になり、0.5 秒の無音すら描けない | §7.3.2 |
@@ -36,7 +36,7 @@
 | D8 | 2 言語の判定方法 | PC 側・端末内ともにチャンクごとに候補を教材の言語ペア（2 言語）に限定して Whisper の言語トークンロジット（確率）を比較し、さらに認識テキストの書記体系ヒューリスティックを組み合わせて判定する | Whisper は冒頭で言語を 1 つに決めると、もう一方の言語の発話を訳して書いてしまうことがある。候補を教材の 2 言語に絞ることで短いチャンクでも高い識別精度が得られる | §7.4.5、ADR 0010 |
 | D9 | UI 状態 | 関心ごとに状態を分け、高頻度で変わる再生位置は UiState に含めず描画フェーズで読む | 位置が変わるたびに画面全体が再コンポーズされるのを防ぐ | §6.2 |
 | D10 | モジュール分割 | 機能別（feature）+ 基盤（core）。信号処理は Android に依存しない純 Kotlin モジュールに置く | 並行開発時の衝突を避け、高速な JVM 単体テストを可能にする | §5.2 |
-| D11 | プライバシー | アプリの通信は、ユーザーの Google Drive との同期および端末内認識・翻訳モデルの公式ダウンロードのみで、音声や文字起こしを外部サーバーへ送信しない | 教材音声は著作物や個人的な内容を含み得る | §8 |
+| D11 | プライバシー | アプリの通信は端末内認識・翻訳モデルの公式ダウンロードのみで、音声や文字起こしを外部サーバーへ送信しない | 教材音声は著作物や個人的な内容を含み得る | §8 |
 | D12 | 言語 | 教材ごとに任意の言語ペア（BCP-47）を持つ。母語側は省略できる（単一言語の教材） | 英語と各言語（中国語、広東語、ベトナム語、ロシア語、スペイン語、ヒンディー語、ドイツ語、ギリシャ語など）、日本語と中国語・韓国語など、教材によって組み合わせが異なる | §6.1 |
 | D13 | 文字起こしの形式 | JSON Schema で定義し、PC ツールとアプリの間の契約として版を管理する | 別々に開発する 2 つのプログラムの境界を明確にする | §7.4.3 |
 
@@ -61,32 +61,30 @@
   - U1 移動中: 画面オフ、Bluetooth イヤホン。ボタン操作で「もう一度」「次の文」
   - U2 机上: 波形とスクリプトを見ながら精聴・シャドーイング・ディクテーション
   - U3 発話練習: 各チャンクの後で自動的に一時停止し、声に出して繰り返す
-  - U4 準備: 新しい教材を Google Drive に置き、PC で文字起こしを作ってから端末に取り込む
+  - U4 準備: 新しい教材を端末のフォルダに置く（または PC で文字起こしを作ってから端末に取り込む）
 
 ### 1.3 Goals
 
-- **G1 即時再生**: ローカルや Google Drive から取り込んだ音声を待たずに再生でき、解析が再生を妨げない。
+- **G1 即時再生**: ローカルから取り込んだ音声を待たずに再生でき、解析が再生を妨げない。
 - **G2 チャンク単位の操作**: 発話単位のチャンク（PC の文字起こし、または端末内の無音検出で作る）ごとに、移動・リピート・自動ポーズができる。リピートは複数のチャンクの指定も可能。チャンク以外でも、巻き戻し・早送り（既定 3 秒 / 5 秒）などの操作ができる。
 - **G3 波形表示**: 全体の波形の下に、現在再生している周辺前後2分間の波形をチャンク境界とともに表示し、波形上で直接シークや範囲指定ができる。
-- **G4 スクリプトと言語**: PC で作った文字起こし（チャンクの区切り・テキスト・言語）を取り込み、再生位置と同期して表示する。言語の判定結果を使った再生モード（学習言語のみ再生、瞬間作文モードなど）を提供する。
+- **G4 スクリプトと言語**: PC または端末内で作った文字起こし（チャンクの区切り・テキスト・言語）を再生位置と同期して表示する。言語の判定結果を使った再生モード（学習言語のみ再生、瞬間作文モードなど）を提供する。
 - **G5 ながら学習**: 画面オフでも、イヤホン・ロック画面・通知から主要な操作（再生 / 停止、前 / 次のチャンク）ができる。
 - **G6 標準準拠**: Media3 / Material 3 / Jetpack の標準部品を優先し、保守性と OS との親和性を高める。
-- **G7 プライバシー**: アプリの通信は Google Drive からの読み取りだけで、送信はしない。
-- **G8 PC ツール**: Google Drive 上の音声から、文字起こしファイルを手間なく作れる（コースフォルダ単位の一括処理。Drive とのやり取りは手動）。
+- **G7 プライバシー**: アプリの通信は端末内認識・翻訳モデルのダウンロードだけで、教材の音声や文字起こしは外部へ送信しない。
+- **G8 PC ツール**: ローカルの音声から、文字起こしファイルを手間なく作れる（コースフォルダ単位の一括処理）。
 
 MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に加えて、PC で作った文字起こしの取り込みとスクリプト表示も行います。
 
 ### 1.4 Non-Goals（当面のスコープ外）
 
-- クラウド API へ音声を送信する文字起こし（プライバシーと課金回避のため。文字起こしは PC の Whisper JSON 取り込み、または端末内の量子化 Whisper Tiny LID + Android `SpeechRecognizer` で完結させる。付録 C、ADR 0010）
+- クラウド API へ音声を送信する文字起こし（プライバシーと課金回避のため。文字起こしは PC の Whisper JSON 取り込み、または端末内の量子化 Whisper Tiny LID + 端末内音声認識エンジンで完結させる。付録 C、ADR 0010・0011）
 - Google Play での公開（個人利用のため）
 - 音声ファイルの編集・トリミング・再エンコード保存（チャンク境界の手動調整はメタデータの編集なので対象内: M4）
 - ストリーミング再生、Podcast の購読（RSS）
 - 3 言語以上の同時判定（ただし、データモデルは任意の BCP-47 言語ペアを扱える設計にする）
-- アカウント、端末間の同期
+- アカウント、クラウドストレージや端末間の同期
 - 自分の声のマイク録音・比較（当面は実装しない。なお `RECORD_AUDIO` 権限自体は Android `SpeechRecognizer` へパイプ経由でチャンク PCM を渡す仕様上の要件として宣言済み。§8.2）
-- 母語の訳の付与
-- Google Drive との自動・定期的な同期（同期ボタンによる手動の同期だけを行う）
 - 動画の再生（動画ファイルから音声トラックだけを取り込む機能は将来の候補）
 
 ### 1.5 設計原則
@@ -96,8 +94,8 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 3. **解析結果は資産として扱う**: 高コストな結果は永続化して再計算を避ける。アルゴリズムを更新したらバージョンで判別する。
 4. **標準を優先し、自作は最小限にする**: 標準 API で実現できるものは自作しない。自作する部分（波形、チャンクスケジューラなど）は境界を明確にする。
 5. **テストしやすくする**: 信号処理と分割アルゴリズムは Android に依存しない純 Kotlin で書き、JVM 単体テストで検証する。
-6. **最小権限**: 危険な権限を要求しない。ネットワークは Drive からの読み取りにだけ使う。
-7. **重い処理は PC へ**: 大きなモデルが必要な処理（文字起こし）は PC で行い、アプリは結果を取り込んで使う。
+6. **最小権限**: 危険な権限を要求しない。ネットワークは端末内モデルのダウンロードにだけ使う。
+7. **重い処理は PC とも連携**: 大きなモデルが必要な高精度一括文字起こしは PC でも行え、アプリは `.chunkflow/` または単体 JSON として結果を取り込んで使える。
 
 ---
 
@@ -111,10 +109,9 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | F1.2 | 複数ファイルの一括取り込み（音声に続けて文字起こしファイルを選び、SHA-256 と名前で対応付ける）、他アプリからの共有・「アプリで開く」 | P0 | M2 |
 | F1.3 | 文字起こしファイル（`chunkflow-transcript` JSON）の取り込み（音声と同時に、または後から単独で） | P0 | M2 |
 | F1.4 | 他の形式の字幕・スクリプト（SRT / WebVTT / LRC）の取り込み | P1 | M3 |
-| F1.5 | Google Drive の `ChunkFlow/` フォルダとの同期（インデックス同期・オンデマンド音声キャッシュ・`.chunkflow/` 文字起こし書き戻し） | P1 | M3 |
 | F2.1 | ライブラリ一覧（フォルダ階層、タイトル、長さ、進捗、解析・文字起こし状態、ファイル単位の文字起こし実行）、画面下部約 1/3 の「最近開いたファイル」（最大 5 件）、および削除 | P0 | M1〜M4 |
 | F2.2 | 教材ごとのレジューム（再生位置、速度、学習モード）と、アプリ再起動後も維持される最下部ミニプレイヤーからのワンタップ再開 | P0 | M1〜M4 |
-| F2.3 | コース・フォルダ単位での整理と一括言語設定（ローカルフォルダおよび Drive のコースフォルダに対応） | P1 | M3 |
+| F2.3 | コース・フォルダ単位での整理と一括言語設定（ローカルフォルダのコースに対応） | P1 | M3 |
 | F2.4 | DB と設定のバックアップ・復元（Android の自動バックアップ） | P1 | M4 |
 | F3.1 | 再生 / 一時停止 / シーク、バックグラウンド再生、通知・ロック画面からの操作 | P0 | M1 |
 | F3.2 | ピッチを保った速度変更（0.5〜2.0 倍、0.05 刻み、プリセットあり） | P0 | M1 |
@@ -161,7 +158,7 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | 長さ | 想定は 1 ファイル 2〜30 分。60 分程度までは上記を満たす（それより長いファイルも、遅くはなっても動作する） |
 | 堅牢性 | プロセスが終了しても再生位置と解析の進捗を復元する。破損したファイルや不正な文字起こしファイルでもクラッシュせず、エラーを表示する |
 | 電池 | 再生中と自動ポーズ中（タイムアウト付き）以外は WakeLock を保持しない。解析は WorkManager の管理下で実行する |
-| プライバシー | 通信は Google Drive との同期と端末内モデルのダウンロードのみ。分析・トラッキング用 SDK は入れない |
+| プライバシー | 通信は端末内認識・翻訳モデルのダウンロードのみ。分析・トラッキング用 SDK は入れない |
 | 多言語表示 | 日本語、中国語（簡体字 / 繁体字）、広東語、韓国語、キリル文字（ロシア語）、ギリシャ文字、デーヴァナーガリー（ヒンディー語）、声調記号を含むラテン文字（ベトナム語）などを、言語に合った字形と改行規則で表示する |
 | PC ツールの処理時間 | 30 分の音声を、NVIDIA GPU で 5 分以内、Apple Silicon（M3 Pro）で 10 分以内（turbo 系モデルの場合の目安。S1 で実測） |
 | アクセシビリティ | TalkBack 対応、タップ領域 48dp 以上、文字サイズ設定に追従、言語ラベルを色だけで区別しない |
@@ -193,7 +190,6 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 | バックグラウンド処理 | WorkManager | |
 | 文字起こしの取り込み | kotlinx.serialization（JSON） | アプリは解析・検証して取り込む（§7.4.6） |
 | 発音ガイド・文字変換 | ICU4J（`com.ibm.icu:icu4j`）、Pinyin4j、内蔵粤拼（Jyutping）辞書・かなローマ字変換 | 学習言語の発音ガイド（ローマ字・拼音・粤拼・IAST・ラテン翻字）生成に使用 |
-| Drive の同期 | Google Play 開発者サービスの認可（`play-services-auth` の `AuthorizationClient`）、OkHttp | Drive API は REST で直接呼ぶ（`.chunkflow/` の読み書き・オンデマンド音声取得に対応。§7.1） |
 | PC ツール | Python 3.12 以上、uv、ffmpeg、faster-whisper（NVIDIA）/ mlx-whisper（Apple Silicon）、Silero VAD、OpenCC（中国語の字体の変換）、jsonschema、pytest | 環境ごとにエンジンを選ぶ（§7.4.4） |
 | ビルド | Gradle Kotlin DSL、Version Catalog、convention plugins（`build-logic/`） | |
 | テスト | JUnit、kotlinx-coroutines-test、Robolectric、`media3-test-utils`、Compose UI Test、Compose Preview Screenshot Testing、（Turbine、Roborazzi） | 括弧内は導入審査の対象。スクリーンショットテストは §10.5 |
@@ -209,14 +205,14 @@ MVP は M1 + M2（§11）とします。M2 では、端末内の自動分割に�
 
 ### 5.1 全体構成
 
-アプリは Google 推奨のアーキテクチャ（UI 層とデータ層、単方向データフロー、単一の情報源）に従います。文字起こしは PC 上の別のツールが作り、Google Drive を経由してアプリに渡します。
+アプリは Google 推奨のアーキテクチャ（UI 層とデータ層、単方向データフロー、単一の情報源）に従います。文字起こしは PC 上のツールで事前作成して取り込むほか、端末内の認識エンジンでも生成できます。
 
 ```mermaid
 flowchart TB
     subgraph PCSIDE["GPU 搭載 PC（tools/transcriber）"]
         TOOL["chunkflow-transcribe（Whisper）"]
     end
-    GD[("Google Drive（音声 + 文字起こし JSON）")]
+    FS[("ローカルフォルダ（音声 + 文字起こし JSON）")]
     subgraph APP["Android アプリ"]
         subgraph UIL["UI 層（feature:*）"]
             LS["LibraryScreen / ViewModel"]
@@ -226,7 +222,6 @@ flowchart TB
             LR["LibraryRepository"]
             AR["AnalysisRepository"]
             TI["TranscriptImporter（core:transcript）"]
-            DRV["DriveSync（core:drive）"]
         end
         subgraph SVC["PlaybackService（core:playback）"]
             MS["MediaSession"]
@@ -243,11 +238,8 @@ flowchart TB
     end
     SYS["通知・ロック画面・イヤホン"]
 
-    GD -->|"音声をダウンロード（手動）"| TOOL
-    TOOL -->|"JSON をアップロード（手動）"| GD
-    GD -->|"SAF で選択"| LR
-    GD -->|"同期ボタン（Drive API）"| DRV
-    LR --> DRV
+    FS <-->|"音声の読み込み・JSON の出力"| TOOL
+    FS -->|"SAF で選択・フォルダ同期"| LR
     LS --> LR
     PS --> AR
     PS -->|"PlaybackController"| MS
@@ -264,12 +256,11 @@ flowchart TB
     AW --> DB
 ```
 
-- **PC ツール**: GPU 搭載 PC 上の `chunkflow-transcribe`（`tools/transcriber/`）が、Drive からダウンロードした音声を文字起こしし、ローカルのコースフォルダの `transcription/` に JSON を書き込む。利用者がそれを Drive にアップロードする。アプリとは JSON の形式（§7.4.3）だけでつながり、コードは共有しない。
-- **Drive の同期**: 同期ボタンを押したときだけ、`core:drive` が Drive API で新しいファイルをダウンロードし、取り込み処理に渡す（§7.1）。
+- **PC ツール**: GPU 搭載 PC 上の `chunkflow-transcribe`（`tools/transcriber/`）が音声を文字起こしし、ローカルのコースフォルダの `transcription/` に JSON を書き込む。アプリとは JSON の形式（§7.4.3）だけでつながり、コードは共有しない。
 - **UI 層**: Compose の画面。ViewModel の `StateFlow` を `collectAsStateWithLifecycle` で購読し、ユーザー操作はイベントとして ViewModel に渡す。
 - **データ層**: Repository が Room・ファイル・DataStore をまとめ、単一の情報源（SSOT）として Flow を公開する。取り込んだ JSON は `TranscriptImporter` が検証し、チャンクと文字起こしとして保存する。
 - **再生**: `PlaybackService`（`MediaSessionService`）が ExoPlayer を所有する。アプリの UI は `PlaybackController`（`MediaController` のラッパー）経由でのみ操作し、通知・ロック画面・イヤホンと同じ経路（MediaSession）を通る。
-- **解析と端末内先読み文字起こし**: WorkManager 上の `AnalysisWorker` が波形と特徴量を作り（文字起こし JSON がない教材では無音検出チャンクも作り）、結果を Room / ファイルに書き込む。さらに先読み文字起こし（既定 ON）が有効な場合、`AnalysisRepository` が再生・選択位置から前方のチャンクを `OnDeviceSpeechTranscriber`（量子化 Whisper Tiny 2 言語判定 + Android `SpeechRecognizer`）で順次バックグラウンド認識し、手動の言語切り替えや強制再文字起こし要求が来た際は優先キュー（`PriorityRecognitionLock`）で先読みに割り込んで即座に処理する（ADR 0010）。
+- **解析と端末内先読み文字起こし**: WorkManager 上の `AnalysisWorker` が波形と特徴量を作り（文字起こし JSON がない教材では無音検出チャンクも作り）、結果を Room / ファイルに書き込む。さらに先読み文字起こし（既定 ON）が有効な場合、`AnalysisRepository` が再生・選択位置から前方のチャンクを `OnDeviceSpeechTranscriber`（量子化 Whisper Tiny 2 言語判定 + 端末内音声認識エンジン）で順次バックグラウンド認識し、手動の言語切り替えや強制再文字起こし要求が来た際は優先キュー（`PriorityRecognitionLock`）で先読みに割り込んで即座に処理する（ADR 0010・ADR 0011）。
 
 ### 5.2 モジュール構成
 
@@ -281,8 +272,7 @@ flowchart TB
 :core:model             ドメインモデル（純 Kotlin、Android 非依存）
 :core:audio             波形の縮約・特徴量・VAD・チャンク分割・リサンプラ（純 Kotlin、Android 非依存）
 :core:transcript        文字起こしファイル（Chunk Flow JSON / SRT / WebVTT / LRC）の解析・検証・チャンクへの対応付け（純 Kotlin）
-:core:media             デコード（MediaExtractorCompat + MediaCodec）、メタデータ取得、形式検証、端末内チャンク音声認識・2 言語判定（OnDeviceSpeechTranscriber / WhisperTinyLanguageDetector）
-:core:drive             Google Drive の手動同期（認可、Drive API の呼び出し、ダウンロード）
+:core:media             デコード（MediaExtractorCompat + MediaCodec）、メタデータ取得、形式検証、端末内チャンク音声認識・2 言語判定（OnDeviceSpeechTranscriber / WhisperTinyLanguageDetector）、オフラインモデル管理
 :core:playback          PlaybackService、LearningPlayer、ChunkScheduler、PracticeController、PlaybackController
 :core:database          Room（Entity / DAO / Migration）
 :core:datastore         DataStore（アプリ設定）
@@ -300,7 +290,6 @@ docs/format/            文字起こしの形式の仕様（JSON Schema とサ�
 - `feature:*` 同士は依存しない。画面遷移は `:app` で組み立てる。
 - `core:model`、`core:audio`、`core:transcript` は Android SDK に依存しない（JVM モジュール）。
 - ExoPlayer を直接触るのは `core:playback` だけ。ViewModel は `PlaybackController` インターフェースに依存する。
-- ネットワークに触るのは `core:drive` だけ。
 - PC ツールとアプリが共有するのは `docs/format/` の JSON Schema とサンプルだけ。どちらもそのサンプルでテストする（§9）。
 
 v0.1 の `feature/player/ui` と `feature/player/viewmodel` の分離はやめ、feature モジュールに統合します。UI と ViewModel は常に一緒に変更されるため、モジュールを分けても変更コストが増えるだけだからです。
@@ -311,19 +300,16 @@ v0.1 の `feature/player/ui` と `feature/player/viewmodel` の分離はやめ�
 sequenceDiagram
     actor U as ユーザー
     participant PC as PC（chunkflow-transcribe）
-    participant G as Google Drive
     participant P as UI / ViewModel
     participant L as LibraryRepository
     participant W as AnalysisWorker
     participant D as Room / files
 
-    U->>G: 音声を置く
-    U->>PC: 音声をダウンロードして実行
-    PC->>PC: 文字起こし（Whisper）
-    U->>G: JSON をアップロード
-    U->>P: 音声を選び、続けて transcription/ の JSON を選ぶ（SAF の複数選択）
-    P->>L: import(uris)
-    L->>L: filesDir へコピー + SHA-256 + 形式と JSON の検証
+    U->>PC: ローカルのコースフォルダを指定して実行
+    PC->>PC: 文字起こし（Whisper）→ transcription/ に JSON を出力
+    U->>P: 音声を選び、続けて transcription/ の JSON を選ぶ（またはフォルダ同期）
+    P->>L: import(uris) / syncFromLinkedFolder(treeUri)
+    L->>L: 検証 + SHA-256 + 必要に応じ filesDir へコピー
     L->>D: AudioItem・チャンク・文字起こしを登録
     L->>W: 解析ジョブを投入（波形・特徴量）
     Note over P,D: この時点で再生でき、チャンクとスクリプトも使える
@@ -373,7 +359,7 @@ data class AudioItem(
     val mimeType: String,
     val sizeBytes: Long,
     val contentSha256: String,      // 重複の検出と、文字起こしファイルとの対応付けに使うキー
-    val course: String?,            // コース名（Drive のコースフォルダ名）。手動で取り込んだ場合は任意
+    val course: String?,            // コース名（フォルダ名）。手動で取り込んだ場合は任意
     val languagePair: LanguagePair,
     val transcriptOffsetMs: Int = 0, // 文字起こしの時刻に足す補正値（§7.4.6）
     val importedAtEpochMs: Long,
@@ -577,12 +563,14 @@ interface LibraryRepository {
     ): Flow<ImportProgress>
     /** 文字起こしファイルだけを取り込み、SHA-256 が一致する既存の教材に付ける */
     suspend fun importTranscript(uri: Uri): TranscriptImportResult
-    /** Drive の ChunkFlow/ フォルダから新しい音声と文字起こしを取り込む（§7.1）。認可が必要なら NOT_AUTHORIZED で終わる */
-    fun syncFromDrive(): Flow<SyncProgress>
-    /** リンク済み SAF フォルダが設定されているかどうかを返す */
-    suspend fun hasLinkedSyncFolder(): Boolean
-    /** リンク済みまたは新規選択した SAF フォルダ（treeUri）から音声と文字起こしを同期する */
-    fun syncFromLinkedFolder(treeUri: Uri? = null): Flow<SyncProgress>
+    /** ローカルフォルダ（SAF Tree URI）をリンクし、再帰的に音声と文字起こしを走査して登録する */
+    fun linkLocalDirectory(
+        treeUri: Uri,
+        course: String? = null,
+        languages: LanguagePair? = null,
+    ): Flow<ImportProgress>
+    /** 登録済みのローカルフォルダを再スキャンし、新規ファイルの追加や消失したファイルの DB 削除を行う */
+    suspend fun rescanLocalDirectories(coursePath: String? = null): Int
     suspend fun updateItemMetadata(id: MediaId, course: String?, languagePair: LanguagePair)
     suspend fun updateDirectoryMetadata(oldCourse: String, newCourse: String?, languagePair: LanguagePair)
     suspend fun markItemListened(id: MediaId, isListened: Boolean = true)
@@ -597,15 +585,6 @@ sealed interface ImportProgress {
 }
 
 enum class ImportError { UNSUPPORTED_FORMAT, TOO_LARGE, NO_SPACE, IO, CANCELLED }
-
-sealed interface SyncProgress {
-    data object Listing : SyncProgress
-    data class Downloading(val done: Int, val total: Int) : SyncProgress
-    data class Done(val newAudio: Int, val newTranscripts: Int, val failed: Int) : SyncProgress
-    data class Failed(val error: SyncError) : SyncProgress
-}
-
-enum class SyncError { NOT_AUTHORIZED, NETWORK, FOLDER_NOT_FOUND, NO_SPACE, IO, CANCELLED }
 
 sealed interface TranscriptImportResult {
     data class Attached(val mediaId: MediaId, val chunkCount: Int, val durationMismatch: Boolean) : TranscriptImportResult
@@ -691,7 +670,7 @@ Room のテーブル（概要。外部キーは ON DELETE CASCADE）:
 | `chunk` | `id`（PK）、`media_id`（`start_ms` との複合インデックス）、`start_ms`、`end_ms`、`origin`、`algorithm_version` |
 | `transcript` | `chunk_id`（PK）、`text`、`text_variants`（JSON 文字列）、`language`、`language_confidence`、`words`（JSON 文字列）、`engine`、`user_edited`、`created_at` |
 | `bookmark` | `id`（PK）、`media_id`（`position_ms` との複合インデックス）、`position_ms`、`note`、`created_at` |
-| `drive_file` | `drive_file_id`（PK）、`kind`（AUDIO / TRANSCRIPT）、`course`、`modified_time`、`sha256`（NULL 可）、`media_id`（NULL 可） |
+| `course_folder` | `course`（PK）、`tree_uri`（NULL 可）、`updated_at` |
 | `item_stt_override` | `media_id`（PK）、`target_engine`（NULL 可）、`base_engine`（NULL 可） |
 
 - ブックマークはチャンク ID ではなく**時刻**で持ち、表示時にその時刻を含むチャンクに対応付けます。再分割でチャンクが作り直されても消えません。
@@ -700,7 +679,7 @@ Room のテーブル（概要。外部キーは ON DELETE CASCADE）:
 
 同じ音声をもう一度取り込んだ場合は SHA-256 で検出して既存の項目を開くため、解析結果は教材（`media_id`）ごとに 1 組だけ持ちます。各結果には生成したアルゴリズムのバージョンを記録し、アルゴリズムを更新したときは自動生成（`AUTO`）の結果だけを再計算します（再計算も上記と同じトランザクションで行う）。
 
-**バックアップからの復元**（F2.4）: 復元されるのは DB と設定だけで、音声と解析ファイルは含まれない（§8.2）。起動時に音声ファイルがない教材を「音声なし」と表示し、同じ音声を取り込み直す（手動または同期）と、SHA-256 で既存の項目に結び付く。文字起こし・手動の修正・ブックマーク・再生位置はそのまま戻り、波形と端末内の分割は再計算する。
+**バックアップからの復元**（F2.4）: 復元されるのは DB と設定だけで、音声と解析ファイルは含まれない（§8.2）。起動時に音声ファイルがない教材を「音声なし」と表示し、同じ音声を取り込み直す（手動またはフォルダ同期）と、SHA-256 で既存の項目に結び付く。文字起こし・手動の修正・ブックマーク・再生位置はそのまま戻り、波形と端末内の分割は再計算する。
 
 ---
 
@@ -717,13 +696,6 @@ Room のテーブル（概要。外部キーは ON DELETE CASCADE）:
   - 文字起こしファイルは `TranscriptParser` で検証し（§7.4.6）、JSON に書かれた音声の SHA-256（SRT 等は拡張子を除いたファイル名）で対応する音声に紐付ける。
 - **文字起こしだけの取り込み**（`LibraryRepository.importTranscript`）: 音声を先に取り込んだあとで PC の処理が終わった場合に使う。SHA-256 で既存の教材を探して付ける。見つからなければ「対応する音声がまだない」と表示する。
 - メタデータ（タイトル、アーティスト、長さ）は Media3 の inspector または `MediaMetadataRetriever` で取得する。他アプリからの共有・「アプリで開く」（F1.2）も、受け取った `content://` URI を同じ取り込み処理に通す。
-- **Google Drive との同期**（F1.5）: ライブラリ画面の「同期」ボタンを押すと、Drive の `ChunkFlow/` フォルダを確認し、音声インデックスと `.chunkflow/`（および互換の `transcription/`）内の文字起こし JSON を同期する。
-  - **方式と認可**: Google Play 開発者サービスの `AuthorizationClient` で Drive API v3（REST）の認可を受け取る。トークンはアプリで永続保存せず、同期・取得時に受け取る。
-  - **オンデマンド音声取得と `.chunkflow/` 書き戻し**:
-    1. `ChunkFlow/` 配下のフォルダ階層と音声・`.chunkflow/*.chunkflow.json`（および `transcription/*.chunkflow.json`）を一覧し、未取得の音声はメタデータのみ登録（`AudioStorageState.DRIVE_REMOTE_ONLY`）して、再生や解析が必要になった時点でオンデマンドに `filesDir/media/` へダウンロード（`AudioStorageState.DRIVE_CACHED`）する。キャッシュ済み音声はローカルコピーのみを削除して容量を空けることもできる。
-    2. 端末内で生成・編集した文字起こしやチャンク結果は `.chunkflow/<音声名>.chunkflow.json` としてローカルおよび Drive 側へ書き戻し、PC 側と双方向に共有できる。
-  - Drive から消えたファイルは、アプリからは自動削除しない（ライブラリの削除はユーザーの操作だけで行う）。
-  - Drive のファイル ID などの記録は Room の `drive_file` テーブルに置く（§6.4）。
 
 ### 7.2 再生エンジン（`core:playback`）
 
@@ -853,12 +825,12 @@ PlaybackService : MediaSessionService
 #### 7.4.2 全体の流れ
 
 ```text
-ChunkFlow/                    Google Drive 上のルート
+ChunkFlow/                    コース親フォルダ
   korean-course/                 コース（教材フォルダ）
     chunkflow.toml                  コースの設定（言語ペア、モデルなど）
     lesson01.mp3                 音声はコースフォルダの直下に置く
     lesson02.mp3
-    transcription/               文字起こし（PC で作ってアップロードする）
+    .chunkflow/                  アプリと共有する文字起こし・チャンク JSON（または互換の transcription/）
       lesson01.chunkflow.json
       lesson02.chunkflow.json
   cantonese-course/
@@ -866,26 +838,20 @@ ChunkFlow/                    Google Drive 上のルート
 ```
 
 ```text
-[利用者]   音声を Drive のコースフォルダに置く
-     │
-[利用者]   コースフォルダ（音声と chunkflow.toml）を PC のローカルにダウンロードする（手動）
-     │
 [PC]       chunkflow-transcribe <ローカルのコースフォルダ>
-           → <コース>/transcription/lesson01.chunkflow.json などをローカルに書き込む
+           → <コース>/transcription/lesson01.chunkflow.json などを出力する
      │
-[利用者]   transcription/ の JSON を Drive の同じコースの transcription/ にアップロードする（手動）
-     │
-[アプリ]   音声を選び、続けて transcription/ の JSON を選んで取り込む（JSON だけを後から取り込んでもよい）
+[アプリ]   コースフォルダをリンクして同期する、または音声と JSON を選んで取り込む
 ```
 
-- **この方式を選んだ理由**: GPU で大きな Whisper モデル（`large-v3` 系）を使えるため、端末内の認識より精度が高く、中国語・広東語・ヒンディー語などを含む多くの言語に対応できる。アプリには機械学習の処理も通信も不要になり、課金も発生しない。
-- **Drive とのやり取りは手動にする**: PC ツールは Google Drive を扱わず、ローカルのフォルダだけを読み書きする。PC で Drive を同期・マウントする仕組み（OS ごとに異なる）や、フォルダの監視は作らない。Drive 上とローカルで同じフォルダ構成にしておけば、アップロード先に迷わない。
-- **代償**: 文字起こしが使えるのは、PC で処理してアップロードした後になる。文字起こしがなくても、アプリは端末内の無音検出でチャンクを作って使える（§7.3.3）。
+- **この方式を選んだ理由**: GPU で大きな Whisper モデル（`large-v3` 系）を使えるため、大きなモデルによる一括文字起こしで高い精度を得られ、中国語・広東語・ヒンディー語などを含む多くの言語に対応できる。
+- **ローカルのフォルダだけを読み書きする**: PC ツールはローカルのフォルダだけを読み書きし、外部のクラウド API には依存しない。
+- **端末内との組み合わせ**: PC で事前処理していない音声でも、アプリは端末内の無音検出でチャンクを作り（§7.3.3）、さらに端末内の音声認識エンジン（付録 C、ADR 0010・0011）で文字起こしを生成できる。
 - PC ツールは、コースフォルダ直下の音声だけを処理する（サブフォルダは見ない。`transcription/` も対象外）。
 
 #### 7.4.3 文字起こしの形式（`chunkflow-transcript` v1）
 
-- **ファイル名と置き場所**: 音声のファイル名から拡張子を除いて `.chunkflow.json` を付け、同じコースフォルダの `transcription/` に置く（例: `korean-course/lesson01.mp3` → `korean-course/transcription/lesson01.chunkflow.json`）。
+- **ファイル名と置き場所**: 音声のファイル名から拡張子を除いて `.chunkflow.json` を付け、同じコースフォルダの `transcription/`（または `.chunkflow/`）に置く（例: `korean-course/lesson01.mp3` → `korean-course/transcription/lesson01.chunkflow.json`）。
 - **仕様**: JSON Schema（`docs/format/chunkflow-transcript-v1.schema.json`）とサンプル（`docs/format/examples/`）を lead が管理する。PC ツールとアプリの間の契約なので、変更は §10.3 の手順に従う。
 
 ```json
@@ -937,9 +903,9 @@ ChunkFlow/                    Google Drive 上のルート
 - **コマンド**: `chunkflow-transcribe <コースフォルダ（複数可） | 音声ファイル> [--target ko] [--base ja] [--model large-v3-turbo] [--engine auto|mlx|faster-whisper] [--force]`
   - JSON がすでにある音声は飛ばす（`--force` で作り直す）。古い版のツールで作った JSON は作り直す。
   - `--engine auto` は、macOS（Apple Silicon）なら mlx-whisper、CUDA が使えれば faster-whisper（GPU）、どちらもなければ faster-whisper（CPU、int8。遅い）を選ぶ。
-  - 最後に、作成した JSON の一覧と、アップロード先（`<コース>/transcription/`）を表示する。
+  - 最後に、作成した JSON の一覧と出力先（`<コース>/transcription/`）を表示する。
 - **設定**は 2 種類に分ける。
-  - **コースの設定**（`<コース>/chunkflow.toml`）: 言語ペア、モデル、VAD とチャンクのパラメータ、言語ごとの書き起こしのヒント。Drive のコースフォルダに置いておけば、音声と一緒にダウンロードされ、どの PC でも同じ設定で処理できる。コマンドの引数が優先する。言語ペアの指定がなければ、ファイル全体の言語判定で上位 2 言語を推定してログに出す（誤りやすいので、設定での指定を推奨する）。
+  - **コースの設定**（`<コース>/chunkflow.toml`）: 言語ペア、モデル、VAD とチャンクのパラメータ、言語ごとの書き起こしのヒント。コースフォルダに置いておけば、どの PC でも同じ設定で処理できる。コマンドの引数が優先する。言語ペアの指定がなければ、ファイル全体の言語判定で上位 2 言語を推定してログに出す（誤りやすいので、設定での指定を推奨する）。
   - **PC ごとの設定**（`~/.config/chunkflow-transcribe/config.toml`）: エンジン、デバイス、モデルの取得元とリビジョン。
 
 ```toml
@@ -1111,11 +1077,9 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 
 | 資産・入力 | 脅威 | 対策 |
 | --- | --- | --- |
-| 教材の音声・文字起こし（著作物や個人的な内容を含み得る） | 他アプリからの読み取り、意図しない外部送信、バックアップ経由の流出 | 内部ストレージ（サンドボックス + ファイルベース暗号化）に保存し、外部ストレージには書かない。アプリから外部へは送信しない（通信は Drive からの読み取りだけ）。バックアップの対象から外す |
+| 教材の音声・文字起こし（著作物や個人的な内容を含み得る） | 他アプリからの読み取り、意図しない外部送信、バックアップ経由の流出 | 内部ストレージ（サンドボックス + ファイルベース暗号化）またはユーザーがリンクしたローカルフォルダ内に保存し、アプリから外部へは送信しない（通信は端末内認識・翻訳モデルのダウンロードのみ）。バックアップの対象から外す |
 | 取り込む音声ファイル（信頼できない入力） | 不正なコンテナや巨大なファイルによるクラッシュ / DoS、パストラバーサル | 形式の検証、サイズと空き容量の確認、UUID のファイル名、デコード失敗を項目単位で隔離 |
 | 文字起こしファイル（Chunk Flow JSON / SRT / WebVTT / LRC）。自分の PC で作ったものでも、信頼できない入力として扱う | 巨大な入力や異常な値によるメモリ不足・ハング・クラッシュ、表示の崩れ | 上限（ファイル 20MB、セグメント 50,000 件、1 セグメントのテキスト 2,000 文字）を読み込みながら確認する。厳密な検証（§7.4.6）。線形時間で動くパーサ（破滅的なバックトラックを起こす正規表現を使わない）。テキストはプレーンテキストとしてのみ表示する（HTML や WebVTT のタグを解釈しない） |
-| Google のアクセストークン（Drive 全体の読み取り権限） | 漏えいによる Drive の中身の読み取り | 読み取り専用のスコープ。トークンは保存せず、同期のたびに Play 開発者サービスから受け取り、ログに出さない。通信は HTTPS のみ |
-| Drive からダウンロードするファイル | 巨大なファイル、不正な内容 | ダウンロードの前に `size` で上限を確かめ、手動の取り込みと同じ検証を通す |
 | メタデータ（ID3 タグなど） | 表示の崩れ、パスへの混入 | Compose の `Text` でプレーンテキストとしてのみ表示し（HTML として解釈しない）、パスには使わない |
 | MediaSession（エクスポートされたサービス）と `MediaButtonReceiver`（エクスポートされた受信機） | 他アプリからの不正な操作 | 標準コマンドとメディアボタンのイベントは許可する（システム UI・Bluetooth・再生再開に必要。影響は再生操作に限られるため許容する）。カスタムコマンドは `ControllerInfo` を確認し、自アプリと信頼済みのシステムからのみ受け付ける |
 | 他アプリから受け取るインテント（共有・「開く」） | 想定外のスキームの URI、巨大なファイル | `content://` のみ受け付け、取り込み処理と同じ検証を通す |
@@ -1124,14 +1088,14 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 ### 8.2 実装ルール
 
 - **権限**: 最小限にし、追加するときは理由を ADR に残す。
-  - 宣言する: `INTERNET`（Drive の同期だけに使う）、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`FOREGROUND_SERVICE_MEDIA_PROCESSING`、`FOREGROUND_SERVICE_DATA_SYNC`、`WAKE_LOCK`、`POST_NOTIFICATIONS`、`RECORD_AUDIO`（端末内 `SpeechRecognizer` による先読み文字起こし利用時のみ要求。マイク録音自体は行わず `EXTRA_AUDIO_SOURCE` でチャンク PCM を供給するが、Android の `SpeechRecognitionManagerService` / `AppOps` が呼び出し元に要求するため宣言する）。実行時に許可を求めるのは `POST_NOTIFICATIONS`（解析の進捗通知用）と `RECORD_AUDIO`（端末内 `SpeechRecognizer` による先読み文字起こし実行時）だけで、拒否されても再生・無音分割・外部文字起こしファイル読み込みは動作する。
+  - 宣言する: `INTERNET`（端末内認識・翻訳モデルのダウンロードだけに使う）、`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`FOREGROUND_SERVICE_MEDIA_PROCESSING`、`FOREGROUND_SERVICE_DATA_SYNC`、`WAKE_LOCK`、`POST_NOTIFICATIONS`、`RECORD_AUDIO`（端末内 `SpeechRecognizer` による先読み文字起こし利用時のみ要求。マイク録音自体は行わず `EXTRA_AUDIO_SOURCE` でチャンク PCM を供給するが、Android の `SpeechRecognitionManagerService` / `AppOps` が呼び出し元に要求するため宣言する）。実行時に許可を求めるのは `POST_NOTIFICATIONS`（解析の進捗通知用）と `RECORD_AUDIO`（端末内 `SpeechRecognizer` による先読み文字起こし実行時）だけで、拒否されても再生・無音分割・外部文字起こしファイル読み込みは動作する。
   - 宣言しない: `READ_EXTERNAL_STORAGE` / `READ_MEDIA_AUDIO`（SAF のみを使う）。
   - 依存ライブラリがマニフェストのマージで権限を持ち込んでいないことを CI で確認する（持ち込まれた場合は `tools:node="remove"` で取り除くか、依存を見直す）。
   - Google Play では公開しないため、フォアグラウンドサービスの種類ごとの申告は不要（公開することになった場合は必要）。
 - **ファイル**: 保存名は UUID にする。削除するときは、正規化したパスがアプリの管理ディレクトリ配下にあることを確認する。Java のシリアライズ（`ObjectInputStream`）は使わない。
 - **文字起こしファイルの読み込み**: kotlinx.serialization で決まった型として読み（任意のクラスへの逆シリアライズはしない）、サイズの上限を超えたら読み込みを打ち切る。検証を通るまでは DB に書かない。
 - **エクスポートするコンポーネント**: `MainActivity`（ランチャー、共有・「開く」の受け口）、`PlaybackService`、`MediaButtonReceiver`（再生の再開に必要）のみ。マージ後のマニフェストを CI で確認する（§9）。
-- **通信**: Drive API（`www.googleapis.com`）への HTTPS だけ（cleartext 通信の禁止は targetSdk 28 以上の既定）。通信するコードは `core:drive` に限る。
+- **通信**: 端末内認識・翻訳モデルのダウンロード時の HTTPS 通信のみ（cleartext 通信の禁止は targetSdk 28 以上の既定）。
 - **ログ**: リリースビルドでは、ファイル名・URI・文字起こしの本文をログに出さない。
 - **バックアップ**（F2.4）: Android の自動バックアップ（Auto Backup）と端末間の移行を使う（独自の実装はしない）。`dataExtractionRules` で対象を DB（`database` ドメイン。Room の `-wal` / `-shm` を含む）と DataStore（`file` ドメインの `datastore/`）に限り、`filesDir/media/` と解析ファイルは含めない（大容量かつ著作物のため。自動バックアップの上限は 25MB）。画面ロックを設定していれば、バックアップは端末側で暗号化される。復元の動作は `adb shell bmgr` で手動で確かめる。
 - **依存関係**: 新しい依存を加える前に、ライセンス・保守状況・既知の脆弱性を確認し、バージョンを固定する（アプリは Version Catalog、PC ツールは `uv.lock`）。
@@ -1140,8 +1104,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 - **意図的に見送る対策**（実装時はコードにも `TODO(security)` を残す）
   - `TODO(security)`: 保存データのアプリ独自の暗号化は行わない。サンドボックスとファイルベース暗号化で十分と判断する（root 化された端末は対象外）。
   - `TODO(security)`: 取り込みファイルのマルウェアスキャンは行わない。実行されないメディアデータであり、デコーダの堅牢性は OS と Media3 に依存する。
-  - `TODO(security)`: Drive API の通信で証明書のピン留めはしない（Google の証明書は更新されるため。OS の信頼ストアに任せる）。
-  - `TODO(security)`: 文字起こしファイルの署名による改ざんの検知は行わない。自分の PC と自分の Google Drive の間でだけ受け渡すため。内容が不正な場合の影響は、検証と上限で抑える。
+  - `TODO(security)`: 文字起こしファイルの署名による改ざんの検知は行わない。内容が不正な場合の影響は、検証と上限で抑える。
 
 ---
 
@@ -1155,7 +1118,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 | UI | 画面の状態（解析中・完了・エラー・文字起こしなし、ライト / ダーク、スマートフォン / タブレット）、多言語の表示（日本語・中国語の簡体字 / 繁体字・韓国語・ヒンディー語・ロシア語・ギリシャ語・ベトナム語など） | Compose UI テスト、スクリーンショットテスト（Compose Preview Screenshot Testing。§10.5） |
 | PC ツール | `tools/transcriber` のチャンクの整形、言語の平滑化、JSON の出力 | pytest（純粋な関数と、モックにしたエンジン）、Ruff |
 | 契約 | `docs/format/` の JSON Schema とサンプル | アプリのパーサが正しいサンプルをすべて読め、不正なサンプル（`docs/format/examples/invalid/`）をすべて拒否すること。PC ツールの出力が Schema に合格すること |
-| 手動（Pixel 実機） | Bluetooth イヤホンでの操作、ロック画面、通話による中断、30 分と 60 分の音声、電池消費、Drive からの取り込み | チェックリスト（`docs/manual-test.md`） |
+| 手動（Pixel 実機） | Bluetooth イヤホンでの操作、ロック画面、通話による中断、30 分と 60 分の音声、電池消費、ローカルフォルダ同期 | チェックリスト（`docs/manual-test.md`） |
 
 - **テスト用の音源**: ライセンス上問題のない短い音源（合成音声やトーン）をスクリプトで生成し、期待するチャンク境界の JSON と一緒に `core:testing` に置く。実際の教材は手元での評価だけに使い、リポジトリには含めない（著作権のため）。
 - **文字起こしのフィクスチャ**: 言語ペアの異なるサンプル（ja-ko、ja-zh、en-yue、en-hi、en-ru、en-vi、en-el、単一言語など。簡体字 / 繁体字（`textVariants`）、口語の広東語、デーヴァナーガリー、キリル文字、ギリシャ文字、ベトナム語の声調記号を含む）と、境界値・異常値のサンプルを `docs/format/examples/` に置き、アプリと PC ツールの両方のテストで使う。
@@ -1168,7 +1131,6 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
   - 巨大・異常な文字起こしファイル（上限を超えるサイズや件数、深い入れ子、負の時刻や逆転した時刻、言語ペアにない言語タグ、不正な UTF-8）が、ハングもクラッシュもせずに拒否されること（タイムアウト付きのテスト）
   - 文字起こしのテキストに HTML や WebVTT のタグが含まれていても、文字としてそのまま表示されること
   - 外部アプリ（テスト用のコントローラ）からのカスタムコマンドが拒否されること
-  - Drive の同期: テスト用のサーバー（OkHttp の MockWebServer）で、不正な応答・上限を超えるサイズ・途中で切れるダウンロード・認可の取り消しを、クラッシュせずに扱えること。トークンがログに出ないこと
   - バックアップの対象に `filesDir/media/` と解析ファイルが含まれないこと（`dataExtractionRules` のテスト）
   - エクスポートされたコンポーネントと権限が §8.2 の一覧から増えていないこと（ネットワーク関連の権限は `INTERNET` と、WorkManager が持ち込む `ACCESS_NETWORK_STATE` だけであること）
   - リリース APK に秘密情報が含まれないこと（シークレットスキャン）
@@ -1190,7 +1152,7 @@ prompt = "佢哋喺度傾緊偈，我哋一齊聽下啦。"
 | エージェント | 担当 | 書き込める範囲 | 実行できるコマンド |
 | --- | --- | --- | --- |
 | `lead` | 契約（文字起こしの形式を含む）・ビルド設定・DI・画面遷移・DB スキーマ・設定・Fake・CI・統合・ADR | `build-logic/`、`gradle/`、すべての `*.gradle.kts`（各モジュールへの依存追加を含む）、リポジトリ直下の設定ファイル（`settings.gradle.kts`、`gradle.properties`、`.github/`、`.editorconfig`、`.gitignore` など）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`（`docs/format/` を含む。下の例外を除く）、`AGENTS.md`、`_agents/`、`design_doc.md` | Gradle 全般、uv、git |
-| `playback` | 取り込み・ライブラリ・Drive の同期・再生・学習モード、スパイク S2 | `core/playback/`、`core/drive/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` | 担当モジュールのビルド・テスト |
+| `playback` | 取り込み・ライブラリ・ローカルフォルダ同期・再生・学習モード、スパイク S2 | `core/playback/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` | 担当モジュールのビルド・テスト |
 | `audio-analysis` | デコード・波形・特徴量・分割・解析 Worker、スパイク S3 | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md` | 同上 |
 | `transcriber` | PC ツール、文字起こしファイルの解析・取り込み、スパイク S1、スパイク S4（ML Kit の翻訳・校正） | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md`、`spikes/textai/`、`docs/spikes/S4-*.md` | 同上 + PC ツールの `uv run`（pytest、Ruff、評価用の文字起こし） |
 | `ui` | 画面・波形 Composable・テーマ | `feature/`、`core/designsystem/` | 同上 + スクリーンショットテスト、Android CLI の `studio render-compose-preview`・`screen capture`・`layout`・`run`（§10.5） |
@@ -1224,7 +1186,7 @@ UI は、エージェントが実装と一次確認を行い、人間が Android
 
 - 画面は「状態を受け取って描くだけの Composable」（例: `PlayerScreen(state: PlayerUiState, onEvent: (PlayerEvent) -> Unit)`）と、ViewModel をつなぐ薄い Route（`PlayerRoute`）に分ける。プレビューとテストは前者だけを使う。
 - 各画面と主要な部品（波形、スクリプトの行、操作部、ミニプレイヤー）に `@Preview` を付ける。状態は `core:testing` のプレビュー用フィクスチャ（`PreviewParameterProvider`）から渡す。
-- **確認する状態の一覧**（フィクスチャとして用意する）: ライブラリが空 / 複数のコース、解析中 / 完了 / エラー、文字起こしなし、ja-ko、ja-zh（簡体字）、en-yue（繁体字・口語）、en-hi（デーヴァナーガリー）、en-ru、en-vi、長い文、言語が「?」のチャンク、自動ポーズのカウントダウン中、ブラインドモード、同期中 / 同期の失敗。
+- **確認する状態の一覧**（フィクスチャとして用意する）: ライブラリが空 / 複数のコース、解析中 / 完了 / エラー、文字起こしなし、ja-ko、ja-zh（簡体字）、en-yue（繁体字・口語）、en-hi（デーヴァナーガリー）、en-ru、en-vi、長い文、言語が「?」のチャンク、自動ポーズのカウントダウン中、ブラインドモード、フォルダ同期中 / 同期の失敗。
 - **確認する表示条件**は、独自のマルチプレビュー注釈（例: `@ChunkFlowPreviews`）にまとめる: ライト / ダーク（`@PreviewLightDark`）、文字サイズ（`@PreviewFontScale`。最大 2.0 倍）、画面サイズ（`@PreviewScreenSizes`。スマートフォン・折りたたみ・タブレット）、UI 言語（日本語 / 英語）。
 - プレビューは本番と同じテーマ（`core:designsystem`）で描く。ダイナミックカラーはプレビューでは固定の配色にする（画像の比較が安定するように）。
 
@@ -1270,9 +1232,7 @@ Phase 0  基盤と技術検証（基盤は lead、スパイクは各担当）
                   再生位置との時刻のずれ（S3 と合同）、3 環境（macOS / Linux / WSL2）での動作、
                   広東語の口語の表記と、字体の変換の質
                S2 PlayerMessage によるループの精度、MP3（CBR / VBR + Xing / ヘッダのない VBR）のシーク精度、
-                  画面オフでの自動ポーズからの再開タイミング、
-                  Google Drive での複数選択とフォルダ選択の可否、
-                  Drive API による同期の試作（認可の流れ、未確認のアプリの警告、sha256Checksum）（playback）
+                  画面オフでの自動ポーズからの再開タイミング（playback）
                S3 デコード速度と、解析・再生の時間軸の一致（audio-analysis）
 M1  使えるプレイヤー（playback + ui が Fake を使って並行開発 → 統合）
   └─ 取り込み、ライブラリ、バックグラウンド再生と通知、速度、スキップ、レジューム
@@ -1282,7 +1242,7 @@ M2  チャンクプレイヤー = MVP（audio-analysis + playback + transcriber 
      チャンク移動・リピート・A-B・自動ポーズ、イヤホン操作
 M3  言語を使った学習（transcriber + playback + ui）
   └─ 言語フィルタ、瞬間作文モード、言語ラベルの修正、時刻のずれの補正、
-     SRT / WebVTT / LRC の取り込み、Drive の手動同期、コース単位の整理
+     SRT / WebVTT / LRC の取り込み、ローカルフォルダの同期、コース単位の整理
 M4  編集と仕上げ
   └─ チャンクの手動編集、テキストの修正、ブックマーク、書き出し、カラオケ表示、バックアップ、2 ペイン表示、Baseline Profile
 ```
@@ -1292,9 +1252,9 @@ M4  編集と仕上げ
 | マイルストーン | 完了条件 |
 | --- | --- |
 | Phase 0 | `./gradlew build` が通り、空の画面の間を遷移できる。形式 v1 の Schema とサンプル、スパイクの報告、ADR がそろっている |
-| M1 | Pixel 実機で Drive / ローカルの教材を取り込み、画面オフで 1 時間再生できる。プロセスが終了しても再生位置を復元できる |
-| M2 | 30 分の教材を 60 秒以内に解析できる。PC ツールで作った JSON を Drive から取り込み、スクリプトが再生位置に同期して表示される（時間軸のずれ 50ms 未満）。イヤホンの前 / 次ボタンでチャンクを移動できる。ループの行き過ぎが 50ms 未満（S2 で対策した MP3 を含む）。画面オフでも自動ポーズの長さの誤差が小さい。テスト音源で境界の誤差 ±50ms 以内のチャンクが 90% 以上 |
-| M3 | 評価用の教材（ja-ko、ja-zh、en-yue、en-hi など）で、PC ツールによる 1 秒以上のチャンクの言語判定の正解率が 95% 以上。言語フィルタと瞬間作文モードが画面オフでも正しく動く。同期ボタンで Drive の新しい音声と文字起こしが取り込まれる |
+| M1 | Pixel 実機でローカルの教材を取り込み、画面オフで 1 時間再生できる。プロセスが終了しても再生位置を復元できる |
+| M2 | 30 分の教材を 60 秒以内に解析できる。PC ツールで作った JSON を取り込み、スクリプトが再生位置に同期して表示される（時間軸のずれ 50ms 未満）。イヤホンの前 / 次ボタンでチャンクを移動できる。ループの行き過ぎが 50ms 未満（S2 で対策した MP3 を含む）。画面オフでも自動ポーズの長さの誤差が小さい。テスト音源で境界の誤差 ±50ms 以内のチャンクが 90% 以上 |
+| M3 | 評価用の教材（ja-ko、ja-zh、en-yue、en-hi など）で、PC ツールによる 1 秒以上のチャンクの言語判定の正解率が 95% 以上。言語フィルタと瞬間作文モードが画面オフでも正しく動く。フォルダ同期ボタンでローカルフォルダの新しい音声と文字起こしが取り込まれる |
 | M4 | 手動で編集した後も文字起こしが正しく引き継がれる。バックアップから復元し、音声を取り込み直すと、文字起こしと手動の修正が戻る。アクセシビリティのチェックを通過する |
 
 ---
@@ -1306,12 +1266,11 @@ M4  編集と仕上げ
 | 言語が混ざった教材で、Whisper が言語を誤って判定する、またはもう一方の言語の発話を訳して書く | スクリプトの誤り、言語フィルタの誤動作 | チャンクごとに判定した言語を指定して文字起こしする（§7.4.5）。前後のチャンクで平滑化し、確率の低いチャンクは「?」と表示してアプリで修正できるようにする。S1 で実際の教材を使って測る |
 | Whisper の幻覚（無音の区間に存在しない文を出す、同じ文を繰り返す） | 実在しないチャンクや誤ったテキスト | VAD で求めた発話区間だけを認識させる。前のチャンクの文脈を引き継がない。無音の確率や圧縮率が閾値を超える出力は捨てるか、印を付ける |
 | 文字起こしの時刻と再生位置のずれ（エンコーダ遅延の扱いの違い、Whisper の時刻の粗さ） | スクリプトの強調やチャンクの頭出しがずれる | 時刻の基準を形式で定め（§7.4.3）、取り込み時に形式ごとの初期値を `transcriptOffsetMs` に入れた上で自動補正と手動調整（F7.6）、チャンクのパディングで吸収する（ADR 0008） |
-| PC での処理を忘れる、手順が面倒になる | スクリプトのないまま学習することになる | PC ツールはコースフォルダ単位で未処理の音声だけをまとめて処理し、アップロードするファイルの一覧を表示する。文字起こしがなくても端末内の分割でチャンクを使える。JSON を後から単独で取り込める |
-| アップロードの誤り（別のコースのフォルダに置く、古い JSON を置く） | 取り込めない、古い文字起こしを使う | 音声の SHA-256 で対応付けるので、置き場所を誤っても正しい音声に付く。対応する音声がなければその旨を表示し、同じ音声の JSON が複数あれば新しい方を使う |
+| PC での処理を忘れる、手順が面倒になる | PC 生成のスクリプトがないまま学習することになる | PC ツールはコースフォルダ単位で未処理の音声だけをまとめて処理し、出力したファイルの一覧を表示する。事前処理がなくても端末内の分割・端末内音声認識でチャンクとスクリプトを使える。JSON を後から単独で取り込める |
+| 取り込み時の対応付けの誤り（別のコースのフォルダに置く、古い JSON を置く） | 取り込めない、古い文字起こしを使う | 音声の SHA-256 で対応付けるので、置き場所を誤っても正しい音声に付く。対応する音声がなければその旨を表示し、同じ音声の JSON が複数あれば新しい方を使う |
 | PC の環境構築（GPU ドライバ、CUDA、WSL2 など） | PC ツールが動かない、手間がかかる | `uv sync` だけで依存がそろうようにし、環境ごとの手順を README に書く。Windows は WSL2 で Linux と同じ手順にする。CUDA のライブラリは pip のパッケージでも入れられる。CPU でも（遅いが）動くようにする |
 | エンジン（mlx-whisper / faster-whisper）による結果の違い | PC によってチャンクやテキストが変わる | 共通のインターフェースと共通の後処理にする。`generator` にエンジンとモデルを記録する。S1 で同じ音声の結果を比べる |
 | 言語ごとの書き起こしの癖（広東語を書き言葉で書く、簡体字と繁体字の混在、ヒンディー語をウルドゥー文字で書くなど） | スクリプトが学習に使いにくい | 文字体系の確認と再認識、OpenCC による字体の統一、口語の広東語に寄せるプロンプト、コースごとのモデルの選択（§7.4.5）。S1 で言語ごとに確かめる |
-| Drive API の認可（制限付きのスコープ、未確認のアプリ、承認の期限切れ） | 同期できない、たびたび承認を求められる | 個人利用として未確認のまま使う（同意画面に警告が出る）。OAuth の同意画面は「本番」の状態にする（「テスト」の状態では承認が 7 日で切れることがある）。承認が切れたら同期ボタンから承認し直せるようにする。手動の取り込みは Drive API なしで常に使える。S2 で確かめる |
 | MP3（特に VBR）のシーク誤差。`FLAG_ENABLE_INDEX_SEEKING` はフォールバックでしか使われない | 頭出し・A-B リピートがずれ、解析と再生の時間軸も気づかないうちにずれる | 読み出し時にヘッダを隠しファイル長を不明にする `DataSource` と `FLAG_ENABLE_INDEX_SEEKING` を組み合わせて `IndexSeeker` を使わせる（§7.2.2、ADR 0006）。解析も同じ `DataSource` で読む |
 | バックグラウンド実行の制約（バックグラウンドからのフォアグラウンドサービス開始の禁止、Android 16 のジョブ実行時間の割り当て、FGS の 6 時間上限、自動ポーズ中の CPU スリープ） | 解析が止まる。自動ポーズが長引く | 前面にいる間に長時間ワーカーを開始する、停止理由を記録する、自動ポーズ中は期限付きの WakeLock を保持する（§7.2.4、§7.3.4） |
 | BGM のある教材（当面は想定しない） | 端末内の無音検出が破綻する | 文字起こしファイルのチャンクを使う（PC 側は Silero VAD と文単位の整形）。端末内の分割は、必要になってから移動窓の閾値と Silero VAD を加える |
@@ -1327,10 +1286,9 @@ M4  編集と仕上げ
 
 **人間が行う準備**
 
-1. Google Cloud のプロジェクトの作成、Drive API の有効化、OAuth の同意画面と Android 用の OAuth クライアント（`com.miuraken.chunkflow` と署名鍵の SHA-1）の登録。S2 の試作では開発用の署名鍵で登録する。
-2. リリース用の署名鍵の作成と保管（リポジトリの外）。
-3. S1 と M3 の評価に使う実際の教材（各言語ペアで数本ずつ）の用意。
-4. Android Studio の更新、Android CLI の導入、エミュレータの用意（§10.5.4）。
+1. リリース用の署名鍵の作成と保管（リポジトリの外）。
+2. S1 と M3 の評価に使う実際の教材（各言語ペアで数本ずつ）の用意。
+3. Android Studio の更新、Android CLI の導入、エミュレータの用意（§10.5.4）。
 
 **今後のチューニング・実機検証の参考メモ**（詳細は `docs/spikes/` および ADR 0005〜0009 を参照）
 
