@@ -33,7 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
@@ -411,6 +411,7 @@ fun TranscriptList(
     modifier: Modifier = Modifier,
     showTargetRomanization: Boolean = false,
     showTargetTranslation: Boolean = false,
+    bookmarksOnly: Boolean = false,
     positionProvider: PositionProvider = PositionProvider { 0L },
     lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
     showTranscriptionProgress: Boolean = lookaheadStatus.inFlightChunkId != null ||
@@ -462,6 +463,21 @@ fun TranscriptList(
     var progressOverlayHeightPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
 
+    val displayedChunks = remember(chunks, bookmarksOnly) {
+        chunks.mapIndexedNotNull { originalIndex, chunk ->
+            if (!bookmarksOnly || chunk.isBookmarked) {
+                originalIndex to chunk
+            } else {
+                null
+            }
+        }
+    }
+    val activeDisplayIndex = remember(activeChunkIndex, displayedChunks) {
+        activeChunkIndex?.let { targetIdx ->
+            displayedChunks.indexOfFirst { (originalIdx, _) -> originalIdx == targetIdx }.takeIf { it >= 0 }
+        }
+    }
+
     // ユーザーによる手動スクロールの検出
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress && !isProgrammaticScroll) {
@@ -480,9 +496,9 @@ fun TranscriptList(
 
     // activeChunkIndex が変わったときの自動追従スクロール
     if (!isInspectionMode) {
-        LaunchedEffect(activeChunkIndex, chunks.size) {
-            val targetIdx = activeChunkIndex ?: return@LaunchedEffect
-            if (!isAutoFollowPaused && targetIdx in chunks.indices) {
+        LaunchedEffect(activeDisplayIndex, displayedChunks.size) {
+            val targetIdx = activeDisplayIndex ?: return@LaunchedEffect
+            if (!isAutoFollowPaused && targetIdx in displayedChunks.indices) {
                 val scrollTargetIdx = (targetIdx - 2).coerceAtLeast(0)
                 isProgrammaticScroll = true
                 try {
@@ -576,10 +592,10 @@ fun TranscriptList(
                     .weight(1f),
                 contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp),
             ) {
-                itemsIndexed(
-                    items = chunks,
-                    key = { _, chunk -> chunk.id.value },
-                ) { index, chunk ->
+                items(
+                    items = displayedChunks,
+                    key = { (_, chunk) -> chunk.id.value },
+                ) { (index, chunk) ->
                     val isActive = index == activeChunkIndex
                     val isInLoopRange = chunk.id in loopHighlightedIds ||
                         chunk.isRepeatChecked ||
@@ -697,12 +713,12 @@ fun TranscriptList(
             )
         }
 
-        if (isAutoFollowPaused && activeChunkIndex != null && activeChunkIndex in chunks.indices) {
+        if (isAutoFollowPaused && activeDisplayIndex != null && activeDisplayIndex in displayedChunks.indices) {
             AssistChip(
                 onClick = {
                     isAutoFollowPaused = false
                     coroutineScope.launch {
-                        val scrollTargetIdx = (activeChunkIndex - 2).coerceAtLeast(0)
+                        val scrollTargetIdx = (activeDisplayIndex - 2).coerceAtLeast(0)
                         isProgrammaticScroll = true
                         try {
                             listState.animateScrollToItem(scrollTargetIdx)

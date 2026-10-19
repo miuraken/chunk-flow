@@ -1504,11 +1504,39 @@ class LibraryViewModelTest {
         viewModel.onEvent(LibraryEvent.BookmarkPlayerTogglePlayPause)
         assertFalse(playback.status.value.isPlaying)
 
-        // 6. チャンクのブックマークを解除するとリストから除外される
+        // 6. 下部再生コントローラーの速度・リピート・無音スキップ操作が動作する
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerSetCustomSpeed(1.5f))
+        assertEquals(1.5f, viewModel.uiState.value.playbackSpeed)
+        assertEquals(1.5f, viewModel.uiState.value.customPlaybackSpeed)
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerSetSpeed(1.0f))
+        assertEquals(1.0f, viewModel.uiState.value.playbackSpeed)
+        assertEquals(1.5f, viewModel.uiState.value.customPlaybackSpeed)
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerAdjustCustomSpeed(0.25f))
+        assertEquals(1.75f, viewModel.uiState.value.playbackSpeed)
+        assertEquals(1.75f, viewModel.uiState.value.customPlaybackSpeed)
+
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerToggleRepeat)
+        assertTrue(viewModel.uiState.value.practice.repeatCheckedOnly)
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerToggleRepeat)
+        assertFalse(viewModel.uiState.value.practice.repeatCheckedOnly)
+
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerEnableWholeFileRepeat)
+        assertTrue(viewModel.uiState.value.practice.repeatWholeFile)
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerToggleRepeat)
+        assertFalse(viewModel.uiState.value.practice.repeatWholeFile)
+
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerToggleSkipSilence)
+        assertTrue(viewModel.uiState.value.practice.skipOriginalSilence)
+
+        // 7. チャンクのブックマークを解除するとリストから除外される
         viewModel.onEvent(LibraryEvent.ToggleChunkBookmark(item1.id, chunks1[0].id))
         assertEquals(
             listOf(chunks1[2].id),
             viewModel.uiState.value.bookmarkedFiles.single().bookmarkedChunks.map { it.chunk.id },
         )
+
+        // 8. ファイル内のすべてのブックマークを一括削除できる
+        viewModel.onEvent(LibraryEvent.ClearBookmarksForMedia(item1.id))
+        assertTrue(viewModel.uiState.value.bookmarkedFiles.isEmpty())
     }
 }

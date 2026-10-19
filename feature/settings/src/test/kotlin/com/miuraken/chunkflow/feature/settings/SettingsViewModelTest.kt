@@ -427,5 +427,21 @@ class SettingsViewModelTest {
         // モデルを削除すると自動 (null) に戻る
         viewModel.onEvent(SettingsEvent.DeleteSherpaModel(LanguageTag("ja")))
         assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
+        assertNull(repo.state.value.sttEngineByLanguage[LanguageTag("ja")])
+
+        // 別のエンジン（SpeechRecognizer など）を選択している状態で sherpa-onnx を削除しても自動 (null) に戻る
+        viewModel.onEvent(
+            SettingsEvent.SetSttEngineForLanguage(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER,
+            ),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER,
+            viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")],
+        )
+        viewModel.onEvent(SettingsEvent.DeleteSherpaModel(LanguageTag("ja")))
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
+        assertNull(repo.state.value.sttEngineByLanguage[LanguageTag("ja")])
     }
 }

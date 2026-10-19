@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -616,10 +617,31 @@ class SettingsViewModel @Inject constructor(
             is SettingsEvent.DeleteSherpaModel -> {
                 viewModelScope.launch {
                     analysisRepository.deleteSherpaModel(event.language)
+                    languageModelsState.update { current ->
+                        current.map { info ->
+                            if (info.language == event.language) {
+                                info.copy(
+                                    sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                                    canDeleteSherpaModel = false,
+                                )
+                            } else {
+                                info
+                            }
+                        }
+                    }
                     refreshLanguageModelsInternal()
-                    val normalized = com.miuraken.chunkflow.core.model.LanguageSettings.normalize(event.language)
-                    if (uiState.value.sttEngineByLanguage[normalized] == SttEngine.SHERPA_ONNX) {
-                        userSettingsRepository.setSttEngineForLanguage(event.language, null)
+                    userSettingsRepository.setSttEngineForLanguage(event.language, null)
+                    val currentEngines = userSettingsRepository.settings.first().sttEngineByLanguage
+                    for ((lang, engine) in currentEngines) {
+                        if (engine == SttEngine.SHERPA_ONNX) {
+                            val isStillInstalled = languageModelsState.value.any { info ->
+                                com.miuraken.chunkflow.core.model.LanguageSettings.normalize(info.language) == lang &&
+                                    info.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
+                            }
+                            if (!isStillInstalled) {
+                                userSettingsRepository.setSttEngineForLanguage(lang, null)
+                            }
+                        }
                     }
                 }
             }

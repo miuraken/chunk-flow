@@ -71,6 +71,7 @@
     <string name="player_chip_transcribe">文字起こし</string>
     <string name="player_chip_reading">読み</string>
     <string name="player_chip_translate">翻訳</string>
+    <string name="player_chip_bookmarks_only_cd">ブックマークしたチャンクのみ表示</string>
     <string name="player_chip_blind_off">ブラインド: OFF</string>
     <string name="player_chip_blind_target">学習言語を隠す</string>
     <string name="player_chip_blind_all">すべて隠す</string>

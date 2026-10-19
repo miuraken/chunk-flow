@@ -26,8 +26,10 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LibraryPlaylist
+import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
+import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.SttEngine
@@ -43,6 +45,7 @@ import com.miuraken.chunkflow.core.transcript.TranscriptError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.math.BigInteger
 import javax.inject.Inject
+import kotlin.math.roundToInt
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -602,6 +605,9 @@ data class LibraryUiState(
     val activePlaybackChunkId: ChunkId? = null,
     val seekBackMs: Long = 3_000L,
     val seekForwardMs: Long = 5_000L,
+    val playbackSpeed: Float = 1.0f,
+    val customPlaybackSpeed: Float = 1.5f,
+    val practice: PracticeSettings = PracticeSettings(),
 ) {
     companion object {
         /** 最近開いたファイル欄およびよくアクセスするファイル欄に表示する最大件数。 */
@@ -1347,6 +1353,9 @@ sealed interface LibraryEvent {
     /** 「ブックマーク」タブから特定チャンクのブックマーク状態を切り替える（解除する）。 */
     data class ToggleChunkBookmark(val mediaId: MediaId, val chunkId: ChunkId) : LibraryEvent
 
+    /** 「ブックマーク」タブから指定した教材 [mediaId] のすべてのブックマークを削除する。 */
+    data class ClearBookmarksForMedia(val mediaId: MediaId) : LibraryEvent
+
     /** 「ブックマーク」タブ下部の再生コントローラーの再生 / 一時停止を切り替える。 */
     data object BookmarkPlayerTogglePlayPause : LibraryEvent
 
@@ -1361,6 +1370,24 @@ sealed interface LibraryEvent {
 
     /** 「ブックマーク」タブ下部の再生コントローラーで数秒進める。 */
     data object BookmarkPlayerSeekForward : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーで再生速度を変更する。 */
+    data class BookmarkPlayerSetSpeed(val speed: Float) : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーでカスタム速度（第 2 ボタン）を変更・適用する。 */
+    data class BookmarkPlayerSetCustomSpeed(val speed: Float) : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーでカスタム速度（第 2 ボタン）を微調整する。 */
+    data class BookmarkPlayerAdjustCustomSpeed(val delta: Float) : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーでリピートを切り替える。 */
+    data object BookmarkPlayerToggleRepeat : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーでファイル全体リピート（🔁リピート）を有効にする。 */
+    data object BookmarkPlayerEnableWholeFileRepeat : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーで無音スキップを切り替える。 */
+    data object BookmarkPlayerToggleSkipSilence : LibraryEvent
 }
 
 private data class ItemAnalysisSummary(
@@ -1385,6 +1412,7 @@ private data class LibraryRepositorySnapshot(
     val showLanguageOnboardingDialog: Boolean = false,
     val seekBackMs: Long = 3_000L,
     val seekForwardMs: Long = 5_000L,
+    val defaultSpeed: Float = 1.0f,
 )
 
 private data class DialogAndImportSnapshot(
@@ -1412,6 +1440,7 @@ private data class NavigationAndSelectionSnapshot(
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val selectedPlaylistId: PlaylistId? = null,
     val expandedBookmarkMediaIds: Set<MediaId> = emptySet(),
+    val customSpeedOverride: Float? = null,
 )
 
 private object EmptyAnalysisRepository : AnalysisRepository {
@@ -1481,6 +1510,7 @@ class LibraryViewModel @Inject constructor(
     private val fileSortOption = MutableStateFlow(LibraryFileSortOption.NAME)
     private val selectedPlaylistId = MutableStateFlow<PlaylistId?>(null)
     private val expandedBookmarkMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
+    private val customSpeedOverride = MutableStateFlow<Float?>(null)
     private var defaultLanguagePair: LanguagePair = LanguagePair(
         target = LanguageTag("en"),
         base = LanguageTag("ja"),
@@ -1669,7 +1699,8 @@ class LibraryViewModel @Inject constructor(
             )
         },
         expandedBookmarkMediaIds,
-    ) { baseNav, tabAndFilter, expandedBookmarks ->
+        customSpeedOverride,
+    ) { baseNav, tabAndFilter, expandedBookmarks, speedOverride ->
         baseNav.copy(
             selectedTab = tabAndFilter.selectedTab,
             fileSearchQuery = tabAndFilter.fileSearchQuery,
@@ -1677,6 +1708,7 @@ class LibraryViewModel @Inject constructor(
             fileSortOption = tabAndFilter.fileSortOption,
             selectedPlaylistId = tabAndFilter.selectedPlaylistId,
             expandedBookmarkMediaIds = expandedBookmarks,
+            customSpeedOverride = speedOverride,
         )
     }
 
@@ -1705,12 +1737,14 @@ class LibraryViewModel @Inject constructor(
                 showLanguageOnboardingDialog = !userSettings.hasCompletedLanguageOnboarding,
                 seekBackMs = userSettings.seekBackMs,
                 seekForwardMs = userSettings.seekForwardMs,
+                defaultSpeed = userSettings.defaultSpeed,
             )
         },
         playbackController.status,
+        playbackController.practice,
         dialogAndImportFlow,
         navigationAndSelectionFlow,
-    ) { repoSnapshot, playbackStatus, dialogAndImport, navAndSelection ->
+    ) { repoSnapshot, playbackStatus, practice, dialogAndImport, navAndSelection ->
         buildUiState(
             items = repoSnapshot.items,
             courseFolders = repoSnapshot.courseFolders,
@@ -1723,7 +1757,9 @@ class LibraryViewModel @Inject constructor(
             showLanguageOnboardingDialog = repoSnapshot.showLanguageOnboardingDialog,
             seekBackMs = repoSnapshot.seekBackMs,
             seekForwardMs = repoSnapshot.seekForwardMs,
+            defaultSpeed = repoSnapshot.defaultSpeed,
             playbackStatus = playbackStatus,
+            practice = practice,
             dialogAndImport = dialogAndImport,
             navAndSelection = navAndSelection,
         )
@@ -2330,6 +2366,29 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            is LibraryEvent.ClearBookmarksForMedia -> {
+                val cachedIds = uiState.value.bookmarkedChunksByMedia[event.mediaId]
+                    ?.map { it.chunk.id }
+                    .orEmpty()
+                viewModelScope.launch {
+                    val targetChunkIds = if (cachedIds.isNotEmpty()) {
+                        cachedIds
+                    } else {
+                        val chunks = analysisRepository.observeChunks(event.mediaId).firstOrNull().orEmpty()
+                        val bookmarks = analysisRepository.observeBookmarks(event.mediaId).firstOrNull().orEmpty()
+                        chunks.filter { chunk ->
+                            bookmarks.any { bm ->
+                                (bm.positionMs >= chunk.startMs && bm.positionMs < chunk.endMs) ||
+                                    bm.positionMs == chunk.startMs
+                            }
+                        }.map { it.id }
+                    }
+                    for (chunkId in targetChunkIds) {
+                        analysisRepository.toggleChunkBookmark(event.mediaId, chunkId)
+                    }
+                }
+            }
+
             LibraryEvent.BookmarkPlayerTogglePlayPause -> {
                 toggleBookmarkPlayerPlayPause()
             }
@@ -2350,6 +2409,38 @@ class LibraryViewModel @Inject constructor(
                 seekBookmarkPlayerBy(uiState.value.seekForwardMs)
             }
 
+            is LibraryEvent.BookmarkPlayerSetSpeed -> {
+                setBookmarkSpeed(event.speed)
+            }
+
+            is LibraryEvent.BookmarkPlayerSetCustomSpeed -> {
+                setBookmarkCustomSpeed(event.speed)
+            }
+
+            is LibraryEvent.BookmarkPlayerAdjustCustomSpeed -> {
+                setBookmarkCustomSpeed(uiState.value.customPlaybackSpeed + event.delta)
+            }
+
+            LibraryEvent.BookmarkPlayerToggleRepeat -> {
+                toggleBookmarkRepeat()
+            }
+
+            LibraryEvent.BookmarkPlayerEnableWholeFileRepeat -> {
+                playbackController.updatePractice { current ->
+                    current.copy(repeatWholeFile = true)
+                }
+            }
+
+            LibraryEvent.BookmarkPlayerToggleSkipSilence -> {
+                val next = !uiState.value.practice.skipOriginalSilence
+                playbackController.updatePractice { current ->
+                    current.copy(skipOriginalSilence = next)
+                }
+                viewModelScope.launch {
+                    userSettingsRepository.setSkipOriginalSilence(next)
+                }
+            }
+
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.RequestImportTranscript,
@@ -2357,6 +2448,75 @@ class LibraryViewModel @Inject constructor(
             LibraryEvent.RequestSelectDriveSyncFolder,
             LibraryEvent.OpenSettings,
             -> Unit
+        }
+    }
+
+    private fun roundBookmarkSpeed(rawSpeed: Float): Float {
+        val clamped = rawSpeed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+        return ((clamped * 20f).roundToInt() / 20f).coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+    }
+
+    private fun setBookmarkSpeed(rawSpeed: Float) {
+        val rounded = roundBookmarkSpeed(rawSpeed)
+        playbackController.setSpeed(rounded)
+        if (kotlin.math.abs(rounded - 1.0f) >= 0.01f) {
+            customSpeedOverride.value = rounded
+            viewModelScope.launch {
+                userSettingsRepository.setDefaultSpeed(rounded)
+            }
+        }
+    }
+
+    private fun setBookmarkCustomSpeed(rawSpeed: Float) {
+        val rounded = roundBookmarkSpeed(rawSpeed)
+        customSpeedOverride.value = rounded
+        viewModelScope.launch {
+            userSettingsRepository.setDefaultSpeed(rounded)
+        }
+        playbackController.setSpeed(rounded)
+    }
+
+    private fun toggleBookmarkRepeat() {
+        val activeChunkId = playbackController.status.value.currentChunkId
+            ?: uiState.value.activeBookmarkedChunk?.chunk?.id
+            ?: uiState.value.bookmarkedFiles.firstOrNull()?.bookmarkedChunks?.firstOrNull()?.chunk?.id
+        playbackController.updatePractice { current ->
+            if (current.repeatWholeFile) {
+                current.copy(repeatWholeFile = false)
+            } else {
+                val isCurrentlyOn = current.loop !is LoopMode.Off || current.repeatCheckedOnly
+                if (isCurrentlyOn) {
+                    val tempId = current.temporaryRepeatChunkId
+                    val nextRepeatIds = if (tempId != null) {
+                        current.repeatChunkIds - tempId
+                    } else {
+                        current.repeatChunkIds
+                    }
+                    current.copy(
+                        loop = LoopMode.Off,
+                        repeatCheckedOnly = false,
+                        repeatChunkIds = nextRepeatIds,
+                        temporaryRepeatChunkId = null,
+                    )
+                } else if (current.repeatChunkIds.isNotEmpty()) {
+                    current.copy(
+                        repeatCheckedOnly = true,
+                        temporaryRepeatChunkId = null,
+                    )
+                } else if (activeChunkId != null) {
+                    current.copy(
+                        loop = LoopMode.Off,
+                        repeatChunkIds = setOf(activeChunkId),
+                        repeatCheckedOnly = true,
+                        temporaryRepeatChunkId = activeChunkId,
+                    )
+                } else {
+                    current.copy(
+                        repeatCheckedOnly = true,
+                        temporaryRepeatChunkId = null,
+                    )
+                }
+            }
         }
     }
 
@@ -2731,7 +2891,9 @@ class LibraryViewModel @Inject constructor(
         showLanguageOnboardingDialog: Boolean,
         seekBackMs: Long,
         seekForwardMs: Long,
+        defaultSpeed: Float,
         playbackStatus: PlaybackStatus,
+        practice: PracticeSettings,
         dialogAndImport: DialogAndImportSnapshot,
         navAndSelection: NavigationAndSelectionSnapshot,
     ): LibraryUiState {
@@ -2822,6 +2984,10 @@ class LibraryViewModel @Inject constructor(
                     .thenBy { it.item.id.value },
             )
             .map { it.item.id }
+        val resolvedCustomSpeed = navAndSelection.customSpeedOverride
+            ?: defaultSpeed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
+            ?: playbackStatus.speed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
+            ?: 1.5f
 
         return LibraryUiState(
             items = uiItems,
@@ -2860,6 +3026,9 @@ class LibraryViewModel @Inject constructor(
             activePlaybackChunkId = playbackStatus.currentChunkId,
             seekBackMs = seekBackMs,
             seekForwardMs = seekForwardMs,
+            playbackSpeed = playbackStatus.speed,
+            customPlaybackSpeed = resolvedCustomSpeed,
+            practice = practice,
         )
     }
 }

@@ -71,6 +71,7 @@
     <string name="player_chip_transcribe">Transcribe</string>
     <string name="player_chip_reading">Reading</string>
     <string name="player_chip_translate">Translate</string>
+    <string name="player_chip_bookmarks_only_cd">Show bookmarked chunks only</string>
     <string name="player_chip_blind_off">Blind: OFF</string>
     <string name="player_chip_blind_target">Hide target language</string>
     <string name="player_chip_blind_all">Hide All</string>

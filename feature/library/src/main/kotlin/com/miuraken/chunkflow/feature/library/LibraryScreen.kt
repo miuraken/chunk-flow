@@ -44,6 +44,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -58,18 +59,21 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -123,6 +127,7 @@ import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
+import com.miuraken.chunkflow.core.designsystem.util.formatCompactSpeed
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AudioItem
@@ -130,10 +135,12 @@ import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
+import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.Transcript
@@ -144,6 +151,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -1947,23 +1955,12 @@ private fun FolderKindBadge(
     isRealFolder: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val label = stringResource(
-        if (isRealFolder) R.string.library_folder_kind_real else R.string.library_folder_kind_virtual,
-    )
-    val containerColor = if (isRealFolder) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.tertiaryContainer
-    }
-    val contentColor = if (isRealFolder) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onTertiaryContainer
-    }
+    if (isRealFolder) return
+    val label = stringResource(R.string.library_folder_kind_virtual)
     Surface(
         modifier = modifier,
-        color = containerColor,
-        contentColor = contentColor,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
         shape = RoundedCornerShape(6.dp),
     ) {
         Text(
@@ -3153,6 +3150,8 @@ private fun LibraryBookmarksTabContent(
         return
     }
 
+    var pendingClearFile by remember { mutableStateOf<LibraryBookmarkedFileUiModel?>(null) }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
@@ -3173,11 +3172,42 @@ private fun LibraryBookmarksTabContent(
                 onPlayChunk = { chunkId ->
                     onEvent(LibraryEvent.PlayBookmarkedChunk(fileModel.mediaId, chunkId))
                 },
-                onToggleChunkBookmark = { chunkId ->
-                    onEvent(LibraryEvent.ToggleChunkBookmark(fileModel.mediaId, chunkId))
+                onRequestClearFileBookmarks = {
+                    pendingClearFile = fileModel
                 },
             )
         }
+    }
+
+    pendingClearFile?.let { targetFile ->
+        AlertDialog(
+            onDismissRequest = { pendingClearFile = null },
+            text = {
+                Text(
+                    text = stringResource(
+                        R.string.library_bookmarks_clear_file_confirm_message,
+                        targetFile.title,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingClearFile = null
+                        onEvent(LibraryEvent.ClearBookmarksForMedia(targetFile.mediaId))
+                    },
+                ) {
+                    Text(text = stringResource(R.string.library_bookmarks_clear_file_yes))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingClearFile = null },
+                ) {
+                    Text(text = stringResource(R.string.library_bookmarks_clear_file_no))
+                }
+            },
+        )
     }
 }
 
@@ -3189,7 +3219,7 @@ private fun LibraryBookmarkedFileAccordionCard(
     isPlaying: Boolean,
     onToggleExpand: () -> Unit,
     onPlayChunk: (ChunkId) -> Unit,
-    onToggleChunkBookmark: (ChunkId) -> Unit,
+    onRequestClearFileBookmarks: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val item = fileModel.itemModel.item
@@ -3214,9 +3244,9 @@ private fun LibraryBookmarkedFileAccordionCard(
                     .fillMaxWidth()
                     .clickable(onClick = onToggleExpand)
                     .semantics { contentDescription = expandCollapseCd }
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                    .padding(start = 14.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Column(
                     modifier = Modifier.weight(1f),
@@ -3276,6 +3306,21 @@ private fun LibraryBookmarkedFileAccordionCard(
                     }
                 }
 
+                IconButton(
+                    onClick = onRequestClearFileBookmarks,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Delete,
+                        contentDescription = stringResource(
+                            R.string.library_bookmarks_clear_file_cd,
+                            item.title,
+                        ),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+
                 Icon(
                     imageVector = if (fileModel.isExpanded) {
                         ChunkFlowIcons.ExpandLess
@@ -3302,7 +3347,6 @@ private fun LibraryBookmarkedFileAccordionCard(
                             isActive = isActiveChunk,
                             isPlaying = isActiveChunk && isPlaying,
                             onClick = { onPlayChunk(chunkModel.chunk.id) },
-                            onToggleBookmark = { onToggleChunkBookmark(chunkModel.chunk.id) },
                         )
                         if (index < fileModel.bookmarkedChunks.lastIndex) {
                             HorizontalDivider(
@@ -3324,7 +3368,6 @@ private fun LibraryBookmarkedChunkRow(
     isActive: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
-    onToggleBookmark: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val chunk = chunkModel.chunk
@@ -3346,7 +3389,6 @@ private fun LibraryBookmarkedChunkRow(
         chunkModel.chunkNumber,
     )
     val displayText = transcript?.text?.takeIf { it.isNotBlank() } ?: fallbackText
-    val removeBookmarkCd = stringResource(R.string.library_bookmarks_remove_cd)
 
     Surface(
         modifier = modifier
@@ -3358,7 +3400,7 @@ private fun LibraryBookmarkedChunkRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(IntrinsicSize.Min)
-                .padding(end = 4.dp),
+                .padding(end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
@@ -3433,25 +3475,15 @@ private fun LibraryBookmarkedChunkRow(
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
-                        .padding(end = 2.dp)
+                        .padding(start = 4.dp)
                         .size(16.dp),
-                )
-            }
-            IconButton(
-                onClick = onToggleBookmark,
-                modifier = Modifier.size(36.dp),
-            ) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Bookmark,
-                    contentDescription = removeBookmarkCd,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryBookmarkPlaybackController(
     state: LibraryUiState,
@@ -3499,6 +3531,7 @@ private fun LibraryBookmarkPlaybackController(
         null
     }
     val openMediaId = activeFile?.mediaId ?: miniPlayer?.mediaId
+    var showSpeedSheet by remember { mutableStateOf(false) }
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -3550,6 +3583,12 @@ private fun LibraryBookmarkPlaybackController(
                     }
                 }
             }
+
+            BookmarkPlaybackControlStrip(
+                state = state,
+                onEvent = onEvent,
+                onOpenSpeedSheet = { showSpeedSheet = true },
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -3641,6 +3680,305 @@ private fun LibraryBookmarkPlaybackController(
                     enabled = hasPlayableTarget,
                     onClick = { onEvent(LibraryEvent.BookmarkPlayerSeekForward) },
                 )
+            }
+        }
+    }
+
+    if (showSpeedSheet) {
+        ModalBottomSheet(onDismissRequest = { showSpeedSheet = false }) {
+            BookmarkSpeedControlSheetContent(
+                speed = state.customPlaybackSpeed,
+                onAdjustSpeed = { delta -> onEvent(LibraryEvent.BookmarkPlayerAdjustCustomSpeed(delta)) },
+                onSetSpeed = { speed -> onEvent(LibraryEvent.BookmarkPlayerSetCustomSpeed(speed)) },
+                onClose = { showSpeedSheet = false },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BookmarkPlaybackControlStrip(
+    state: LibraryUiState,
+    onEvent: (LibraryEvent) -> Unit,
+    onOpenSpeedSheet: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val isNormalSpeed = abs(state.playbackSpeed - 1.0f) < 0.01f
+    val isCustomSpeedSelected = !isNormalSpeed
+    val isWholeFileRepeat = state.practice.repeatWholeFile
+    val isRepeatOn = isWholeFileRepeat || state.practice.loop !is LoopMode.Off || state.practice.repeatCheckedOnly
+    val isSkipSilenceOn = state.practice.skipOriginalSilence
+    val toggleColors = FilterChipDefaults.filterChipColors(
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f),
+        labelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+        iconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    )
+    var showWholeFileRepeatDialog by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FilterChip(
+            selected = isNormalSpeed,
+            onClick = { onEvent(LibraryEvent.BookmarkPlayerSetSpeed(1.0f)) },
+            label = {
+                Text(
+                    text = "1x",
+                    fontWeight = if (isNormalSpeed) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            },
+            colors = toggleColors,
+        )
+
+        val customChipContainerColor = if (isCustomSpeedSelected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+        }
+        val customChipContentColor = if (isCustomSpeedSelected) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+        }
+        val customChipBorder = if (isCustomSpeedSelected) {
+            null
+        } else {
+            FilterChipDefaults.filterChipBorder(enabled = true, selected = false)
+        }
+        Surface(
+            shape = FilterChipDefaults.shape,
+            color = customChipContainerColor,
+            contentColor = customChipContentColor,
+            border = customChipBorder,
+            modifier = Modifier
+                .heightIn(min = FilterChipDefaults.Height)
+                .clip(FilterChipDefaults.shape)
+                .combinedClickable(
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerSetSpeed(state.customPlaybackSpeed)) },
+                    onLongClick = onOpenSpeedSheet,
+                ),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = formatCompactSpeed(state.customPlaybackSpeed),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isCustomSpeedSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        val repeatChipContainerColor = when {
+            isWholeFileRepeat -> Color(0xFF1976D2)
+            isRepeatOn -> MaterialTheme.colorScheme.primaryContainer
+            else -> MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+        }
+        val repeatChipContentColor = when {
+            isWholeFileRepeat -> Color.White
+            isRepeatOn -> MaterialTheme.colorScheme.onPrimaryContainer
+            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+        }
+        val repeatChipBorder = if (isRepeatOn) {
+            null
+        } else {
+            FilterChipDefaults.filterChipBorder(enabled = true, selected = false)
+        }
+        Surface(
+            shape = FilterChipDefaults.shape,
+            color = repeatChipContainerColor,
+            contentColor = repeatChipContentColor,
+            border = repeatChipBorder,
+            modifier = Modifier
+                .heightIn(min = FilterChipDefaults.Height)
+                .clip(FilterChipDefaults.shape)
+                .combinedClickable(
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerToggleRepeat) },
+                    onLongClick = { showWholeFileRepeatDialog = true },
+                ),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (isWholeFileRepeat) {
+                        stringResource(R.string.library_bookmarks_chip_repeat_whole_file)
+                    } else {
+                        stringResource(R.string.library_bookmarks_chip_repeat)
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isRepeatOn) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        FilterChip(
+            selected = isSkipSilenceOn,
+            onClick = { onEvent(LibraryEvent.BookmarkPlayerToggleSkipSilence) },
+            label = {
+                Text(
+                    text = stringResource(R.string.library_bookmarks_chip_skip_silence),
+                    fontWeight = if (isSkipSilenceOn) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            },
+            colors = toggleColors,
+        )
+
+        AssistChip(
+            onClick = { onEvent(LibraryEvent.OpenSettings) },
+            label = {
+                Icon(
+                    imageVector = ChunkFlowIcons.Settings,
+                    contentDescription = stringResource(R.string.library_bookmarks_chip_playback_settings),
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+        )
+    }
+
+    if (showWholeFileRepeatDialog) {
+        AlertDialog(
+            onDismissRequest = { showWholeFileRepeatDialog = false },
+            text = {
+                Text(text = stringResource(R.string.library_bookmarks_whole_file_repeat_confirm_message))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showWholeFileRepeatDialog = false
+                        onEvent(LibraryEvent.BookmarkPlayerEnableWholeFileRepeat)
+                    },
+                ) {
+                    Text(text = stringResource(R.string.library_bookmarks_whole_file_repeat_yes))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showWholeFileRepeatDialog = false },
+                ) {
+                    Text(text = stringResource(R.string.library_bookmarks_whole_file_repeat_no))
+                }
+            },
+        )
+    }
+}
+
+private val BOOKMARK_SPEED_PRESETS = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BookmarkSpeedControlSheetContent(
+    speed: Float,
+    onAdjustSpeed: (Float) -> Unit,
+    onSetSpeed: (Float) -> Unit,
+    onClose: () -> Unit,
+) {
+    val decreaseCd = stringResource(R.string.library_bookmarks_speed_decrease_cd)
+    val increaseCd = stringResource(R.string.library_bookmarks_speed_increase_cd)
+    val sliderCd = stringResource(R.string.library_bookmarks_speed_slider_cd)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.library_bookmarks_speed_section_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                shape = MaterialTheme.shapes.small,
+            ) {
+                Text(
+                    text = formatCompactSpeed(speed),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = { onAdjustSpeed(-0.05f) },
+                enabled = speed > ItemState.MIN_SPEED + 0.001f,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = decreaseCd },
+            ) {
+                Text(text = "-0.05x")
+            }
+            OutlinedButton(
+                onClick = { onAdjustSpeed(0.05f) },
+                enabled = speed < ItemState.MAX_SPEED - 0.001f,
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .semantics { contentDescription = increaseCd },
+            ) {
+                Text(text = "+0.05x")
+            }
+        }
+
+        Slider(
+            value = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED),
+            onValueChange = onSetSpeed,
+            valueRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
+            steps = 29,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = sliderCd },
+        )
+
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            BOOKMARK_SPEED_PRESETS.forEach { preset ->
+                val isSelected = abs(speed - preset) < 0.01f
+                val labelText = formatCompactSpeed(preset)
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onSetSpeed(preset) },
+                    label = { Text(text = labelText) },
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onClose) {
+                Text(text = stringResource(R.string.library_edit_cancel))
             }
         }
     }

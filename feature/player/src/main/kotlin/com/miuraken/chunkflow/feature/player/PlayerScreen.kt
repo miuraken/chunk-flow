@@ -819,6 +819,7 @@ private fun PlayerChunkList(
         cantoneseScript = state.cantoneseScript,
         showTargetRomanization = state.showTargetRomanization,
         showTargetTranslation = state.showTargetTranslation,
+        bookmarksOnly = state.practice.bookmarksOnly,
         transcriptImportBanner = state.transcriptImportBanner,
         positionProvider = positionProvider,
         lookaheadStatus = state.lookaheadStatus,
@@ -1134,6 +1135,7 @@ private fun LanguageCodePill(
  * - 「言語」（`[base][target]`、`[base]`、`[target]`）
  * - 「{target}を隠す」（on, *off）
  * - 「読み」（on, *off）
+ * - 右端: 「🔖」（ブックマークしたチャンクのみ表示）
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1155,285 +1157,307 @@ private fun ChunkDisplaySettingsStrip(
     val languageFilter = state.practice.languageFilter
     val isHideTargetLangOn = state.blindMode != BlindMode.OFF
     val isReadingOn = state.showTargetRomanization
+    val isBookmarksOnlyOn = state.practice.bookmarksOnly
     val toggleColors = brightnessToggleChipColors()
 
     Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 0. 「文字起こし」（未完了または実行中のみ表示）
-        if (state.isTranscriptionBadgeVisible) {
-            val isRunning = state.isTranscriptionRunning
-            val baseChipLabel = stringResource(R.string.player_chip_transcribe)
-            val transcribedCount = state.chunks.count { !it.text.isNullOrBlank() }
-            val chipLabel = if (!isRunning && state.chunks.isNotEmpty() &&
-                (transcribedCount > 0 || state.isAllTranscriptionEmptyAfterCompletion || state.lookaheadStatus.skippedEmptyChunkIds.isNotEmpty())
-            ) {
-                "$baseChipLabel $transcribedCount/${state.chunks.size}"
-            } else {
-                baseChipLabel
-            }
-            FilterChip(
-                selected = isRunning,
-                onClick = {
-                    if (isRunning) {
-                        onEvent(PlayerEvent.ToggleTranscriptionProgress)
-                    } else {
-                        onEvent(PlayerEvent.SetLookaheadEnabled(true))
-                    }
-                },
-                leadingIcon = if (isRunning) {
-                    {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                        )
-                    }
-                } else {
-                    null
-                },
-                label = {
-                    Text(
-                        text = chipLabel,
-                        fontWeight = if (isRunning) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1,
-                    )
-                },
-                colors = toggleColors,
-            )
-        }
-
-        // 1. 「言語」（[base][target]、[base]、[target]）
-        val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
-        val isLanguageFilterEnabled = state.hasTranscript || state.hasChunkLanguage
-        val isLangFilterSelected = languageFilter != LanguageFilter.ALL
-        val langFilterContainerColor = if (isLangFilterSelected) {
-            MaterialTheme.colorScheme.secondaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
-        }
-        val langFilterBorder = if (isLangFilterSelected) {
-            null
-        } else {
-            FilterChipDefaults.filterChipBorder(enabled = isLanguageFilterEnabled, selected = false)
-        }
-        val baseDisplayCode = baseLangCode ?: stringResource(R.string.player_settings_base_lang_label)
-        val targetDisplayCode = targetLangCode ?: stringResource(R.string.player_settings_target_lang_label)
-        Column {
-            Surface(
-                shape = FilterChipDefaults.shape,
-                color = langFilterContainerColor,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                border = langFilterBorder,
-                modifier = Modifier
-                    .alpha(if (isLanguageFilterEnabled) 1f else 0.28f)
-                    .heightIn(min = FilterChipDefaults.Height)
-                    .clip(FilterChipDefaults.shape)
-                    .combinedClickable(
-                        enabled = isLanguageFilterEnabled,
-                        onClick = { langFilterMenuExpanded = true },
-                        onLongClick = { langFilterMenuExpanded = true },
-                    ),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // 0. 「文字起こし」（未完了または実行中のみ表示）
+            if (state.isTranscriptionBadgeVisible) {
+                val isRunning = state.isTranscriptionRunning
+                val baseChipLabel = stringResource(R.string.player_chip_transcribe)
+                val transcribedCount = state.chunks.count { !it.text.isNullOrBlank() }
+                val chipLabel = if (!isRunning && state.chunks.isNotEmpty() &&
+                    (transcribedCount > 0 || state.isAllTranscriptionEmptyAfterCompletion || state.lookaheadStatus.skippedEmptyChunkIds.isNotEmpty())
                 ) {
-                    when (languageFilter) {
-                        LanguageFilter.ALL -> {
-                            if (baseLangCode != null) {
+                    "$baseChipLabel $transcribedCount/${state.chunks.size}"
+                } else {
+                    baseChipLabel
+                }
+                FilterChip(
+                    selected = isRunning,
+                    onClick = {
+                        if (isRunning) {
+                            onEvent(PlayerEvent.ToggleTranscriptionProgress)
+                        } else {
+                            onEvent(PlayerEvent.SetLookaheadEnabled(true))
+                        }
+                    },
+                    leadingIcon = if (isRunning) {
+                        {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                    label = {
+                        Text(
+                            text = chipLabel,
+                            fontWeight = if (isRunning) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                        )
+                    },
+                    colors = toggleColors,
+                )
+            }
+
+            // 1. 「言語」（[base][target]、[base]、[target]）
+            val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
+            val isLanguageFilterEnabled = state.hasTranscript || state.hasChunkLanguage
+            val isLangFilterSelected = languageFilter != LanguageFilter.ALL
+            val langFilterContainerColor = if (isLangFilterSelected) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+            }
+            val langFilterBorder = if (isLangFilterSelected) {
+                null
+            } else {
+                FilterChipDefaults.filterChipBorder(enabled = isLanguageFilterEnabled, selected = false)
+            }
+            val baseDisplayCode = baseLangCode ?: stringResource(R.string.player_settings_base_lang_label)
+            val targetDisplayCode = targetLangCode ?: stringResource(R.string.player_settings_target_lang_label)
+            Column {
+                Surface(
+                    shape = FilterChipDefaults.shape,
+                    color = langFilterContainerColor,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    border = langFilterBorder,
+                    modifier = Modifier
+                        .alpha(if (isLanguageFilterEnabled) 1f else 0.28f)
+                        .heightIn(min = FilterChipDefaults.Height)
+                        .clip(FilterChipDefaults.shape)
+                        .combinedClickable(
+                            enabled = isLanguageFilterEnabled,
+                            onClick = { langFilterMenuExpanded = true },
+                            onLongClick = { langFilterMenuExpanded = true },
+                        ),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        when (languageFilter) {
+                            LanguageFilter.ALL -> {
+                                if (baseLangCode != null) {
+                                    LanguageCodePill(
+                                        code = baseLangCode,
+                                        containerColor = langPalette.baseBadgeContainer,
+                                        contentColor = langPalette.onBaseBadgeContainer,
+                                    )
+                                }
+                                if (targetLangCode != null) {
+                                    LanguageCodePill(
+                                        code = targetLangCode,
+                                        containerColor = langPalette.targetBadgeContainer,
+                                        contentColor = langPalette.onTargetBadgeContainer,
+                                    )
+                                }
+                                if (baseLangCode == null && targetLangCode == null) {
+                                    Text(
+                                        text = stringResource(R.string.player_chip_lang_filter_all),
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+
+                            LanguageFilter.BASE_ONLY -> {
                                 LanguageCodePill(
-                                    code = baseLangCode,
+                                    code = baseDisplayCode,
                                     containerColor = langPalette.baseBadgeContainer,
                                     contentColor = langPalette.onBaseBadgeContainer,
                                 )
                             }
-                            if (targetLangCode != null) {
+
+                            LanguageFilter.TARGET_ONLY -> {
                                 LanguageCodePill(
-                                    code = targetLangCode,
+                                    code = targetDisplayCode,
                                     containerColor = langPalette.targetBadgeContainer,
                                     contentColor = langPalette.onTargetBadgeContainer,
                                 )
                             }
-                            if (baseLangCode == null && targetLangCode == null) {
-                                Text(
-                                    text = stringResource(R.string.player_chip_lang_filter_all),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
-                                )
-                            }
-                        }
-
-                        LanguageFilter.BASE_ONLY -> {
-                            LanguageCodePill(
-                                code = baseDisplayCode,
-                                containerColor = langPalette.baseBadgeContainer,
-                                contentColor = langPalette.onBaseBadgeContainer,
-                            )
-                        }
-
-                        LanguageFilter.TARGET_ONLY -> {
-                            LanguageCodePill(
-                                code = targetDisplayCode,
-                                containerColor = langPalette.targetBadgeContainer,
-                                contentColor = langPalette.onTargetBadgeContainer,
-                            )
                         }
                     }
                 }
-            }
-            DropdownMenu(
-                expanded = langFilterMenuExpanded,
-                onDismissRequest = { langFilterMenuExpanded = false },
-            ) {
-                DropdownMenuItem(
-                    text = {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (baseLangCode != null) {
+                DropdownMenu(
+                    expanded = langFilterMenuExpanded,
+                    onDismissRequest = { langFilterMenuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (baseLangCode != null) {
+                                    LanguageCodePill(
+                                        code = baseLangCode,
+                                        containerColor = langPalette.baseBadgeContainer,
+                                        contentColor = langPalette.onBaseBadgeContainer,
+                                    )
+                                }
                                 LanguageCodePill(
-                                    code = baseLangCode,
+                                    code = targetDisplayCode,
+                                    containerColor = langPalette.targetBadgeContainer,
+                                    contentColor = langPalette.onTargetBadgeContainer,
+                                )
+                                Text(
+                                    text = stringResource(R.string.player_menu_lang_filter_both_play),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                )
+                            }
+                        },
+                        onClick = {
+                            langFilterMenuExpanded = false
+                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.ALL))
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                LanguageCodePill(
+                                    code = baseDisplayCode,
                                     containerColor = langPalette.baseBadgeContainer,
                                     contentColor = langPalette.onBaseBadgeContainer,
                                 )
+                                Text(
+                                    text = stringResource(R.string.player_menu_lang_filter_only_play),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                )
                             }
-                            LanguageCodePill(
-                                code = targetDisplayCode,
-                                containerColor = langPalette.targetBadgeContainer,
-                                contentColor = langPalette.onTargetBadgeContainer,
-                            )
-                            Text(
-                                text = stringResource(R.string.player_menu_lang_filter_both_play),
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                            )
-                        }
-                    },
-                    onClick = {
-                        langFilterMenuExpanded = false
-                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.ALL))
-                    },
-                )
-                DropdownMenuItem(
-                    text = {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            LanguageCodePill(
-                                code = baseDisplayCode,
-                                containerColor = langPalette.baseBadgeContainer,
-                                contentColor = langPalette.onBaseBadgeContainer,
-                            )
-                            Text(
-                                text = stringResource(R.string.player_menu_lang_filter_only_play),
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                            )
-                        }
-                    },
-                    onClick = {
-                        langFilterMenuExpanded = false
-                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
-                    },
-                )
-                DropdownMenuItem(
-                    text = {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            LanguageCodePill(
-                                code = targetDisplayCode,
-                                containerColor = langPalette.targetBadgeContainer,
-                                contentColor = langPalette.onTargetBadgeContainer,
-                            )
-                            Text(
-                                text = stringResource(R.string.player_menu_lang_filter_only_play),
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 1,
-                            )
-                        }
-                    },
-                    onClick = {
-                        langFilterMenuExpanded = false
-                        onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
-                    },
-                )
-            }
-        }
-
-        // 2. 「{target_lang_code}を隠す」（on, *off）
-        val blindChipLabel = if (targetLangCode != null) {
-            stringResource(R.string.player_chip_blind_target_code, targetLangCode)
-        } else {
-            stringResource(R.string.player_chip_blind_target)
-        }
-        FilterChip(
-            selected = isHideTargetLangOn,
-            enabled = state.hasTranscript,
-            onClick = {
-                val nextBlindMode = if (isHideTargetLangOn) {
-                    BlindMode.OFF
-                } else {
-                    BlindMode.HIDE_TARGET_ONLY
+                        },
+                        onClick = {
+                            langFilterMenuExpanded = false
+                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                LanguageCodePill(
+                                    code = targetDisplayCode,
+                                    containerColor = langPalette.targetBadgeContainer,
+                                    contentColor = langPalette.onTargetBadgeContainer,
+                                )
+                                Text(
+                                    text = stringResource(R.string.player_menu_lang_filter_only_play),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                )
+                            }
+                        },
+                        onClick = {
+                            langFilterMenuExpanded = false
+                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
+                        },
+                    )
                 }
-                onEvent(PlayerEvent.SetBlindMode(nextBlindMode))
-            },
-            label = {
-                Text(
-                    text = blindChipLabel,
-                    fontWeight = if (isHideTargetLangOn) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 1,
-                )
-            },
-            colors = toggleColors,
-            modifier = transcriptChipModifier,
-        )
+            }
 
-        // 3. 「読み」（on, *off）
-        FilterChip(
-            selected = isReadingOn,
-            enabled = state.hasTranscript,
-            onClick = {
-                onEvent(PlayerEvent.SetShowTargetRomanization(!isReadingOn))
-            },
-            label = {
-                Text(
-                    text = stringResource(R.string.player_chip_reading),
-                    fontWeight = if (isReadingOn) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 1,
-                )
-            },
-            colors = toggleColors,
-            modifier = transcriptChipModifier,
-        )
-
-        // 4. 「翻訳」（on, *off）
-        if (state.isTranslationSupported) {
+            // 2. 「{target_lang_code}を隠す」（on, *off）
+            val blindChipLabel = if (targetLangCode != null) {
+                stringResource(R.string.player_chip_blind_target_code, targetLangCode)
+            } else {
+                stringResource(R.string.player_chip_blind_target)
+            }
             FilterChip(
-                selected = state.showTargetTranslation,
+                selected = isHideTargetLangOn,
                 enabled = state.hasTranscript,
                 onClick = {
-                    onEvent(PlayerEvent.SetShowTargetTranslation(!state.showTargetTranslation))
+                    val nextBlindMode = if (isHideTargetLangOn) {
+                        BlindMode.OFF
+                    } else {
+                        BlindMode.HIDE_TARGET_ONLY
+                    }
+                    onEvent(PlayerEvent.SetBlindMode(nextBlindMode))
                 },
                 label = {
                     Text(
-                        text = stringResource(R.string.player_chip_translate),
-                        fontWeight = if (state.showTargetTranslation) FontWeight.SemiBold else FontWeight.Normal,
+                        text = blindChipLabel,
+                        fontWeight = if (isHideTargetLangOn) FontWeight.SemiBold else FontWeight.Normal,
                         maxLines = 1,
                     )
                 },
                 colors = toggleColors,
                 modifier = transcriptChipModifier,
             )
+
+            // 3. 「読み」（on, *off）
+            FilterChip(
+                selected = isReadingOn,
+                enabled = state.hasTranscript,
+                onClick = {
+                    onEvent(PlayerEvent.SetShowTargetRomanization(!isReadingOn))
+                },
+                label = {
+                    Text(
+                        text = stringResource(R.string.player_chip_reading),
+                        fontWeight = if (isReadingOn) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                    )
+                },
+                colors = toggleColors,
+                modifier = transcriptChipModifier,
+            )
+
+            // 4. 「翻訳」（on, *off）
+            if (state.isTranslationSupported) {
+                FilterChip(
+                    selected = state.showTargetTranslation,
+                    enabled = state.hasTranscript,
+                    onClick = {
+                        onEvent(PlayerEvent.SetShowTargetTranslation(!state.showTargetTranslation))
+                    },
+                    label = {
+                        Text(
+                            text = stringResource(R.string.player_chip_translate),
+                            fontWeight = if (state.showTargetTranslation) FontWeight.SemiBold else FontWeight.Normal,
+                            maxLines = 1,
+                        )
+                    },
+                    colors = toggleColors,
+                    modifier = transcriptChipModifier,
+                )
+            }
         }
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        // 5. 「🔖」（ブックマークしたチャンクのみ表示）
+        FilterChip(
+            selected = isBookmarksOnlyOn,
+            onClick = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
+            label = {
+                Icon(
+                    imageVector = ChunkFlowIcons.Bookmark,
+                    contentDescription = stringResource(R.string.player_chip_bookmarks_only_cd),
+                    modifier = Modifier.size(18.dp),
+                )
+            },
+            colors = toggleColors,
+        )
     }
 }
 
