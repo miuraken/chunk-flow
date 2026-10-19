@@ -721,10 +721,6 @@ fun PlayerScreen(
                     onEvent(PlayerEvent.Resegment(params))
                     showResegmentSheet = false
                 },
-                onRunLanguageDetectionOnly = {
-                    onEvent(PlayerEvent.RunLanguageDetectionOnly)
-                    showResegmentSheet = false
-                },
                 onOpenGlobalSettings = {
                     showResegmentSheet = false
                     onOpenPlaybackSettings()
@@ -2100,7 +2096,6 @@ private fun ResegmentSheetContent(
     onOpenDiagnostics: () -> Unit,
     onToggleUseGlobalSegmentation: (Boolean) -> Unit,
     onApply: (SegmentationParams) -> Unit,
-    onRunLanguageDetectionOnly: () -> Unit,
     onOpenGlobalSettings: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -2359,7 +2354,7 @@ private fun ResegmentSheetContent(
             }
 
             2 -> {
-                // 「チャンク分割」タブ: 全体設定に従うチェックボックス + 個別調整スライダー + 言語判定のみを行う
+                // 「チャンク分割」タブ: 全体設定に従うチェックボックス + 個別調整スライダー
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2465,21 +2460,6 @@ private fun ResegmentSheetContent(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(text = stringResource(R.string.player_resegment_apply))
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                FilledTonalButton(
-                    onClick = onRunLanguageDetectionOnly,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Translate,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = stringResource(R.string.player_segmentation_language_detection_only))
                 }
             }
         }

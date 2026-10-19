@@ -3694,8 +3694,8 @@ class DefaultAnalysisRepositoryTest {
         assertNull(transcriptDao.getByChunkId(5103L), "判定できなかったチャンクには何も保存しない")
         val status = repository.observeLookaheadStatus(mediaId).first()
         assertNull(status.inFlightChunkId)
-        assertEquals(3, status.completedCount)
-        assertEquals(3, status.totalTargetCount)
+        assertEquals(0, status.completedCount)
+        assertEquals(0, status.totalTargetCount)
     }
 
     @Test

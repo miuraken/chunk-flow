@@ -165,6 +165,7 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override suspend fun resegment(id: MediaId, params: SegmentationParams) {
         resegmentRequests += id to params
+        languageDetectionOnlyRequests += id
     }
 
     override suspend fun setCustomSegmentationParams(id: MediaId, params: SegmentationParams?) {

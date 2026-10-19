@@ -242,8 +242,6 @@
     <string name="player_file_settings_section_reset">リセット</string>
     <string name="player_file_settings_section_log">ログ</string>
     <string name="player_segmentation_use_global">全体設定に従う</string>
-    <string name="player_segmentation_language_detection_only">言語判定のみを行う</string>
-    <string name="player_segmentation_language_detection_started">未判定チャンクの言語判定を開始しました（バックグラウンドでも継続します）</string>
     <string name="player_chip_blind_target_code">%1$sを隠す</string>
     <string name="player_menu_lang_filter_both_play">両方再生</string>
     <string name="player_menu_lang_filter_only_play">のみ再生</string>

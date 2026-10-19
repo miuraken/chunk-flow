@@ -992,9 +992,6 @@ sealed interface PlayerEvent {
     /** チャンク分割パラメータで「全体設定に従う」の ON / OFF を切り替える。 */
     data class SetUseGlobalSegmentation(val useGlobal: Boolean) : PlayerEvent
 
-    /** 未判定チャンクに対して文字起こしを行わず言語判定のみをバックグラウンドで実行する。 */
-    data object RunLanguageDetectionOnly : PlayerEvent
-
     /** チャンク 1 件の言語ラベルを手動で更新する（F7.3）。 */
     data class UpdateChunkLanguage(val chunkId: ChunkId, val language: LanguageTag?) : PlayerEvent
 
@@ -1179,6 +1176,7 @@ private data class LocalUiSnapshot(
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
     val hasRecordAudioPermission: Boolean = true,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
+    val isLookaheadEnabled: Boolean = false,
 )
 
 /**
@@ -1352,7 +1350,7 @@ class PlayerViewModel @Inject constructor(
                     .distinctUntilChanged(),
             ) { mediaId, enabledMap, firstChunkId ->
                 val enabled = if (mediaId != null) enabledMap[mediaId] ?: false else false
-                Triple(mediaId, enabled, firstChunkId)
+                Triple(mediaId, enabled, if (enabled) firstChunkId else null)
             }.distinctUntilChanged().collect { (mediaId, enabled, _) ->
                 if (mediaId != null) {
                     syncLookaheadState(mediaId, enabled)
@@ -1522,8 +1520,8 @@ class PlayerViewModel @Inject constructor(
         retranscribeJob = null
         chunkSeekPrioritizeJob?.cancel()
         chunkSeekPrioritizeJob = null
-        localUiState.value = LocalUiSnapshot()
         val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
+        localUiState.value = LocalUiSnapshot(isLookaheadEnabled = enabled)
         syncLookaheadState(mediaId, enabled)
         viewModelScope.launch {
             val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
@@ -1802,6 +1800,7 @@ class PlayerViewModel @Inject constructor(
                     val newPair = LanguagePair(target = LanguageTag(target), base = base?.let(::LanguageTag))
                     if (item.languagePair == newPair) return@launch
                     libraryRepository.updateItemMetadata(id = id, course = item.course, languages = newPair)
+                    analysisRepository.startLanguageDetectionOnly(id)
                 }
             }
 
@@ -1924,14 +1923,6 @@ class PlayerViewModel @Inject constructor(
                     viewModelScope.launch {
                         analysisRepository.setCustomSegmentationParams(id, currentParams)
                     }
-                }
-            }
-
-            PlayerEvent.RunLanguageDetectionOnly -> {
-                val id = resolveActiveMediaId() ?: return
-                localUiState.update { it.copy(isTranscriptionProgressDismissed = false) }
-                viewModelScope.launch {
-                    analysisRepository.startLanguageDetectionOnly(id)
                 }
             }
 
@@ -2119,7 +2110,12 @@ class PlayerViewModel @Inject constructor(
                 if (!event.enabled) {
                     abortActiveViewModelTranscriptionJobs()
                 }
-                localUiState.update { it.copy(isTranscriptionProgressDismissed = false) }
+                localUiState.update {
+                    it.copy(
+                        isLookaheadEnabled = event.enabled,
+                        isTranscriptionProgressDismissed = false,
+                    )
+                }
                 perMediaLookaheadEnabled.update { it + (id to event.enabled) }
                 viewModelScope.launch {
                     userSettingsRepository.setLookaheadTranscriptionEnabled(event.enabled)
@@ -2218,7 +2214,12 @@ class PlayerViewModel @Inject constructor(
             PlayerEvent.ResetTranscription -> {
                 val id = resolveActiveMediaId() ?: return
                 abortActiveViewModelTranscriptionJobs()
-                localUiState.update { it.copy(isTranscriptionProgressDismissed = false) }
+                localUiState.update {
+                    it.copy(
+                        isLookaheadEnabled = false,
+                        isTranscriptionProgressDismissed = false,
+                    )
+                }
                 perMediaLookaheadEnabled.update { it + (id to false) }
                 viewModelScope.launch {
                     userSettingsRepository.setLookaheadTranscriptionEnabled(false)
@@ -3235,6 +3236,7 @@ class PlayerViewModel @Inject constructor(
         val effectiveQueuedIds = (analysis.lookaheadStatus.queuedChunkIds + local.clearingChunkIds) -
             setOfNotNull(analysis.lookaheadStatus.inFlightChunkId)
         val effectiveLookaheadStatus = analysis.lookaheadStatus.copy(
+            enabled = local.isLookaheadEnabled && analysis.lookaheadStatus.enabled,
             queuedChunkIds = effectiveQueuedIds,
             skippedEmptyChunkIds = analysis.lookaheadStatus.skippedEmptyChunkIds - local.manuallyClearedChunkIds,
             recognitionModelIssues = analysis.lookaheadStatus.recognitionModelIssues.filterKeys { language ->

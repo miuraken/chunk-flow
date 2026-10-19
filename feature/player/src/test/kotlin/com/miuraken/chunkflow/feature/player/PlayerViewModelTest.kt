@@ -2103,7 +2103,7 @@ class PlayerViewModelTest {
     }
 
     @Test
-    fun `ファイル個別設定_チャンク分割の全体設定追従チェック切替と個別パラメータ保存および言語判定のみ実行が動作する`() = runTest {
+    fun `ファイル個別設定_チャンク分割の全体設定追従チェック切替と個別パラメータ保存および再分割と言語変更時の自動言語判定が動作する`() = runTest {
         val sample = SampleMaterials.jaKo
         val item = sample.item
         val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
@@ -2118,7 +2118,7 @@ class PlayerViewModelTest {
         // 1. 初期状態では「全体設定に従う」(useGlobalSegmentationParams = true) になっている
         assertTrue(viewModel.uiState.value.useGlobalSegmentationParams)
 
-        // 2. チェックを外して個別パラメータで再分割すると customSegmentationParams が保存される
+        // 2. チェックを外して個別パラメータで再分割すると customSegmentationParams が保存され自動言語判定が走る
         viewModel.onEvent(PlayerEvent.SetUseGlobalSegmentation(false))
         assertFalse(viewModel.uiState.value.useGlobalSegmentationParams)
         val customParams = SegmentationParams(
@@ -2133,6 +2133,7 @@ class PlayerViewModelTest {
             customParams,
             analysisRepo.customSegmentationParamsByMedia[item.id],
         )
+        assertEquals(listOf(item.id), analysisRepo.languageDetectionOnlyRequests)
 
         // 3. ItemState に保存された個別設定がある状態で ViewModel を再生成すると useGlobalSegmentationParams = false が復元される
         val libraryRepoWithSavedCustomSeg = FakeLibraryRepository(
@@ -2161,10 +2162,16 @@ class PlayerViewModelTest {
         assertTrue(recreatedViewModel.uiState.value.useGlobalSegmentationParams)
         assertNull(analysisRepo.customSegmentationParamsByMedia[item.id])
         assertEquals(SegmentationParams(), recreatedViewModel.uiState.value.segmentationParams)
+        assertEquals(listOf(item.id, item.id), analysisRepo.languageDetectionOnlyRequests)
 
-        // 5. 「言語判定のみを行う」ボタンを押すと startLanguageDetectionOnly が呼ばれる
-        recreatedViewModel.onEvent(PlayerEvent.RunLanguageDetectionOnly)
-        assertEquals(listOf(item.id), analysisRepo.languageDetectionOnlyRequests)
+        // 5. ファイルの言語設定を変更すると startLanguageDetectionOnly が自動で呼ばれる
+        recreatedViewModel.onEvent(
+            PlayerEvent.UpdateItemLanguages(
+                target = LanguageTag("en"),
+                base = LanguageTag("ja"),
+            ),
+        )
+        assertEquals(listOf(item.id, item.id, item.id), analysisRepo.languageDetectionOnlyRequests)
     }
 
     @Test

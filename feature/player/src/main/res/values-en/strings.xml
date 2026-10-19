@@ -242,8 +242,6 @@
     <string name="player_file_settings_section_reset">Reset</string>
     <string name="player_file_settings_section_log">Logs</string>
     <string name="player_segmentation_use_global">Follow global settings</string>
-    <string name="player_segmentation_language_detection_only">Detect languages only</string>
-    <string name="player_segmentation_language_detection_started">Started language detection for undetected chunks (continues in background)</string>
     <string name="player_chip_blind_target_code">Hide %1$s</string>
     <string name="player_menu_lang_filter_both_play">Play both</string>
     <string name="player_menu_lang_filter_only_play">only</string>
