@@ -69,18 +69,17 @@ internal fun Project.configureAndroidLibrary(extension: LibraryExtension) {
 
 /**
  * AGP が Java 9+ の [JavaCompile] に自動で追加する `JdkImageInput`（内部で `jmod` / `jlink` を起動する
- * `JdkImageTransform`）を取り除き、`javac --system none` に置き換える。
- *
- * AGP は Java 9+ でも `android.jar`（bootClasspath）を `JavaCompile.classpath` の先頭に入れているため、
- * `--system none` を指定すれば `jmod` / `jlink` を一切起動せずに `android.jar` に対して Java 17 でコンパイルできる。
+ * `JdkImageTransform`）を `afterEvaluate` で取り除き、`jmod` / `jlink` に依存せずに `android.jar` に対してコンパイルする。
  */
 private fun Project.disableAndroidJdkImageTransform() {
-    tasks.withType<JavaCompile>().configureEach {
-        options.compilerArgumentProviders.removeAll {
-            it.javaClass.name == "com.android.build.gradle.tasks.JdkImageInput"
-        }
-        if ("--system" !in options.compilerArgs) {
-            options.compilerArgs.addAll(listOf("--system", "none"))
+    afterEvaluate {
+        tasks.withType<JavaCompile>().configureEach {
+            options.compilerArgumentProviders.removeAll {
+                it.javaClass.name.contains("JdkImageInput")
+            }
+            if ("-Xlint:-options" !in options.compilerArgs) {
+                options.compilerArgs.add("-Xlint:-options")
+            }
         }
     }
 }
