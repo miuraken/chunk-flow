@@ -2638,4 +2638,88 @@ class PlayerViewModelTest {
         testScheduler.runCurrent()
         assertFalse(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
     }
+
+    @Test
+    fun `拡大波形の範囲選択アクション_範囲解除で中央シークとタッチ解除とチャンク追加と範囲連結と範囲一括解除が動作する`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // 1. 範囲を選択してから「範囲を解除」(ClearWaveformRangeToCenter) を押すと、
+        //    既存のチェック選択を維持したまま範囲選択が解除され、選択範囲の中央へシークする
+        val checkedChunkId = viewModel.uiState.value.chunks.last().id
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(checkedChunkId))
+        viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs = 2_000L, endMs = 6_000L)))
+        assertEquals(LoopMode.AbRange(2_000L, 6_000L), viewModel.uiState.value.practice.loop)
+
+        viewModel.onEvent(PlayerEvent.ClearWaveformRangeToCenter)
+        assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
+        assertEquals(4_000L, playback.position.positionMs)
+        assertEquals(setOf(checkedChunkId), viewModel.uiState.value.practice.repeatChunkIds)
+
+        // 2. 範囲選択後に拡大波形の他の部分をタッチ (DismissWaveformRangeAndSeek) すると、
+        //    範囲選択が解除されてタッチ位置にシークする
+        viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs = 1_000L, endMs = 3_000L)))
+        viewModel.onEvent(PlayerEvent.DismissWaveformRangeAndSeek(positionMs = 7_200L))
+        assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
+        assertEquals(7_200L, playback.position.positionMs)
+        assertEquals(setOf(checkedChunkId), viewModel.uiState.value.practice.repeatChunkIds)
+
+        // 3. A) チャンク以外の領域を選択して「チャンク追加」(AddChunkInSelectedRange) を押すと、
+        //    その時系列位置にチャンクが追加され、範囲選択が解除される
+        val lastEndMs = viewModel.uiState.value.chunks.last().endMs
+        val addStartMs = lastEndMs + 500L
+        val addEndMs = lastEndMs + 1_500L
+        val countBeforeAdd = viewModel.uiState.value.chunks.size
+        viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(startMs = addStartMs, endMs = addEndMs)))
+        viewModel.onEvent(PlayerEvent.AddChunkInSelectedRange)
+        assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
+        assertEquals(countBeforeAdd + 1, viewModel.uiState.value.chunks.size)
+        val addedChunk = viewModel.uiState.value.chunks.last()
+        assertEquals(addStartMs to addEndMs, addedChunk.startMs to addedChunk.endMs)
+
+        // 4. B-1) 2 つ以上のチャンクが含まれる範囲を選択して「連結」(MergeChunksInSelectedRange) を押すと、
+        //    範囲にかかったチャンク同士が連結され、範囲選択が解除される
+        val c0 = viewModel.uiState.value.chunks[0]
+        val c1 = viewModel.uiState.value.chunks[1]
+        val countBeforeMerge = viewModel.uiState.value.chunks.size
+        viewModel.onEvent(
+            PlayerEvent.SetLoopMode(
+                LoopMode.AbRange(
+                    startMs = c0.endMs - 100L,
+                    endMs = c1.startMs + 100L,
+                ),
+            ),
+        )
+        viewModel.onEvent(PlayerEvent.MergeChunksInSelectedRange)
+        assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
+        assertEquals(countBeforeMerge - 1, viewModel.uiState.value.chunks.size)
+        assertEquals(c0.startMs to c1.endMs, viewModel.uiState.value.chunks[0].startMs to viewModel.uiState.value.chunks[0].endMs)
+
+        // 5. B-2) 2 つ以上のチャンクが含まれる範囲を選択して「解除」(DeleteChunksInSelectedRange) を押すと、
+        //    範囲にかかったチャンクが一括削除され、範囲選択が解除される
+        val d0 = viewModel.uiState.value.chunks[0]
+        val d1 = viewModel.uiState.value.chunks[1]
+        val d2 = viewModel.uiState.value.chunks[2]
+        val countBeforeDelete = viewModel.uiState.value.chunks.size
+        viewModel.onEvent(
+            PlayerEvent.SetLoopMode(
+                LoopMode.AbRange(
+                    startMs = d0.endMs - 50L,
+                    endMs = d1.startMs + 50L,
+                ),
+            ),
+        )
+        viewModel.onEvent(PlayerEvent.DeleteChunksInSelectedRange)
+        assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
+        assertEquals(countBeforeDelete - 2, viewModel.uiState.value.chunks.size)
+        assertEquals(d2.startMs to d2.endMs, viewModel.uiState.value.chunks.first().startMs to viewModel.uiState.value.chunks.first().endMs)
+    }
 }

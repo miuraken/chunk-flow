@@ -199,6 +199,7 @@ fun WaveformSection(
     seekBackSeconds: Int = 3,
     onSeekToChunk: (ChunkId) -> Unit = {},
     onSetChunkSelected: (ChunkId, Boolean) -> Unit = { _, _ -> },
+    onDismissAbRangeAndSeek: (Long) -> Unit = onSeekTo,
     lookaheadStatus: com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus =
         com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(),
     isTranscriptionRunning: Boolean = false,
@@ -410,6 +411,10 @@ fun WaveformSection(
                 onSeekTo = { targetMs ->
                     scrubPositionMs = null
                     onSeekTo(targetMs.coerceIn(0L, effectiveDurationMs))
+                },
+                onDismissAbRangeAndSeek = { targetMs ->
+                    scrubPositionMs = null
+                    onDismissAbRangeAndSeek(targetMs.coerceIn(0L, effectiveDurationMs))
                 },
                 onSeekToChunk = { chunkId ->
                     scrubPositionMs = null
@@ -1010,6 +1015,7 @@ private fun ZoomedWaveformCanvas(
     nextChunkActionLabel: String,
     seekBackActionLabel: String,
     onSeekTo: (Long) -> Unit,
+    onDismissAbRangeAndSeek: (Long) -> Unit,
     onSeekToChunk: (ChunkId) -> Unit,
     onScrubChange: (Long) -> Unit,
     onZoomWindowChange: (Long) -> Unit,
@@ -1025,10 +1031,12 @@ private fun ZoomedWaveformCanvas(
     // pointerInput や LaunchedEffect の中では、起動したときにキャプチャした古い値ではなく最新の値を読む
     val currentZoomWindowMs by rememberUpdatedState(zoomWindowMs)
     val currentChunks by rememberUpdatedState(chunks)
+    val currentLoopMode by rememberUpdatedState(loopMode)
     val currentScrubPositionMs by rememberUpdatedState(scrubPositionMs)
     val currentAnchorCenterMs by rememberUpdatedState(cachedAnchorCenterMs)
     val currentOnUpdateAnchorCenter by rememberUpdatedState(onUpdateAnchorCenter)
     val currentOnSeekTo by rememberUpdatedState(onSeekTo)
+    val currentOnDismissAbRangeAndSeek by rememberUpdatedState(onDismissAbRangeAndSeek)
     val currentOnSeekToChunk by rememberUpdatedState(onSeekToChunk)
     val currentOnScrubChange by rememberUpdatedState(onScrubChange)
     val currentOnZoomWindowChange by rememberUpdatedState(onZoomWindowChange)
@@ -1224,7 +1232,8 @@ private fun ZoomedWaveformCanvas(
                     },
                 )
             }
-            // タップ: チャンクの上ならそのチャンクの冒頭から再生し、チャンクの外ならその位置へ移動する
+            // タップ: 範囲選択中なら範囲選択を解除してタッチ位置へ移動する。
+            // 通常時はチャンクの上ならそのチャンクの冒頭から再生し、チャンクの外ならその位置へ移動する
             .pointerInput(durationMs) {
                 detectTapGestures(
                     onTap = { offset ->
@@ -1236,11 +1245,16 @@ private fun ZoomedWaveformCanvas(
                                 windowMs = currentZoomWindowMs,
                                 durationMs = durationMs,
                             )
-                            val targetChunk = findChunkAt(currentChunks, targetMs)
-                            if (targetChunk != null) {
-                                currentOnSeekToChunk(targetChunk.id)
+                            val activeAbRange = (currentLoopMode as? LoopMode.AbRange)?.takeIf { it.startMs < it.endMs }
+                            if (activeAbRange != null) {
+                                currentOnDismissAbRangeAndSeek(targetMs)
                             } else {
-                                currentOnSeekTo(targetMs)
+                                val targetChunk = findChunkAt(currentChunks, targetMs)
+                                if (targetChunk != null) {
+                                    currentOnSeekToChunk(targetChunk.id)
+                                } else {
+                                    currentOnSeekTo(targetMs)
+                                }
                             }
                         }
                     },
@@ -1271,14 +1285,11 @@ private fun ZoomedWaveformCanvas(
                     },
                 )
             }
-            // 長押し: チャンクの上ならそのチャンクを選択し（押したまま指を動かすと、通ったチャンクもまとめて選択）、
-            // チャンクの外なら A-B 範囲を指定する。長押しが成立したあとの指の動きをピンチ・パンより先に受け取るため、
-            // いちばん内側（最後）に置く
+            // 長押しドラッグ: ドラッグ移動時は範囲選択（A-B 範囲）を行い、
+            // ドラッグせずチャンク上で長押ししただけの場合はそのチャンクの選択状態を切り替える。
+            // 長押しが成立したあとの指の動きをピンチ・パンより先に受け取るため、いちばん内側（最後）に置く
             .pointerInput(durationMs) {
-                var isSelectionSweep = false
-                var selectionValue = true
-                var lastSweepMs = 0L
-                val sweptChunkIds = mutableSetOf<ChunkId>()
+                var initialTouchedChunk: ChunkUi? = null
                 var abStartMs = 0L
                 var abCurrentMs = 0L
                 detectDragGesturesAfterLongPress(
@@ -1291,60 +1302,32 @@ private fun ZoomedWaveformCanvas(
                                 windowMs = currentZoomWindowMs,
                                 durationMs = durationMs,
                             )
-                            val touchedChunk = findChunkAt(currentChunks, touchMs)
-                            sweptChunkIds.clear()
-                            if (touchedChunk != null) {
-                                isSelectionSweep = true
-                                // 選択済みのチャンクを長押ししたときは、選択を外す方向でまとめて操作する
-                                selectionValue = !touchedChunk.isRepeatChecked
-                                sweptChunkIds += touchedChunk.id
-                                lastSweepMs = touchMs
-                                currentOnSetChunkSelected(touchedChunk.id, selectionValue)
-                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                            } else {
-                                isSelectionSweep = false
-                                abStartMs = touchMs
-                                abCurrentMs = touchMs
-                                currentOnAbDragUpdate(abStartMs, abCurrentMs)
-                            }
+                            initialTouchedChunk = findChunkAt(currentChunks, touchMs)
+                            abStartMs = touchMs
+                            abCurrentMs = touchMs
+                            currentOnAbDragUpdate(abStartMs, abCurrentMs)
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                         }
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
                         if (size.width > 0) {
-                            if (isSelectionSweep) {
-                                val touchMs = zoomedTouchXToMs(
-                                    x = change.position.x,
-                                    widthPx = size.width,
-                                    centerMs = currentScrubPositionMs ?: positionProvider.currentPositionMs(),
-                                    windowMs = currentZoomWindowMs,
-                                    durationMs = durationMs,
-                                )
-                                var addedAny = false
-                                for (chunk in chunksInRange(currentChunks, lastSweepMs, touchMs)) {
-                                    if (sweptChunkIds.add(chunk.id)) {
-                                        currentOnSetChunkSelected(chunk.id, selectionValue)
-                                        addedAny = true
-                                    }
-                                }
-                                if (addedAny) {
-                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                }
-                                lastSweepMs = touchMs
-                            } else {
-                                val deltaMs = ((dragAmount.x / size.width.toFloat()) * currentZoomWindowMs).roundToLong()
-                                abCurrentMs = (abCurrentMs + deltaMs).coerceIn(0L, durationMs)
-                                currentOnAbDragUpdate(abStartMs, abCurrentMs)
-                            }
+                            val deltaMs = ((dragAmount.x / size.width.toFloat()) * currentZoomWindowMs).roundToLong()
+                            abCurrentMs = (abCurrentMs + deltaMs).coerceIn(0L, durationMs)
+                            currentOnAbDragUpdate(abStartMs, abCurrentMs)
                         }
                     },
                     onDragEnd = {
-                        if (!isSelectionSweep) currentOnAbDragFinish()
-                        isSelectionSweep = false
+                        val touched = initialTouchedChunk
+                        initialTouchedChunk = null
+                        if (abs(abCurrentMs - abStartMs) < 100L && touched != null) {
+                            currentOnSetChunkSelected(touched.id, !touched.isRepeatChecked)
+                        }
+                        currentOnAbDragFinish()
                     },
                     onDragCancel = {
-                        if (!isSelectionSweep) currentOnAbDragFinish()
-                        isSelectionSweep = false
+                        initialTouchedChunk = null
+                        currentOnAbDragFinish()
                     },
                 )
             }

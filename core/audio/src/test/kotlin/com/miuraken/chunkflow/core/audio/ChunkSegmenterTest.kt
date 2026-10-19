@@ -300,4 +300,45 @@ class ChunkSegmenterTest {
         assertEquals(500L to 1_800L, firstEmpty)
         assertEquals(1_800L to 3_500L, secondEmpty)
     }
+
+    @Test
+    fun `trimSilenceInRange_有音領域がある場合は左右の無音をトリミングし無音のみの場合は全範囲を返す`() {
+        val segmenter = ChunkSegmenter()
+        // 0..5000ms (500 frames): 1400..2600ms のみ有音 (-15dB)、それ以外は無音 (-65dB)
+        val energy = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 1_400 until 2_600) -15f else -65f
+        }
+
+        // 左右に無音を含む [1000..3000ms] を選択した場合、有音領域 [1400..2600ms] 前後にトリミングされる
+        val (trimmedStart, trimmedEnd) = segmenter.trimSilenceInRange(
+            logEnergyDb = energy,
+            rangeStartMs = 1_000L,
+            rangeEndMs = 3_000L,
+            binMs = 10,
+        )
+        assertTrue(trimmedStart in 1_350L..1_420L, "trimmedStart=$trimmedStart")
+        assertTrue(trimmedEnd in 2_580L..2_650L, "trimmedEnd=$trimmedEnd")
+
+        // 無音しかない [3200..4500ms] を選択した場合、選択された全範囲がそのまま返る
+        val silentRange = segmenter.trimSilenceInRange(
+            logEnergyDb = energy,
+            rangeStartMs = 3_200L,
+            rangeEndMs = 4_500L,
+            binMs = 10,
+        )
+        assertEquals(3_200L to 4_500L, silentRange)
+
+        // 全体が無音の特徴量でも全範囲がそのまま返る
+        val allSilentEnergy = FloatArray(500) { -65f }
+        assertEquals(
+            1_000L to 2_500L,
+            segmenter.trimSilenceInRange(
+                logEnergyDb = allSilentEnergy,
+                rangeStartMs = 1_000L,
+                rangeEndMs = 2_500L,
+                binMs = 10,
+            ),
+        )
+    }
 }

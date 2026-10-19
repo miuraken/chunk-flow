@@ -532,19 +532,57 @@ class FakeAnalysisRepository : AnalysisRepository {
         return success
     }
 
+    /** [addChunk] の呼び出し履歴（呼ばれた順）。 */
+    val addChunkRequests: MutableList<Triple<MediaId, Long, Long>> = mutableListOf()
+
+    override suspend fun addChunk(id: MediaId, startMs: Long, endMs: Long): Boolean {
+        addChunkRequests += Triple(id, startMs, endMs)
+        if (startMs < 0L || startMs >= endMs) return false
+        var success = false
+        update(id) { entry ->
+            if (entry.chunks.any { startMs < it.endMs && endMs > it.startMs }) {
+                return@update entry
+            }
+            success = true
+            val newChunk = Chunk(
+                id = ChunkId(nextManualChunkId++),
+                startMs = startMs,
+                endMs = endMs,
+                origin = ChunkOrigin.MANUAL,
+                isSkipped = false,
+            )
+            val manualChunks = (entry.chunks.map { it.copy(origin = ChunkOrigin.MANUAL) } + newChunk)
+                .sortedBy { it.startMs }
+            chunkSources[id] = ChunkOrigin.MANUAL
+            entry.copy(
+                chunks = manualChunks,
+                chunksByOrigin = entry.chunksByOrigin + (ChunkOrigin.MANUAL to manualChunks),
+            )
+        }
+        return success
+    }
+
     /** [deleteChunk] の呼び出し履歴（呼ばれた順）。 */
     val deleteChunkRequests: MutableList<Pair<MediaId, ChunkId>> = mutableListOf()
 
+    /** [deleteChunks] の呼び出し履歴（呼ばれた順）。 */
+    val deleteChunksRequests: MutableList<Pair<MediaId, Set<ChunkId>>> = mutableListOf()
+
     override suspend fun deleteChunk(id: MediaId, chunkId: ChunkId): Boolean {
         deleteChunkRequests += id to chunkId
+        return deleteChunks(id, setOf(chunkId))
+    }
+
+    override suspend fun deleteChunks(id: MediaId, chunkIds: Set<ChunkId>): Boolean {
+        if (chunkIds.isEmpty()) return false
+        deleteChunksRequests += id to chunkIds
         var success = false
         update(id) { entry ->
-            val idx = entry.chunks.indexOfFirst { it.id == chunkId }
-            if (idx < 0) return@update entry
+            if (entry.chunks.none { it.id in chunkIds }) return@update entry
             success = true
-            val manualChunks = entry.chunks.filterIndexed { index, _ -> index != idx }
+            val manualChunks = entry.chunks.filterNot { it.id in chunkIds }
                 .map { it.copy(origin = ChunkOrigin.MANUAL) }
-            val updatedTranscripts = entry.transcripts - chunkId
+            val updatedTranscripts = entry.transcripts - chunkIds
             chunkSources[id] = ChunkOrigin.MANUAL
             entry.copy(
                 chunks = manualChunks,

@@ -248,6 +248,15 @@ interface AnalysisRepository {
     suspend fun mergeChunks(id: MediaId, chunkIds: List<ChunkId>): Boolean = false
 
     /**
+     * チャンクが存在しない区間 `[startMs, endMs]` に新しいチャンクを追加し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
+     *
+     * 指定範囲内に有音領域がある場合は左右の無音領域をトリミングし、無音領域しかない場合は全範囲をそのまま新チャンクとする。
+     *
+     * @return 追加が成立した場合は `true`、既存チャンクと重なる場合や不正な範囲の場合は `false`。
+     */
+    suspend fun addChunk(id: MediaId, startMs: Long, endMs: Long): Boolean = false
+
+    /**
      * 指定したチャンク [chunkId] を解除（削除）し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
      *
      * 解除された区間 `[startMs, endMs)` はチャンク間の無音区間と同様に扱われる。
@@ -255,6 +264,13 @@ interface AnalysisRepository {
      * @return 解除が成立した場合は `true`、対象チャンクが存在しない等で解除できない場合は `false`。
      */
     suspend fun deleteChunk(id: MediaId, chunkId: ChunkId): Boolean = false
+
+    /**
+     * 指定した複数のチャンク [chunkIds] を一括で解除（削除）し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。
+     *
+     * @return 1 件以上の解除が成立した場合は `true`、対象チャンクが存在しない等で解除できない場合は `false`。
+     */
+    suspend fun deleteChunks(id: MediaId, chunkIds: Set<ChunkId>): Boolean = false
 
     /**
      * チャンクの開始・終了境界を [newStartMs] / [newEndMs] に移動し、[ChunkOrigin.MANUAL] として 1 トランザクションで保存する（F5.3）。

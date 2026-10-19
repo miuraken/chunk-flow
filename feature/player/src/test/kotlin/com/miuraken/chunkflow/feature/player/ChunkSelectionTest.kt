@@ -152,4 +152,28 @@ class ChunkSelectionTest {
         // すき間だけなら空
         assertTrue(chunksInRange(chunks, 4_200, 4_800).isEmpty())
     }
+
+    @Test
+    fun `chunksOverlappingRange_選択範囲と正の長さで重なるチャンクのみを返し境界接触や無音範囲は除外する`() {
+        val chunks = listOf(
+            chunk(1, 1_000, 2_000, "ja"),
+            chunk(2, 2_500, 3_500, "ko"),
+            chunk(3, 4_000, 5_000, "ko"),
+        )
+        // チャンク間の無音区間 [2000..2500] を選択した場合は、端点が接していても重なり 0 件
+        assertTrue(chunksOverlappingRange(chunks, 2_000, 2_500).isEmpty())
+        assertTrue(chunksOverlappingRange(chunks, 2_100, 2_400).isEmpty())
+
+        // 2 つのチャンクに少しでもかかる範囲 [1900..2600] では 2 件返る
+        assertEquals(
+            listOf(ChunkId(1), ChunkId(2)),
+            chunksOverlappingRange(chunks, 1_900, 2_600).map { it.id },
+        )
+
+        // 3 つのチャンクにかかる範囲 [1500..4200] では 3 件返る
+        assertEquals(
+            listOf(ChunkId(1), ChunkId(2), ChunkId(3)),
+            chunksOverlappingRange(chunks, 1_500, 4_200).map { it.id },
+        )
+    }
 }

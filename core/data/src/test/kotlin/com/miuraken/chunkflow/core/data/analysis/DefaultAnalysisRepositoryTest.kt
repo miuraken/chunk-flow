@@ -4571,4 +4571,102 @@ class DefaultAnalysisRepositoryTest {
         testScheduler.advanceUntilIdle()
         assertEquals(0, transcribeCallCount)
     }
+
+    @Test
+    fun `addChunkとdeleteChunks_無音トリミング付きで時系列順にチャンクを追加し複数チャンクを一括解除できる`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_add_delete_chunks_01")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Add and Delete Chunks Test",
+                durationMs = 10_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1024L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 10L, mediaId = mediaId.value, startMs = 0L, endMs = 1_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 20L, mediaId = mediaId.value, startMs = 4_000L, endMs = 5_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 30L, mediaId = mediaId.value, startMs = 6_000L, endMs = 7_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+        transcriptDao.upsertAll(
+            listOf(
+                Transcript(
+                    chunkId = ChunkId(10L),
+                    text = "first",
+                    language = LanguageTag("ja"),
+                    languageConfidence = 0.9f,
+                    engine = EngineId("test"),
+                    userEdited = true,
+                ).toEntity(),
+                Transcript(
+                    chunkId = ChunkId(20L),
+                    text = "second",
+                    language = LanguageTag("ko"),
+                    languageConfidence = 0.9f,
+                    engine = EngineId("test"),
+                    userEdited = true,
+                ).toEntity(),
+                Transcript(
+                    chunkId = ChunkId(30L),
+                    text = "third",
+                    language = LanguageTag("ko"),
+                    languageConfidence = 0.9f,
+                    engine = EngineId("test"),
+                    userEdited = true,
+                ).toEntity(),
+            ),
+        )
+
+        // 特徴量ファイル: 1800..2600ms に有音 (-15dB)、それ以外は無音 (-65dB)
+        val analysisDir = File(File(context.filesDir, "analysis"), mediaId.value).apply { mkdirs() }
+        val logEnergy = FloatArray(1_000) { frame ->
+            val ms = frame * 10
+            if (ms in 1_800 until 2_600) -15f else -65f
+        }
+        AnalysisBinaryFormat.writeFeaturesAtomic(
+            File(analysisDir, "features.bin"),
+            StoredFeatures(
+                binMs = 10,
+                logEnergyDb = logEnergy,
+            ),
+        )
+
+        // 1. チャンク間 [1500..3000ms] にチャンクを追加すると、左右の無音がトリミングされて 1 番目と 2 番目の間に挿入される
+        assertTrue(repository.addChunk(mediaId, startMs = 1_500L, endMs = 3_000L))
+        val afterAdd = repository.observeChunks(mediaId).first()
+        assertEquals(4, afterAdd.size)
+        assertEquals(0L to 1_000L, afterAdd[0].startMs to afterAdd[0].endMs)
+        assertTrue(afterAdd[1].startMs in 1_750L..1_820L)
+        assertTrue(afterAdd[1].endMs in 2_580L..2_650L)
+        assertEquals(4_000L to 5_000L, afterAdd[2].startMs to afterAdd[2].endMs)
+        assertEquals(6_000L to 7_000L, afterAdd[3].startMs to afterAdd[3].endMs)
+
+        // 無音しかない [7500..8500ms] にチャンクを追加すると、選択された全範囲がそのまま新チャンクになる
+        assertTrue(repository.addChunk(mediaId, startMs = 7_500L, endMs = 8_500L))
+        val afterAddSilent = repository.observeChunks(mediaId).first()
+        assertEquals(5, afterAddSilent.size)
+        assertEquals(7_500L to 8_500L, afterAddSilent[4].startMs to afterAddSilent[4].endMs)
+
+        // 2. deleteChunks で中間の 2 チャンク（afterAddSilent[1], afterAddSilent[2]）を一括解除できる
+        val idsToRemove = setOf(afterAddSilent[1].id, afterAddSilent[2].id)
+        assertTrue(repository.deleteChunks(mediaId, idsToRemove))
+        val afterDelete = repository.observeChunks(mediaId).first()
+        assertEquals(
+            listOf(0L to 1_000L, 6_000L to 7_000L, 7_500L to 8_500L),
+            afterDelete.map { it.startMs to it.endMs },
+        )
+        val remainingTranscripts = repository.observeTranscripts(mediaId).first()
+        assertEquals("first", remainingTranscripts[afterDelete[0].id]?.text)
+        assertEquals("third", remainingTranscripts[afterDelete[1].id]?.text)
+    }
 }

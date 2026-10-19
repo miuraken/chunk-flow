@@ -963,6 +963,21 @@ sealed interface PlayerEvent {
     /** チャンクの選択（チェックボックス）をすべて外す。 */
     data object ClearChunkSelection : PlayerEvent
 
+    /** 拡大波形で選択された範囲（[LoopMode.AbRange]）を解除し、選択範囲の中央へ再生位置を移動する。 */
+    data object ClearWaveformRangeToCenter : PlayerEvent
+
+    /** 拡大波形で選択された範囲（[LoopMode.AbRange]）を解除し、タッチした位置 [positionMs] へ再生位置を移動する。 */
+    data class DismissWaveformRangeAndSeek(val positionMs: Long) : PlayerEvent
+
+    /** 拡大波形で選択されたチャンク以外の範囲（[LoopMode.AbRange]）に新しいチャンクを追加する。 */
+    data object AddChunkInSelectedRange : PlayerEvent
+
+    /** 拡大波形で選択された範囲（[LoopMode.AbRange]）に含まれる複数のチャンクを 1 つに連結する。 */
+    data object MergeChunksInSelectedRange : PlayerEvent
+
+    /** 拡大波形で選択された範囲（[LoopMode.AbRange]）に含まれるチャンクを一括で解除（削除）する。 */
+    data object DeleteChunksInSelectedRange : PlayerEvent
+
     /** 選択中のチャンク（先頭から末尾までの範囲）を 1 つに連結する（言語は最初のチャンクの設定に合わせる）。 */
     data object MergeSelectedChunks : PlayerEvent
 
@@ -1951,6 +1966,184 @@ class PlayerViewModel @Inject constructor(
                         current
                     } else {
                         current.copy(repeatChunkIds = emptySet(), temporaryRepeatChunkId = null)
+                    }
+                }
+            }
+
+            PlayerEvent.ClearWaveformRangeToCenter -> {
+                val abRange = (playbackController.practice.value.loop as? LoopMode.AbRange)
+                    ?.takeIf { it.startMs < it.endMs } ?: return
+                val centerMs = (abRange.startMs + abRange.endMs) / 2L
+                playbackController.updatePractice { current ->
+                    if (current.loop is LoopMode.AbRange) {
+                        current.copy(loop = LoopMode.Off)
+                    } else {
+                        current
+                    }
+                }
+                seekTo(centerMs)
+            }
+
+            is PlayerEvent.DismissWaveformRangeAndSeek -> {
+                playbackController.updatePractice { current ->
+                    if (current.loop is LoopMode.AbRange) {
+                        current.copy(loop = LoopMode.Off)
+                    } else {
+                        current
+                    }
+                }
+                seekTo(event.positionMs)
+            }
+
+            PlayerEvent.AddChunkInSelectedRange -> {
+                val id = resolveActiveMediaId() ?: return
+                val abRange = (playbackController.practice.value.loop as? LoopMode.AbRange)
+                    ?.takeIf { it.startMs < it.endMs } ?: return
+                viewModelScope.launch {
+                    withContext(NonCancellable) {
+                        val currentRepeatIds = playbackController.practice.value.repeatChunkIds
+                        val selectedRanges = if (currentRepeatIds.isNotEmpty()) {
+                            uiState.value.chunks
+                                .filter { it.id in currentRepeatIds }
+                                .map { it.startMs to it.endMs }
+                                .toSet()
+                        } else {
+                            emptySet()
+                        }
+                        val added = analysisRepository.addChunk(id, abRange.startMs, abRange.endMs)
+                        if (added && currentRepeatIds.isNotEmpty()) {
+                            val updatedChunks = analysisRepository.observeChunks(id).first()
+                            val preservedIds = updatedChunks
+                                .filter { (it.startMs to it.endMs) in selectedRanges }
+                                .map { it.id }
+                                .toSet()
+                            updatePracticeWithCheckedFallback { current ->
+                                current.copy(
+                                    loop = if (current.loop is LoopMode.AbRange) LoopMode.Off else current.loop,
+                                    repeatChunkIds = preservedIds,
+                                    temporaryRepeatChunkId = current.temporaryRepeatChunkId?.takeIf { it in preservedIds },
+                                )
+                            }
+                        } else {
+                            playbackController.updatePractice { current ->
+                                if (current.loop is LoopMode.AbRange) {
+                                    current.copy(loop = LoopMode.Off)
+                                } else {
+                                    current
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            PlayerEvent.MergeChunksInSelectedRange -> {
+                val id = resolveActiveMediaId() ?: return
+                val abRange = (playbackController.practice.value.loop as? LoopMode.AbRange)
+                    ?.takeIf { it.startMs < it.endMs } ?: return
+                val overlappingChunks = chunksOverlappingRange(uiState.value.chunks, abRange.startMs, abRange.endMs)
+                if (overlappingChunks.size < 2) return
+                val chunkIds = overlappingChunks.map { it.id }
+                val firstChunkId = chunkIds.first()
+                val hasFirstOverride = firstChunkId in localUiState.value.languageOverrides
+                val firstOverrideLang = localUiState.value.languageOverrides[firstChunkId]
+                chunkIds.forEach { cid ->
+                    pendingLanguageCommitJobs.remove(cid)?.cancel()
+                }
+                viewModelScope.launch {
+                    withContext(NonCancellable) {
+                        val targetIdSet = chunkIds.toSet()
+                        val currentRepeatIds = playbackController.practice.value.repeatChunkIds
+                        val selectedRanges = if (currentRepeatIds.isNotEmpty()) {
+                            uiState.value.chunks
+                                .filter { it.id in currentRepeatIds && it.id !in targetIdSet }
+                                .map { it.startMs to it.endMs }
+                                .toSet()
+                        } else {
+                            emptySet()
+                        }
+                        if (hasFirstOverride) {
+                            analysisRepository.updateChunkLanguage(id, firstChunkId, firstOverrideLang)
+                        }
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = state.languageOverrides - targetIdSet)
+                        }
+                        val merged = analysisRepository.mergeChunks(id, chunkIds)
+                        if (merged) {
+                            val preservedIds = if (selectedRanges.isNotEmpty()) {
+                                val updatedChunks = analysisRepository.observeChunks(id).first()
+                                updatedChunks
+                                    .filter { (it.startMs to it.endMs) in selectedRanges }
+                                    .map { it.id }
+                                    .toSet()
+                            } else {
+                                emptySet()
+                            }
+                            updatePracticeWithCheckedFallback { current ->
+                                current.copy(
+                                    loop = if (current.loop is LoopMode.AbRange) LoopMode.Off else current.loop,
+                                    repeatChunkIds = preservedIds,
+                                    temporaryRepeatChunkId = current.temporaryRepeatChunkId?.takeIf { it in preservedIds },
+                                )
+                            }
+                        } else {
+                            playbackController.updatePractice { current ->
+                                if (current.loop is LoopMode.AbRange) {
+                                    current.copy(loop = LoopMode.Off)
+                                } else {
+                                    current
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            PlayerEvent.DeleteChunksInSelectedRange -> {
+                val id = resolveActiveMediaId() ?: return
+                val abRange = (playbackController.practice.value.loop as? LoopMode.AbRange)
+                    ?.takeIf { it.startMs < it.endMs } ?: return
+                val overlappingChunks = chunksOverlappingRange(uiState.value.chunks, abRange.startMs, abRange.endMs)
+                if (overlappingChunks.isEmpty()) return
+                val targetIds = overlappingChunks.mapTo(LinkedHashSet()) { it.id }
+                targetIds.forEach { cid ->
+                    pendingLanguageCommitJobs.remove(cid)?.cancel()
+                }
+                viewModelScope.launch {
+                    withContext(NonCancellable) {
+                        val currentRepeatIds = playbackController.practice.value.repeatChunkIds
+                        val selectedRanges = if (currentRepeatIds.isNotEmpty()) {
+                            uiState.value.chunks
+                                .filter { it.id in currentRepeatIds && it.id !in targetIds }
+                                .map { it.startMs to it.endMs }
+                                .toSet()
+                        } else {
+                            emptySet()
+                        }
+                        localUiState.update { state ->
+                            state.copy(languageOverrides = state.languageOverrides - targetIds)
+                        }
+                        val deleted = analysisRepository.deleteChunks(id, targetIds)
+                        val preservedIds = if (deleted && selectedRanges.isNotEmpty()) {
+                            val updatedChunks = analysisRepository.observeChunks(id).first()
+                            updatedChunks
+                                .filter { (it.startMs to it.endMs) in selectedRanges }
+                                .map { it.id }
+                                .toSet()
+                        } else {
+                            emptySet()
+                        }
+                        updatePracticeWithCheckedFallback { current ->
+                            current.copy(
+                                loop = if (current.loop is LoopMode.AbRange) LoopMode.Off else current.loop,
+                                repeatChunkIds = if (deleted) preservedIds else current.repeatChunkIds,
+                                temporaryRepeatChunkId = if (deleted) {
+                                    current.temporaryRepeatChunkId?.takeIf { it in preservedIds }
+                                } else {
+                                    current.temporaryRepeatChunkId
+                                },
+                            )
+                        }
                     }
                 }
             }

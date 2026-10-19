@@ -907,6 +907,9 @@ private fun PlayerWaveform(
         positionProvider = positionProvider,
         seekBackSeconds = seekBackSeconds,
         onSeekTo = { targetMs -> onEvent(PlayerEvent.SeekTo(targetMs)) },
+        onDismissAbRangeAndSeek = { targetMs ->
+            onEvent(PlayerEvent.DismissWaveformRangeAndSeek(targetMs))
+        },
         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
         onSetChunkSelected = { chunkId, selected ->
             onEvent(PlayerEvent.SetChunkSelected(chunkId, selected))
@@ -1100,6 +1103,14 @@ private fun ChunkSelectionActionStrip(
     val hasSelection = state.chunks.any { it.isRepeatChecked }
     val mergeSummary = remember(state.chunks) { summarizeMergeSelection(state.chunks) }
     val canMergeSelection = mergeSummary != null
+    val abRange = (state.practice.loop as? LoopMode.AbRange)?.takeIf { it.startMs < it.endMs }
+    val overlappingRangeChunks = remember(state.chunks, abRange) {
+        if (abRange != null) {
+            chunksOverlappingRange(state.chunks, abRange.startMs, abRange.endMs)
+        } else {
+            emptyList()
+        }
+    }
     val isInspectionMode = LocalInspectionMode.current
     var isPositionInsideSplittableChunk by remember(state.chunks, positionProvider) {
         mutableStateOf(canSplitChunkAtPosition(state.chunks, positionProvider.currentPositionMs()))
@@ -1118,26 +1129,71 @@ private fun ChunkSelectionActionStrip(
     }
     val canSplitAtCursor = isPositionInsideSplittableChunk
     var showMergeConfirmDialog by remember { mutableStateOf(false) }
+    var showRangeMergeConfirmDialog by remember { mutableStateOf(false) }
+    var showRangeDeleteConfirmDialog by remember { mutableStateOf(false) }
 
     FlowRow(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        AssistChip(
-            onClick = { onEvent(PlayerEvent.ClearChunkSelection) },
-            enabled = hasSelection,
-            label = { Text(text = stringResource(R.string.player_selection_clear_all), maxLines = 1) },
-        )
-        AssistChip(
-            onClick = { showMergeConfirmDialog = true },
-            enabled = canMergeSelection,
-            label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
-        )
-        AssistChip(
-            onClick = { onEvent(PlayerEvent.SplitChunkAtCurrentPosition) },
-            enabled = canSplitAtCursor,
-            label = { Text(text = stringResource(R.string.player_split_at_cursor), maxLines = 1) },
-        )
+        if (abRange != null) {
+            AssistChip(
+                onClick = { onEvent(PlayerEvent.ClearWaveformRangeToCenter) },
+                enabled = true,
+                label = { Text(text = stringResource(R.string.player_selection_clear_range), maxLines = 1) },
+            )
+            when {
+                overlappingRangeChunks.isEmpty() -> {
+                    AssistChip(
+                        onClick = { onEvent(PlayerEvent.AddChunkInSelectedRange) },
+                        enabled = true,
+                        label = { Text(text = stringResource(R.string.player_selection_add_chunk), maxLines = 1) },
+                    )
+                }
+
+                overlappingRangeChunks.size >= 2 -> {
+                    AssistChip(
+                        onClick = { showRangeMergeConfirmDialog = true },
+                        enabled = true,
+                        label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
+                    )
+                    AssistChip(
+                        onClick = { showRangeDeleteConfirmDialog = true },
+                        enabled = true,
+                        label = { Text(text = stringResource(R.string.player_selection_delete_chunks), maxLines = 1) },
+                    )
+                }
+
+                else -> {
+                    AssistChip(
+                        onClick = { showMergeConfirmDialog = true },
+                        enabled = canMergeSelection,
+                        label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
+                    )
+                    AssistChip(
+                        onClick = { onEvent(PlayerEvent.SplitChunkAtCurrentPosition) },
+                        enabled = canSplitAtCursor,
+                        label = { Text(text = stringResource(R.string.player_split_at_cursor), maxLines = 1) },
+                    )
+                }
+            }
+        } else {
+            AssistChip(
+                onClick = { onEvent(PlayerEvent.ClearChunkSelection) },
+                enabled = hasSelection,
+                label = { Text(text = stringResource(R.string.player_selection_clear_all), maxLines = 1) },
+            )
+            AssistChip(
+                onClick = { showMergeConfirmDialog = true },
+                enabled = canMergeSelection,
+                label = { Text(text = stringResource(R.string.player_selection_merge), maxLines = 1) },
+            )
+            AssistChip(
+                onClick = { onEvent(PlayerEvent.SplitChunkAtCurrentPosition) },
+                enabled = canSplitAtCursor,
+                label = { Text(text = stringResource(R.string.player_split_at_cursor), maxLines = 1) },
+            )
+        }
     }
 
     val currentSummary = mergeSummary
@@ -1185,6 +1241,87 @@ private fun ChunkSelectionActionStrip(
             },
             dismissButton = {
                 TextButton(onClick = { showMergeConfirmDialog = false }) {
+                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
+                }
+            },
+        )
+    }
+
+    if (showRangeMergeConfirmDialog && overlappingRangeChunks.size >= 2) {
+        val firstChunk = overlappingRangeChunks.first()
+        val lastChunk = overlappingRangeChunks.last()
+        val firstChunkNumber = state.chunks.indexOfFirst { it.id == firstChunk.id }.coerceAtLeast(0) + 1
+        val lastChunkNumber = state.chunks.indexOfFirst { it.id == lastChunk.id }.coerceAtLeast(0) + 1
+        val rawLangCode = firstChunk.language?.value?.trim()?.takeUnless {
+            it.isEmpty() || it.equals("und", ignoreCase = true)
+        }?.lowercase(Locale.ROOT)
+        val langLabel = rawLangCode ?: stringResource(R.string.player_merge_lang_unknown)
+        val confirmMessage = stringResource(
+            R.string.player_merge_confirm_message_contiguous,
+            firstChunkNumber,
+            lastChunkNumber,
+            overlappingRangeChunks.size,
+            langLabel,
+        )
+
+        AlertDialog(
+            onDismissRequest = { showRangeMergeConfirmDialog = false },
+            title = {
+                Text(text = stringResource(R.string.player_range_merge_confirm_title))
+            },
+            text = {
+                Text(text = confirmMessage)
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRangeMergeConfirmDialog = false
+                        onEvent(PlayerEvent.MergeChunksInSelectedRange)
+                    },
+                ) {
+                    Text(text = stringResource(R.string.player_merge_confirm_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRangeMergeConfirmDialog = false }) {
+                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
+                }
+            },
+        )
+    }
+
+    if (showRangeDeleteConfirmDialog && overlappingRangeChunks.isNotEmpty()) {
+        val firstChunk = overlappingRangeChunks.first()
+        val lastChunk = overlappingRangeChunks.last()
+        val firstChunkNumber = state.chunks.indexOfFirst { it.id == firstChunk.id }.coerceAtLeast(0) + 1
+        val lastChunkNumber = state.chunks.indexOfFirst { it.id == lastChunk.id }.coerceAtLeast(0) + 1
+        val confirmMessage = stringResource(
+            R.string.player_range_delete_confirm_message,
+            firstChunkNumber,
+            lastChunkNumber,
+            overlappingRangeChunks.size,
+        )
+
+        AlertDialog(
+            onDismissRequest = { showRangeDeleteConfirmDialog = false },
+            title = {
+                Text(text = stringResource(R.string.player_range_delete_confirm_title))
+            },
+            text = {
+                Text(text = confirmMessage)
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRangeDeleteConfirmDialog = false
+                        onEvent(PlayerEvent.DeleteChunksInSelectedRange)
+                    },
+                ) {
+                    Text(text = stringResource(R.string.player_range_delete_confirm_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRangeDeleteConfirmDialog = false }) {
                     Text(text = stringResource(R.string.player_chunk_edit_cancel))
                 }
             },

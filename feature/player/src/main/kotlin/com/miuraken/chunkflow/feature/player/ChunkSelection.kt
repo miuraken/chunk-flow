@@ -112,3 +112,17 @@ internal fun chunksInRange(chunks: List<ChunkUi>, fromMs: Long, toMs: Long): Lis
     val endMs = max(fromMs, toMs)
     return chunks.filter { it.startMs <= endMs && it.endMs > startMs }
 }
+
+/**
+ * 選択範囲 `[rangeStartMs, rangeEndMs]` に少しでも含まれる（正の長さで重なる）チャンクを、リストの順に返す。
+ */
+internal fun chunksOverlappingRange(
+    chunks: List<ChunkUi>,
+    rangeStartMs: Long,
+    rangeEndMs: Long,
+): List<ChunkUi> {
+    val startMs = min(rangeStartMs, rangeEndMs)
+    val endMs = max(rangeStartMs, rangeEndMs)
+    if (startMs >= endMs) return emptyList()
+    return chunks.filter { it.startMs < endMs && it.endMs > startMs }
+}

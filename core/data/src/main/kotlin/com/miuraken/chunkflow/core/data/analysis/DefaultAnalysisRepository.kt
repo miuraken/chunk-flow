@@ -3836,19 +3836,105 @@ class DefaultAnalysisRepository(
         true
     }
 
-    override suspend fun deleteChunk(id: MediaId, chunkId: ChunkId): Boolean = withContext(ioDispatcher) {
+    override suspend fun addChunk(id: MediaId, startMs: Long, endMs: Long): Boolean = withContext(ioDispatcher) {
+        if (startMs < 0L || startMs >= endMs) {
+            return@withContext false
+        }
+
         val allChunks = chunkDao.observeByMediaId(id.value).first()
         val itemState = itemStateDao.getByMediaId(id.value)
         val activeChunks = selectActiveChunkEntities(itemState, allChunks)
-        val targetIndex = activeChunks.indexOfFirst { it.id == chunkId.value }
-        if (targetIndex < 0) return@withContext false
+        if (activeChunks.any { startMs < it.endMs && endMs > it.startMs }) {
+            return@withContext false
+        }
+
+        val storedFeatures = resolveAnalysisFile(id, FEATURES_FILE_NAME)?.let {
+            AnalysisBinaryFormat.readFeatures(it)
+        }
+        val energyAndBinMs: Pair<FloatArray, Int>? = if (storedFeatures != null && storedFeatures.logEnergyDb.isNotEmpty()) {
+            storedFeatures.logEnergyDb to storedFeatures.binMs
+        } else {
+            val waveform = readWaveformFromDisk(id)
+            if (waveform != null && waveform.rms.isNotEmpty() && waveform.binMs > 0) {
+                FloatArray(waveform.rms.size) { i -> DbfsQuantizer.toDb(waveform.rms[i]) } to waveform.binMs
+            } else {
+                null
+            }
+        }
+        val (trimmedStartMs, trimmedEndMs) = if (energyAndBinMs != null) {
+            val segmentationParams = userSettingsRepository?.settings?.first()?.defaultSegmentationParams
+                ?: SegmentationParams()
+            chunkSegmenter.trimSilenceInRange(
+                logEnergyDb = energyAndBinMs.first,
+                rangeStartMs = startMs,
+                rangeEndMs = endMs,
+                params = segmentationParams,
+                binMs = energyAndBinMs.second,
+            )
+        } else {
+            startMs to endMs
+        }
+        if (trimmedStartMs >= trimmedEndMs) {
+            return@withContext false
+        }
 
         val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
-        val newChunks = ArrayList<ChunkEntity>((activeChunks.size - 1).coerceAtLeast(0))
+        val newChunks = ArrayList<ChunkEntity>(activeChunks.size + 1)
+        val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
+        val insertedEntity = ChunkEntity(
+            id = 0L,
+            mediaId = id.value,
+            startMs = trimmedStartMs,
+            endMs = trimmedEndMs,
+            origin = ChunkOrigin.MANUAL.name,
+            algorithmVersion = ChunkSegmenter.CURRENT_ALGORITHM_VERSION,
+            isSkipped = false,
+        )
+
+        var inserted = false
+        for (chunk in activeChunks) {
+            if (!inserted && chunk.startMs >= trimmedEndMs) {
+                newChunks.add(insertedEntity)
+                inserted = true
+            }
+            val destIndex = newChunks.size
+            newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
+            effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIndex] = it }
+        }
+        if (!inserted) {
+            newChunks.add(insertedEntity)
+        }
+
+        val insertedChunks = chunkDao.replaceChunksTransaction(
+            mediaId = id.value,
+            origin = ChunkOrigin.MANUAL.name,
+            newChunks = newChunks,
+            newTranscriptsByIndex = newTranscriptsByIndex,
+            preserveAllOldTranscripts = true,
+        )
+        syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
+        syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
+        setChunkSource(id, ChunkOrigin.MANUAL)
+        persistTranscriptBackupFile(id)
+        true
+    }
+
+    override suspend fun deleteChunk(id: MediaId, chunkId: ChunkId): Boolean = deleteChunks(id, setOf(chunkId))
+
+    override suspend fun deleteChunks(id: MediaId, chunkIds: Set<ChunkId>): Boolean = withContext(ioDispatcher) {
+        if (chunkIds.isEmpty()) return@withContext false
+        val allChunks = chunkDao.observeByMediaId(id.value).first()
+        val itemState = itemStateDao.getByMediaId(id.value)
+        val activeChunks = selectActiveChunkEntities(itemState, allChunks)
+        val targetIdValues = chunkIds.mapTo(HashSet(chunkIds.size)) { it.value }
+        if (activeChunks.none { it.id in targetIdValues }) return@withContext false
+
+        val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
+        val newChunks = ArrayList<ChunkEntity>((activeChunks.size - targetIdValues.size).coerceAtLeast(0))
         val newTranscriptsByIndex = LinkedHashMap<Int, TranscriptEntity>()
 
-        for ((index, chunk) in activeChunks.withIndex()) {
-            if (index == targetIndex) continue
+        for (chunk in activeChunks) {
+            if (chunk.id in targetIdValues) continue
             val destIndex = newChunks.size
             newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
             effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIndex] = it }
