@@ -165,7 +165,7 @@ class PcmSlidingWindowBuffer(
 
     companion object {
         const val DEFAULT_SAMPLE_RATE_HZ: Int = 16_000
-        const val DEFAULT_MAX_RETAINED_SECONDS: Int = 120
+        const val DEFAULT_MAX_RETAINED_SECONDS: Int = 300
         const val DEFAULT_MAX_SLICE_DURATION_MS: Long = 2_000L
     }
 }

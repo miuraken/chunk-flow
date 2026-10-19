@@ -566,8 +566,10 @@ class MediaCodecAudioStreamDecoder internal constructor(
             var floatBuf = FloatArray(0)
             var monoBuf = FloatArray(4096)
             var decodedAnySample = false
+            val coarseStartMs = elapsedRealtimeMs()
 
             for (col in 0 until columns) {
+                if (col > 0 && elapsedRealtimeMs() - coarseStartMs > 250L) return null
                 currentCoroutineContext().ensureActive()
                 val targetTimeUs = col.toLong() * stepUs
                 val currentPtsUs = extractor.sampleTime
@@ -789,6 +791,8 @@ class MediaCodecAudioStreamDecoder internal constructor(
 
             var lastActivityMs = elapsedRealtimeMs()
             var lastProgressEmitMs = lastActivityMs
+            var lastProgressDecodedMs = 0L
+            var first5sProgressEmitted = false
 
             while (true) {
                 currentCoroutineContext().ensureActive()
@@ -956,9 +960,14 @@ class MediaCodecAudioStreamDecoder internal constructor(
                             }
 
                             val progressNowMs = elapsedRealtimeMs()
-                            if (progressNowMs - lastProgressEmitMs >= progressIntervalMs) {
+                            val decodedMs = (decodedFrames * 1_000L) / sampleRate
+                            val isFirst5s = !first5sProgressEmitted && decodedMs >= 5_000L
+                            val is15sInterval = decodedMs - lastProgressDecodedMs >= 15_000L
+
+                            if (progressNowMs - lastProgressEmitMs >= progressIntervalMs || isFirst5s || is15sInterval) {
                                 lastProgressEmitMs = progressNowMs
-                                val decodedMs = (decodedFrames * 1_000L) / sampleRate
+                                lastProgressDecodedMs = decodedMs
+                                if (decodedMs >= 5_000L) first5sProgressEmitted = true
                                 val fraction = totalDurationMs?.takeIf { it > 0L }?.let { total ->
                                     (decodedMs.toFloat() / total.toFloat()).coerceIn(0f, 1f)
                                 }

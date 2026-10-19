@@ -280,6 +280,7 @@ class AnalysisWorker(
                 var lastSegmentedBins = 0
                 var progressiveConfirmedCount = 0
                 var progressiveSegmentationRunning = false
+                var firstProgressiveSaved = false
 
                 val sampleSink = SampleSink { samples, count ->
                     if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
@@ -292,12 +293,13 @@ class AnalysisWorker(
                         throw AnalysisPreemptedException()
                     }
                     val currentMs = clock()
-                    // 30 秒区間ごとの保存は、最初の区間はすぐ、2 回目以降は前の保存から一定時間あける（DefaultAnalysisRepository と同じ）
-                    val hasNew30sSegment =
-                        accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_30_SECONDS &&
-                            (lastSavedDecodedBins == 0 || currentMs - lastCheckpointMs >= MIN_SEGMENT_SAVE_INTERVAL_MS)
-                    val shouldSaveWaveform =
-                        currentMs - lastCheckpointMs >= PROGRESS_SAVE_INTERVAL_MS || hasNew30sSegment
+                    val hasNew15sSegment =
+                        accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_15_SECONDS - 2
+                    val shouldSaveWaveform = if (!firstProgressiveSaved) {
+                        accumulator.size >= FeatureAccumulator.BINS_PER_INITIAL_PREVIEW - 2
+                    } else {
+                        currentMs - lastCheckpointMs >= MIN_SEGMENT_SAVE_INTERVAL_MS || hasNew15sSegment
+                    }
                     val shouldUpdateProgress = currentMs - lastProgressUpdateMs >= PROGRESS_DB_INTERVAL_MS
 
                     if (shouldSaveWaveform && accumulator.size > 0) {
@@ -307,6 +309,7 @@ class AnalysisWorker(
                         )
                         lastCheckpointMs = currentMs
                         lastSavedDecodedBins = accumulator.size
+                        firstProgressiveSaved = true
 
                         if (
                             segmentationParams != null &&

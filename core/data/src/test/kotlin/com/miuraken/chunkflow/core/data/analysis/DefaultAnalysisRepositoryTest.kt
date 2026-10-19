@@ -4224,4 +4224,272 @@ class DefaultAnalysisRepositoryTest {
         testScheduler.advanceUntilIdle()
         assertEquals(0, fileBasedDetectCalls, "startLanguageDetectionOnly を呼んでも重複してファイル再デコードしない")
     }
+
+    @Test
+    fun `requestAnalysis_初回5秒でプログレッシブ波形を公開し高速デコードでもまだら状の未判定チャンクを出さない`() = runTest {
+        val mediaId = MediaId("fast_decode_200s")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Fast Decode 200s Lesson",
+                durationMs = 200_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        val pcmLidLengths = mutableListOf<Int>()
+        var callIndex = 0
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun detectChunkLanguageFromPcm(
+                audioScopeKey: String,
+                pcm16kMono: ShortArray,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair,
+                audioFile: File?,
+            ): OnDeviceChunkTranscriptionResult {
+                pcmLidLengths += pcm16kMono.size
+                val lang = if (callIndex % 2 == 0) LanguageTag("ja") else LanguageTag("ko")
+                callIndex += 1
+                return OnDeviceChunkTranscriptionResult(
+                    text = "",
+                    language = lang,
+                    confidence = 0.9f,
+                    engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                )
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+        }
+
+        var waveformAt5s: Waveform? = null
+        lateinit var repository: DefaultAnalysisRepository
+
+        val fakeDecoder = object : AudioStreamDecoder {
+            override suspend fun decode(
+                file: File,
+                sink: SampleSink,
+                outputSampleRate: Int,
+                expectedDurationMs: Long?,
+                onProgress: suspend (DecodeProgress) -> Unit,
+            ): AudioDecodeResult {
+                // 実時間クロック (currentEpochMs) を一切進めずに 200 秒間を 5 秒ステップで高速デコードする
+                for (step in 1..40) {
+                    val stepStartSec = (step - 1) * 5
+                    val samples5s = FloatArray(outputSampleRate * 5) { idx ->
+                        val sec = stepStartSec + idx.toDouble() / outputSampleRate
+                        val inSpeech = (sec % 10.0) in 1.0..4.0 || (sec % 10.0) in 6.0..9.0
+                        if (inSpeech) (0.5 * sin(2.0 * PI * 440.0 * sec)).toFloat() else 0f
+                    }
+                    sink.onSamples(samples5s, samples5s.size)
+                    onProgress(
+                        DecodeProgress(
+                            decodedDurationMs = step * 5_000L,
+                            totalDurationMs = 200_000L,
+                            fraction = step / 40f,
+                        ),
+                    )
+                    if (step == 1) {
+                        waveformAt5s = repository.observeWaveform(mediaId).first()
+                    }
+                }
+                return AudioDecodeResult.Success(
+                    sampleRate = outputSampleRate,
+                    channels = 1,
+                    decodedFrames = (outputSampleRate * 200).toLong(),
+                    resampledSamples = (outputSampleRate * 200).toLong(),
+                    durationMs = 200_000L,
+                    encoderDelay = 0,
+                    encoderPadding = 0,
+                    mimeType = "audio/mpeg",
+                )
+            }
+        }
+
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = dispatcher,
+            onDeviceChunkTranscriber = fakeTranscriber,
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            audioStreamDecoder = fakeDecoder,
+            computeDispatcher = dispatcher,
+        )
+
+        repository.requestAnalysis(mediaId, setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION))
+        testScheduler.advanceUntilIdle()
+
+        // 1. 最初の 5 秒 (~500 bins) デコード完了時点でプログレッシブ波形がすでに保存・公開されていること
+        assertNotNull(waveformAt5s, "5秒デコード時点で初回のプログレッシブ波形が保存・公開される")
+        assertTrue((waveformAt5s?.peak?.size ?: 0) >= 499)
+
+        // 2. 200 秒分すべてのチャンクが PCM 欠落なく言語判定され、まだら状の未判定領域がないこと
+        val finalChunks = repository.observeChunks(mediaId).first()
+        val finalTranscripts = repository.observeTranscripts(mediaId).first()
+        assertTrue(finalChunks.size >= 30, "200秒の音声から30個以上のチャンクが生成される (actual=${finalChunks.size})")
+        assertTrue(pcmLidLengths.all { it > 0 }, "全チャンクに非空のPCMスライスが渡される")
+        assertTrue(
+            finalChunks.all { chunk -> finalTranscripts[chunk.id]?.language != null },
+            "全チャンクに欠落なく言語判定結果が保存される",
+        )
+    }
+
+    @Test
+    fun `prioritizeOpenedMediaAnalysis_解析済みファイルに未判定チャンクがまだらに残っている場合は未判定チャンクのみ自動補完する`() = runTest {
+        val mediaId = MediaId("patchy_existing_01")
+        val mediaDir = File(context.filesDir, "media").apply { mkdirs() }
+        File(mediaDir, "${mediaId.value}.mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "Patchy Existing Lesson",
+                durationMs = 20_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "ko",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        // 解析ファイルと AnalysisState (DONE) を用意
+        val analysisDir = File(File(context.filesDir, "analysis"), mediaId.value).apply { mkdirs() }
+        AnalysisBinaryFormat.writeWaveformAtomic(
+            File(analysisDir, "waveform.bin"),
+            Waveform(
+                binMs = 10,
+                peak = ByteArray(2000),
+                rms = ByteArray(2000),
+            ),
+        )
+        AnalysisBinaryFormat.writeFeaturesAtomic(
+            File(analysisDir, "features.bin"),
+            StoredFeatures(binMs = 10, logEnergyDb = FloatArray(2000) { -20f }),
+        )
+        analysisStateDao.upsert(
+            StageStatus.Done.toEntity(mediaId, AnalysisStage.FEATURES, CURRENT_ALGORITHM_VERSION, currentEpochMs),
+        )
+        analysisStateDao.upsert(
+            StageStatus.Done.toEntity(mediaId, AnalysisStage.SEGMENTATION, CURRENT_ALGORITHM_VERSION, currentEpochMs),
+        )
+
+        // 3 チャンクのうち、1つ目と3つ目はすでに whisper-tiny-lid 判定済み、2つ目だけ未判定（まだら状態）
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 1L, mediaId = mediaId.value, startMs = 0L, endMs = 4_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2L, mediaId = mediaId.value, startMs = 5_000L, endMs = 9_000L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 3L, mediaId = mediaId.value, startMs = 10_000L, endMs = 14_000L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+        transcriptDao.upsertAll(
+            listOf(
+                TranscriptEntity(
+                    chunkId = 1L,
+                    text = "",
+                    language = "ja",
+                    languageConfidence = 0.9f,
+                    engine = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID.value,
+                    createdAt = currentEpochMs,
+                ),
+                TranscriptEntity(
+                    chunkId = 3L,
+                    text = "",
+                    language = "ko",
+                    languageConfidence = 0.9f,
+                    engine = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID.value,
+                    createdAt = currentEpochMs,
+                ),
+            ),
+        )
+
+        val evaluatedRanges = mutableListOf<ChunkTimeRange>()
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult? = null
+
+            override suspend fun detectChunkLanguages(
+                audioFile: File,
+                chunks: List<ChunkTimeRange>,
+                languagePair: LanguagePair,
+                parallelism: Int,
+                computeDispatcher: CoroutineDispatcher,
+                onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+            ) {
+                chunks.forEachIndexed { index, range ->
+                    evaluatedRanges += range
+                    onResult(
+                        index,
+                        OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = LanguageTag("ko"),
+                            confidence = 0.88f,
+                            engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                        ),
+                    )
+                }
+            }
+        }
+
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = dispatcher,
+            onDeviceChunkTranscriber = fakeTranscriber,
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            computeDispatcher = dispatcher,
+        )
+
+        repository.prioritizeOpenedMediaAnalysis(mediaId)
+        testScheduler.advanceUntilIdle()
+
+        // すでに判定済みの chunk 1, 3 は再推論せず、未判定の chunk 2 (5000..9000) のみ補完推論されること
+        assertEquals(listOf(ChunkTimeRange(5_000L, 9_000L)), evaluatedRanges)
+        val finalTranscripts = repository.observeTranscripts(mediaId).first()
+        assertEquals(LanguageTag("ja"), finalTranscripts[ChunkId(1L)]?.language)
+        assertEquals(LanguageTag("ko"), finalTranscripts[ChunkId(2L)]?.language)
+        assertEquals(LanguageTag("ko"), finalTranscripts[ChunkId(3L)]?.language)
+    }
 }

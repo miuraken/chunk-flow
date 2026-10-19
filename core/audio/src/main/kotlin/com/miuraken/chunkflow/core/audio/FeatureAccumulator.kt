@@ -80,6 +80,8 @@ class FeatureAccumulator(private val binMs: Int = 10, initialCapacity: Int = 409
     companion object {
         /** 拡大波形の 1 画面分（30 秒 = 30,000ms）に相当する既定ビン数（10ms × 3,000 = 30,000ms）。 */
         const val BINS_PER_30_SECONDS: Int = 3_000
+        const val BINS_PER_15_SECONDS: Int = 1_500
+        const val BINS_PER_INITIAL_PREVIEW: Int = 500
 
         /**
          * 音声全体の長さ [totalDurationMs] と全体波形の横幅（カラム数）から算出したサンプリング列
