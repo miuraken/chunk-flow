@@ -199,9 +199,13 @@ fun WaveformSection(
     seekBackSeconds: Int = 3,
     onSeekToChunk: (ChunkId) -> Unit = {},
     onSetChunkSelected: (ChunkId, Boolean) -> Unit = { _, _ -> },
+    lookaheadStatus: com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus =
+        com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus(),
+    isTranscriptionRunning: Boolean = false,
 ) {
     val effectiveDurationMs = max(durationMs, waveform?.durationMs ?: 0L).coerceAtLeast(1L)
     val featureStatus = analysis[AnalysisStage.FEATURES]
+    val segmentationStatus = analysis[AnalysisStage.SEGMENTATION]
     val downsampler = remember { WaveformDownsampler() }
     val isInspectionMode = LocalInspectionMode.current
 
@@ -295,62 +299,17 @@ fun WaveformSection(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    WaveformOverviewPositionText(
-                        durationMs = effectiveDurationMs,
-                        isPlaying = isPlaying,
-                        positionProvider = positionProvider,
-                        scrubPositionMs = scrubPositionMs,
-                    )
-                    if (featureStatus is StageStatus.Running) {
-                        val progress = featureStatus.progress
-                        val label = if (progress != null) {
-                            stringResource(
-                                R.string.player_waveform_analyzing_percent,
-                                (progress * 100f).roundToInt().coerceIn(0, 100),
-                            )
-                        } else {
-                            stringResource(R.string.player_waveform_analyzing)
-                        }
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colorScheme.onSurfaceVariant,
-                        )
-                    } else if (featureStatus is StageStatus.Failed) {
-                        Text(
-                            text = stringResource(R.string.player_waveform_analysis_failed),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colorScheme.error,
-                        )
-                    } else if (waveform == null) {
-                        Text(
-                            text = stringResource(R.string.player_waveform_preparing),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+                WaveformOverviewPositionText(
+                    durationMs = effectiveDurationMs,
+                    isPlaying = isPlaying,
+                    positionProvider = positionProvider,
+                    scrubPositionMs = scrubPositionMs,
+                )
                 Text(
                     text = formatDurationMs(effectiveDurationMs),
                     style = MaterialTheme.typography.labelSmall,
                     color = colorScheme.onSurfaceVariant,
                 )
-            }
-
-            if (featureStatus is StageStatus.Running) {
-                val progress = featureStatus.progress
-                if (progress != null) {
-                    LinearProgressIndicator(
-                        progress = { progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().height(2.dp),
-                    )
-                } else {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
-                }
             }
 
             OverviewWaveformCanvas(
@@ -395,26 +354,16 @@ fun WaveformSection(
                 onSeekBack = onSeekBack,
             )
 
-            // 2. 拡大波形ヘッダ + キャンバス
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(R.string.player_waveform_zoomed_label),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = stringResource(
-                        R.string.player_waveform_zoom_window,
-                        formatDurationMs(zoomWindowMs),
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colorScheme.onSurfaceVariant,
-                )
-            }
+            // 2. 拡大波形ヘッダ（波形解析中・文字起こし中はステータス表示領域＋背景プログレスバーとして使用）+ キャンバス
+            ZoomedWaveformHeaderStatusArea(
+                waveform = waveform,
+                featureStatus = featureStatus,
+                segmentationStatus = segmentationStatus,
+                chunks = chunks,
+                lookaheadStatus = lookaheadStatus,
+                isTranscriptionRunning = isTranscriptionRunning,
+                zoomWindowMs = zoomWindowMs,
+            )
 
             ZoomedWaveformCanvas(
                 waveform = waveform,
@@ -493,6 +442,236 @@ fun WaveformSection(
                 onNextChunk = onNextChunk,
                 onSeekBack = onSeekBack,
             )
+        }
+    }
+}
+
+/**
+ * 拡大波形の上部ヘッダ領域。
+ *
+ * - 波形解析中や文字起こし中はステータス表示領域として使用し、背景をプログレスバーに見立てて
+ *   薄いバックグラウンドカラーの変化で進捗度（波形解析の進捗率、または文字起こし済チャンク数/総チャンク数）を表示する。
+ * - 文字起こし中はステータスログ（処理中のチャンク番号・ステップ・詳細・経過秒数・進捗数）を表示する。
+ * - 波形解析・文字起こしがすべて完了（または待機中）したら、通常の「拡大波形」〜「表示幅: 00:30」表示に戻す。
+ */
+@Composable
+private fun ZoomedWaveformHeaderStatusArea(
+    waveform: Waveform?,
+    featureStatus: StageStatus?,
+    segmentationStatus: StageStatus?,
+    chunks: List<ChunkUi>,
+    lookaheadStatus: com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus,
+    isTranscriptionRunning: Boolean,
+    zoomWindowMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val isInspectionMode = LocalInspectionMode.current
+
+    val isWaveformAnalyzing = featureStatus is StageStatus.Running ||
+        segmentationStatus is StageStatus.Running ||
+        (waveform == null && featureStatus !is StageStatus.Done && featureStatus !is StageStatus.Failed)
+    val isWaveformFailed = featureStatus is StageStatus.Failed
+
+    val inFlightStartedAt = lookaheadStatus.inFlightStartedAtEpochMs
+    var nowEpochMs by remember(inFlightStartedAt) {
+        mutableLongStateOf(inFlightStartedAt ?: 0L)
+    }
+    if (!isInspectionMode && isTranscriptionRunning && inFlightStartedAt != null) {
+        LaunchedEffect(inFlightStartedAt) {
+            while (isActive) {
+                nowEpochMs = System.currentTimeMillis()
+                delay(500L)
+            }
+        }
+    }
+
+    when {
+        isWaveformAnalyzing -> {
+            val featureProgress = (featureStatus as? StageStatus.Running)?.progress
+            val rawProgress = featureProgress
+                ?: (segmentationStatus as? StageStatus.Running)?.progress
+            val progressFraction = (rawProgress ?: 0f).coerceIn(0f, 1f)
+            val statusText = when {
+                featureProgress != null ->
+                    stringResource(
+                        R.string.player_waveform_analyzing_percent,
+                        (featureProgress * 100f).roundToInt().coerceIn(0, 100),
+                    )
+
+                featureStatus is StageStatus.Running || segmentationStatus is StageStatus.Running ->
+                    stringResource(R.string.player_waveform_analyzing)
+
+                else -> stringResource(R.string.player_waveform_preparing)
+            }
+            val trackColor = colorScheme.surfaceContainerHighest.copy(alpha = 0.55f)
+            val fillColor = colorScheme.primary.copy(alpha = 0.22f)
+            Row(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .drawWithCache {
+                        onDrawBehind {
+                            val corner = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                            drawRoundRect(color = trackColor, cornerRadius = corner)
+                            if (progressFraction > 0f) {
+                                drawRoundRect(
+                                    color = fillColor,
+                                    size = Size(size.width * progressFraction, size.height),
+                                    cornerRadius = corner,
+                                )
+                            }
+                        }
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+                if (rawProgress != null) {
+                    Text(
+                        text = "${(progressFraction * 100f).roundToInt().coerceIn(0, 100)}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+
+        isWaveformFailed -> {
+            Row(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.player_waveform_analysis_failed),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.error,
+                    maxLines = 1,
+                )
+                Text(
+                    text = stringResource(
+                        R.string.player_waveform_zoom_window,
+                        formatDurationMs(zoomWindowMs),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        isTranscriptionRunning -> {
+            val transcribedChunkCount = chunks.count { !it.text.isNullOrBlank() }
+            val progressSummary = computeTranscriptionProgressSummary(
+                lookaheadStatus = lookaheadStatus,
+                transcribedChunkCount = transcribedChunkCount,
+                totalChunkCount = chunks.size,
+            )
+            val totalCount = progressSummary.totalCount
+            val completedCount = progressSummary.completedCount
+            val progressFraction = progressSummary.overallProgress.coerceIn(0f, 1f)
+
+            val activeChunkNumber = lookaheadStatus.inFlightChunkId?.let { inFlightId ->
+                chunks.indexOfFirst { it.id == inFlightId }.takeIf { it >= 0 }?.plus(1)
+            }
+            val elapsedMs = if (inFlightStartedAt != null && nowEpochMs >= inFlightStartedAt) {
+                (nowEpochMs - inFlightStartedAt).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            val isStalled = elapsedMs >= 8_000L
+            val stepLabel = transcriptionStepLabel(lookaheadStatus.inFlightStep)
+            val chunkPrefix = if (activeChunkNumber != null) {
+                "#$activeChunkNumber: "
+            } else {
+                ""
+            }
+            val detailSuffix = lookaheadStatus.inFlightDetail
+                ?.takeIf { it.isNotBlank() }
+                ?.let { " [$it]" }
+                .orEmpty()
+            val elapsedSuffix = if (elapsedMs > 0L) {
+                String.format(Locale.ROOT, " (%.1fs)", elapsedMs / 1_000f)
+            } else {
+                ""
+            }
+            val stallSuffix = if (isStalled) {
+                " " + stringResource(R.string.player_transcription_stall_short)
+            } else {
+                ""
+            }
+            val logText = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix$stallSuffix"
+
+            val trackColor = colorScheme.surfaceContainerHighest.copy(alpha = 0.55f)
+            val fillColor = colorScheme.primary.copy(alpha = 0.22f)
+            Row(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .drawWithCache {
+                        onDrawBehind {
+                            val corner = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                            drawRoundRect(color = trackColor, cornerRadius = corner)
+                            if (progressFraction > 0f) {
+                                drawRoundRect(
+                                    color = fillColor,
+                                    size = Size(size.width * progressFraction, size.height),
+                                    cornerRadius = corner,
+                                )
+                            }
+                        }
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = logText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (totalCount > 0) {
+                    Spacer(modifier = Modifier.padding(horizontal = 4.dp))
+                    Text(
+                        text = "$completedCount/$totalCount",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+
+        else -> {
+            Row(
+                modifier = modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.player_waveform_zoomed_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = stringResource(
+                        R.string.player_waveform_zoom_window,
+                        formatDurationMs(zoomWindowMs),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

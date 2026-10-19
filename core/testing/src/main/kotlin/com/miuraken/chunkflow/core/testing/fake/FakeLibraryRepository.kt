@@ -86,6 +86,10 @@ class FakeLibraryRepository(
     /** [resetTranscriptsAndDeleteFiles] の呼び出し履歴（呼ばれた順）。 */
     val resetTranscriptMediaIds: MutableList<MediaId> = mutableListOf()
 
+    /** [resetTranscriptsAndDeleteFiles] の呼び出し履歴（別名）。 */
+    val resetTranscriptsRequests: MutableList<MediaId>
+        get() = resetTranscriptMediaIds
+
     /** [syncFromDrive] が流す進捗を決める。既定はすぐに「0 件で完了」。 */
     var syncResult: () -> Flow<SyncProgress> = {
         flowOf(

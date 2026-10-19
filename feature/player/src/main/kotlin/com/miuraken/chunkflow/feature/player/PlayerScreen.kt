@@ -357,6 +357,13 @@ fun PlayerScreen(
                             contentDescription = stringResource(R.string.player_file_settings_cd),
                         )
                     }
+                    PlayerTranscriptionStatusBadge(
+                        state = state,
+                        onToggleTranscription = { enabled ->
+                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+                        },
+                        modifier = Modifier.padding(end = 8.dp),
+                    )
                 },
             )
         },
@@ -759,6 +766,109 @@ fun PlayerScreen(
     }
 }
 
+private val CompletedTranscriptBadgeColor = Color(0xFF19532B)
+
+/**
+ * 再生画面 TopAppBar の設定アイコン右に表示する文字起こし進捗バッジ。
+ *
+ * - 全チャンクの文字起こしが完了している場合は、ライブラリ画面と同様に緑丸＋白抜きの文字起こしアイコンを表示する。
+ * - 未完了の場合は `{文字起こしアイコン}{スピナー（実行中のみ）}{進捗率%}` を表示し、タップでオン（再開）/ オフ（一時停止）を切り替えられる。
+ * - 停止中（オフ）であることが視覚的に伝わるよう、停止中は表示を薄く（alpha 0.32f）する。
+ */
+@Composable
+private fun PlayerTranscriptionStatusBadge(
+    state: PlayerUiState,
+    onToggleTranscription: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (state.chunks.isEmpty() && !state.isTranscriptionRunning) return
+
+    if (state.isAllTranscriptionCompleted) {
+        Surface(
+            color = CompletedTranscriptBadgeColor,
+            shape = CircleShape,
+            modifier = modifier
+                .size(22.dp)
+                .semantics { contentDescription = "文字起こし完了" },
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SpeechToText,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
+        return
+    }
+
+    val isRunning = state.isTranscriptionRunning
+    val totalCount = if (state.chunks.isNotEmpty()) {
+        state.chunks.size
+    } else {
+        state.lookaheadStatus.totalTargetCount
+    }
+    val completedCount = if (state.chunks.isNotEmpty()) {
+        state.chunks.count { !it.text.isNullOrBlank() }
+    } else {
+        state.lookaheadStatus.completedCount
+    }.coerceIn(0, totalCount.coerceAtLeast(0))
+    val progressPercent = if (totalCount > 0) {
+        ((completedCount * 100) / totalCount).coerceIn(0, 100)
+    } else {
+        0
+    }
+    val statusDescription = if (isRunning) {
+        "文字起こし中 $progressPercent%（タップして一時停止）"
+    } else {
+        "文字起こし停止中 $progressPercent%（タップして再開）"
+    }
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onToggleTranscription(!isRunning) }
+            .padding(horizontal = 6.dp, vertical = 4.dp)
+            .alpha(if (isRunning) 1f else 0.32f)
+            .semantics(mergeDescendants = true) {
+                contentDescription = statusDescription
+            },
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.SpeechToText,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        if (isRunning) {
+            if (LocalInspectionMode.current) {
+                CircularProgressIndicator(
+                    progress = { 0.75f },
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    trackColor = Color.Transparent,
+                )
+            } else {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.5.dp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            text = "$progressPercent%",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
+}
+
 /**
  * [PlayerUiState] とイベントを [WaveformSection]（全体波形 + 拡大波形）につなぐ。1 ペインと 2 ペインで共通に使う。
  */
@@ -792,6 +902,8 @@ private fun PlayerWaveform(
         onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
         onNextChunk = { onEvent(PlayerEvent.NextChunk) },
         onSeekBack = { onEvent(PlayerEvent.SeekBack) },
+        lookaheadStatus = state.lookaheadStatus,
+        isTranscriptionRunning = state.isTranscriptionRunning,
         modifier = modifier,
     )
 }
@@ -1177,48 +1289,6 @@ private fun ChunkDisplaySettingsStrip(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 0. 「文字起こし」（未完了または実行中のみ表示）
-            if (state.isTranscriptionBadgeVisible) {
-                val isRunning = state.isTranscriptionRunning
-                val baseChipLabel = stringResource(R.string.player_chip_transcribe)
-                val transcribedCount = state.chunks.count { !it.text.isNullOrBlank() }
-                val chipLabel = if (!isRunning && state.chunks.isNotEmpty() &&
-                    (transcribedCount > 0 || state.isAllTranscriptionEmptyAfterCompletion || state.lookaheadStatus.skippedEmptyChunkIds.isNotEmpty())
-                ) {
-                    "$baseChipLabel $transcribedCount/${state.chunks.size}"
-                } else {
-                    baseChipLabel
-                }
-                FilterChip(
-                    selected = isRunning,
-                    onClick = {
-                        if (isRunning) {
-                            onEvent(PlayerEvent.ToggleTranscriptionProgress)
-                        } else {
-                            onEvent(PlayerEvent.SetLookaheadEnabled(true))
-                        }
-                    },
-                    leadingIcon = if (isRunning) {
-                        {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                            )
-                        }
-                    } else {
-                        null
-                    },
-                    label = {
-                        Text(
-                            text = chipLabel,
-                            fontWeight = if (isRunning) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1,
-                        )
-                    },
-                    colors = toggleColors,
-                )
-            }
-
             // 1. 「言語」（[base][target]、[base]、[target]）
             val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
             val isLanguageFilterEnabled = state.hasTranscript || state.hasChunkLanguage
@@ -2302,7 +2372,25 @@ internal fun ResegmentSheetContent(
             }
 
             1 -> {
-                // 「文字起こしファイル」タブ: エクスポート / インポート / リセット / ログ
+                // 「文字起こし」タブ: 最上位にリセットボタン / エクスポート / インポート / ログ
+                OutlinedButton(
+                    onClick = { showResetConfirmDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = stringResource(R.string.player_transcript_reset_button))
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
                 // 1. エクスポート
                 Text(
                     text = stringResource(R.string.player_file_settings_section_export),
@@ -2422,31 +2510,7 @@ internal fun ResegmentSheetContent(
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                // 3. リセット
-                Text(
-                    text = stringResource(R.string.player_file_settings_section_reset),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                OutlinedButton(
-                    onClick = { showResetConfirmDialog = true },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Delete,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = stringResource(R.string.player_transcript_reset_button))
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                // 4. ログ
+                // 3. ログ
                 Text(
                     text = stringResource(R.string.player_file_settings_section_log),
                     style = MaterialTheme.typography.titleMedium,

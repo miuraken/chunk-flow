@@ -2164,35 +2164,27 @@ class PlayerViewModelTest {
         assertEquals(SegmentationParams(), recreatedViewModel.uiState.value.segmentationParams)
         assertEquals(listOf(item.id, item.id), analysisRepo.languageDetectionOnlyRequests)
 
-        // 5. ファイルの言語設定を変更すると startLanguageDetectionOnly が自動で呼ばれる
+        // 5. ファイルの言語設定を変更すると startLanguageDetectionOnly が自動で呼ばれ、学習言語変更時は文字起こしもクリアされる
         recreatedViewModel.onEvent(
             PlayerEvent.UpdateItemLanguages(
                 target = LanguageTag("en"),
                 base = LanguageTag("ja"),
             ),
         )
+        assertEquals(listOf(item.id), libraryRepoWithSavedCustomSeg.resetTranscriptsRequests)
+        assertEquals(listOf(item.id), analysisRepo.clearTranscriptsRequests)
         assertEquals(listOf(item.id, item.id, item.id), analysisRepo.languageDetectionOnlyRequests)
-    }
 
-    @Test
-    fun `ファイル個別言語設定_言語設定に従うの括弧内エンジン解決が全体の言語設定値を返す`() {
-        val sttEngineByLanguage = mapOf(
-            LanguageTag("ja") to com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
-            LanguageTag("ko") to com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+        // ベース言語のみ変更した場合は文字起こしはクリアされない
+        recreatedViewModel.onEvent(
+            PlayerEvent.UpdateItemLanguages(
+                target = LanguageTag("en"),
+                base = LanguageTag("zh-cn"),
+            ),
         )
-        assertEquals(
-            com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
-            resolveConfiguredDefaultEngineForLanguage("ja-JP", sttEngineByLanguage),
-        )
-        assertEquals(
-            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
-            resolveConfiguredDefaultEngineForLanguage("ko", sttEngineByLanguage),
-        )
-        // 未設定の言語は対応エンジン（ML Kit 等）のデフォルトにフォールバックする
-        assertEquals(
-            com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
-            resolveConfiguredDefaultEngineForLanguage("en", sttEngineByLanguage),
-        )
+        assertEquals(listOf(item.id), libraryRepoWithSavedCustomSeg.resetTranscriptsRequests)
+        assertEquals(listOf(item.id), analysisRepo.clearTranscriptsRequests)
+        assertEquals(listOf(item.id, item.id, item.id, item.id), analysisRepo.languageDetectionOnlyRequests)
     }
 
     @Test

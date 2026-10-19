@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
@@ -15,11 +16,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -108,17 +109,17 @@ internal fun languagePairWithBase(
 }
 
 /**
- * プレイヤーの設定シートの「言語」セクション。開いている教材の学習対象言語とベース言語および文字起こしエンジンをプルダウンで選び直す。
+ * プレイヤーの設定シートの「言語」セクション。開いている教材の学習対象言語とベース言語をプルダウンで選び直す。
  *
- * 選んだ時点で [onChangeLanguages] を呼ぶ（いまの言語と同じものを選んだときは呼ばない）。
+ * 学習対象言語が変わる場合は確認ダイアログを出してから [onChangeLanguages] を呼ぶ。
  */
 @Composable
 internal fun ItemLanguageSettingsSection(
     languagePair: LanguagePair?,
     itemSttOverride: ItemSttOverride,
     onChangeLanguages: (LanguagePair) -> Unit,
-    onChangeTargetEngine: (SttEngine?) -> Unit,
-    onChangeBaseEngine: (SttEngine?) -> Unit,
+    onChangeTargetEngine: (SttEngine?) -> Unit = {},
+    onChangeBaseEngine: (SttEngine?) -> Unit = {},
     modifier: Modifier = Modifier,
     enabledLanguages: List<LanguageTag> = emptyList(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
@@ -140,18 +141,39 @@ internal fun ItemLanguageSettingsSection(
             enabledLanguages = enabledLanguages,
         )
     }
-    val targetDefaultEngine = remember(targetCode, sttEngineByLanguage, languageModelInfos) {
-        resolveConfiguredDefaultEngineForLanguage(
-            rawCode = targetCode,
-            sttEngineByLanguage = sttEngineByLanguage,
-            languageModelInfos = languageModelInfos,
-        )
+    var pendingTargetLanguageChange by remember { mutableStateOf<LanguagePair?>(null) }
+
+    val handleLanguagePairSelection: (LanguagePair?) -> Unit = { newPair ->
+        if (newPair != null) {
+            val newTargetCode = normalizeItemLanguageCode(newPair.target.value)
+            if (newTargetCode != targetCode) {
+                pendingTargetLanguageChange = newPair
+            } else {
+                onChangeLanguages(newPair)
+            }
+        }
     }
-    val baseDefaultEngine = remember(baseCode, sttEngineByLanguage, languageModelInfos) {
-        resolveConfiguredDefaultEngineForLanguage(
-            rawCode = baseCode,
-            sttEngineByLanguage = sttEngineByLanguage,
-            languageModelInfos = languageModelInfos,
+
+    pendingTargetLanguageChange?.let { pendingPair ->
+        AlertDialog(
+            onDismissRequest = { pendingTargetLanguageChange = null },
+            title = { Text(text = stringResource(R.string.player_target_lang_change_confirm_title)) },
+            text = { Text(text = stringResource(R.string.player_target_lang_change_confirm_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingTargetLanguageChange = null
+                        onChangeLanguages(pendingPair)
+                    },
+                ) {
+                    Text(text = stringResource(R.string.player_target_lang_change_confirm_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingTargetLanguageChange = null }) {
+                    Text(text = stringResource(R.string.player_target_lang_change_confirm_cancel))
+                }
+            },
         )
     }
 
@@ -183,14 +205,7 @@ internal fun ItemLanguageSettingsSection(
                     options = targetOptions,
                     fallbackLabel = targetCode,
                     accentColor = langPalette.onTargetBadgeContainer,
-                    onSelect = { code -> languagePairWithTarget(languagePair, code)?.let(onChangeLanguages) },
-                )
-                SttEngineDropdown(
-                    label = stringResource(R.string.player_settings_target_stt_engine_label),
-                    selectedEngine = itemSttOverride.targetEngine,
-                    defaultEngine = targetDefaultEngine,
-                    accentColor = langPalette.onTargetBadgeContainer,
-                    onSelect = onChangeTargetEngine,
+                    onSelect = { code -> handleLanguagePairSelection(languagePairWithTarget(languagePair, code)) },
                 )
             }
         }
@@ -211,95 +226,13 @@ internal fun ItemLanguageSettingsSection(
                     options = baseOptions,
                     fallbackLabel = noneLabel,
                     accentColor = langPalette.onBaseBadgeContainer,
-                    onSelect = { code -> languagePairWithBase(languagePair, code)?.let(onChangeLanguages) },
-                )
-                SttEngineDropdown(
-                    label = stringResource(R.string.player_settings_base_stt_engine_label),
-                    selectedEngine = itemSttOverride.baseEngine,
-                    defaultEngine = baseDefaultEngine,
-                    accentColor = langPalette.onBaseBadgeContainer,
-                    onSelect = onChangeBaseEngine,
+                    onSelect = { code -> handleLanguagePairSelection(languagePairWithBase(languagePair, code)) },
                 )
             }
         }
         MissingLanguageHintText(
             text = stringResource(R.string.player_missing_language_hint),
         )
-    }
-}
-
-@Composable
-private fun sttEngineDisplayName(engine: SttEngine): String = when (engine) {
-    SttEngine.ML_KIT -> stringResource(R.string.player_settings_stt_engine_mlkit)
-    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.player_settings_stt_engine_speech_recognizer)
-    SttEngine.SHERPA_ONNX -> stringResource(R.string.player_settings_stt_engine_sherpa_onnx)
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SttEngineDropdown(
-    label: String,
-    selectedEngine: SttEngine?,
-    defaultEngine: SttEngine,
-    accentColor: Color,
-    onSelect: (SttEngine?) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val defaultEngineLabel = stringResource(
-        R.string.player_settings_stt_engine_default_with_name,
-        sttEngineDisplayName(defaultEngine),
-    )
-
-    val options = listOf(
-        null to defaultEngineLabel,
-        SttEngine.ML_KIT to stringResource(R.string.player_settings_stt_engine_mlkit),
-        SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.player_settings_stt_engine_speech_recognizer),
-        SttEngine.SHERPA_ONNX to stringResource(R.string.player_settings_stt_engine_sherpa_onnx),
-    )
-
-    val selectedLabel = options.firstOrNull { it.first == selectedEngine }?.second ?: options.first().second
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        OutlinedTextField(
-            value = selectedLabel,
-            onValueChange = {},
-            readOnly = true,
-            singleLine = true,
-            label = { Text(text = label) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = accentColor,
-                focusedLabelColor = accentColor,
-            ),
-            modifier = Modifier
-                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                .fillMaxWidth(),
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            options.forEach { (engine, optionLabel) ->
-                val isSelected = engine == selectedEngine
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = optionLabel,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    },
-                    onClick = {
-                        expanded = false
-                        onSelect(engine)
-                    },
-                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
-                )
-            }
-        }
     }
 }
 

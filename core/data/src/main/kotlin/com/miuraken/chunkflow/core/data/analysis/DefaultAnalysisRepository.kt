@@ -1821,6 +1821,7 @@ class DefaultAnalysisRepository(
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
         explicitlyConfiguredLookaheadMediaIds.add(id)
         if (enabled) {
+            backgroundTranscriptionMediaIds.add(id)
             attemptedEmptyChunkIds.remove(id)
             backgroundDeferredEmptyChunkIds.remove(id)
         } else {
@@ -1847,7 +1848,7 @@ class DefaultAnalysisRepository(
         lookaheadStateFor(id).update { current ->
             current.copy(
                 enabled = enabled,
-                backgroundEnabled = if (enabled) current.backgroundEnabled else false,
+                backgroundEnabled = enabled,
                 engineAvailable = available,
                 inFlightChunkId = if (enabled) current.inFlightChunkId else null,
                 inFlightStep = if (enabled) current.inFlightStep else null,
@@ -2595,7 +2596,11 @@ class DefaultAnalysisRepository(
     override suspend fun clearTranscriptsForMedia(id: MediaId) {
         withContext(ioDispatcher) {
             activeLanguageDetectionJobs.remove(id)?.cancel()
+            activePipelinedLidJobs.remove(id)?.cancel()
+            backgroundJobs.remove(id)?.cancel()
+            cancelActiveTranscriptionJobs(id, CancellationException("Transcripts cleared"))
             attemptedEmptyChunkIds.remove(id)
+            backgroundDeferredEmptyChunkIds.remove(id)
             pipelinedLidProcessedChunkIds.remove(id)
             pendingHighPriorityChunkIds.remove(id)
             latestLookaheadChunkIndex.remove(id)

@@ -137,7 +137,7 @@
     <string name="player_chunk_delete">Remove chunk</string>
     <string name="player_export_section_title">Transcript files</string>
     <string name="player_transcript_file_import">Import transcript / subtitle file</string>
-    <string name="player_transcript_reset_button">Reset transcripts and delete files</string>
+    <string name="player_transcript_reset_button">Reset transcripts</string>
     <string name="player_transcript_reset_confirm_title">Reset transcripts?</string>
     <string name="player_transcript_reset_confirm_message">This will clear all current transcript data, delete saved transcript files, and re-run chunk segmentation and language detection. This action cannot be undone.</string>
     <string name="player_transcript_reset_confirm_ok">Reset and delete</string>
@@ -240,7 +240,7 @@
     <string name="player_background_speech_recognizer_warning_close">Close</string>
     <string name="player_file_settings_title">Per-File Settings</string>
     <string name="player_file_settings_tab_language">Languages</string>
-    <string name="player_file_settings_tab_transcript_file">Transcript File</string>
+    <string name="player_file_settings_tab_transcript_file">Transcript</string>
     <string name="player_file_settings_tab_segmentation">Chunk Segmentation</string>
     <string name="player_settings_stt_engine_default_with_name">Follow language setting (%1$s)</string>
     <string name="player_file_settings_section_export">Export</string>
@@ -257,4 +257,8 @@
     <string name="player_missing_language_hint">If you cannot find the language you want, add it from Global Settings &gt; Languages.</string>
     <string name="player_resegment_reset_button">Reset chunk segmentation</string>
     <string name="player_resegment_reset_caption">Transcripts will also be cleared</string>
+    <string name="player_target_lang_change_confirm_title">Change target language?</string>
+    <string name="player_target_lang_change_confirm_message">Changing the target language will clear all current transcript and language detection data and restart language detection.</string>
+    <string name="player_target_lang_change_confirm_ok">Change and clear</string>
+    <string name="player_target_lang_change_confirm_cancel">Cancel</string>
 </resources>

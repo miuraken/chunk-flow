@@ -260,11 +260,15 @@ sealed interface LibraryImportUiState {
      * @property addedCount 取り込んだ教材数。
      * @property duplicates 重複していた音声の数。
      * @property transcriptsAttached 紐付けた文字起こしの数。
+     * @property importedFiles 取り込んだ教材の ID とファイル名の一覧。
+     * @property targetFolderName 取り込み先のフォルダ名。
      */
     data class Done(
         val addedCount: Int,
         val duplicates: Int,
         val transcriptsAttached: Int = 0,
+        val importedFiles: List<LibraryImportedFileUiModel> = emptyList(),
+        val targetFolderName: String? = null,
     ) : LibraryImportUiState
 
     /**
@@ -274,6 +278,17 @@ sealed interface LibraryImportUiState {
      */
     data class Error(val error: ImportError) : LibraryImportUiState
 }
+
+/**
+ * 取り込み完了バナーに表示する教材 1 件分の情報。
+ *
+ * @property mediaId 教材の ID。
+ * @property fileName 表示するファイル名（タイトル）。
+ */
+data class LibraryImportedFileUiModel(
+    val mediaId: MediaId,
+    val fileName: String,
+)
 
 /**
  * 文字起こし JSON / 字幕単体取り込みの UI 状態（F7.1、F1.4、§7.1）。
@@ -424,13 +439,16 @@ enum class LibraryViewTab {
  * ファイルビュータブのソート種別。
  */
 enum class LibraryFileSortOption {
-    /** 名称順（ファイル名自然昇順 / 手動並び替え順）。 */
+    /** 名称順（ファイル名自然順 / 手動並び替え順）。 */
     NAME,
 
-    /** アクセス日時順（最終アクセスが新しい順）。 */
+    /** アクセス日時順（最終アクセス日時順）。 */
     ACCESS_TIME,
 
-    /** 完了度順（完了済み・再生進捗率の高い順）。 */
+    /** 追加日時順（ライブラリへの取り込み日時順）。 */
+    ADDED_TIME,
+
+    /** 完了度順（完了済み・再生進捗率順）。 */
     COMPLETION,
 }
 
@@ -548,7 +566,8 @@ data class LibraryBookmarkedFileUiModel(
  * @property selectedTab 現在選択されているビュータブ（フォルダ / ファイル / 再生リスト / ブックマーク）。
  * @property fileSearchQuery ファイルビュータブのファイル名検索キーワード。
  * @property fileTargetLanguageFilter ファイルビュータブの対象言語フィルタ（`null` なら全言語）。
- * @property fileSortOption ファイルビュータブのソート種別（名称順 / アクセス日時 / 完了度）。
+ * @property fileSortOption ファイルビュータブのソート種別（名称順 / アクセス日時 / 追加日時 / 完了度）。
+ * @property fileSortAscending ファイルビュータブのソートが昇順かどうか（`true`: 昇順、`false`: 降順）。
  * @property selectedPlaylistId 再生リストビュータブで展開中のプレイリスト ID（一覧表示時は `null`）。
  * @property selectedPlaylistCategory 再生リストビュータブで展開中のスマートリスト種別（互換用・一覧表示時は `null`）。
  * @property playlists DB に保存されているプレイリスト一覧（ユーザー作成プレイリスト＋並び順・アイテム順が上書きされた組み込みプレイリスト）。
@@ -587,6 +606,7 @@ data class LibraryUiState(
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
+    val fileSortAscending: Boolean = true,
     val selectedPlaylistId: PlaylistId? = null,
     val selectedPlaylistCategory: LibraryPlaylistCategory? = selectedPlaylistId?.let(LibraryPlaylistCategory::fromPlaylistId),
     val playlists: List<LibraryPlaylist> = emptyList(),
@@ -637,7 +657,7 @@ data class LibraryUiState(
             .sortedBy { it.value }
 
     /**
-     * ファイルビュータブでファイル名キーワードと対象言語でフィルタし、[fileSortOption] に応じて並べた全ファイル一覧。
+     * ファイルビュータブでファイル名キーワードと対象言語でフィルタし、[fileSortOption] と [fileSortAscending] に応じて並べた全ファイル一覧。
      */
     val filteredAllFiles: List<LibraryItemUiModel>
         get() {
@@ -656,18 +676,40 @@ data class LibraryUiState(
                     val orderA = a.fileSortOrder
                     val orderB = b.fileSortOrder
                     if (orderA != null && orderB != null && orderA != orderB) {
-                        return@sortedWith orderA.compareTo(orderB)
+                        val cmp = orderA.compareTo(orderB)
+                        return@sortedWith if (fileSortAscending) cmp else -cmp
                     }
-                    if (orderA != null && orderB == null) return@sortedWith -1
-                    if (orderA == null && orderB != null) return@sortedWith 1
+                    if (orderA != null && orderB == null) return@sortedWith if (fileSortAscending) -1 else 1
+                    if (orderA == null && orderB != null) return@sortedWith if (fileSortAscending) 1 else -1
                     val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                    if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                    val baseCmp = if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                    if (fileSortAscending) baseCmp else -baseCmp
                 }
 
                 LibraryFileSortOption.ACCESS_TIME -> filtered.sortedWith { a, b ->
                     val timeA = a.lastAccessedAtEpochMs ?: 0L
                     val timeB = b.lastAccessedAtEpochMs ?: 0L
-                    val timeCmp = timeB.compareTo(timeA)
+                    val timeCmp = if (fileSortAscending) {
+                        timeA.compareTo(timeB)
+                    } else {
+                        timeB.compareTo(timeA)
+                    }
+                    if (timeCmp != 0) {
+                        timeCmp
+                    } else {
+                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                    }
+                }
+
+                LibraryFileSortOption.ADDED_TIME -> filtered.sortedWith { a, b ->
+                    val timeA = a.item.importedAtEpochMs
+                    val timeB = b.item.importedAtEpochMs
+                    val timeCmp = if (fileSortAscending) {
+                        timeA.compareTo(timeB)
+                    } else {
+                        timeB.compareTo(timeA)
+                    }
                     if (timeCmp != 0) {
                         timeCmp
                     } else {
@@ -679,11 +721,19 @@ data class LibraryUiState(
                 LibraryFileSortOption.COMPLETION -> filtered.sortedWith { a, b ->
                     val compA = if (a.isListened) 1.0f else a.maxProgressFraction
                     val compB = if (b.isListened) 1.0f else b.maxProgressFraction
-                    val compCmp = compB.compareTo(compA)
+                    val compCmp = if (fileSortAscending) {
+                        compA.compareTo(compB)
+                    } else {
+                        compB.compareTo(compA)
+                    }
                     if (compCmp != 0) {
                         compCmp
                     } else {
-                        val listenedCmp = b.isListened.compareTo(a.isListened)
+                        val listenedCmp = if (fileSortAscending) {
+                            a.isListened.compareTo(b.isListened)
+                        } else {
+                            b.isListened.compareTo(a.isListened)
+                        }
                         if (listenedCmp != 0) {
                             listenedCmp
                         } else {
@@ -1304,7 +1354,10 @@ sealed interface LibraryEvent {
     data class SelectFileTargetLanguageFilter(val language: LanguageTag?) : LibraryEvent
 
     /** ファイルビューのソート順を切り替える。 */
-    data class SelectFileSortOption(val sortOption: LibraryFileSortOption) : LibraryEvent
+    data class SelectFileSortOption(
+        val sortOption: LibraryFileSortOption,
+        val ascending: Boolean? = null,
+    ) : LibraryEvent
 
     /** 再生リストビューで開くスマートプレイリストカテゴリを選択する（`null` で一覧へ戻る）。 */
     data class SelectPlaylistCategory(val category: LibraryPlaylistCategory?) : LibraryEvent
@@ -1442,6 +1495,7 @@ private data class NavigationAndSelectionSnapshot(
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
+    val fileSortAscending: Boolean = true,
     val selectedPlaylistId: PlaylistId? = null,
     val expandedBookmarkMediaIds: Set<MediaId> = emptySet(),
     val customSpeedOverride: Float? = null,
@@ -1512,6 +1566,7 @@ class LibraryViewModel @Inject constructor(
     private val fileSearchQuery = MutableStateFlow("")
     private val fileTargetLanguageFilter = MutableStateFlow<LanguageTag?>(null)
     private val fileSortOption = MutableStateFlow(LibraryFileSortOption.NAME)
+    private val fileSortAscending = MutableStateFlow(true)
     private val selectedPlaylistId = MutableStateFlow<PlaylistId?>(null)
     private val expandedBookmarkMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private val customSpeedOverride = MutableStateFlow<Float?>(null)
@@ -1691,14 +1746,15 @@ class LibraryViewModel @Inject constructor(
             selectedTab,
             fileSearchQuery,
             fileTargetLanguageFilter,
-            fileSortOption,
+            combine(fileSortOption, fileSortAscending) { opt, asc -> opt to asc },
             selectedPlaylistId,
-        ) { tab, query, langFilter, sortOption, playlistId ->
+        ) { tab, query, langFilter, (sortOption, sortAscending), playlistId ->
             NavigationTabAndFilterSnapshot(
                 selectedTab = tab,
                 fileSearchQuery = query,
                 fileTargetLanguageFilter = langFilter,
                 fileSortOption = sortOption,
+                fileSortAscending = sortAscending,
                 selectedPlaylistId = playlistId,
             )
         },
@@ -1710,6 +1766,7 @@ class LibraryViewModel @Inject constructor(
             fileSearchQuery = tabAndFilter.fileSearchQuery,
             fileTargetLanguageFilter = tabAndFilter.fileTargetLanguageFilter,
             fileSortOption = tabAndFilter.fileSortOption,
+            fileSortAscending = tabAndFilter.fileSortAscending,
             selectedPlaylistId = tabAndFilter.selectedPlaylistId,
             expandedBookmarkMediaIds = expandedBookmarks,
             customSpeedOverride = speedOverride,
@@ -1932,6 +1989,7 @@ class LibraryViewModel @Inject constructor(
 
             is LibraryEvent.SelectFileSortOption -> {
                 fileSortOption.value = event.sortOption
+                fileSortAscending.value = event.ascending ?: (event.sortOption == LibraryFileSortOption.NAME)
             }
 
             is LibraryEvent.SelectPlaylistCategory -> {
@@ -2043,6 +2101,7 @@ class LibraryViewModel @Inject constructor(
 
             is LibraryEvent.MoveFileTabItem -> {
                 fileSortOption.value = LibraryFileSortOption.NAME
+                fileSortAscending.value = true
                 val currentFiltered = uiState.value.filteredAllFiles.map { it.item.id }.toMutableList()
                 if (event.fromIndex in currentFiltered.indices &&
                     event.toIndex in currentFiltered.indices &&
@@ -2125,20 +2184,30 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.ConfirmEditMetadata -> {
+                val previousItem = pendingEditItem.value
+                    ?: uiState.value.items.firstOrNull { it.item.id == event.id }?.item
                 pendingEditItem.value = null
                 val normalizedCourse = event.course?.trim()?.ifBlank { null }
                 val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
                 val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
+                val newTarget = LanguageTag(normalizedTarget)
+                val targetLangChanged = previousItem != null &&
+                    !previousItem.languagePair.target.value.equals(newTarget.value, ignoreCase = true)
                 viewModelScope.launch {
                     libraryRepository.updateItemMetadata(
                         id = event.id,
                         course = normalizedCourse,
                         languages = LanguagePair(
-                            target = LanguageTag(normalizedTarget),
+                            target = newTarget,
                             base = normalizedBase?.let { LanguageTag(it) },
                         ),
                     )
-                    itemSttOverrideRepository.set(event.id, event.sttOverride)
+                    itemSttOverrideRepository.set(event.id, ItemSttOverride.NONE)
+                    if (targetLangChanged) {
+                        libraryRepository.resetTranscriptsAndDeleteFiles(event.id)
+                        analysisRepository.clearTranscriptsForMedia(event.id)
+                        analysisRepository.startLanguageDetectionOnly(event.id)
+                    }
                 }
             }
 
@@ -2179,6 +2248,7 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.ConfirmEditDirectoryMetadata -> {
+                val previousEditDir = pendingEditDirectory.value
                 val targetItems = run {
                     val dirPath = event.currentCourse?.trim('/')?.takeIf { it.isNotBlank() }
                     if (dirPath != null) {
@@ -2202,10 +2272,13 @@ class LibraryViewModel @Inject constructor(
                 }
                 val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
                 val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
+                val newTarget = LanguageTag(normalizedTarget)
                 val normalizedLanguages = LanguagePair(
-                    target = LanguageTag(normalizedTarget),
+                    target = newTarget,
                     base = normalizedBase?.let { LanguageTag(it) },
                 )
+                val folderLevelTargetChanged = previousEditDir != null &&
+                    !previousEditDir.initialLanguages.target.value.equals(newTarget.value, ignoreCase = true)
                 if (selectedDirectoryName.value == currentPath) {
                     selectedDirectoryName.value = resolvedNewCourse
                 }
@@ -2229,7 +2302,14 @@ class LibraryViewModel @Inject constructor(
                         languages = normalizedLanguages,
                     )
                     for (model in targetItems) {
-                        itemSttOverrideRepository.set(model.item.id, event.sttOverride)
+                        itemSttOverrideRepository.set(model.item.id, ItemSttOverride.NONE)
+                        val itemTargetChanged = folderLevelTargetChanged ||
+                            !model.item.languagePair.target.value.equals(newTarget.value, ignoreCase = true)
+                        if (itemTargetChanged) {
+                            libraryRepository.resetTranscriptsAndDeleteFiles(model.item.id)
+                            analysisRepository.clearTranscriptsForMedia(model.item.id)
+                            analysisRepository.startLanguageDetectionOnly(model.item.id)
+                        }
                     }
                 }
             }
@@ -2754,6 +2834,7 @@ class LibraryViewModel @Inject constructor(
         if (uris.isEmpty()) return
         val effectiveCourse = course?.trim()?.takeIf { it.isNotEmpty() }
             ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+        val normalizedFolder = effectiveCourse.trim('/').ifBlank { LibraryCourseFolder.DEFAULT_IMPORTED_COURSE }
         transcriptImportState.value = TranscriptImportUiState.Idle
         importJob?.cancel()
         importJob = viewModelScope.launch {
@@ -2771,16 +2852,38 @@ class LibraryViewModel @Inject constructor(
                         itemSttOverrideRepository.set(mediaId, sttOverride)
                     }
                 }
-                importState.value = when (progress) {
-                    is ImportProgress.Copying -> LibraryImportUiState.Copying(progress.fraction)
+                when (progress) {
+                    is ImportProgress.Copying -> {
+                        importState.value = LibraryImportUiState.Copying(progress.fraction)
+                    }
 
-                    is ImportProgress.Done -> LibraryImportUiState.Done(
-                        addedCount = progress.mediaIds.size,
-                        duplicates = progress.duplicates,
-                        transcriptsAttached = progress.transcriptsAttached,
-                    )
+                    is ImportProgress.Done -> {
+                        val allItemsById = libraryRepository.observeItems().firstOrNull().orEmpty().associateBy { it.id }
+                        val importedFiles = progress.mediaIds.map { id ->
+                            val item = allItemsById[id]
+                            LibraryImportedFileUiModel(
+                                mediaId = id,
+                                fileName = item?.title?.takeIf { it.isNotBlank() } ?: id.value,
+                            )
+                        }
+                        val resolvedFolder = progress.mediaIds.firstNotNullOfOrNull { id ->
+                            allItemsById[id]?.course?.trim('/')?.takeIf { it.isNotBlank() }
+                        } ?: normalizedFolder
+                        clearSelectionInternal()
+                        selectedTab.value = LibraryViewTab.FOLDERS
+                        currentDirectoryPath.value = resolvedFolder
+                        importState.value = LibraryImportUiState.Done(
+                            addedCount = progress.mediaIds.size,
+                            duplicates = progress.duplicates,
+                            transcriptsAttached = progress.transcriptsAttached,
+                            importedFiles = importedFiles,
+                            targetFolderName = resolvedFolder,
+                        )
+                    }
 
-                    is ImportProgress.Failed -> LibraryImportUiState.Error(progress.error)
+                    is ImportProgress.Failed -> {
+                        importState.value = LibraryImportUiState.Error(progress.error)
+                    }
                 }
             }
         }
@@ -3064,6 +3167,7 @@ class LibraryViewModel @Inject constructor(
             fileSearchQuery = navAndSelection.fileSearchQuery,
             fileTargetLanguageFilter = navAndSelection.fileTargetLanguageFilter,
             fileSortOption = navAndSelection.fileSortOption,
+            fileSortAscending = navAndSelection.fileSortAscending,
             selectedPlaylistId = navAndSelection.selectedPlaylistId,
             selectedPlaylistCategory = navAndSelection.selectedPlaylistId?.let(LibraryPlaylistCategory::fromPlaylistId),
             playlists = playlists,
@@ -3087,5 +3191,6 @@ private data class NavigationTabAndFilterSnapshot(
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
+    val fileSortAscending: Boolean = true,
     val selectedPlaylistId: PlaylistId? = null,
 )

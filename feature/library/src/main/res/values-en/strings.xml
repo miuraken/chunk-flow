@@ -164,7 +164,11 @@
     <string name="library_files_sort_label">Sort</string>
     <string name="library_files_sort_name">Name</string>
     <string name="library_files_sort_access_time">Access time</string>
+    <string name="library_files_sort_added_time">Added time</string>
     <string name="library_files_sort_completion">Completion</string>
+    <string name="library_files_sort_asc">Asc</string>
+    <string name="library_files_sort_desc">Desc</string>
+    <string name="library_files_sort_option_format">%1$s (%2$s)</string>
     <string name="library_folder_kind_real">Real folder</string>
     <string name="library_folder_kind_virtual">Virtual folder</string>
     <string name="library_import_config_folder_label">Folder</string>
@@ -173,4 +177,9 @@
     <string name="library_import_config_new_virtual_folder_name_label">New virtual folder name</string>
     <string name="library_edit_real_folder_dialog_title">Folder settings: %1$s</string>
     <string name="library_bookmarks_open_in_player_cd">Go to this chunk in file</string>
+    <string name="library_import_done_into_folder_suffix"> imported under %1$s</string>
+    <string name="library_target_lang_change_confirm_title">Change target language?</string>
+    <string name="library_target_lang_change_confirm_message">Changing the target language will clear all current transcript and language detection data and restart language detection.</string>
+    <string name="library_target_lang_change_confirm_ok">Change and clear</string>
+    <string name="library_target_lang_change_confirm_cancel">Cancel</string>
 </resources>

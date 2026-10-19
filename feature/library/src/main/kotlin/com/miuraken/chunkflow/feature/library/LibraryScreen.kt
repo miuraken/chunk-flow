@@ -112,6 +112,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.PreviewParameter
@@ -552,12 +553,6 @@ fun LibraryScreen(
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                     } else {
-                        IconButton(onClick = { onEvent(LibraryEvent.RescanLocalDirectories) }) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.Sync,
-                                contentDescription = stringResource(R.string.library_refresh_cd),
-                            )
-                        }
                         IconButton(onClick = { onEvent(LibraryEvent.RequestImportDirectory) }) {
                             Icon(
                                 imageVector = ChunkFlowIcons.CreateNewFolder,
@@ -622,6 +617,7 @@ fun LibraryScreen(
                 transcriptImportState = state.transcriptImportState,
                 syncState = state.syncState,
                 onSelectDriveSyncFolder = { onEvent(LibraryEvent.RequestSelectDriveSyncFolder) },
+                onOpenItem = { mediaId -> onEvent(LibraryEvent.OpenItem(mediaId)) },
                 onDismiss = { onEvent(LibraryEvent.DismissImportStatus) },
             )
 
@@ -1149,6 +1145,7 @@ private fun LibraryCurrentFolderHeader(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LibraryFilesTabContent(
     state: LibraryUiState,
@@ -1157,6 +1154,23 @@ private fun LibraryFilesTabContent(
 ) {
     val filteredFiles = state.filteredAllFiles
     val targetLanguages = state.availableTargetLanguages
+    var sortMenuExpanded by remember { mutableStateOf(false) }
+
+    @Composable
+    fun sortOptionLabel(option: LibraryFileSortOption, ascending: Boolean): String {
+        val optionName = stringResource(
+            when (option) {
+                LibraryFileSortOption.NAME -> R.string.library_files_sort_name
+                LibraryFileSortOption.ACCESS_TIME -> R.string.library_files_sort_access_time
+                LibraryFileSortOption.ADDED_TIME -> R.string.library_files_sort_added_time
+                LibraryFileSortOption.COMPLETION -> R.string.library_files_sort_completion
+            },
+        )
+        val orderName = stringResource(
+            if (ascending) R.string.library_files_sort_asc else R.string.library_files_sort_desc,
+        )
+        return stringResource(R.string.library_files_sort_option_format, optionName, orderName)
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -1194,9 +1208,7 @@ private fun LibraryFilesTabContent(
             )
 
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1205,17 +1217,49 @@ private fun LibraryFilesTabContent(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                LibraryFileSortOption.entries.forEach { option ->
-                    val labelRes = when (option) {
-                        LibraryFileSortOption.NAME -> R.string.library_files_sort_name
-                        LibraryFileSortOption.ACCESS_TIME -> R.string.library_files_sort_access_time
-                        LibraryFileSortOption.COMPLETION -> R.string.library_files_sort_completion
-                    }
-                    FilterChip(
-                        selected = state.fileSortOption == option,
-                        onClick = { onEvent(LibraryEvent.SelectFileSortOption(option)) },
-                        label = { Text(text = stringResource(labelRes)) },
+                ExposedDropdownMenuBox(
+                    expanded = sortMenuExpanded,
+                    onExpandedChange = { sortMenuExpanded = it },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    OutlinedTextField(
+                        value = sortOptionLabel(state.fileSortOption, state.fileSortAscending),
+                        onValueChange = {},
+                        readOnly = true,
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        trailingIcon = {
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = sortMenuExpanded)
+                        },
+                        modifier = Modifier
+                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                            .fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
                     )
+                    ExposedDropdownMenu(
+                        expanded = sortMenuExpanded,
+                        onDismissRequest = { sortMenuExpanded = false },
+                    ) {
+                        LibraryFileSortOption.entries.forEach { option ->
+                            listOf(true, false).forEach { ascending ->
+                                val itemLabel = sortOptionLabel(option, ascending)
+                                val isSelected = state.fileSortOption == option &&
+                                    state.fileSortAscending == ascending
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = itemLabel,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        )
+                                    },
+                                    onClick = {
+                                        sortMenuExpanded = false
+                                        onEvent(LibraryEvent.SelectFileSortOption(option, ascending))
+                                    },
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1979,6 +2023,7 @@ private fun FolderKindBadge(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ImportStatusBanner(
     importState: LibraryImportUiState,
@@ -1987,6 +2032,7 @@ private fun ImportStatusBanner(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     onSelectDriveSyncFolder: () -> Unit = {},
+    onOpenItem: (MediaId) -> Unit = {},
 ) {
     when (importState) {
         LibraryImportUiState.Idle -> Unit
@@ -2017,26 +2063,87 @@ private fun ImportStatusBanner(
         }
 
         is LibraryImportUiState.Done -> {
-            val doneMessage = if (importState.transcriptsAttached > 0) {
-                stringResource(
-                    R.string.library_import_done_with_transcripts,
-                    importState.addedCount,
-                    importState.duplicates,
-                    importState.transcriptsAttached,
-                )
+            val folderName = importState.targetFolderName?.takeIf { it.isNotBlank() }
+            if (importState.importedFiles.isNotEmpty() && folderName != null) {
+                Card(
+                    modifier = modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlowRow(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            importState.importedFiles.forEachIndexed { index, importedFile ->
+                                Text(
+                                    text = importedFile.fileName,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        textDecoration = TextDecoration.Underline,
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable { onOpenItem(importedFile.mediaId) }
+                                        .padding(vertical = 2.dp),
+                                )
+                                if (index < importState.importedFiles.lastIndex) {
+                                    Text(
+                                        text = "、",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.padding(vertical = 2.dp),
+                                    )
+                                }
+                            }
+                            Text(
+                                text = stringResource(
+                                    R.string.library_import_done_into_folder_suffix,
+                                    folderName,
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(vertical = 2.dp),
+                            )
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Close,
+                                contentDescription = stringResource(R.string.library_dismiss_banner),
+                            )
+                        }
+                    }
+                }
             } else {
-                stringResource(
-                    R.string.library_import_done,
-                    importState.addedCount,
-                    importState.duplicates,
+                val doneMessage = if (importState.transcriptsAttached > 0) {
+                    stringResource(
+                        R.string.library_import_done_with_transcripts,
+                        importState.addedCount,
+                        importState.duplicates,
+                        importState.transcriptsAttached,
+                    )
+                } else {
+                    stringResource(
+                        R.string.library_import_done,
+                        importState.addedCount,
+                        importState.duplicates,
+                    )
+                }
+                StatusBannerCard(
+                    message = doneMessage,
+                    isError = false,
+                    onDismiss = onDismiss,
+                    modifier = modifier,
                 )
             }
-            StatusBannerCard(
-                message = doneMessage,
-                isError = false,
-                onDismiss = onDismiss,
-                modifier = modifier,
-            )
         }
 
         is LibraryImportUiState.Error -> {

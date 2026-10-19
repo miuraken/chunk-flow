@@ -104,12 +104,22 @@ class LibraryViewModelTest {
         repo.importResult = {
             flowOf(ImportProgress.Done(mediaIds = listOf(item.id), duplicates = 1, transcriptsAttached = 0))
         }
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.FILES))
         viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
         viewModel.onEvent(LibraryEvent.ConfirmImportConfig(course = "初級韓国語", languages = selectedPair))
         assertEquals(
-            LibraryImportUiState.Done(addedCount = 1, duplicates = 1),
+            LibraryImportUiState.Done(
+                addedCount = 1,
+                duplicates = 1,
+                importedFiles = listOf(
+                    LibraryImportedFileUiModel(mediaId = item.id, fileName = item.id.value),
+                ),
+                targetFolderName = "初級韓国語",
+            ),
             viewModel.uiState.value.importState,
         )
+        assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
+        assertEquals("初級韓国語", viewModel.uiState.value.currentDirectoryPath)
 
         repo.importResult = { flowOf(ImportProgress.Failed(ImportError.UNSUPPORTED_FORMAT)) }
         viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
@@ -1584,5 +1594,132 @@ class LibraryViewModelTest {
         viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("仮想フォルダB"))
         assertEquals("仮想フォルダB", viewModel.uiState.value.pendingEditDirectory?.currentCourse)
         assertEquals(false, viewModel.uiState.value.pendingEditDirectory?.isRealFolder)
+    }
+
+    @Test
+    fun `ファイルタブのソート_追加日時と昇順降順すべてで正しく並び替えられる`() = runTest {
+        val baseItem = SampleMaterials.jaKo.item
+        val itemA = baseItem.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("sort-a"),
+            title = "Lesson 1",
+            importedAtEpochMs = 1_000L,
+        )
+        val itemB = baseItem.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("sort-b"),
+            title = "Lesson 2",
+            importedAtEpochMs = 3_000L,
+        )
+        val itemC = baseItem.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("sort-c"),
+            title = "Lesson 10",
+            importedAtEpochMs = 2_000L,
+        )
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(itemA, itemB, itemC),
+            initialItemStates = mapOf(
+                itemA.id to ItemState(mediaId = itemA.id, positionMs = 5_000L, updatedAtEpochMs = 200L),
+                itemB.id to ItemState(mediaId = itemB.id, positionMs = 25_000L, updatedAtEpochMs = 100L),
+                itemC.id to ItemState(mediaId = itemC.id, positionMs = 15_000L, updatedAtEpochMs = 300L),
+            ),
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 名称順（昇順・降順）
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.NAME, ascending = true))
+        assertEquals(
+            listOf(itemA.id, itemB.id, itemC.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.NAME, ascending = false))
+        assertEquals(
+            listOf(itemC.id, itemB.id, itemA.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+
+        // 追加日時（昇順・降順）
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ADDED_TIME, ascending = true))
+        assertEquals(
+            listOf(itemA.id, itemC.id, itemB.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ADDED_TIME, ascending = false))
+        assertEquals(
+            listOf(itemB.id, itemC.id, itemA.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+
+        // アクセス日時（昇順・降順）
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ACCESS_TIME, ascending = true))
+        assertEquals(
+            listOf(itemB.id, itemA.id, itemC.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ACCESS_TIME, ascending = false))
+        assertEquals(
+            listOf(itemC.id, itemA.id, itemB.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+
+        // 完了度（昇順・降順）
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.COMPLETION, ascending = true))
+        assertEquals(
+            listOf(itemA.id, itemC.id, itemB.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.COMPLETION, ascending = false))
+        assertEquals(
+            listOf(itemB.id, itemC.id, itemA.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+    }
+
+    @Test
+    fun `ファイル設定とフォルダ設定での学習言語変更_対象言語変更時に文字起こしと言語判定データがクリアされ再判定が走る`() = runTest {
+        val item1 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("lang-1"),
+            course = "講座A",
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        val item2 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("lang-2"),
+            course = "講座A",
+            languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2))
+        val analysisRepo = FakeAnalysisRepository()
+        val viewModel = LibraryViewModel(
+            libraryRepository = repo,
+            playbackController = FakePlaybackController(),
+            analysisRepository = analysisRepo,
+            userSettingsRepository = com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // ファイル設定で対象言語を変更すると文字起こしと言語判定がクリアされる
+        viewModel.onEvent(LibraryEvent.RequestEditMetadata(item1))
+        viewModel.onEvent(
+            LibraryEvent.ConfirmEditMetadata(
+                id = item1.id,
+                course = "講座A",
+                languages = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+            ),
+        )
+        assertEquals(listOf(item1.id), repo.resetTranscriptsRequests)
+        assertEquals(listOf(item1.id), analysisRepo.clearTranscriptsRequests)
+        assertEquals(listOf(item1.id), analysisRepo.languageDetectionOnlyRequests)
+
+        // フォルダ設定で対象言語を変更すると配下のファイルすべてで文字起こしと言語判定がクリアされる
+        viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("講座A"))
+        viewModel.onEvent(
+            LibraryEvent.ConfirmEditDirectoryMetadata(
+                currentCourse = "講座A",
+                newCourse = "講座A",
+                languages = LanguagePair(target = LanguageTag("zh-cn"), base = LanguageTag("ja")),
+            ),
+        )
+        assertEquals(listOf(item1.id, item1.id, item2.id), repo.resetTranscriptsRequests)
+        assertEquals(listOf(item1.id, item1.id, item2.id), analysisRepo.clearTranscriptsRequests)
+        assertEquals(listOf(item1.id, item1.id, item2.id), analysisRepo.languageDetectionOnlyRequests)
     }
 }

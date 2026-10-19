@@ -164,7 +164,11 @@
     <string name="library_files_sort_label">並び順</string>
     <string name="library_files_sort_name">名称順</string>
     <string name="library_files_sort_access_time">アクセス日時</string>
+    <string name="library_files_sort_added_time">追加日時</string>
     <string name="library_files_sort_completion">完了度</string>
+    <string name="library_files_sort_asc">昇順</string>
+    <string name="library_files_sort_desc">降順</string>
+    <string name="library_files_sort_option_format">%1$s（%2$s）</string>
     <string name="library_folder_kind_real">実フォルダ</string>
     <string name="library_folder_kind_virtual">仮想フォルダ</string>
     <string name="library_import_config_folder_label">格納先フォルダ</string>
@@ -173,4 +177,9 @@
     <string name="library_import_config_new_virtual_folder_name_label">新しい仮想フォルダの名前</string>
     <string name="library_edit_real_folder_dialog_title">フォルダ設定：%1$s</string>
     <string name="library_bookmarks_open_in_player_cd">このファイルの該当チャンクへ移動</string>
+    <string name="library_import_done_into_folder_suffix"> を %1$sの下に取り込みました</string>
+    <string name="library_target_lang_change_confirm_title">学習対象言語を変更しますか？</string>
+    <string name="library_target_lang_change_confirm_message">学習対象言語を切り替えると、現在の文字起こしデータと言語判定データがすべてクリアされ、言語判定がやり直されます。</string>
+    <string name="library_target_lang_change_confirm_ok">変更してクリア</string>
+    <string name="library_target_lang_change_confirm_cancel">キャンセル</string>
 </resources>

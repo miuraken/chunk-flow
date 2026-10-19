@@ -242,7 +242,10 @@ class FakeAnalysisRepository : AnalysisRepository {
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
         update(id) { entry ->
             val nextStatus = if (enabled) {
-                entry.lookaheadStatus.copy(enabled = true)
+                entry.lookaheadStatus.copy(
+                    enabled = true,
+                    backgroundEnabled = true,
+                )
             } else {
                 entry.lookaheadStatus.copy(
                     enabled = false,
@@ -384,7 +387,11 @@ class FakeAnalysisRepository : AnalysisRepository {
         retranscribeChunkRequests += id to chunkId
     }
 
+    /** [clearTranscriptsForMedia] の呼び出し履歴（呼ばれた順）。 */
+    val clearTranscriptsRequests: MutableList<MediaId> = mutableListOf()
+
     override suspend fun clearTranscriptsForMedia(id: MediaId) {
+        clearTranscriptsRequests += id
         update(id) { entry ->
             val autoChunks = entry.chunksByOrigin[ChunkOrigin.AUTO]
                 ?: entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED && it.origin != ChunkOrigin.MANUAL }

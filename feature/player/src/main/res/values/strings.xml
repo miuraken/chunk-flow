@@ -137,7 +137,7 @@
     <string name="player_chunk_delete">チャンクを解除</string>
     <string name="player_export_section_title">文字起こしファイル</string>
     <string name="player_transcript_file_import">文字起こし・字幕ファイルをインポート</string>
-    <string name="player_transcript_reset_button">文字起こしをリセットしてファイルを削除</string>
+    <string name="player_transcript_reset_button">文字起こしをリセット</string>
     <string name="player_transcript_reset_confirm_title">文字起こしをリセットしますか？</string>
     <string name="player_transcript_reset_confirm_message">現在の文字起こしデータをすべて消去して保存済みの文字起こしファイルも削除し、チャンク分割と言語判定をやり直します。この操作は元に戻せません。</string>
     <string name="player_transcript_reset_confirm_ok">リセットして削除</string>
@@ -240,7 +240,7 @@
     <string name="player_background_speech_recognizer_warning_close">閉じる</string>
     <string name="player_file_settings_title">ファイル個別設定</string>
     <string name="player_file_settings_tab_language">言語</string>
-    <string name="player_file_settings_tab_transcript_file">文字起こしファイル</string>
+    <string name="player_file_settings_tab_transcript_file">文字起こし</string>
     <string name="player_file_settings_tab_segmentation">チャンク分割</string>
     <string name="player_settings_stt_engine_default_with_name">言語設定に従う（%1$s）</string>
     <string name="player_file_settings_section_export">エクスポート</string>
@@ -257,4 +257,8 @@
     <string name="player_missing_language_hint">設定したい言語が見つからないときは、全体設定 &gt; 言語 から追加してください。</string>
     <string name="player_resegment_reset_button">チャンク分割をリセット</string>
     <string name="player_resegment_reset_caption">文字起こしもクリアされます</string>
+    <string name="player_target_lang_change_confirm_title">学習対象言語を変更しますか？</string>
+    <string name="player_target_lang_change_confirm_message">学習対象言語を切り替えると、現在の文字起こしデータと言語判定データがすべてクリアされ、言語判定がやり直されます。</string>
+    <string name="player_target_lang_change_confirm_ok">変更してクリア</string>
+    <string name="player_target_lang_change_confirm_cancel">キャンセル</string>
 </resources>

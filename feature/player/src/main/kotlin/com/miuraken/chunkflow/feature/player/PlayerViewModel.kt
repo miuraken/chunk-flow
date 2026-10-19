@@ -1924,7 +1924,25 @@ class PlayerViewModel @Inject constructor(
                     val item = libraryRepository.observeItem(id).firstOrNull() ?: return@launch
                     val newPair = LanguagePair(target = LanguageTag(target), base = base?.let(::LanguageTag))
                     if (item.languagePair == newPair) return@launch
+                    val targetChanged = item.languagePair.target.value.trim().lowercase(Locale.ROOT) != target
                     libraryRepository.updateItemMetadata(id = id, course = item.course, languages = newPair)
+                    if (targetChanged) {
+                        abortActiveViewModelTranscriptionJobs()
+                        stopTranslationLoop()
+                        failedTranslationChunkIds.clear()
+                        libraryRepository.resetTranscriptsAndDeleteFiles(id)
+                        analysisRepository.clearTranscriptsForMedia(id)
+                        localUiState.update { state ->
+                            state.copy(
+                                languageOverrides = emptyMap(),
+                                clearingChunkIds = emptySet(),
+                                manuallyClearedChunkIds = emptySet(),
+                                isTranscriptionProgressDismissed = false,
+                                localTranscriptExported = false,
+                                transcriptImportBanner = null,
+                            )
+                        }
+                    }
                     analysisRepository.startLanguageDetectionOnly(id)
                 }
             }
