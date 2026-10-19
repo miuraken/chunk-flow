@@ -223,11 +223,15 @@ class FakeLibraryRepository(
         val trimmed = coursePath.trim().trim('/')
         if (trimmed.isEmpty()) return false
         courseFolders.update { list ->
+            val existing = list.firstOrNull { it.coursePath == trimmed }
             list.filterNot { it.coursePath == trimmed } +
                 LibraryCourseFolder(
                     coursePath = trimmed,
-                    kind = LibraryFolderKind.VIRTUAL_DIRECTORY,
+                    kind = existing?.kind ?: LibraryFolderKind.VIRTUAL_DIRECTORY,
                     languagePair = languages,
+                    treeUri = existing?.treeUri,
+                    driveFolderId = existing?.driveFolderId,
+                    lastScannedAtEpochMs = existing?.lastScannedAtEpochMs ?: 0L,
                 )
         }
         return true
@@ -237,7 +241,7 @@ class FakeLibraryRepository(
         mediaIds: Set<MediaId>,
         targetCourse: String,
     ) {
-        val normalized = targetCourse.trim().trim('/').ifEmpty { "imported" }
+        val normalized = targetCourse.trim().trim('/').ifEmpty { LibraryCourseFolder.DEFAULT_IMPORTED_COURSE }
         val folderLang = courseFolders.value.firstOrNull { it.coursePath == normalized }?.languagePair
         items.update { list ->
             list.map { item ->

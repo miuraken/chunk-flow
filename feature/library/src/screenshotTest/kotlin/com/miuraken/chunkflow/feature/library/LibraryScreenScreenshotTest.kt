@@ -39,6 +39,13 @@ fun LibraryScreenPopulatedScreenshot() {
         LibraryScreen(
             state = LibraryUiState(
                 items = items,
+                courseFolders = listOf(
+                    com.miuraken.chunkflow.core.model.LibraryCourseFolder(
+                        coursePath = first.course ?: "korean-course",
+                        kind = com.miuraken.chunkflow.core.model.LibraryFolderKind.LOCAL_DIRECTORY,
+                        languagePair = first.languagePair,
+                    ),
+                ),
                 importState = LibraryImportUiState.Error(ImportError.NO_SPACE),
                 miniPlayer = MiniPlayerUiState(
                     mediaId = first.id,
@@ -137,6 +144,13 @@ fun LibraryScreenFolderFilesScreenshot() {
             state = LibraryUiState(
                 items = uiItems + recentHindiItems,
                 currentDirectoryPath = course,
+                courseFolders = listOf(
+                    com.miuraken.chunkflow.core.model.LibraryCourseFolder(
+                        coursePath = course,
+                        kind = com.miuraken.chunkflow.core.model.LibraryFolderKind.LOCAL_DIRECTORY,
+                        languagePair = baseItem.languagePair,
+                    ),
+                ),
                 miniPlayer = MiniPlayerUiState(
                     mediaId = uiItems.first().item.id,
                     title = "Lesson 1",
@@ -145,6 +159,36 @@ fun LibraryScreenFolderFilesScreenshot() {
                     positionMs = 102_000L,
                     localFilePath = "preview:cover_pimsleur",
                 ),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryScreenFilesTabScreenshot() {
+    val items = SampleLibraries.multipleCourses.take(3).mapIndexed { index, item ->
+        LibraryItemUiModel(
+            item = item,
+            positionMs = if (index == 0) 12_000L else 0L,
+            maxPositionMs = if (index == 0) 12_000L else 0L,
+            speed = if (index == 0) 1.25f else 1.0f,
+            chunkCount = if (index == 0) 6 else 0,
+            hasTranscript = index == 0,
+            transcriptStatus = if (index == 0) LibraryTranscriptStatus.COMPLETED else LibraryTranscriptStatus.NONE,
+            transcriptProgressPercent = if (index == 0) 100 else 0,
+            isListened = index == 0,
+            lastAccessedAtEpochMs = if (index == 0) 1_792_338_600_000L else null,
+        )
+    }
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = items,
+                selectedTab = LibraryViewTab.FILES,
+                fileSortOption = LibraryFileSortOption.ACCESS_TIME,
             ),
             onEvent = {},
         )

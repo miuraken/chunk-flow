@@ -48,6 +48,7 @@ import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 
 internal typealias LanguageDropdownOption = SelectableLanguageOption
 
@@ -236,6 +237,7 @@ internal fun LanguagePairDropdownSection(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ImportConfigDialog(
     config: PendingImportConfig,
@@ -243,13 +245,44 @@ internal fun ImportConfigDialog(
     onConfirm: (String?, LanguagePair) -> Unit,
     onDismiss: () -> Unit,
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    availableFolders: List<String> = listOf(LibraryCourseFolder.DEFAULT_IMPORTED_COURSE),
+    onCreateVirtualFolder: (String, LanguagePair) -> Unit = { _, _ -> },
 ) {
-    var courseText by remember(config) { mutableStateOf(config.initialCourse.orEmpty()) }
+    val isFileImport = !config.isDriveSyncFolder && config.treeUri == null
+    var courseText by remember(config) {
+        mutableStateOf(
+            if (isFileImport) {
+                config.initialCourse?.takeIf { it.isNotBlank() }
+                    ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+            } else {
+                config.initialCourse.orEmpty()
+            },
+        )
+    }
     var targetLangText by remember(config) {
         mutableStateOf(normalizeDialogLanguageCode(config.initialLanguages.target.value))
     }
     var baseLangText by remember(config) {
         mutableStateOf(normalizeDialogLanguageCode(config.initialLanguages.base?.value.orEmpty()))
+    }
+    var folderDropdownExpanded by remember { mutableStateOf(false) }
+    var showNewVirtualFolderDialog by rememberSaveable { mutableStateOf(false) }
+    var newVirtualFolderName by rememberSaveable { mutableStateOf("") }
+
+    val folderOptions = remember(availableFolders, courseText) {
+        buildList {
+            add(LibraryCourseFolder.DEFAULT_IMPORTED_COURSE)
+            availableFolders.forEach { folder ->
+                val trimmed = folder.trim()
+                if (trimmed.isNotBlank() && trimmed !in this) {
+                    add(trimmed)
+                }
+            }
+            val currentTrimmed = courseText.trim()
+            if (currentTrimmed.isNotBlank() && currentTrimmed !in this) {
+                add(currentTrimmed)
+            }
+        }
     }
 
     val dialogTitle = if (config.isDriveSyncFolder) {
@@ -284,13 +317,82 @@ internal fun ImportConfigDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
-                OutlinedTextField(
-                    value = courseText,
-                    onValueChange = { courseText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_course_label)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (isFileImport) {
+                    ExposedDropdownMenuBox(
+                        expanded = folderDropdownExpanded,
+                        onExpandedChange = { folderDropdownExpanded = it },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        OutlinedTextField(
+                            value = courseText,
+                            onValueChange = {},
+                            readOnly = true,
+                            singleLine = true,
+                            label = {
+                                Text(text = stringResource(R.string.library_import_config_folder_label))
+                            },
+                            trailingIcon = {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = folderDropdownExpanded)
+                            },
+                            modifier = Modifier
+                                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                                .fillMaxWidth(),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = folderDropdownExpanded,
+                            onDismissRequest = { folderDropdownExpanded = false },
+                        ) {
+                            folderOptions.forEach { folder ->
+                                val isSelected = folder == courseText.trim()
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = folder,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        )
+                                    },
+                                    onClick = {
+                                        folderDropdownExpanded = false
+                                        courseText = folder
+                                    },
+                                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = stringResource(R.string.library_import_config_new_virtual_folder_option),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = ChunkFlowIcons.Add,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                },
+                                onClick = {
+                                    folderDropdownExpanded = false
+                                    newVirtualFolderName = ""
+                                    showNewVirtualFolderDialog = true
+                                },
+                                contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                            )
+                        }
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = courseText,
+                        onValueChange = { courseText = it },
+                        label = { Text(text = stringResource(R.string.library_edit_course_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
 
                 LanguagePairDropdownSection(
                     targetLangCode = targetLangText,
@@ -325,6 +427,54 @@ internal fun ImportConfigDialog(
             }
         },
     )
+
+    if (showNewVirtualFolderDialog) {
+        val trimmedNewFolder = newVirtualFolderName.trim()
+        AlertDialog(
+            onDismissRequest = { showNewVirtualFolderDialog = false },
+            title = {
+                Text(text = stringResource(R.string.library_import_config_new_virtual_folder_dialog_title))
+            },
+            text = {
+                OutlinedTextField(
+                    value = newVirtualFolderName,
+                    onValueChange = { newVirtualFolderName = it },
+                    label = {
+                        Text(text = stringResource(R.string.library_import_config_new_virtual_folder_name_label))
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (trimmedNewFolder.isNotBlank()) {
+                            val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
+                            val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
+                            courseText = trimmedNewFolder
+                            onCreateVirtualFolder(
+                                trimmedNewFolder,
+                                LanguagePair(
+                                    target = LanguageTag(cleanTarget),
+                                    base = cleanBase?.let { LanguageTag(it) },
+                                ),
+                            )
+                            showNewVirtualFolderDialog = false
+                        }
+                    },
+                    enabled = trimmedNewFolder.isNotBlank(),
+                ) {
+                    Text(text = stringResource(R.string.library_create_virtual_folder_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewVirtualFolderDialog = false }) {
+                    Text(text = stringResource(R.string.library_edit_cancel))
+                }
+            },
+        )
+    }
 }
 
 @Composable

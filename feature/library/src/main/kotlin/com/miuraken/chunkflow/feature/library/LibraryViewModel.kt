@@ -13,6 +13,7 @@ import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
@@ -21,6 +22,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LibraryPlaylist
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
@@ -193,6 +195,7 @@ data class LibraryDirectoryUiModel(
     val items: List<LibraryItemUiModel>,
     val isExpanded: Boolean = true,
     val displayName: String? = name?.substringAfterLast('/'),
+    val isRealFolder: Boolean = false,
 ) {
     /** ディレクトリ配下の `transcription/` サブフォルダの対応パス案内。 */
     val transcriptionPathHint: String
@@ -405,6 +408,20 @@ enum class LibraryViewTab {
 }
 
 /**
+ * ファイルビュータブのソート種別。
+ */
+enum class LibraryFileSortOption {
+    /** 名称順（ファイル名自然昇順 / 手動並び替え順）。 */
+    NAME,
+
+    /** アクセス日時順（最終アクセスが新しい順）。 */
+    ACCESS_TIME,
+
+    /** 完了度順（完了済み・再生進捗率の高い順）。 */
+    COMPLETION,
+}
+
+/**
  * 再生リストビュータブの組み込みスマートリスト種別。
  */
 enum class LibraryPlaylistCategory(val playlistId: PlaylistId) {
@@ -478,6 +495,7 @@ data class LibraryPlaylistEntryUiModel(
  * @property selectedTab 現在選択されているビュータブ（フォルダ / ファイル / 再生リスト）。
  * @property fileSearchQuery ファイルビュータブのファイル名検索キーワード。
  * @property fileTargetLanguageFilter ファイルビュータブの対象言語フィルタ（`null` なら全言語）。
+ * @property fileSortOption ファイルビュータブのソート種別（名称順 / アクセス日時 / 完了度）。
  * @property selectedPlaylistId 再生リストビュータブで展開中のプレイリスト ID（一覧表示時は `null`）。
  * @property selectedPlaylistCategory 再生リストビュータブで展開中のスマートリスト種別（互換用・一覧表示時は `null`）。
  * @property playlists DB に保存されているプレイリスト一覧（ユーザー作成プレイリスト＋並び順・アイテム順が上書きされた組み込みプレイリスト）。
@@ -507,6 +525,7 @@ data class LibraryUiState(
     val selectedTab: LibraryViewTab = LibraryViewTab.FOLDERS,
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
+    val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val selectedPlaylistId: PlaylistId? = null,
     val selectedPlaylistCategory: LibraryPlaylistCategory? = selectedPlaylistId?.let(LibraryPlaylistCategory::fromPlaylistId),
     val playlists: List<LibraryPlaylist> = emptyList(),
@@ -522,7 +541,7 @@ data class LibraryUiState(
         .map { it.item.id },
 ) {
     companion object {
-        /** 最近開いたファイル欄に表示する最大件数。 */
+        /** 最近開いたファイル欄およびよくアクセスするファイル欄に表示する最大件数。 */
         const val MAX_RECENT_ITEMS = 10
     }
 
@@ -548,22 +567,22 @@ data class LibraryUiState(
             .sortedBy { it.value }
 
     /**
-     * ファイルビュータブでファイル名キーワードと対象言語でフィルタし、カスタム並び順（未設定ならファイル名自然昇順）で並べた全ファイル一覧。
+     * ファイルビュータブでファイル名キーワードと対象言語でフィルタし、[fileSortOption] に応じて並べた全ファイル一覧。
      */
     val filteredAllFiles: List<LibraryItemUiModel>
         get() {
             val normalizedQuery = fileSearchQuery.trim()
             val targetFilter = fileTargetLanguageFilter?.value?.lowercase()
-            return items
-                .filter { model ->
-                    val matchesQuery = normalizedQuery.isEmpty() ||
-                        model.item.title.contains(normalizedQuery, ignoreCase = true) ||
-                        (model.item.course?.contains(normalizedQuery, ignoreCase = true) == true)
-                    val matchesLang = targetFilter == null ||
-                        model.item.languagePair.target.value.lowercase() == targetFilter
-                    matchesQuery && matchesLang
-                }
-                .sortedWith { a, b ->
+            val filtered = items.filter { model ->
+                val matchesQuery = normalizedQuery.isEmpty() ||
+                    model.item.title.contains(normalizedQuery, ignoreCase = true) ||
+                    (model.item.course?.contains(normalizedQuery, ignoreCase = true) == true)
+                val matchesLang = targetFilter == null ||
+                    model.item.languagePair.target.value.lowercase() == targetFilter
+                matchesQuery && matchesLang
+            }
+            return when (fileSortOption) {
+                LibraryFileSortOption.NAME -> filtered.sortedWith { a, b ->
                     val orderA = a.fileSortOrder
                     val orderB = b.fileSortOrder
                     if (orderA != null && orderB != null && orderA != orderB) {
@@ -574,6 +593,36 @@ data class LibraryUiState(
                     val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
                     if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
                 }
+
+                LibraryFileSortOption.ACCESS_TIME -> filtered.sortedWith { a, b ->
+                    val timeA = a.lastAccessedAtEpochMs ?: 0L
+                    val timeB = b.lastAccessedAtEpochMs ?: 0L
+                    val timeCmp = timeB.compareTo(timeA)
+                    if (timeCmp != 0) {
+                        timeCmp
+                    } else {
+                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                    }
+                }
+
+                LibraryFileSortOption.COMPLETION -> filtered.sortedWith { a, b ->
+                    val compA = if (a.isListened) 1.0f else a.maxProgressFraction
+                    val compB = if (b.isListened) 1.0f else b.maxProgressFraction
+                    val compCmp = compB.compareTo(compA)
+                    if (compCmp != 0) {
+                        compCmp
+                    } else {
+                        val listenedCmp = b.isListened.compareTo(a.isListened)
+                        if (listenedCmp != 0) {
+                            listenedCmp
+                        } else {
+                            val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                            if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                        }
+                    }
+                }
+            }
         }
 
     /**
@@ -594,6 +643,8 @@ data class LibraryUiState(
 
     /**
      * 指定された再生リストカテゴリ [category] に該当する教材一覧を返す（カスタム並び替えがあれば反映する）。
+     *
+     * 「最近開いたファイル」と「よくアクセスするファイル」は最大 [MAX_RECENT_ITEMS]（10）件までに制限する。
      */
     fun playlistItemsFor(category: LibraryPlaylistCategory): List<LibraryItemUiModel> {
         val rawList = when (category) {
@@ -604,6 +655,7 @@ data class LibraryUiState(
                         compareByDescending<LibraryItemUiModel> { it.lastAccessedAtEpochMs ?: 0L }
                             .thenBy { it.item.id.value },
                     )
+                    .take(MAX_RECENT_ITEMS)
 
             LibraryPlaylistCategory.FREQUENTLY_ACCESSED ->
                 items
@@ -621,6 +673,7 @@ data class LibraryUiState(
                             .thenByDescending { it.lastAccessedAtEpochMs ?: 0L }
                             .thenBy { it.item.id.value },
                     )
+                    .take(MAX_RECENT_ITEMS)
 
             LibraryPlaylistCategory.FAVORITES ->
                 items
@@ -636,10 +689,17 @@ data class LibraryUiState(
             }
         }
         val persisted = playlists.firstOrNull { it.id == category.playlistId }
-        return if (persisted != null && persisted.itemIds.isNotEmpty()) {
+        val ordered = if (persisted != null && persisted.itemIds.isNotEmpty()) {
             applyCustomOrder(rawList, persisted.itemIds)
         } else {
             rawList
+        }
+        return when (category) {
+            LibraryPlaylistCategory.RECENTLY_OPENED,
+            LibraryPlaylistCategory.FREQUENTLY_ACCESSED,
+            -> ordered.take(MAX_RECENT_ITEMS)
+
+            else -> ordered
         }
     }
 
@@ -741,6 +801,56 @@ data class LibraryUiState(
     }
 
     /**
+     * 指定されたディレクトリパス [dirPath] が「実フォルダ」（ファイルシステム上のディレクトリを参照するもの）かどうかを返す。
+     *
+     * `false` の場合はアプリ内でファイルをグループ分けする「仮想フォルダ」を表す。
+     */
+    fun isRealFolder(dirPath: String?): Boolean {
+        val normalized = dirPath?.trim('/')?.takeIf { it.isNotBlank() } ?: return false
+        if (normalized == LibraryCourseFolder.DEFAULT_IMPORTED_COURSE || normalized == "imported") {
+            return false
+        }
+        val matchingFolders = courseFolders.filter { folder ->
+            val path = folder.coursePath.trim('/')
+            path == normalized || path.startsWith("$normalized/") || normalized.startsWith("$path/")
+        }
+        if (matchingFolders.isNotEmpty()) {
+            return matchingFolders.any { folder ->
+                folder.kind == LibraryFolderKind.LOCAL_DIRECTORY || !folder.treeUri.isNullOrBlank()
+            }
+        }
+        val matchingItems = itemsInDirectoryTree(normalized)
+        return matchingItems.any { model ->
+            model.item.storageState == AudioStorageState.LOCAL_REFERENCE ||
+                !model.item.localFilePath.isNullOrBlank()
+        }
+    }
+
+    /**
+     * ファイル追加時の格納先フォルダ選択プルダウンに表示する既存フォルダ名の一覧。
+     *
+     * 先頭には必ず既定の仮想フォルダ `"default"`（[LibraryCourseFolder.DEFAULT_IMPORTED_COURSE]）を置き、
+     * 続いて既存のフォルダ名を自然昇順で並べる。
+     */
+    val availableImportFolders: List<String>
+        get() {
+            val defaultFolder = LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+            val folderNames = linkedSetOf<String>()
+            for (folder in courseFolders) {
+                val path = folder.coursePath.trim('/').takeIf { it.isNotBlank() } ?: continue
+                folderNames += path
+            }
+            for (model in items) {
+                val path = effectivePathOf(model) ?: continue
+                folderNames += path
+            }
+            val sortedOthers = folderNames
+                .filterNot { it == defaultFolder }
+                .sortedWith(::compareFileNamesAscending)
+            return listOf(defaultFolder) + sortedOthers
+        }
+
+    /**
      * 複数選択モードで対象となる全教材 ID の一覧（選択中のディレクトリ配下の教材と選択中の教材、重複なし）。
      */
     val selectedTargetItemIds: List<MediaId>
@@ -833,6 +943,7 @@ data class LibraryUiState(
                         items = sortedItems,
                         isExpanded = dirFullPath !in collapsedDirectories,
                         displayName = dirFullPath.substringAfterLast('/'),
+                        isRealFolder = isRealFolder(dirFullPath),
                     )
                 }
         }
@@ -893,6 +1004,7 @@ data class LibraryUiState(
                     name = dirName,
                     items = sortedItems,
                     isExpanded = dirName !in collapsedDirectories,
+                    isRealFolder = isRealFolder(dirName),
                 )
             }
         }
@@ -1078,6 +1190,9 @@ sealed interface LibraryEvent {
     /** ファイルビューの対象言語フィルタを切り替える（`null` ですべて表示）。 */
     data class SelectFileTargetLanguageFilter(val language: LanguageTag?) : LibraryEvent
 
+    /** ファイルビューのソート順を切り替える。 */
+    data class SelectFileSortOption(val sortOption: LibraryFileSortOption) : LibraryEvent
+
     /** 再生リストビューで開くスマートプレイリストカテゴリを選択する（`null` で一覧へ戻る）。 */
     data class SelectPlaylistCategory(val category: LibraryPlaylistCategory?) : LibraryEvent
 
@@ -1159,6 +1274,7 @@ private data class NavigationAndSelectionSnapshot(
     val selectedTab: LibraryViewTab = LibraryViewTab.FOLDERS,
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
+    val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val selectedPlaylistId: PlaylistId? = null,
 )
 
@@ -1223,6 +1339,7 @@ class LibraryViewModel @Inject constructor(
     private val selectedTab = MutableStateFlow(LibraryViewTab.FOLDERS)
     private val fileSearchQuery = MutableStateFlow("")
     private val fileTargetLanguageFilter = MutableStateFlow<LanguageTag?>(null)
+    private val fileSortOption = MutableStateFlow(LibraryFileSortOption.NAME)
     private val selectedPlaylistId = MutableStateFlow<PlaylistId?>(null)
     private var defaultLanguagePair: LanguagePair = LanguagePair(
         target = LanguageTag("en"),
@@ -1366,12 +1483,14 @@ class LibraryViewModel @Inject constructor(
             selectedTab,
             fileSearchQuery,
             fileTargetLanguageFilter,
+            fileSortOption,
             selectedPlaylistId,
-        ) { tab, query, langFilter, playlistId ->
+        ) { tab, query, langFilter, sortOption, playlistId ->
             NavigationTabAndFilterSnapshot(
                 selectedTab = tab,
                 fileSearchQuery = query,
                 fileTargetLanguageFilter = langFilter,
+                fileSortOption = sortOption,
                 selectedPlaylistId = playlistId,
             )
         },
@@ -1380,6 +1499,7 @@ class LibraryViewModel @Inject constructor(
             selectedTab = tabAndFilter.selectedTab,
             fileSearchQuery = tabAndFilter.fileSearchQuery,
             fileTargetLanguageFilter = tabAndFilter.fileTargetLanguageFilter,
+            fileSortOption = tabAndFilter.fileSortOption,
             selectedPlaylistId = tabAndFilter.selectedPlaylistId,
         )
     }
@@ -1461,9 +1581,7 @@ class LibraryViewModel @Inject constructor(
                 if (event.uris.isNotEmpty()) {
                     pendingImportConfig.value = PendingImportConfig(
                         uris = event.uris,
-                        initialCourse = currentDirectoryPath.value
-                            ?: selectedDirectoryName.value
-                            ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE,
+                        initialCourse = LibraryCourseFolder.DEFAULT_IMPORTED_COURSE,
                         initialLanguages = defaultLanguagePair,
                         isDriveSyncFolder = false,
                         treeUri = null,
@@ -1514,9 +1632,10 @@ class LibraryViewModel @Inject constructor(
                         languages = normalizedLanguages,
                     )
                 } else {
+                    val targetCourse = normalizedCourse ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
                     importUris(
                         uris = config.uris,
-                        course = normalizedCourse,
+                        course = targetCourse,
                         languages = normalizedLanguages,
                     )
                 }
@@ -1585,6 +1704,10 @@ class LibraryViewModel @Inject constructor(
                 fileTargetLanguageFilter.value = event.language?.let {
                     LanguageTag(it.value.trim().lowercase())
                 }
+            }
+
+            is LibraryEvent.SelectFileSortOption -> {
+                fileSortOption.value = event.sortOption
             }
 
             is LibraryEvent.SelectPlaylistCategory -> {
@@ -1695,6 +1818,7 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.MoveFileTabItem -> {
+                fileSortOption.value = LibraryFileSortOption.NAME
                 val currentFiltered = uiState.value.filteredAllFiles.map { it.item.id }.toMutableList()
                 if (event.fromIndex in currentFiltered.indices &&
                     event.toIndex in currentFiltered.indices &&
@@ -2058,12 +2182,18 @@ class LibraryViewModel @Inject constructor(
         languages: LanguagePair,
     ) {
         if (uris.isEmpty()) return
+        val effectiveCourse = course?.trim()?.takeIf { it.isNotEmpty() }
+            ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
         transcriptImportState.value = TranscriptImportUiState.Idle
         importJob?.cancel()
         importJob = viewModelScope.launch {
+            libraryRepository.createVirtualFolder(
+                coursePath = effectiveCourse,
+                languages = languages,
+            )
             libraryRepository.import(
                 uris = uris,
-                course = course,
+                course = effectiveCourse,
                 languages = languages,
             ).collect { progress ->
                 importState.value = when (progress) {
@@ -2343,6 +2473,7 @@ class LibraryViewModel @Inject constructor(
             selectedTab = navAndSelection.selectedTab,
             fileSearchQuery = navAndSelection.fileSearchQuery,
             fileTargetLanguageFilter = navAndSelection.fileTargetLanguageFilter,
+            fileSortOption = navAndSelection.fileSortOption,
             selectedPlaylistId = navAndSelection.selectedPlaylistId,
             selectedPlaylistCategory = navAndSelection.selectedPlaylistId?.let(LibraryPlaylistCategory::fromPlaylistId),
             playlists = playlists,
@@ -2356,5 +2487,6 @@ private data class NavigationTabAndFilterSnapshot(
     val selectedTab: LibraryViewTab = LibraryViewTab.FOLDERS,
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
+    val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val selectedPlaylistId: PlaylistId? = null,
 )

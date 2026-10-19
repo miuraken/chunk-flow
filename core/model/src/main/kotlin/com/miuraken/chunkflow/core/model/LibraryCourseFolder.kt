@@ -34,6 +34,6 @@ data class LibraryCourseFolder(
 ) {
     companion object {
         /** 単一・複数ファイル選択時に既定で格納される仮想ディレクトリ名。 */
-        const val DEFAULT_IMPORTED_COURSE: String = "imported"
+        const val DEFAULT_IMPORTED_COURSE: String = "default"
     }
 }

@@ -124,6 +124,8 @@ import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.testing.fixture.SampleLibraryPreviewParameterProvider
@@ -666,6 +668,15 @@ fun LibraryScreen(
             config = config,
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
+            availableFolders = state.availableImportFolders,
+            onCreateVirtualFolder = { folderName, languages ->
+                onEvent(
+                    LibraryEvent.CreateVirtualFolder(
+                        folderName = folderName,
+                        languages = languages,
+                    ),
+                )
+            },
             onConfirm = { course, languages ->
                 onEvent(
                     LibraryEvent.ConfirmImportConfig(
@@ -845,6 +856,7 @@ private fun LibraryFoldersTabContent(
             LibraryCurrentFolderHeader(
                 folderPath = currentFolderPath,
                 itemCount = totalItemsInFolder,
+                isRealFolder = state.isRealFolder(currentFolderPath),
                 isSelected = currentFolderPath in state.selectedDirectoryPaths,
                 onNavigateUp = { onEvent(LibraryEvent.NavigateUp) },
                 onLongClick = { onEvent(LibraryEvent.ToggleDirectorySelection(currentFolderPath)) },
@@ -987,6 +999,7 @@ private fun LibraryRootFolderBreadcrumbHeader(
 private fun LibraryCurrentFolderHeader(
     folderPath: String,
     itemCount: Int,
+    isRealFolder: Boolean,
     isSelected: Boolean,
     onNavigateUp: () -> Unit,
     onLongClick: () -> Unit,
@@ -1031,7 +1044,11 @@ private fun LibraryCurrentFolderHeader(
             Icon(
                 imageVector = ChunkFlowIcons.Folder,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = if (isRealFolder) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.tertiary
+                },
                 modifier = Modifier.size(22.dp),
             )
             Spacer(modifier = Modifier.width(10.dp))
@@ -1048,6 +1065,7 @@ private fun LibraryCurrentFolderHeader(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                FolderKindBadge(isRealFolder = isRealFolder)
                 Text(
                     text = stringResource(
                         R.string.library_directory_item_count,
@@ -1104,6 +1122,32 @@ private fun LibraryFilesTabContent(
                 shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(),
             )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.library_files_sort_label),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LibraryFileSortOption.entries.forEach { option ->
+                    val labelRes = when (option) {
+                        LibraryFileSortOption.NAME -> R.string.library_files_sort_name
+                        LibraryFileSortOption.ACCESS_TIME -> R.string.library_files_sort_access_time
+                        LibraryFileSortOption.COMPLETION -> R.string.library_files_sort_completion
+                    }
+                    FilterChip(
+                        selected = state.fileSortOption == option,
+                        onClick = { onEvent(LibraryEvent.SelectFileSortOption(option)) },
+                        label = { Text(text = stringResource(labelRes)) },
+                    )
+                }
+            }
 
             if (targetLanguages.isNotEmpty()) {
                 Row(
@@ -1763,14 +1807,20 @@ private fun LibraryDirectoryRow(
     modifier: Modifier = Modifier,
 ) {
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
+    val containerColor = when {
+        isSelected -> MaterialTheme.colorScheme.secondaryContainer
+        directory.isRealFolder -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+        else -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.32f)
+    }
+    val folderIconTint = if (directory.isRealFolder) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.tertiary
+    }
 
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = if (isSelected) {
-            MaterialTheme.colorScheme.secondaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
-        },
+        color = containerColor,
         shape = RoundedCornerShape(12.dp),
     ) {
         Row(
@@ -1793,7 +1843,7 @@ private fun LibraryDirectoryRow(
             Icon(
                 imageVector = ChunkFlowIcons.Folder,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = folderIconTint,
                 modifier = Modifier.size(22.dp),
             )
             Spacer(modifier = Modifier.width(10.dp))
@@ -1809,6 +1859,7 @@ private fun LibraryDirectoryRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                FolderKindBadge(isRealFolder = directory.isRealFolder)
                 Text(
                     text = stringResource(
                         R.string.library_directory_item_count,
@@ -1832,6 +1883,40 @@ private fun LibraryDirectoryRow(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FolderKindBadge(
+    isRealFolder: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val label = stringResource(
+        if (isRealFolder) R.string.library_folder_kind_real else R.string.library_folder_kind_virtual,
+    )
+    val containerColor = if (isRealFolder) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.tertiaryContainer
+    }
+    val contentColor = if (isRealFolder) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onTertiaryContainer
+    }
+    Surface(
+        modifier = modifier,
+        color = containerColor,
+        contentColor = contentColor,
+        shape = RoundedCornerShape(6.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+        )
     }
 }
 
@@ -2220,8 +2305,8 @@ private fun LibraryItemRow(
             .padding(
                 start = if (dragHandle != null && !isSelectionMode) 8.dp else 16.dp,
                 end = 16.dp,
-                top = 12.dp,
-                bottom = 12.dp,
+                top = 8.dp,
+                bottom = 8.dp,
             ),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.Top,
@@ -2233,7 +2318,7 @@ private fun LibraryItemRow(
                 modifier = Modifier.padding(top = 2.dp),
             )
         } else if (dragHandle != null) {
-            Box(modifier = Modifier.padding(top = 6.dp)) {
+            Box(modifier = Modifier.padding(top = 4.dp)) {
                 dragHandle()
             }
         }
@@ -2244,7 +2329,7 @@ private fun LibraryItemRow(
             sourceUri = item.sourceUri,
             modifier = Modifier
                 .padding(top = 2.dp)
-                .size(46.dp),
+                .size(40.dp),
         )
 
         Column(
@@ -2264,7 +2349,7 @@ private fun LibraryItemRow(
                     modifier = Modifier.weight(1f),
                 )
             }
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(2.dp))
 
             // 2 行目: 言語ペアバッジ + SpeechToText 文字起こし状態 + 右端に ☆ と ✏️
             Row(
@@ -2333,7 +2418,7 @@ private fun LibraryItemRow(
                 if (onToggleFavoriteClick != null) {
                     IconButton(
                         onClick = onToggleFavoriteClick,
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(28.dp),
                     ) {
                         Icon(
                             imageVector = if (isFavorite) {
@@ -2347,49 +2432,51 @@ private fun LibraryItemRow(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
                             },
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(17.dp),
                         )
                     }
                 }
                 if (!isSelectionMode) {
                     IconButton(
                         onClick = onEditMetadataClick,
-                        modifier = Modifier.size(32.dp),
+                        modifier = Modifier.size(28.dp),
                     ) {
                         Icon(
                             imageVector = ChunkFlowIcons.Edit,
                             contentDescription = editCd,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(17.dp),
                         )
                     }
                     if (onRemoveFromPlaylistClick != null) {
                         IconButton(
                             onClick = onRemoveFromPlaylistClick,
-                            modifier = Modifier.size(32.dp),
+                            modifier = Modifier.size(28.dp),
                         ) {
                             Icon(
                                 imageVector = ChunkFlowIcons.Close,
                                 contentDescription = removeFromPlaylistCd,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
+                                modifier = Modifier.size(17.dp),
                             )
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(3.dp))
             LinearProgressIndicator(
                 progress = { itemModel.maxProgressFraction },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp),
                 color = if (isCompleted) {
                     langPalette.completedProgressIndicator
                 } else {
                     ProgressIndicatorDefaults.linearColor
                 },
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(2.dp))
 
             // 3 行目: 再生時間・進捗 と 最終アクセス日時（History アイコン + 日時）
             val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
@@ -2622,7 +2709,7 @@ private fun AudioItemThumbnail(
                     imageVector = ChunkFlowIcons.MusicNote,
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(24.dp),
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }
@@ -2995,6 +3082,13 @@ private fun LibraryScreenPreview(
         LibraryScreen(
             state = LibraryUiState(
                 items = uiItems,
+                courseFolders = listOf(
+                    LibraryCourseFolder(
+                        coursePath = "korean-course",
+                        kind = LibraryFolderKind.LOCAL_DIRECTORY,
+                        languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+                    ),
+                ),
                 miniPlayer = miniPlayer,
             ),
             onEvent = {},
@@ -3084,6 +3178,13 @@ private fun LibraryScreenFolderPreview() {
             state = LibraryUiState(
                 items = uiItems + recentHindiItems,
                 currentDirectoryPath = course,
+                courseFolders = listOf(
+                    LibraryCourseFolder(
+                        coursePath = course,
+                        kind = LibraryFolderKind.LOCAL_DIRECTORY,
+                        languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+                    ),
+                ),
                 miniPlayer = MiniPlayerUiState(
                     mediaId = uiItems.first().item.id,
                     title = "Lesson 1",
@@ -3139,7 +3240,7 @@ private fun LibraryScreenImportConfigDialogPreview() {
                 ),
                 pendingImportConfig = PendingImportConfig(
                     uris = emptyList(),
-                    initialCourse = "韓国語講座",
+                    initialCourse = LibraryCourseFolder.DEFAULT_IMPORTED_COURSE,
                     initialLanguages = LanguagePair(
                         target = LanguageTag("ko"),
                         base = LanguageTag("ja"),

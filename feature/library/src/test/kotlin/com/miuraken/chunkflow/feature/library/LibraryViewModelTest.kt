@@ -720,10 +720,10 @@ class LibraryViewModelTest {
         val viewModel = LibraryViewModel(repo, playback)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
-        // 1. ファイル未選択の状態で ImportUris を呼ぶと既定コース名が "imported" になる
+        // 1. ファイル未選択の状態で ImportUris を呼ぶと既定コース名が "default" になる
         val fakeUri = StubUri.create()
         viewModel.onEvent(LibraryEvent.ImportUris(listOf(fakeUri)))
-        assertEquals("imported", viewModel.uiState.value.pendingImportConfig?.initialCourse)
+        assertEquals("default", viewModel.uiState.value.pendingImportConfig?.initialCourse)
         viewModel.onEvent(LibraryEvent.CancelImportConfig)
 
         // 2. CreateVirtualFolder で空の仮想フォルダを作成すると、教材が 0 件でも currentDirectories と directories に表示される
@@ -1285,5 +1285,142 @@ class LibraryViewModelTest {
             listOf(item3.id, item1.id, item2.id),
             recreated.uiState.value.filteredAllFiles.map { it.item.id },
         )
+    }
+
+    @Test
+    fun `ファイルビューのソート_名称順とアクセス日時順と完了度順で並び替えられる`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val itemA = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-a"),
+            title = "Lesson 1",
+            durationMs = 100_000L,
+        )
+        val itemB = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-b"),
+            title = "Lesson 2",
+            durationMs = 100_000L,
+        )
+        val itemC = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-c"),
+            title = "Lesson 10",
+            durationMs = 100_000L,
+        )
+        val states = mapOf(
+            itemA.id to ItemState(
+                mediaId = itemA.id,
+                positionMs = 30_000L,
+                maxPositionMs = 30_000L,
+                updatedAtEpochMs = 100L,
+            ),
+            itemB.id to ItemState(
+                mediaId = itemB.id,
+                positionMs = 90_000L,
+                maxPositionMs = 90_000L,
+                updatedAtEpochMs = 500L,
+            ),
+            itemC.id to ItemState(
+                mediaId = itemC.id,
+                positionMs = 60_000L,
+                maxPositionMs = 60_000L,
+                updatedAtEpochMs = 300L,
+            ),
+        )
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(itemC, itemA, itemB),
+            initialItemStates = states,
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. デフォルトは名称順（自然順: Lesson 1, Lesson 2, Lesson 10）
+        assertEquals(LibraryFileSortOption.NAME, viewModel.uiState.value.fileSortOption)
+        assertEquals(
+            listOf(itemA.id, itemB.id, itemC.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+
+        // 2. アクセス日時順（新しい順: itemB(500L), itemC(300L), itemA(100L)）
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ACCESS_TIME))
+        assertEquals(
+            listOf(itemB.id, itemC.id, itemA.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+
+        // 3. 完了度順（高い順: itemB(90%), itemC(60%), itemA(30%)）
+        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.COMPLETION))
+        assertEquals(
+            listOf(itemB.id, itemC.id, itemA.id),
+            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+        )
+    }
+
+    @Test
+    fun `再生リストの件数上限_最近開いたファイルとよくアクセスするファイルは最大10件に制限される`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val items = (1..12).map { i ->
+            base.copy(
+                id = com.miuraken.chunkflow.core.model.MediaId("p-$i"),
+                title = "Lesson $i",
+            )
+        }
+        val states = items.mapIndexed { idx, item ->
+            item.id to ItemState(
+                mediaId = item.id,
+                updatedAtEpochMs = (idx + 1) * 100L,
+            )
+        }.toMap()
+        val repo = FakeLibraryRepository(
+            initialItems = items,
+            initialItemStates = states,
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 12 件すべてにアクセス履歴があっても、RECENTLY_OPENED と FREQUENTLY_ACCESSED は最大 10 件
+        val recentlyOpened = viewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.RECENTLY_OPENED)
+        val frequentlyAccessed = viewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.FREQUENTLY_ACCESSED)
+        assertEquals(10, recentlyOpened.size)
+        assertEquals(10, frequentlyAccessed.size)
+    }
+
+    @Test
+    fun `実フォルダと仮想フォルダの区別およびファイル追加時の利用可能フォルダ一覧_defaultフォルダが先頭に含まれる`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val realItem = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("real-1"),
+            course = "韓国語講座/初級",
+        )
+        val virtualItem = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("virt-1"),
+            course = "マイ単語帳",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(realItem, virtualItem))
+        // "韓国語講座" を LOCAL_DIRECTORY（実フォルダ）として登録
+        repo.linkLocalDirectory(
+            StubUri.create(),
+            "韓国語講座",
+            LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        // "マイ単語帳" を VIRTUAL_DIRECTORY（仮想フォルダ）として登録
+        repo.createVirtualFolder(
+            "マイ単語帳",
+            LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val state = viewModel.uiState.value
+        val koreanDir = state.currentDirectories.first { it.name == "韓国語講座" }
+        val virtualDir = state.currentDirectories.first { it.name == "マイ単語帳" }
+        assertTrue(koreanDir.isRealFolder)
+        assertFalse(virtualDir.isRealFolder)
+        assertTrue(state.isRealFolder("韓国語講座"))
+        assertTrue(state.isRealFolder("韓国語講座/初級"))
+        assertFalse(state.isRealFolder("マイ単語帳"))
+
+        // ファイル追加時の利用可能フォルダ一覧には先頭に "default" が含まれる
+        assertEquals("default", state.availableImportFolders.first())
+        assertTrue("韓国語講座" in state.availableImportFolders)
+        assertTrue("マイ単語帳" in state.availableImportFolders)
     }
 }

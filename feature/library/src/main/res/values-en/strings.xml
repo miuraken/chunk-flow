@@ -119,4 +119,14 @@
     <string name="library_playlist_delete_cd">Delete %1$s</string>
     <string name="library_playlist_remove_item_cd">Remove from playlist</string>
     <string name="library_drag_handle_cd">Drag to reorder</string>
+    <string name="library_files_sort_label">Sort</string>
+    <string name="library_files_sort_name">Name</string>
+    <string name="library_files_sort_access_time">Access time</string>
+    <string name="library_files_sort_completion">Completion</string>
+    <string name="library_folder_kind_real">Real folder</string>
+    <string name="library_folder_kind_virtual">Virtual folder</string>
+    <string name="library_import_config_folder_label">Folder</string>
+    <string name="library_import_config_new_virtual_folder_option">New virtual folder</string>
+    <string name="library_import_config_new_virtual_folder_dialog_title">Create new virtual folder</string>
+    <string name="library_import_config_new_virtual_folder_name_label">New virtual folder name</string>
 </resources>
