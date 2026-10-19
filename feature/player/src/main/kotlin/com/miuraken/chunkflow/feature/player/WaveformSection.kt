@@ -200,15 +200,8 @@ fun WaveformSection(
     onSeekToChunk: (ChunkId) -> Unit = {},
     onSetChunkSelected: (ChunkId, Boolean) -> Unit = { _, _ -> },
 ) {
-    if (waveform == null || waveform.peak.isEmpty()) {
-        WaveformPlaceholderCard(
-            featureStatus = analysis[AnalysisStage.FEATURES],
-            modifier = modifier,
-        )
-        return
-    }
-
-    val effectiveDurationMs = max(durationMs, waveform.durationMs).coerceAtLeast(1L)
+    val effectiveDurationMs = max(durationMs, waveform?.durationMs ?: 0L).coerceAtLeast(1L)
+    val featureStatus = analysis[AnalysisStage.FEATURES]
     val downsampler = remember { WaveformDownsampler() }
     val isInspectionMode = LocalInspectionMode.current
 
@@ -281,6 +274,7 @@ fun WaveformSection(
     val selectedChunkBackgroundColor = colorScheme.primary.copy(alpha = 0.16f)
     val selectedChunkBorderColor = colorScheme.primary
     val selectedChunkCheckColor = colorScheme.onPrimary
+    val dummyWaveColor = colorScheme.outlineVariant.copy(alpha = 0.35f)
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -300,17 +294,62 @@ fun WaveformSection(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                WaveformOverviewPositionText(
-                    durationMs = effectiveDurationMs,
-                    isPlaying = isPlaying,
-                    positionProvider = positionProvider,
-                    scrubPositionMs = scrubPositionMs,
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    WaveformOverviewPositionText(
+                        durationMs = effectiveDurationMs,
+                        isPlaying = isPlaying,
+                        positionProvider = positionProvider,
+                        scrubPositionMs = scrubPositionMs,
+                    )
+                    if (featureStatus is StageStatus.Running) {
+                        val progress = featureStatus.progress
+                        val label = if (progress != null) {
+                            stringResource(
+                                R.string.player_waveform_analyzing_percent,
+                                (progress * 100f).roundToInt().coerceIn(0, 100),
+                            )
+                        } else {
+                            stringResource(R.string.player_waveform_analyzing)
+                        }
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colorScheme.onSurfaceVariant,
+                        )
+                    } else if (featureStatus is StageStatus.Failed) {
+                        Text(
+                            text = stringResource(R.string.player_waveform_analysis_failed),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colorScheme.error,
+                        )
+                    } else if (waveform == null) {
+                        Text(
+                            text = stringResource(R.string.player_waveform_preparing),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 Text(
                     text = formatDurationMs(effectiveDurationMs),
                     style = MaterialTheme.typography.labelSmall,
                     color = colorScheme.onSurfaceVariant,
                 )
+            }
+
+            if (featureStatus is StageStatus.Running) {
+                val progress = featureStatus.progress
+                if (progress != null) {
+                    LinearProgressIndicator(
+                        progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(2.dp),
+                    )
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+                }
             }
 
             OverviewWaveformCanvas(
@@ -339,6 +378,7 @@ fun WaveformSection(
                 prevChunkActionLabel = prevChunkActionLabel,
                 nextChunkActionLabel = nextChunkActionLabel,
                 seekBackActionLabel = seekBackActionLabel,
+                dummyWaveColor = dummyWaveColor,
                 onSeekTo = { targetMs ->
                     val clamped = targetMs.coerceIn(0L, effectiveDurationMs)
                     scrubPositionMs = null
@@ -409,6 +449,7 @@ fun WaveformSection(
                 selectedChunkBackgroundColor = selectedChunkBackgroundColor,
                 selectedChunkBorderColor = selectedChunkBorderColor,
                 selectedChunkCheckColor = selectedChunkCheckColor,
+                dummyWaveColor = dummyWaveColor,
                 onSetChunkSelected = onSetChunkSelected,
                 contentDescriptionText = zoomedCd,
                 prevChunkActionLabel = prevChunkActionLabel,
@@ -457,7 +498,7 @@ fun WaveformSection(
 
 @Composable
 private fun OverviewWaveformCanvas(
-    waveform: Waveform,
+    waveform: Waveform?,
     durationMs: Long,
     zoomWindowMs: Long,
     chunks: List<ChunkUi>,
@@ -482,6 +523,7 @@ private fun OverviewWaveformCanvas(
     prevChunkActionLabel: String,
     nextChunkActionLabel: String,
     seekBackActionLabel: String,
+    dummyWaveColor: Color,
     onSeekTo: (Long) -> Unit,
     onScrubChange: (Long) -> Unit,
     onPreviousChunk: () -> Unit,
@@ -566,6 +608,7 @@ private fun OverviewWaveformCanvas(
                     targetWaveRmsColor = targetWaveRmsColor,
                     baseWavePeakColor = baseWavePeakColor,
                     baseWaveRmsColor = baseWaveRmsColor,
+                    dummyWaveColor = dummyWaveColor,
                 )
 
                 onDrawBehind {
@@ -693,7 +736,7 @@ private fun WaveformOverviewPositionText(
 
 @Composable
 private fun ZoomedWaveformCanvas(
-    waveform: Waveform,
+    waveform: Waveform?,
     durationMs: Long,
     zoomWindowMs: Long,
     cachedAnchorCenterMs: Long,
@@ -726,6 +769,7 @@ private fun ZoomedWaveformCanvas(
     selectedChunkBackgroundColor: Color,
     selectedChunkBorderColor: Color,
     selectedChunkCheckColor: Color,
+    dummyWaveColor: Color,
     onSetChunkSelected: (ChunkId, Boolean) -> Unit,
     contentDescriptionText: String,
     prevChunkActionLabel: String,
@@ -814,6 +858,7 @@ private fun ZoomedWaveformCanvas(
         targetWaveRmsColor,
         baseWavePeakColor,
         baseWaveRmsColor,
+        dummyWaveColor,
     ) {
         if (canvasWidthPx <= 0 || canvasHeightPx <= 0) {
             null
@@ -833,6 +878,7 @@ private fun ZoomedWaveformCanvas(
                 targetWaveRmsColor = targetWaveRmsColor,
                 baseWavePeakColor = baseWavePeakColor,
                 baseWaveRmsColor = baseWaveRmsColor,
+                dummyWaveColor = dummyWaveColor,
             )
         }
     }
@@ -857,6 +903,7 @@ private fun ZoomedWaveformCanvas(
         targetWaveRmsColor,
         baseWavePeakColor,
         baseWaveRmsColor,
+        dummyWaveColor,
     ) {
         val spec = localStripSpec
         if (spec == null || canvasWidthPx <= 0 || canvasHeightPx <= 0) {
@@ -881,6 +928,7 @@ private fun ZoomedWaveformCanvas(
                 targetWaveRmsColor = targetWaveRmsColor,
                 baseWavePeakColor = baseWavePeakColor,
                 baseWaveRmsColor = baseWaveRmsColor,
+                dummyWaveColor = dummyWaveColor,
             )
         }
     }
@@ -1061,6 +1109,7 @@ private fun ZoomedWaveformCanvas(
                         targetWaveRmsColor = targetWaveRmsColor,
                         baseWavePeakColor = baseWavePeakColor,
                         baseWaveRmsColor = baseWaveRmsColor,
+                        dummyWaveColor = dummyWaveColor,
                     )
                 } else {
                     null
@@ -1388,7 +1437,7 @@ private class WaveformBitmapStrip(
  * アルファチャンネル付き [ImageBitmap] ストリップとしてレンダリングする。
  */
 private fun renderWaveformBitmapStrip(
-    waveform: Waveform,
+    waveform: Waveform?,
     downsampler: WaveformDownsampler,
     startMs: Long,
     endMs: Long,
@@ -1402,17 +1451,24 @@ private fun renderWaveformBitmapStrip(
     targetWaveRmsColor: Color,
     baseWavePeakColor: Color,
     baseWaveRmsColor: Color,
+    dummyWaveColor: Color,
 ): WaveformBitmapStrip {
     val safeWidthPx = totalWidthPx.coerceIn(1, MAX_TOTAL_STRIP_WIDTH_PX)
     val safeHeightPx = heightPx.coerceAtLeast(1)
     val spanMs = (endMs - startMs).coerceAtLeast(1L)
     val columnCount = max(1, (safeWidthPx / 3f).roundToInt())
-    val downsampled = downsampler.downsample(
-        waveform = waveform,
-        startMs = startMs,
-        endMs = endMs,
-        columnCount = columnCount,
-    )
+    val downsampled = if (waveform != null) {
+        downsampler.downsample(
+            waveform = waveform,
+            startMs = startMs,
+            endMs = endMs,
+            columnCount = columnCount,
+        )
+    } else {
+        null
+    }
+
+    val waveformDurationMs = waveform?.durationMs ?: 0L
 
     val stepX = safeWidthPx.toFloat() / columnCount.toFloat()
     val barWidth = max(1f, stepX * 0.68f)
@@ -1448,6 +1504,10 @@ private fun renderWaveformBitmapStrip(
         color = baseWaveRmsColor
         isAntiAlias = true
     }
+    val dummyPaint = Paint().apply {
+        color = dummyWaveColor
+        isAntiAlias = true
+    }
 
     var chunkSearchIndex = 0
     for (tileIdx in 0 until tileCount) {
@@ -1469,6 +1529,22 @@ private fun renderWaveformBitmapStrip(
             if (localRight <= 0f || localLeft >= tileWidthPx.toFloat()) continue
 
             val colCenterMs = startMs + (((i + 0.5) / columnCount.toDouble()) * spanMs.toDouble()).roundToLong()
+
+            if (colCenterMs >= waveformDurationMs) {
+                val isEven = (i % 2 == 0)
+                val dummyHalfH = if (isEven) maxHalfHeight * 0.45f else maxHalfHeight * 0.25f
+                canvas.drawRoundRect(
+                    left = localLeft,
+                    top = centerY - dummyHalfH,
+                    right = localRight,
+                    bottom = centerY + dummyHalfH,
+                    radiusX = cornerRadius,
+                    radiusY = cornerRadius,
+                    paint = dummyPaint,
+                )
+                continue
+            }
+
             while (chunkSearchIndex < chunks.size && chunks[chunkSearchIndex].endMs < colCenterMs) {
                 chunkSearchIndex++
             }
@@ -1490,7 +1566,7 @@ private fun renderWaveformBitmapStrip(
                 else -> unknownRmsPaint
             }
 
-            val peakAmp = downsampled.peak[i].coerceIn(0f, 1f)
+            val peakAmp = downsampled?.peak?.get(i)?.coerceIn(0f, 1f) ?: 0f
             val peakHalfH = max(minHalfHeight, peakAmp * maxHalfHeight)
             canvas.drawRoundRect(
                 left = localLeft,
@@ -1502,7 +1578,7 @@ private fun renderWaveformBitmapStrip(
                 paint = peakPaint,
             )
 
-            val rmsAmp = downsampled.rms[i].coerceIn(0f, 1f)
+            val rmsAmp = downsampled?.rms?.get(i)?.coerceIn(0f, 1f) ?: 0f
             val rmsHalfH = max(minHalfHeight, rmsAmp * maxHalfHeight)
             canvas.drawRoundRect(
                 left = localLeft,
@@ -1623,69 +1699,6 @@ private fun DrawScope.drawLoopRangeOnOverview(
                 topLeft = Offset(left, 0f),
                 size = Size(right - left, size.height),
             )
-        }
-    }
-}
-
-@Composable
-private fun WaveformPlaceholderCard(
-    featureStatus: StageStatus?,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            when (featureStatus) {
-                is StageStatus.Running -> {
-                    val progress = featureStatus.progress
-                    val label = if (progress != null) {
-                        stringResource(
-                            R.string.player_waveform_analyzing_percent,
-                            (progress * 100f).roundToInt().coerceIn(0, 100),
-                        )
-                    } else {
-                        stringResource(R.string.player_waveform_analyzing)
-                    }
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (progress != null) {
-                        LinearProgressIndicator(
-                            progress = { progress.coerceIn(0f, 1f) },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    } else {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                }
-
-                is StageStatus.Failed -> {
-                    Text(
-                        text = stringResource(R.string.player_waveform_analysis_failed),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-
-                else -> {
-                    Text(
-                        text = stringResource(R.string.player_waveform_preparing),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
         }
     }
 }
