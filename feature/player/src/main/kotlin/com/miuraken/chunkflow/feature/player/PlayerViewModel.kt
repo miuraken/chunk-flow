@@ -1803,7 +1803,17 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.ToggleBookmark -> {
                 val id = resolveActiveMediaId() ?: return
                 viewModelScope.launch {
-                    analysisRepository.toggleChunkBookmark(id, event.chunkId)
+                    val added = analysisRepository.toggleChunkBookmark(id, event.chunkId)
+                    if (!added) {
+                        val remainingOtherBookmarks = uiState.value.chunks.any {
+                            it.id != event.chunkId && it.isBookmarked
+                        }
+                        if (!remainingOtherBookmarks) {
+                            playbackController.updatePractice { current ->
+                                if (current.bookmarksOnly) current.copy(bookmarksOnly = false) else current
+                            }
+                        }
+                    }
                 }
             }
 

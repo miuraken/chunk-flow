@@ -73,7 +73,7 @@
     <string name="player_chip_translate">Translate</string>
     <string name="player_chip_bookmarks_only_cd">Show bookmarked chunks only</string>
     <string name="player_chip_blind_off">Blind: OFF</string>
-    <string name="player_chip_blind_target">Hide target language</string>
+    <string name="player_chip_blind_target">Hide</string>
     <string name="player_chip_blind_all">Hide All</string>
 
     <string name="player_chip_source_imported">Chunks: Transcript</string>

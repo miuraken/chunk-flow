@@ -351,19 +351,18 @@ fun PlayerScreen(
                     }
                 },
                 actions = {
+                    PlayerTranscriptionStatusBadge(
+                        state = state,
+                        onToggleTranscription = { enabled ->
+                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+                        },
+                    )
                     IconButton(onClick = { showResegmentSheet = true }) {
                         Icon(
                             imageVector = ChunkFlowIcons.Tune,
                             contentDescription = stringResource(R.string.player_file_settings_cd),
                         )
                     }
-                    PlayerTranscriptionStatusBadge(
-                        state = state,
-                        onToggleTranscription = { enabled ->
-                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
-                        },
-                        modifier = Modifier.padding(end = 8.dp),
-                    )
                 },
             )
         },
@@ -1452,12 +1451,8 @@ private fun ChunkDisplaySettingsStrip(
                 }
             }
 
-            // 2. 「{target_lang_code}を隠す」（on, *off）
-            val blindChipLabel = if (targetLangCode != null) {
-                stringResource(R.string.player_chip_blind_target_code, targetLangCode)
-            } else {
-                stringResource(R.string.player_chip_blind_target)
-            }
+            // 2. 「隠す」（on, *off）
+            val blindChipLabel = stringResource(R.string.player_chip_blind_target)
             FilterChip(
                 selected = isHideTargetLangOn,
                 enabled = state.hasTranscript,
@@ -1517,23 +1512,23 @@ private fun ChunkDisplaySettingsStrip(
                     modifier = transcriptChipModifier,
                 )
             }
-        }
 
-        Spacer(modifier = Modifier.width(6.dp))
-
-        // 5. 「🔖」（ブックマークしたチャンクのみ表示）
-        FilterChip(
-            selected = isBookmarksOnlyOn,
-            onClick = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
-            label = {
-                Icon(
-                    imageVector = ChunkFlowIcons.Bookmark,
-                    contentDescription = stringResource(R.string.player_chip_bookmarks_only_cd),
-                    modifier = Modifier.size(18.dp),
+            // 5. 「🔖」（ブックマークしたチャンクのみ表示。1つでもブックマークがあるときのみ表示）
+            if (state.chunks.any { it.isBookmarked }) {
+                FilterChip(
+                    selected = isBookmarksOnlyOn,
+                    onClick = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
+                    label = {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Bookmark,
+                            contentDescription = stringResource(R.string.player_chip_bookmarks_only_cd),
+                            modifier = Modifier.size(18.dp),
+                        )
+                    },
+                    colors = toggleColors,
                 )
-            },
-            colors = toggleColors,
-        )
+            }
+        }
     }
 }
 
