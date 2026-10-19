@@ -1144,6 +1144,22 @@ object ChunkFlowIcons {
         }
     }
 
+    /** 右上矢印（ファイル内の該当チャンクへ移動・ArrowOutward）アイコン。 */
+    val ArrowOutward: ImageVector by lazy {
+        materialIcon(name = "ArrowOutward") {
+            moveTo(6f, 6f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(8.59f)
+            lineTo(5f, 17.59f)
+            lineTo(6.41f, 19f)
+            lineTo(16f, 9.41f)
+            verticalLineTo(18f)
+            horizontalLineToRelative(2f)
+            verticalLineTo(6f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

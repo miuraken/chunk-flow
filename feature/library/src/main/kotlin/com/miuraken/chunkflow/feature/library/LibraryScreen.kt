@@ -250,6 +250,7 @@ fun LibraryRoute(
     onOpenPlayer: (MediaId) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLanguageSettings: () -> Unit = onOpenSettings,
+    onOpenPlayerAtChunk: (MediaId, ChunkId) -> Unit = { id, _ -> onOpenPlayer(id) },
     modifier: Modifier = Modifier,
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
@@ -392,6 +393,11 @@ fun LibraryRoute(
                 is LibraryEvent.OpenItem -> {
                     viewModel.onEvent(event)
                     onOpenPlayer(event.id)
+                }
+
+                is LibraryEvent.OpenBookmarkedChunkInPlayer -> {
+                    viewModel.onEvent(event)
+                    onOpenPlayerAtChunk(event.mediaId, event.chunkId)
                 }
 
                 LibraryEvent.OpenSettings -> onOpenSettings()
@@ -3172,6 +3178,9 @@ private fun LibraryBookmarksTabContent(
                 onPlayChunk = { chunkId ->
                     onEvent(LibraryEvent.PlayBookmarkedChunk(fileModel.mediaId, chunkId))
                 },
+                onOpenChunkInPlayer = { chunkId ->
+                    onEvent(LibraryEvent.OpenBookmarkedChunkInPlayer(fileModel.mediaId, chunkId))
+                },
                 onRequestClearFileBookmarks = {
                     pendingClearFile = fileModel
                 },
@@ -3219,6 +3228,7 @@ private fun LibraryBookmarkedFileAccordionCard(
     isPlaying: Boolean,
     onToggleExpand: () -> Unit,
     onPlayChunk: (ChunkId) -> Unit,
+    onOpenChunkInPlayer: (ChunkId) -> Unit,
     onRequestClearFileBookmarks: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -3347,6 +3357,7 @@ private fun LibraryBookmarkedFileAccordionCard(
                             isActive = isActiveChunk,
                             isPlaying = isActiveChunk && isPlaying,
                             onClick = { onPlayChunk(chunkModel.chunk.id) },
+                            onOpenInPlayer = { onOpenChunkInPlayer(chunkModel.chunk.id) },
                         )
                         if (index < fileModel.bookmarkedChunks.lastIndex) {
                             HorizontalDivider(
@@ -3368,6 +3379,7 @@ private fun LibraryBookmarkedChunkRow(
     isActive: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
+    onOpenInPlayer: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val chunk = chunkModel.chunk
@@ -3400,7 +3412,7 @@ private fun LibraryBookmarkedChunkRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(IntrinsicSize.Min)
-                .padding(end = 10.dp),
+                .padding(end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
@@ -3477,6 +3489,17 @@ private fun LibraryBookmarkedChunkRow(
                     modifier = Modifier
                         .padding(start = 4.dp)
                         .size(16.dp),
+                )
+            }
+            IconButton(
+                onClick = onOpenInPlayer,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.ArrowOutward,
+                    contentDescription = stringResource(R.string.library_bookmarks_open_in_player_cd),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }

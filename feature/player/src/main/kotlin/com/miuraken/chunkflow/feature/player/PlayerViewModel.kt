@@ -998,6 +998,9 @@ sealed interface PlayerEvent {
     /** チャンク分割パラメータで「全体設定に従う」の ON / OFF を切り替える。 */
     data class SetUseGlobalSegmentation(val useGlobal: Boolean) : PlayerEvent
 
+    /** チャンク設定に従ってチャンク分割をやり直し、文字起こしもクリアする。 */
+    data class ResetChunkSegmentation(val params: SegmentationParams? = null) : PlayerEvent
+
     /** チャンク 1 件の言語ラベルを手動で更新する（F7.3）。 */
     data class UpdateChunkLanguage(val chunkId: ChunkId, val language: LanguageTag?) : PlayerEvent
 
@@ -1514,15 +1517,15 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    /** 指定した教材を開いて再生準備を行う。 */
-    fun open(mediaId: MediaId) {
+    /** 指定した教材を開いて再生準備を行う。[initialChunkId] が指定された場合は該当チャンクの先頭へ一時停止状態で移動する。 */
+    fun open(mediaId: MediaId, initialChunkId: ChunkId? = null) {
         val previousId = lastOpenedMediaId
         if (previousId != null && previousId != mediaId) {
             analysisRepository.setMediaTranscriptionSessionOpen(previousId, false)
         }
         analysisRepository.setMediaTranscriptionSessionOpen(mediaId, true)
         currentMediaId.value = mediaId
-        if (previousId == mediaId) {
+        if (previousId == mediaId && initialChunkId == null) {
             if (lookaheadLoopJob == null) {
                 val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
                 syncLookaheadState(mediaId, enabled)
@@ -1547,18 +1550,48 @@ class PlayerViewModel @Inject constructor(
         syncLookaheadState(mediaId, enabled)
         viewModelScope.launch {
             val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
-            playbackController.open(mediaId)
-            if (playbackController is FakePlaybackController) {
-                val initialPos = savedState?.positionMs ?: 0L
-                val initialSpeed = savedState?.speed ?: 1.0f
-                playbackController.position.positionMs = initialPos
-                playbackController.setSpeed(initialSpeed)
+            val initialSpeed = savedState?.speed ?: 1.0f
+            if (initialChunkId != null) {
+                playbackController.player.value?.pause()
+                val targetChunk = analysisRepository.observeChunks(mediaId).firstOrNull()
+                    ?.firstOrNull { it.id == initialChunkId }
+                val targetPos = targetChunk?.startMs ?: savedState?.positionMs ?: 0L
                 libraryRepository.updatePlaybackPosition(
                     id = mediaId,
-                    positionMs = initialPos,
+                    positionMs = targetPos,
                     speed = initialSpeed,
                     updatedAtEpochMs = System.currentTimeMillis(),
                 )
+                playbackController.open(mediaId)
+                playbackController.player.value?.let { player ->
+                    player.pause()
+                    player.seekTo(targetPos)
+                }
+                if (playbackController is FakePlaybackController) {
+                    playbackController.position.positionMs = targetPos
+                    playbackController.setSpeed(initialSpeed)
+                    playbackController.statusState.update { status ->
+                        status.copy(
+                            mediaId = mediaId,
+                            isPlaying = false,
+                            currentChunkId = initialChunkId,
+                            autoPauseEndsAtMs = null,
+                        )
+                    }
+                }
+            } else {
+                playbackController.open(mediaId)
+                if (playbackController is FakePlaybackController) {
+                    val initialPos = savedState?.positionMs ?: 0L
+                    playbackController.position.positionMs = initialPos
+                    playbackController.setSpeed(initialSpeed)
+                    libraryRepository.updatePlaybackPosition(
+                        id = mediaId,
+                        positionMs = initialPos,
+                        speed = initialSpeed,
+                        updatedAtEpochMs = System.currentTimeMillis(),
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -2018,6 +2051,46 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            is PlayerEvent.ResetChunkSegmentation -> {
+                val id = resolveActiveMediaId() ?: return
+                abortActiveViewModelTranscriptionJobs()
+                val customParams = event.params
+                localUiState.update { state ->
+                    state.copy(
+                        useGlobalSegmentationOverride = if (customParams != null) false else state.useGlobalSegmentationOverride,
+                        customSegmentationParams = customParams ?: state.customSegmentationParams,
+                        languageOverrides = emptyMap(),
+                        clearingChunkIds = emptySet(),
+                        manuallyClearedChunkIds = emptySet(),
+                        isTranscriptionProgressDismissed = false,
+                        localTranscriptExported = false,
+                        transcriptImportBanner = null,
+                    )
+                }
+                viewModelScope.launch {
+                    val itemState = libraryRepository.observeItemState(id).firstOrNull()
+                    val settings = userSettingsRepository.settings.firstOrNull() ?: UserSettings()
+                    val effectiveParams = if (customParams != null) {
+                        analysisRepository.setCustomSegmentationParams(id, customParams)
+                        customParams
+                    } else {
+                        val useGlobal = localUiState.value.useGlobalSegmentationOverride
+                            ?: (itemState?.customSegmentationParams == null)
+                        if (useGlobal) {
+                            analysisRepository.setCustomSegmentationParams(id, null)
+                            settings.defaultSegmentationParams
+                        } else {
+                            localUiState.value.customSegmentationParams
+                                ?: itemState?.customSegmentationParams
+                                ?: settings.defaultSegmentationParams
+                        }
+                    }
+                    analysisRepository.clearTranscriptsForMedia(id)
+                    analysisRepository.setChunkSource(id, ChunkOrigin.AUTO)
+                    analysisRepository.resegment(id, effectiveParams)
+                }
+            }
+
             is PlayerEvent.UpdateChunkLanguage -> {
                 val id = resolveActiveMediaId() ?: return
                 pendingLanguageCommitJobs.remove(event.chunkId)?.cancel()
@@ -2402,9 +2475,21 @@ class PlayerViewModel @Inject constructor(
                 val id = resolveActiveMediaId() ?: return
                 abortActiveViewModelTranscriptionJobs()
                 viewModelScope.launch {
+                    val itemState = libraryRepository.observeItemState(id).firstOrNull()
+                    val settings = userSettingsRepository.settings.firstOrNull() ?: UserSettings()
+                    val useGlobal = localUiState.value.useGlobalSegmentationOverride
+                        ?: (itemState?.customSegmentationParams == null)
+                    val effectiveParams = if (useGlobal) {
+                        settings.defaultSegmentationParams
+                    } else {
+                        localUiState.value.customSegmentationParams
+                            ?: itemState?.customSegmentationParams
+                            ?: settings.defaultSegmentationParams
+                    }
                     val success = libraryRepository.resetTranscriptsAndDeleteFiles(id)
                     analysisRepository.clearTranscriptsForMedia(id)
                     analysisRepository.setChunkSource(id, ChunkOrigin.AUTO)
+                    analysisRepository.resegment(id, effectiveParams)
                     localUiState.update { state ->
                         state.copy(
                             languageOverrides = emptyMap(),

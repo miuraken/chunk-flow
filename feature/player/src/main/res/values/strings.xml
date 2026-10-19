@@ -139,7 +139,7 @@
     <string name="player_transcript_file_import">文字起こし・字幕ファイルをインポート</string>
     <string name="player_transcript_reset_button">文字起こしをリセットしてファイルを削除</string>
     <string name="player_transcript_reset_confirm_title">文字起こしをリセットしますか？</string>
-    <string name="player_transcript_reset_confirm_message">現在の文字起こしデータをすべて消去し、保存済みの文字起こしファイルも削除します。この操作は元に戻せません。</string>
+    <string name="player_transcript_reset_confirm_message">現在の文字起こしデータをすべて消去して保存済みの文字起こしファイルも削除し、チャンク分割と言語判定をやり直します。この操作は元に戻せません。</string>
     <string name="player_transcript_reset_confirm_ok">リセットして削除</string>
     <string name="player_transcript_reset_done">文字起こしをリセットし、ファイルを削除しました</string>
     <string name="player_export_srt">SRT 書き出し</string>
@@ -255,4 +255,6 @@
     <string name="player_floating_controls_close_cd">フローティングコントローラーを閉じる</string>
     <string name="player_transcription_progress_close_cd">文字起こし進捗を閉じる</string>
     <string name="player_missing_language_hint">設定したい言語が見つからないときは、全体設定 &gt; 言語 から追加してください。</string>
+    <string name="player_resegment_reset_button">チャンク分割をリセット</string>
+    <string name="player_resegment_reset_caption">文字起こしもクリアされます</string>
 </resources>

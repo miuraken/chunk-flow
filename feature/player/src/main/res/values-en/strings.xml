@@ -139,7 +139,7 @@
     <string name="player_transcript_file_import">Import transcript / subtitle file</string>
     <string name="player_transcript_reset_button">Reset transcripts and delete files</string>
     <string name="player_transcript_reset_confirm_title">Reset transcripts?</string>
-    <string name="player_transcript_reset_confirm_message">This will clear all current transcript data and delete saved transcript files. This action cannot be undone.</string>
+    <string name="player_transcript_reset_confirm_message">This will clear all current transcript data, delete saved transcript files, and re-run chunk segmentation and language detection. This action cannot be undone.</string>
     <string name="player_transcript_reset_confirm_ok">Reset and delete</string>
     <string name="player_transcript_reset_done">Reset transcripts and deleted files</string>
     <string name="player_export_srt">Export SRT</string>
@@ -255,4 +255,6 @@
     <string name="player_floating_controls_close_cd">Close floating controls</string>
     <string name="player_transcription_progress_close_cd">Close transcription progress</string>
     <string name="player_missing_language_hint">If you cannot find the language you want, add it from Global Settings &gt; Languages.</string>
+    <string name="player_resegment_reset_button">Reset chunk segmentation</string>
+    <string name="player_resegment_reset_caption">Transcripts will also be cleared</string>
 </resources>

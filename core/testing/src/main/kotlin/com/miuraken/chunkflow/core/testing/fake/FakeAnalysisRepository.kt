@@ -130,7 +130,13 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** フィクスチャの解析結果を入れる。 */
     fun put(material: SampleMaterial) {
         update(material.item.id) {
-            Entry(material.analysis, material.waveform, material.chunks, material.transcripts)
+            Entry(
+                status = material.analysis,
+                waveform = material.waveform,
+                chunks = material.chunks,
+                transcripts = material.transcripts,
+                chunksByOrigin = material.chunks.groupBy { it.origin },
+            )
         }
     }
 
@@ -381,11 +387,12 @@ class FakeAnalysisRepository : AnalysisRepository {
     override suspend fun clearTranscriptsForMedia(id: MediaId) {
         update(id) { entry ->
             val autoChunks = entry.chunksByOrigin[ChunkOrigin.AUTO]
-                ?: entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED }
+                ?: entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED && it.origin != ChunkOrigin.MANUAL }
+                    .ifEmpty { entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED } }
             entry.copy(
                 chunks = autoChunks,
                 transcripts = emptyMap(),
-                chunksByOrigin = entry.chunksByOrigin - ChunkOrigin.IMPORTED,
+                chunksByOrigin = entry.chunksByOrigin - ChunkOrigin.IMPORTED - ChunkOrigin.MANUAL,
             )
         }
         chunkSources[id] = ChunkOrigin.AUTO

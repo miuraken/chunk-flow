@@ -868,8 +868,22 @@ internal fun EditDirectoryMetadataDialog(
         mutableStateOf(directoryEdit.initialSttOverride.baseEngine)
     }
 
+    val folderDisplayName = directoryEdit.currentCourse?.substringAfterLast('/').orEmpty()
+
     AlertDialog(
         onDismissRequest = onDismiss,
+        title = if (directoryEdit.isRealFolder) {
+            {
+                Text(
+                    text = stringResource(
+                        R.string.library_edit_real_folder_dialog_title,
+                        folderDisplayName,
+                    ),
+                )
+            }
+        } else {
+            null
+        },
         text = {
             Column(
                 modifier = Modifier
@@ -877,13 +891,15 @@ internal fun EditDirectoryMetadataDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                OutlinedTextField(
-                    value = courseText,
-                    onValueChange = { courseText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_course_label)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (!directoryEdit.isRealFolder) {
+                    OutlinedTextField(
+                        value = courseText,
+                        onValueChange = { courseText = it },
+                        label = { Text(text = stringResource(R.string.library_edit_course_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
 
                 LanguagePairDropdownSection(
                     targetLangCode = targetLangText,
@@ -906,8 +922,13 @@ internal fun EditDirectoryMetadataDialog(
                 onClick = {
                     val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
                     val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
+                    val nextCourse = if (directoryEdit.isRealFolder) {
+                        directoryEdit.currentCourse
+                    } else {
+                        courseText.trim().ifBlank { null }
+                    }
                     onConfirm(
-                        courseText.trim().ifBlank { null },
+                        nextCourse,
                         LanguagePair(
                             target = LanguageTag(cleanTarget),
                             base = cleanBase?.let { LanguageTag(it) },

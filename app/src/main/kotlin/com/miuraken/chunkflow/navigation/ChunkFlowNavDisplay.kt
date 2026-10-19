@@ -5,6 +5,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
+import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.feature.library.LibraryRoute
 import com.miuraken.chunkflow.feature.player.PlayerRoute
@@ -27,6 +28,9 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
             entry<LibraryKey> {
                 LibraryRoute(
                     onOpenPlayer = { id -> backStack.add(PlayerKey(id.value)) },
+                    onOpenPlayerAtChunk = { id, chunkId ->
+                        backStack.add(PlayerKey(mediaId = id.value, initialChunkId = chunkId.value))
+                    },
                     onOpenSettings = { backStack.add(SettingsKey()) },
                     onOpenLanguageSettings = {
                         backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
@@ -36,6 +40,7 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
             entry<PlayerKey> { key ->
                 PlayerRoute(
                     mediaId = MediaId(key.mediaId),
+                    initialChunkId = key.initialChunkId?.let { ChunkId(it) },
                     onBack = { backStack.removeLastOrNull() },
                     onOpenPlaybackSettings = { backStack.add(SettingsKey()) },
                     onOpenLanguageSettings = {

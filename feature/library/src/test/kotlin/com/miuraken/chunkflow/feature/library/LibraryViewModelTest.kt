@@ -1528,6 +1528,15 @@ class LibraryViewModelTest {
         viewModel.onEvent(LibraryEvent.BookmarkPlayerToggleSkipSilence)
         assertTrue(viewModel.uiState.value.practice.skipOriginalSilence)
 
+        // 6.5. ブックマーク行右端のボタン（OpenBookmarkedChunkInPlayer）で該当チャンクへ一時停止状態で移動する
+        viewModel.onEvent(LibraryEvent.PlayBookmarkedChunk(item1.id, chunks1[0].id))
+        assertTrue(playback.status.value.isPlaying)
+        viewModel.onEvent(LibraryEvent.OpenBookmarkedChunkInPlayer(item1.id, chunks1[2].id))
+        assertFalse(playback.status.value.isPlaying)
+        assertEquals(item1.id, playback.status.value.mediaId)
+        assertEquals(chunks1[2].id, playback.status.value.currentChunkId)
+        assertEquals(chunks1[2].startMs, playback.position.positionMs)
+
         // 7. チャンクのブックマークを解除するとリストから除外される
         viewModel.onEvent(LibraryEvent.ToggleChunkBookmark(item1.id, chunks1[0].id))
         assertEquals(
@@ -1538,5 +1547,42 @@ class LibraryViewModelTest {
         // 8. ファイル内のすべてのブックマークを一括削除できる
         viewModel.onEvent(LibraryEvent.ClearBookmarksForMedia(item1.id))
         assertTrue(viewModel.uiState.value.bookmarkedFiles.isEmpty())
+    }
+
+    @Test
+    fun `フォルダ設定編集_実フォルダではisRealFolderがtrueになり仮想フォルダではfalseになる`() = runTest {
+        val realItem = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("real-1"),
+            course = "実フォルダA",
+        )
+        val virtualItem = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("virtual-1"),
+            course = "仮想フォルダB",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(realItem, virtualItem))
+        repo.linkLocalDirectory(
+            StubUri.create(),
+            "実フォルダA",
+            LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+        )
+        repo.createVirtualFolder(
+            "仮想フォルダB",
+            LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        val viewModel = LibraryViewModel(
+            libraryRepository = repo,
+            playbackController = FakePlaybackController(),
+            analysisRepository = FakeAnalysisRepository(),
+            userSettingsRepository = com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("実フォルダA"))
+        assertEquals("実フォルダA", viewModel.uiState.value.pendingEditDirectory?.currentCourse)
+        assertEquals(true, viewModel.uiState.value.pendingEditDirectory?.isRealFolder)
+
+        viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("仮想フォルダB"))
+        assertEquals("仮想フォルダB", viewModel.uiState.value.pendingEditDirectory?.currentCourse)
+        assertEquals(false, viewModel.uiState.value.pendingEditDirectory?.isRealFolder)
     }
 }

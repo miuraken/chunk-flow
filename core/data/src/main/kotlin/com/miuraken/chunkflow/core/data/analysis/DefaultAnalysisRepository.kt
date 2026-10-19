@@ -2603,9 +2603,10 @@ class DefaultAnalysisRepository(
 
             transcriptDao.deleteByMediaId(id.value)
             chunkDao.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.IMPORTED.name)
+            chunkDao.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.MANUAL.name)
 
             val existingState = itemStateDao.getByMediaId(id.value)
-            if (existingState != null && existingState.chunkSource == ChunkOrigin.IMPORTED.name) {
+            if (existingState != null && existingState.chunkSource != ChunkOrigin.AUTO.name) {
                 itemStateDao.updateChunkSource(
                     mediaId = id.value,
                     chunkSource = ChunkOrigin.AUTO.name,

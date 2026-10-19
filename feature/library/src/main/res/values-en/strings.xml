@@ -171,4 +171,6 @@
     <string name="library_import_config_new_virtual_folder_option">New virtual folder</string>
     <string name="library_import_config_new_virtual_folder_dialog_title">Create new virtual folder</string>
     <string name="library_import_config_new_virtual_folder_name_label">New virtual folder name</string>
+    <string name="library_edit_real_folder_dialog_title">Folder settings: %1$s</string>
+    <string name="library_bookmarks_open_in_player_cd">Go to this chunk in file</string>
 </resources>

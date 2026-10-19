@@ -2480,4 +2480,66 @@ class PlayerViewModelTest {
         settingsRepo.setSkipOriginalSilence(false)
         assertFalse(viewModel.uiState.value.practice.skipOriginalSilence)
     }
+
+    @Test
+    fun `チャンク分割をリセットと文字起こしリセット_チャンク再分割と言語判定が実行され文字起こしもクリアされる`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        assertTrue(viewModel.uiState.value.hasTranscript)
+
+        // 1. チャンク分割タブの「チャンク分割をリセット」（個別パラメータ指定）
+        val customParams = SegmentationParams(minSilenceMs = 600, mergeGapMs = 600, prePaddingMs = 120, postPaddingMs = 180)
+        viewModel.onEvent(PlayerEvent.ResetChunkSegmentation(customParams))
+        assertFalse(viewModel.uiState.value.hasTranscript)
+        assertEquals(ChunkOrigin.AUTO, analysisRepo.chunkSources[item.id])
+        assertEquals(customParams, analysisRepo.customSegmentationParamsByMedia[item.id])
+        assertEquals(listOf(item.id to customParams), analysisRepo.resegmentRequests)
+        assertTrue(item.id in analysisRepo.languageDetectionOnlyRequests)
+
+        // 2. 文字起こしを再投入してから「文字起こしをリセットしてファイルを削除」を実行すると、チャンク再分割と言語判定もやり直される
+        analysisRepo.put(sample)
+        analysisRepo.resegmentRequests.clear()
+        analysisRepo.languageDetectionOnlyRequests.clear()
+        assertTrue(viewModel.uiState.value.hasTranscript)
+
+        viewModel.onEvent(PlayerEvent.ResetTranscripts)
+        assertEquals(listOf(item.id), libraryRepo.resetTranscriptMediaIds)
+        assertFalse(viewModel.uiState.value.hasTranscript)
+        assertEquals(ChunkOrigin.AUTO, analysisRepo.chunkSources[item.id])
+        assertEquals(listOf(item.id to customParams), analysisRepo.resegmentRequests)
+        assertEquals(listOf(item.id), analysisRepo.languageDetectionOnlyRequests)
+    }
+
+    @Test
+    fun `初期チャンク指定でopen_一時停止状態のまま該当チャンクの先頭へ移動する`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 再生中だった状態から特定チャンク指定で open する
+        playback.statusState.value = playback.statusState.value.copy(isPlaying = true)
+        val targetChunk = sample.chunks[2]
+
+        viewModel.open(item.id, initialChunkId = targetChunk.id)
+
+        assertFalse(playback.status.value.isPlaying)
+        assertEquals(targetChunk.id, playback.status.value.currentChunkId)
+        assertEquals(targetChunk.startMs, playback.position.positionMs)
+        assertEquals(targetChunk.startMs, libraryRepo.observeItemState(item.id).first()?.positionMs)
+    }
 }

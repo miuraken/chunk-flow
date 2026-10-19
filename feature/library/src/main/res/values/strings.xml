@@ -171,4 +171,6 @@
     <string name="library_import_config_new_virtual_folder_option">新規仮想フォルダ</string>
     <string name="library_import_config_new_virtual_folder_dialog_title">新しい仮想フォルダを作成</string>
     <string name="library_import_config_new_virtual_folder_name_label">新しい仮想フォルダの名前</string>
+    <string name="library_edit_real_folder_dialog_title">フォルダ設定：%1$s</string>
+    <string name="library_bookmarks_open_in_player_cd">このファイルの該当チャンクへ移動</string>
 </resources>

@@ -106,6 +106,7 @@ import com.miuraken.chunkflow.core.designsystem.util.formatCompactSpeed
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
@@ -144,12 +145,13 @@ fun PlayerRoute(
     mediaId: MediaId,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    initialChunkId: ChunkId? = null,
     onOpenPlaybackSettings: () -> Unit = {},
     onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
-    LaunchedEffect(mediaId) {
-        viewModel.open(mediaId)
+    LaunchedEffect(mediaId, initialChunkId) {
+        viewModel.open(mediaId, initialChunkId)
     }
     DisposableEffect(Unit) {
         onDispose {
@@ -719,6 +721,10 @@ fun PlayerScreen(
                 },
                 onToggleUseGlobalSegmentation = { useGlobal ->
                     onEvent(PlayerEvent.SetUseGlobalSegmentation(useGlobal))
+                },
+                onResetSegmentation = { customParams ->
+                    onEvent(PlayerEvent.ResetChunkSegmentation(customParams))
+                    showResegmentSheet = false
                 },
                 onApply = { params ->
                     onEvent(PlayerEvent.Resegment(params))
@@ -2204,6 +2210,7 @@ internal fun ResegmentSheetContent(
     onApply: (SegmentationParams) -> Unit,
     onOpenGlobalSettings: () -> Unit,
     onClose: () -> Unit,
+    onResetSegmentation: (SegmentationParams?) -> Unit = {},
 ) {
     var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     var minSilenceMs by remember(initialParams) { mutableIntStateOf(initialParams.minSilenceMs) }
@@ -2460,7 +2467,35 @@ internal fun ResegmentSheetContent(
             }
 
             2 -> {
-                // 「チャンク分割」タブ: 全体設定に従うチェックボックス + 個別調整スライダー
+                // 「チャンク分割」タブ: 最上部にリセットボタン + 全体設定に従うチェックボックス + 個別調整スライダー
+                OutlinedButton(
+                    onClick = {
+                        if (useGlobalSegmentation) {
+                            onResetSegmentation(null)
+                        } else {
+                            val updatedMergeGap = max(initialParams.mergeGapMs, minSilenceMs)
+                            onResetSegmentation(
+                                initialParams.copy(
+                                    minSilenceMs = minSilenceMs,
+                                    mergeGapMs = updatedMergeGap,
+                                    prePaddingMs = prePaddingMs,
+                                    postPaddingMs = postPaddingMs,
+                                    thresholdRatio = thresholdRatio,
+                                ),
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(text = stringResource(R.string.player_resegment_reset_button))
+                }
+                Text(
+                    text = stringResource(R.string.player_resegment_reset_caption),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

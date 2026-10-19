@@ -400,6 +400,7 @@ data class PendingDirectoryEdit(
     val currentCourse: String?,
     val initialLanguages: LanguagePair,
     val initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
+    val isRealFolder: Boolean = false,
 )
 
 /**
@@ -1350,6 +1351,9 @@ sealed interface LibraryEvent {
     /** 「ブックマーク」タブから特定の教材・チャンクを直接再生する。 */
     data class PlayBookmarkedChunk(val mediaId: MediaId, val chunkId: ChunkId) : LibraryEvent
 
+    /** 「ブックマーク」タブから特定の教材・チャンクのプレイヤー画面を一時停止状態で開く。 */
+    data class OpenBookmarkedChunkInPlayer(val mediaId: MediaId, val chunkId: ChunkId) : LibraryEvent
+
     /** 「ブックマーク」タブから特定チャンクのブックマーク状態を切り替える（解除する）。 */
     data class ToggleChunkBookmark(val mediaId: MediaId, val chunkId: ChunkId) : LibraryEvent
 
@@ -2160,6 +2164,7 @@ class LibraryViewModel @Inject constructor(
                     currentCourse = dirPath,
                     initialLanguages = initialPair,
                     initialSttOverride = ItemSttOverride.NONE,
+                    isRealFolder = dirPath != null && uiState.value.isRealFolder(dirPath),
                 )
                 if (firstItemId != null) {
                     viewModelScope.launch {
@@ -2360,6 +2365,10 @@ class LibraryViewModel @Inject constructor(
                 playBookmarkedChunk(event.mediaId, event.chunkId)
             }
 
+            is LibraryEvent.OpenBookmarkedChunkInPlayer -> {
+                openBookmarkedChunkInPlayer(event.mediaId, event.chunkId)
+            }
+
             is LibraryEvent.ToggleChunkBookmark -> {
                 viewModelScope.launch {
                     analysisRepository.toggleChunkBookmark(event.mediaId, event.chunkId)
@@ -2542,6 +2551,46 @@ class LibraryViewModel @Inject constructor(
                     current.copy(
                         mediaId = mediaId,
                         isPlaying = true,
+                        durationMs = targetItem?.durationMs ?: current.durationMs,
+                        currentChunkId = chunkId,
+                        autoPauseEndsAtMs = null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun openBookmarkedChunkInPlayer(mediaId: MediaId, chunkId: ChunkId) {
+        viewModelScope.launch {
+            libraryRepository.recordItemAccess(mediaId)
+            playbackController.player.value?.pause()
+            val targetChunk = uiState.value.bookmarkedChunksByMedia[mediaId]
+                ?.firstOrNull { it.chunk.id == chunkId }
+                ?.chunk
+                ?: analysisRepository.observeChunks(mediaId).firstOrNull()?.firstOrNull { it.id == chunkId }
+            val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
+            val initialSpeed = savedState?.speed ?: 1.0f
+            val targetPos = targetChunk?.startMs ?: savedState?.positionMs ?: 0L
+            libraryRepository.updatePlaybackPosition(
+                id = mediaId,
+                positionMs = targetPos,
+                speed = initialSpeed,
+                updatedAtEpochMs = System.currentTimeMillis(),
+            )
+            if (playbackController.status.value.mediaId != mediaId) {
+                playbackController.open(mediaId)
+            }
+            playbackController.player.value?.let { player ->
+                player.pause()
+                player.seekTo(targetPos)
+            }
+            if (playbackController is FakePlaybackController) {
+                val targetItem = uiState.value.items.firstOrNull { it.item.id == mediaId }?.item
+                playbackController.position.positionMs = targetPos
+                playbackController.statusState.update { current ->
+                    current.copy(
+                        mediaId = mediaId,
+                        isPlaying = false,
                         durationMs = targetItem?.durationMs ?: current.durationMs,
                         currentChunkId = chunkId,
                         autoPauseEndsAtMs = null,
