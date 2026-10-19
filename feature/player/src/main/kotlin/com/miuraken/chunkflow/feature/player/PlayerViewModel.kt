@@ -929,6 +929,12 @@ sealed interface PlayerEvent {
     /** 下部再生コントロールの「リピート」トグル（on / *off）を切り替える。 */
     data object ToggleRepeat : PlayerEvent
 
+    /** リピートバッジの長押し確認ダイアログで「はい」が選ばれたときにファイル全体リピートを有効にする（チャンク選択は変更しない）。 */
+    data object EnableWholeFileRepeat : PlayerEvent
+
+    /** 下部再生コントロールの「無音スキップ」トグル（チャンク間の無音をスキップ）を切り替える。 */
+    data object ToggleSkipSilence : PlayerEvent
+
     /** 自動ポーズの設定を変更する（F6.3）。 */
     data class SetAutoPause(val autoPause: AutoPause) : PlayerEvent
 
@@ -1490,6 +1496,22 @@ class PlayerViewModel @Inject constructor(
                     }
                 }
         }
+
+        // 再生設定の「チャンク間の無音をスキップ」と PracticeSettings.skipOriginalSilence を同期する
+        viewModelScope.launch {
+            userSettingsRepository.settings
+                .map { it.skipOriginalSilence }
+                .distinctUntilChanged()
+                .collect { skipSilence ->
+                    playbackController.updatePractice { current ->
+                        if (current.skipOriginalSilence == skipSilence) {
+                            current
+                        } else {
+                            current.copy(skipOriginalSilence = skipSilence)
+                        }
+                    }
+                }
+        }
     }
 
     /** 指定した教材を開いて再生準備を行う。 */
@@ -1604,7 +1626,24 @@ class PlayerViewModel @Inject constructor(
                         repeatChunkIds = if (event.loopMode is LoopMode.Off) emptySet() else it.repeatChunkIds,
                         repeatCheckedOnly = if (event.loopMode is LoopMode.Off) false else it.repeatCheckedOnly,
                         temporaryRepeatChunkId = if (event.loopMode is LoopMode.Off) null else it.temporaryRepeatChunkId,
+                        repeatWholeFile = if (event.loopMode is LoopMode.Off) false else it.repeatWholeFile,
                     )
+                }
+            }
+
+            PlayerEvent.EnableWholeFileRepeat -> {
+                playbackController.updatePractice { current ->
+                    current.copy(repeatWholeFile = true)
+                }
+            }
+
+            PlayerEvent.ToggleSkipSilence -> {
+                val next = !uiState.value.practice.skipOriginalSilence
+                playbackController.updatePractice { current ->
+                    current.copy(skipOriginalSilence = next)
+                }
+                viewModelScope.launch {
+                    userSettingsRepository.setSkipOriginalSilence(next)
                 }
             }
 
@@ -1618,37 +1657,41 @@ class PlayerViewModel @Inject constructor(
                     ?: chunks.firstOrNull { !it.isSkipped }?.id
                     ?: chunks.firstOrNull()?.id
                 playbackController.updatePractice { current ->
-                    val isCurrentlyOn = current.loop !is LoopMode.Off || current.repeatCheckedOnly
-                    if (isCurrentlyOn) {
-                        val tempId = current.temporaryRepeatChunkId
-                        val nextRepeatIds = if (tempId != null) {
-                            current.repeatChunkIds - tempId
-                        } else {
-                            current.repeatChunkIds
-                        }
-                        current.copy(
-                            loop = LoopMode.Off,
-                            repeatCheckedOnly = false,
-                            repeatChunkIds = nextRepeatIds,
-                            temporaryRepeatChunkId = null,
-                        )
-                    } else if (current.repeatChunkIds.isNotEmpty()) {
-                        current.copy(
-                            repeatCheckedOnly = true,
-                            temporaryRepeatChunkId = null,
-                        )
-                    } else if (activeChunkId != null) {
-                        current.copy(
-                            loop = LoopMode.Off,
-                            repeatChunkIds = setOf(activeChunkId),
-                            repeatCheckedOnly = true,
-                            temporaryRepeatChunkId = activeChunkId,
-                        )
+                    if (current.repeatWholeFile) {
+                        current.copy(repeatWholeFile = false)
                     } else {
-                        current.copy(
-                            repeatCheckedOnly = true,
-                            temporaryRepeatChunkId = null,
-                        )
+                        val isCurrentlyOn = current.loop !is LoopMode.Off || current.repeatCheckedOnly
+                        if (isCurrentlyOn) {
+                            val tempId = current.temporaryRepeatChunkId
+                            val nextRepeatIds = if (tempId != null) {
+                                current.repeatChunkIds - tempId
+                            } else {
+                                current.repeatChunkIds
+                            }
+                            current.copy(
+                                loop = LoopMode.Off,
+                                repeatCheckedOnly = false,
+                                repeatChunkIds = nextRepeatIds,
+                                temporaryRepeatChunkId = null,
+                            )
+                        } else if (current.repeatChunkIds.isNotEmpty()) {
+                            current.copy(
+                                repeatCheckedOnly = true,
+                                temporaryRepeatChunkId = null,
+                            )
+                        } else if (activeChunkId != null) {
+                            current.copy(
+                                loop = LoopMode.Off,
+                                repeatChunkIds = setOf(activeChunkId),
+                                repeatCheckedOnly = true,
+                                temporaryRepeatChunkId = activeChunkId,
+                            )
+                        } else {
+                            current.copy(
+                                repeatCheckedOnly = true,
+                                temporaryRepeatChunkId = null,
+                            )
+                        }
                     }
                 }
             }
@@ -2848,7 +2891,7 @@ class PlayerViewModel @Inject constructor(
         }
 
         // 1. 複数選択リピート中
-        if (practice.repeatCheckedOnly && practice.repeatChunkIds.isNotEmpty()) {
+        if (!practice.repeatWholeFile && practice.repeatCheckedOnly && practice.repeatChunkIds.isNotEmpty()) {
             val checked = chunks.filter { it.id in practice.repeatChunkIds }
             val unchecked = chunks.filterNot { it.id in practice.repeatChunkIds }
             return rotateFromPosition(checked) + rotateFromPosition(unchecked)
@@ -3132,7 +3175,7 @@ class PlayerViewModel @Inject constructor(
     private fun seekToChunk(chunkId: ChunkId) {
         playbackController.updatePractice { current ->
             val tempId = current.temporaryRepeatChunkId
-            val isRepeatActive = current.repeatCheckedOnly || current.loop !is LoopMode.Off
+            val isRepeatActive = !current.repeatWholeFile && (current.repeatCheckedOnly || current.loop !is LoopMode.Off)
             if (tempId != null && isRepeatActive && chunkId != tempId) {
                 current.copy(
                     repeatChunkIds = (current.repeatChunkIds - tempId) + chunkId,

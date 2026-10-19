@@ -2418,4 +2418,66 @@ class PlayerViewModelTest {
         assertTrue(viewModel.uiState.value.chunks[0].isRepeatChecked)
         assertTrue(viewModel.uiState.value.chunks[2].isRepeatChecked)
     }
+
+    @Test
+    fun `ファイル全体リピート_長押し確認でONになり再タップで解除されチャンク選択やチェックボックスは一切変更されない`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c0 = sample.chunks[0].id
+        val c2 = sample.chunks[2].id
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c0))
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c2))
+        assertEquals(setOf(c0, c2), viewModel.uiState.value.practice.repeatChunkIds)
+        assertFalse(viewModel.uiState.value.practice.repeatWholeFile)
+
+        // リピートバッジ長押し -> Yes でファイル全体リピート ON（チェックボックスはそのまま）
+        viewModel.onEvent(PlayerEvent.EnableWholeFileRepeat)
+        assertTrue(viewModel.uiState.value.practice.repeatWholeFile)
+        assertEquals(setOf(c0, c2), viewModel.uiState.value.practice.repeatChunkIds)
+        assertTrue(viewModel.uiState.value.chunks[0].isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks[2].isRepeatChecked)
+
+        // もう一度リピートバッジをタップ -> ファイル全体リピートが解除され、チェックボックスには一切変更がない
+        viewModel.onEvent(PlayerEvent.ToggleRepeat)
+        assertFalse(viewModel.uiState.value.practice.repeatWholeFile)
+        assertEquals(setOf(c0, c2), viewModel.uiState.value.practice.repeatChunkIds)
+        assertTrue(viewModel.uiState.value.chunks[0].isRepeatChecked)
+        assertTrue(viewModel.uiState.value.chunks[2].isRepeatChecked)
+    }
+
+    @Test
+    fun `無音スキップバッジ_ToggleSkipSilenceでPracticeSettingsとUserSettingsが双方向に同期される`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        // デフォルトはオフ
+        assertFalse(viewModel.uiState.value.practice.skipOriginalSilence)
+        assertFalse(settingsRepo.state.value.skipOriginalSilence)
+
+        // バッジタップで ON
+        viewModel.onEvent(PlayerEvent.ToggleSkipSilence)
+        assertTrue(viewModel.uiState.value.practice.skipOriginalSilence)
+        assertTrue(settingsRepo.state.value.skipOriginalSilence)
+
+        // 再生設定側から OFF に変更しても同期される
+        settingsRepo.setSkipOriginalSilence(false)
+        assertFalse(viewModel.uiState.value.practice.skipOriginalSilence)
+    }
 }

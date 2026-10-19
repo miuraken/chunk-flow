@@ -161,7 +161,10 @@ class MediaControllerPlaybackController(
         val inner = rawPlayerFactory()
         val learning = LearningPlayer(
             player = inner,
-            selectedChunkIdsProvider = { practiceController.settings.value.repeatChunkIds },
+            selectedChunkIdsProvider = {
+                val practice = practiceController.settings.value
+                if (practice.repeatWholeFile) emptySet() else practice.repeatChunkIds
+            },
             chunkStartsMsProvider = {
                 currentChunks.filterNot { it.isSkipped }.ifEmpty { currentChunks }.map { it.startMs }
             },
@@ -379,7 +382,8 @@ class MediaControllerPlaybackController(
             val scheduler = chunkScheduler
             val practice = practiceController.settings.value
             val repeatChunkIds = practice.repeatChunkIds
-            val isSelectedRepeatTarget = chunkId in repeatChunkIds &&
+            val isSelectedRepeatTarget = !practice.repeatWholeFile &&
+                chunkId in repeatChunkIds &&
                 (repeatChunkIds.size >= 2 || (practice.repeatCheckedOnly && practice.temporaryRepeatChunkId == chunkId))
 
             if (isSelectedRepeatTarget) {

@@ -145,6 +145,7 @@ fun PlayerRoute(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenPlaybackSettings: () -> Unit = {},
+    onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(mediaId) {
@@ -233,6 +234,7 @@ fun PlayerRoute(
             }
         },
         onOpenPlaybackSettings = onOpenPlaybackSettings,
+        onOpenLanguageSettings = onOpenLanguageSettings,
         onPickTranscriptJson = {
             transcriptPickerLauncher.launch(
                 arrayOf("*/*"),
@@ -303,6 +305,7 @@ fun PlayerScreen(
     onEvent: (PlayerEvent) -> Unit,
     modifier: Modifier = Modifier,
     onOpenPlaybackSettings: () -> Unit = {},
+    onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
     onPickTranscriptJson: () -> Unit = {},
     onRequestExportTranscript: (TranscriptExportFormat) -> Unit = {},
     hasRecordAudioPermission: Boolean = true,
@@ -723,7 +726,7 @@ fun PlayerScreen(
                 },
                 onOpenGlobalSettings = {
                     showResegmentSheet = false
-                    onOpenPlaybackSettings()
+                    onOpenLanguageSettings()
                 },
                 onClose = { showResegmentSheet = false },
             )
@@ -1454,14 +1457,17 @@ private fun PlaybackControlStrip(
 ) {
     val isNormalSpeed = abs(state.speed - 1.0f) < 0.01f
     val isCustomSpeedSelected = !isNormalSpeed
-    val isRepeatOn = state.practice.loop !is LoopMode.Off || state.practice.repeatCheckedOnly
+    val isWholeFileRepeat = state.practice.repeatWholeFile
+    val isRepeatOn = isWholeFileRepeat || state.practice.loop !is LoopMode.Off || state.practice.repeatCheckedOnly
+    val isSkipSilenceOn = state.practice.skipOriginalSilence
     val toggleColors = brightnessToggleChipColors()
+    var showWholeFileRepeatDialog by remember { mutableStateOf(false) }
 
     Row(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // 1. 「1x」（通常再生速度）
@@ -1508,7 +1514,7 @@ private fun PlaybackControlStrip(
                 ),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -1520,28 +1526,101 @@ private fun PlaybackControlStrip(
             }
         }
 
-        // 2. 「リピート」（on, *off）
+        // 3. 「リピート」（短押しでチャンク・全ファイルリピートの ON/OFF、長押しでファイル全体リピートの確認ダイアログ）
+        val repeatChipContainerColor = when {
+            isWholeFileRepeat -> Color(0xFF1976D2)
+            isRepeatOn -> MaterialTheme.colorScheme.primaryContainer
+            else -> MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+        }
+        val repeatChipContentColor = when {
+            isWholeFileRepeat -> Color.White
+            isRepeatOn -> MaterialTheme.colorScheme.onPrimaryContainer
+            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+        }
+        val repeatChipBorder = if (isRepeatOn) {
+            null
+        } else {
+            FilterChipDefaults.filterChipBorder(enabled = true, selected = false)
+        }
+        Surface(
+            shape = FilterChipDefaults.shape,
+            color = repeatChipContainerColor,
+            contentColor = repeatChipContentColor,
+            border = repeatChipBorder,
+            modifier = Modifier
+                .heightIn(min = FilterChipDefaults.Height)
+                .clip(FilterChipDefaults.shape)
+                .combinedClickable(
+                    onClick = { onEvent(PlayerEvent.ToggleRepeat) },
+                    onLongClick = { showWholeFileRepeatDialog = true },
+                ),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (isWholeFileRepeat) {
+                        stringResource(R.string.player_chip_repeat_whole_file)
+                    } else {
+                        stringResource(R.string.player_chip_repeat)
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (isRepeatOn) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        // 4. 「無音スキップ」（再生設定の「チャンク間の無音をスキップ」と同期）
         FilterChip(
-            selected = isRepeatOn,
-            onClick = { onEvent(PlayerEvent.ToggleRepeat) },
+            selected = isSkipSilenceOn,
+            onClick = { onEvent(PlayerEvent.ToggleSkipSilence) },
             label = {
                 Text(
-                    text = stringResource(R.string.player_chip_repeat),
-                    fontWeight = if (isRepeatOn) FontWeight.SemiBold else FontWeight.Normal,
+                    text = stringResource(R.string.player_chip_skip_silence),
+                    fontWeight = if (isSkipSilenceOn) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                 )
             },
             colors = toggleColors,
         )
 
-        // 3. 「再生設定」
+        // 5. 「再生設定」（⚙️ アイコン）
         AssistChip(
             onClick = onOpenPlaybackSettings,
             label = {
-                Text(
-                    text = stringResource(R.string.player_chip_playback_settings),
-                    maxLines = 1,
+                Icon(
+                    imageVector = ChunkFlowIcons.Settings,
+                    contentDescription = stringResource(R.string.player_chip_playback_settings),
+                    modifier = Modifier.size(18.dp),
                 )
+            },
+        )
+    }
+
+    if (showWholeFileRepeatDialog) {
+        AlertDialog(
+            onDismissRequest = { showWholeFileRepeatDialog = false },
+            text = {
+                Text(text = stringResource(R.string.player_whole_file_repeat_confirm_message))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showWholeFileRepeatDialog = false
+                        onEvent(PlayerEvent.EnableWholeFileRepeat)
+                    },
+                ) {
+                    Text(text = stringResource(R.string.player_whole_file_repeat_yes))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showWholeFileRepeatDialog = false },
+                ) {
+                    Text(text = stringResource(R.string.player_whole_file_repeat_no))
+                }
             },
         )
     }
@@ -2078,7 +2157,7 @@ private fun PlayerSpeedSheetContent(
 }
 
 @Composable
-private fun ResegmentSheetContent(
+internal fun ResegmentSheetContent(
     initialParams: SegmentationParams,
     useGlobalSegmentation: Boolean,
     languagePair: LanguagePair?,
@@ -2182,7 +2261,7 @@ private fun ResegmentSheetContent(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Icon(
-                        imageVector = ChunkFlowIcons.Tune,
+                        imageVector = ChunkFlowIcons.Settings,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
                     )
@@ -2689,6 +2768,62 @@ private fun PlayerScreenTranscriptionProgressPreview() {
                 ),
             ),
             positionProvider = FakePositionProvider(5_000L),
+            onEvent = {},
+        )
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun PlayerFileSettingsSheetPreview() {
+    ChunkFlowTheme {
+        Surface {
+            ResegmentSheetContent(
+                initialParams = SegmentationParams(),
+                useGlobalSegmentation = true,
+                languagePair = LanguagePair(
+                    target = LanguageTag("ko"),
+                    base = LanguageTag("ja"),
+                ),
+                itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+                sttEngineByLanguage = emptyMap(),
+                languageModelInfos = emptyMap(),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onChangeLanguages = {},
+                onChangeTargetEngine = {},
+                onChangeBaseEngine = {},
+                transcriptOffsetMs = 0,
+                onAdjustTranscriptOffset = {},
+                onAutoAlignTranscriptOffset = {},
+                onImportTranscript = {},
+                onExportTranscript = {},
+                onResetTranscripts = {},
+                onOpenDiagnostics = {},
+                onToggleUseGlobalSegmentation = {},
+                onApply = {},
+                onOpenGlobalSettings = {},
+                onClose = {},
+            )
+        }
+    }
+}
+
+/** ファイル全体リピート（「🔁リピート」青バッジ）と「無音スキップ」ON、再生設定「⚙️」アイコンのプレビュー。 */
+@ChunkFlowPreviews
+@Composable
+private fun PlayerScreenWholeFileRepeatPreview() {
+    val material = SampleMaterials.jaKo
+    ChunkFlowTheme {
+        PlayerScreen(
+            state = material.toPlayerUiState(
+                isPlaying = true,
+                practice = PracticeSettings(
+                    repeatWholeFile = true,
+                    skipOriginalSilence = true,
+                    repeatChunkIds = setOf(material.chunks.first().id),
+                ),
+            ),
+            positionProvider = FakePositionProvider(1_500L),
             onEvent = {},
         )
     }

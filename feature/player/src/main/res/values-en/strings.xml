@@ -47,6 +47,11 @@
 
     
     <string name="player_chip_repeat">Repeat</string>
+    <string name="player_chip_repeat_whole_file">🔁Repeat</string>
+    <string name="player_whole_file_repeat_confirm_message">Repeat the entire file?</string>
+    <string name="player_whole_file_repeat_yes">Yes</string>
+    <string name="player_whole_file_repeat_no">No</string>
+    <string name="player_chip_skip_silence">Skip silence</string>
     <string name="player_chip_playback_settings">Playback settings</string>
     <string name="player_chip_repeat_off">Repeat: OFF</string>
     <string name="player_chip_repeat_single_3">1 Chunk ×3</string>
@@ -180,7 +185,7 @@
     <string name="player_recognition_model_download_action">Download</string>
     <string name="player_chunk_transcription_waiting_cd">Waiting for transcription</string>
     <string name="player_chunk_transcription_active_cd">Transcribing</string>
-    <string name="player_open_global_settings">Go to global app settings</string>
+    <string name="player_open_global_settings">Global Settings (Languages)</string>
     <string name="player_chunk_copy_text">Copy text</string>
     <string name="player_chunk_skip_enable">Skip this chunk</string>
     <string name="player_chunk_skip_disable">Unskip this chunk</string>
@@ -248,4 +253,5 @@
     <string name="player_floating_controls_title">Playback Controls</string>
     <string name="player_floating_controls_close_cd">Close floating controls</string>
     <string name="player_transcription_progress_close_cd">Close transcription progress</string>
+    <string name="player_missing_language_hint">If you cannot find the language you want, add it from Global Settings &gt; Languages.</string>
 </resources>

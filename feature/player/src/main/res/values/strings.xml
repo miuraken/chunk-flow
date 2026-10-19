@@ -47,6 +47,11 @@
 
     
     <string name="player_chip_repeat">リピート</string>
+    <string name="player_chip_repeat_whole_file">🔁リピート</string>
+    <string name="player_whole_file_repeat_confirm_message">ファイル全体をリピートしますか？</string>
+    <string name="player_whole_file_repeat_yes">Yes</string>
+    <string name="player_whole_file_repeat_no">No</string>
+    <string name="player_chip_skip_silence">無音スキップ</string>
     <string name="player_chip_playback_settings">再生設定</string>
     <string name="player_chip_repeat_off">リピート: OFF</string>
     <string name="player_chip_repeat_single_3">1チャンク×3</string>
@@ -82,7 +87,7 @@
     <string name="player_merge_lang_unknown">未判定</string>
     <string name="player_split_at_cursor">再生位置で分割</string>
     <string name="player_settings_language_section_title">言語</string>
-    <string name="player_settings_target_lang_label">学習言語</string>
+    <string name="player_settings_target_lang_label">学習対象言語</string>
     <string name="player_settings_base_lang_label">ベース言語</string>
     <string name="player_settings_base_lang_none">なし</string>
 
@@ -180,7 +185,7 @@
     <string name="player_recognition_model_download_action">ダウンロード</string>
     <string name="player_chunk_transcription_waiting_cd">文字起こし待機中</string>
     <string name="player_chunk_transcription_active_cd">文字起こし中</string>
-    <string name="player_open_global_settings">アプリ全体の設定画面へ</string>
+    <string name="player_open_global_settings">全体設定（言語）</string>
     <string name="player_chunk_copy_text">テキストをコピー</string>
     <string name="player_chunk_skip_enable">スキップを設定</string>
     <string name="player_chunk_skip_disable">スキップを解除</string>
@@ -209,7 +214,7 @@
     <string name="player_detailed_transcribe_result_empty">音声を認識できませんでした（条件を変えて再試行できます）</string>
     <string name="player_detailed_transcribe_result_meta">エンジン: %1$s / 言語: %2$s</string>
     <string name="player_detailed_transcribe_apply">この結果を反映</string>
-<string name="player_settings_target_stt_engine_label">文字起こしエンジン (学習言語)</string><string name="player_settings_base_stt_engine_label">文字起こしエンジン (ベース言語)</string><string name="player_settings_stt_engine_default">言語の設定に従う（既定）</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string>    <string name="player_seek_preset_seconds_format">%1$d秒</string>
+<string name="player_settings_target_stt_engine_label">文字起こしエンジン (学習対象言語)</string><string name="player_settings_base_stt_engine_label">文字起こしエンジン (ベース言語)</string><string name="player_settings_stt_engine_default">言語の設定に従う（既定）</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string>    <string name="player_seek_preset_seconds_format">%1$d秒</string>
     <string name="player_long_press_file_start">ファイル先頭へ</string>
     <string name="player_long_press_prev_checked">一つ前のチェック項目へ</string>
     <string name="player_long_press_next_checked">一つ後のチェック項目へ</string>
@@ -248,4 +253,5 @@
     <string name="player_floating_controls_title">再生コントロール</string>
     <string name="player_floating_controls_close_cd">フローティングコントローラーを閉じる</string>
     <string name="player_transcription_progress_close_cd">文字起こし進捗を閉じる</string>
+    <string name="player_missing_language_hint">設定したい言語が見つからないときは、全体設定 &gt; 言語 から追加してください。</string>
 </resources>

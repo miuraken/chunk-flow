@@ -92,6 +92,7 @@ enum class LanguageFilter {
  * @property repeatCheckedOnly 下部再生コントロールの「リピート」トグルが ON かどうか（デフォルトは `false`）。`true` かつ [repeatChunkIds] が空でない場合は選択したチャンクを繰り返し、`false` の場合は最後の選択チャンクのあとで一時停止する。
  * @property temporaryRepeatChunkId 未選択状態でリピートバッジを有効化した際に再生中のチャンクへ付与された「一時チェック」のチャンク ID（高々 1 つ）。見た目や再生時の扱いは通常のチェック（[repeatChunkIds]）と同じだが、(1) 一時チェック中に他のチャンクをタップしてシークすると新しいチャンクへ一時チェックが移り、(2) 他のチャンクにチェックが入れられると恒久的なチェックへ移行（`null` にクリア）し、(3) リピート解除時には一時チェックのみが [repeatChunkIds] から解除される。
  * @property skipOriginalSilence 元音声のチャンク間の無音区間（`[chunk.endMs, nextChunk.startMs)`）をスキップして次のチャンクへ進むかどうか。
+ * @property repeatWholeFile ファイル全体をリピートするかどうか（リピートバッジの長押しで確認後 ON、もう一度タップで OFF。チャンクの選択やチェックボックスは変更しない）。
  */
 data class PracticeSettings(
     val loop: LoopMode = LoopMode.Off,
@@ -103,4 +104,5 @@ data class PracticeSettings(
     val repeatCheckedOnly: Boolean = false,
     val temporaryRepeatChunkId: ChunkId? = null,
     val skipOriginalSilence: Boolean = false,
+    val repeatWholeFile: Boolean = false,
 )

@@ -340,7 +340,11 @@ class ChunkScheduler(
             practiceSettings.loop !is LoopMode.AbRange &&
             practiceSettings.loop !is LoopMode.ChunkRange
         ) {
-            val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
+            val repeatChunks = if (practiceSettings.repeatWholeFile) {
+                emptyList()
+            } else {
+                chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
+            }
             if (repeatChunks.isNotEmpty()) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 val lastRepeatChunk = repeatChunks.last()
@@ -379,6 +383,24 @@ class ChunkScheduler(
     }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
+        if (playbackState == Player.STATE_ENDED && practiceSettings.repeatWholeFile) {
+            singleChunkPlaybackId = null
+            pausedAtChunkEndPositionMs = null
+            if (_autoPauseEndsAtMs.value != null) {
+                cancelAutoPause()
+            }
+            val firstChunk = chunks.firstOrNull { !it.isSkipped } ?: chunks.firstOrNull()
+            val targetMs = if (practiceSettings.skipOriginalSilence && firstChunk != null) {
+                firstChunk.startMs
+            } else {
+                0L
+            }
+            seekInternal(targetMs)
+            updateState(chunkId = findChunkAt(targetMs)?.id, autoPauseEndsAt = null)
+            exoPlayer.play()
+            reschedule()
+            return
+        }
         if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) {
             singleChunkPlaybackId = null
             pausedAtChunkEndPositionMs = null
@@ -405,9 +427,11 @@ class ChunkScheduler(
         val oldAutoPause = practiceSettings.autoPause
         val oldRepeatChunkIds = practiceSettings.repeatChunkIds
         val oldRepeatCheckedOnly = practiceSettings.repeatCheckedOnly
+        val oldRepeatWholeFile = practiceSettings.repeatWholeFile
         practiceSettings = newSettings
 
-        if (newSettings.repeatChunkIds.size >= 2 ||
+        if (newSettings.repeatWholeFile ||
+            newSettings.repeatChunkIds.size >= 2 ||
             (newSettings.temporaryRepeatChunkId != null && newSettings.repeatCheckedOnly)
         ) {
             singleChunkPlaybackId = null
@@ -426,7 +450,8 @@ class ChunkScheduler(
 
         if (_autoPauseEndsAtMs.value != null) {
             if (oldRepeatChunkIds != newSettings.repeatChunkIds ||
-                oldRepeatCheckedOnly != newSettings.repeatCheckedOnly
+                oldRepeatCheckedOnly != newSettings.repeatCheckedOnly ||
+                oldRepeatWholeFile != newSettings.repeatWholeFile
             ) {
                 autoPausedChunk?.let { chunk ->
                     pendingPostPauseAction = determinePostChunkAction(chunk)
@@ -446,7 +471,11 @@ class ChunkScheduler(
             newSettings.loop !is LoopMode.AbRange &&
             newSettings.loop !is LoopMode.ChunkRange
         ) {
-            val repeatChunks = chunks.filter { it.id in newSettings.repeatChunkIds && !it.isSkipped }
+            val repeatChunks = if (newSettings.repeatWholeFile) {
+                emptyList()
+            } else {
+                chunks.filter { it.id in newSettings.repeatChunkIds && !it.isSkipped }
+            }
             if (repeatChunks.size >= 2) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 if (repeatChunks.none { nowMs in it.startMs until it.endMs }) {
@@ -516,7 +545,11 @@ class ChunkScheduler(
         val useSkipFilter = chunks.any { it.isSkipped }
         val useLanguageFilter = filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)
         val useBookmarkFilter = practiceSettings.bookmarksOnly && chunks.any(::isChunkBookmarked)
-        val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
+        val repeatChunks = if (practiceSettings.repeatWholeFile) {
+            emptyList()
+        } else {
+            chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
+        }
         val hasSelectedRepeatChunks = repeatChunks.isNotEmpty()
         if (singleChunkPlaybackId == null &&
             loopMode !is LoopMode.ChunkRange &&
@@ -656,6 +689,7 @@ class ChunkScheduler(
         val effectivePosMs = if (minBoundaryAfterMs != null) max(nowMs, minBoundaryAfterMs) else nowMs
         val ownerIndex = chunks.indexOfLast { it.startMs <= effectivePosMs }
         val owner = chunks.getOrNull(ownerIndex)
+        val shouldWrapAtEnd = useBookmarkFilter || practiceSettings.repeatWholeFile
         if (owner != null &&
             matchesPlaybackFilter(
                 chunk = owner,
@@ -678,7 +712,7 @@ class ChunkScheduler(
             // owner 直後の空白区間 [owner.endMs, nextChunk.startMs) を再生中
             val nextChunk = chunks.getOrNull(ownerIndex + 1)
             if (nextChunk == null) {
-                if (useBookmarkFilter && exoPlayer.playWhenReady) {
+                if (shouldWrapAtEnd && exoPlayer.playWhenReady) {
                     val firstMatching = chunks.firstOrNull { candidate ->
                         matchesPlaybackFilter(
                             chunk = candidate,
@@ -720,7 +754,7 @@ class ChunkScheduler(
                     )
                 }
                 val targetMatching = nextMatching
-                    ?: if (wrapToFirstMatchingIfNoNext || useBookmarkFilter) firstMatching else null
+                    ?: if (wrapToFirstMatchingIfNoNext || shouldWrapAtEnd) firstMatching else null
                 if (targetMatching != null) {
                     seekInternal(targetMatching.startMs)
                     updateState(chunkId = targetMatching.id, autoPauseEndsAt = null)
@@ -820,7 +854,7 @@ class ChunkScheduler(
                 )
             }
             val targetMatching = nextMatching
-                ?: if (wrapToFirstMatchingIfNoNext || useBookmarkFilter) firstMatching else null
+                ?: if (wrapToFirstMatchingIfNoNext || shouldWrapAtEnd) firstMatching else null
 
             if (targetMatching != null) {
                 seekInternal(targetMatching.startMs)
@@ -960,7 +994,7 @@ class ChunkScheduler(
             )
             return
         }
-        if (useBookmarkFilter) {
+        if (useBookmarkFilter || practiceSettings.repeatWholeFile) {
             val firstMatching = chunks.firstOrNull { candidate ->
                 matchesPlaybackFilter(
                     chunk = candidate,
@@ -1006,7 +1040,7 @@ class ChunkScheduler(
                     PostChunkAction.PauseAtChunkEnd(allowsAutoPause = false)
                 }
             }
-            return if (chunk.id in practiceSettings.repeatChunkIds && practiceSettings.repeatCheckedOnly) {
+            return if (!practiceSettings.repeatWholeFile && chunk.id in practiceSettings.repeatChunkIds && practiceSettings.repeatCheckedOnly) {
                 PostChunkAction.SeekToChunk(chunk)
             } else {
                 singleChunkPlaybackId = null
@@ -1047,8 +1081,13 @@ class ChunkScheduler(
 
         // チェックボックス（拡大波形の長押し）で選択したチャンク（repeatChunkIds）を時系列の順に再生する。
         // 最後の選択チャンクのあとは、リピートが ON なら最初へ戻り、OFF なら一時停止する。
+        // ただしファイル全体リピート（repeatWholeFile）が ON の間はチェックボックスの状態を変更せずに全チャンク再生を行う。
         // LoopMode.SingleChunk が残っていても複数選択チャンクの順次再生・リピートが妨げられないよう SingleChunk より先に判定する。
-        val repeatChunks = chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
+        val repeatChunks = if (practiceSettings.repeatWholeFile) {
+            emptyList()
+        } else {
+            chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
+        }
         if (repeatChunks.isNotEmpty()) {
             val selectedIndex = repeatChunks.indexOfFirst { it.id == chunk.id }
             val nextTarget: Chunk? = if (selectedIndex >= 0) {
@@ -1080,6 +1119,7 @@ class ChunkScheduler(
         val useSkipFilter = chunks.any { it.isSkipped }
         val useLanguageFilter = filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)
         val useBookmarkFilter = practiceSettings.bookmarksOnly && chunks.any(::isChunkBookmarked)
+        val shouldWrapAtEnd = useBookmarkFilter || practiceSettings.repeatWholeFile
         if (useSkipFilter || useLanguageFilter || useBookmarkFilter) {
             val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
             val nextChunk = if (currentIndex >= 0) {
@@ -1097,7 +1137,7 @@ class ChunkScheduler(
             }
 
             if (nextChunk == null) {
-                return if (useBookmarkFilter && firstMatching != null) {
+                return if (shouldWrapAtEnd && firstMatching != null) {
                     PostChunkAction.SeekToChunk(firstMatching)
                 } else {
                     PostChunkAction.AdvanceAfter(chunk.endMs)
@@ -1140,21 +1180,22 @@ class ChunkScheduler(
             }
             return when {
                 nextMatching != null -> PostChunkAction.SeekToChunk(nextMatching)
-                useBookmarkFilter && firstMatching != null -> PostChunkAction.SeekToChunk(firstMatching)
+                shouldWrapAtEnd && firstMatching != null -> PostChunkAction.SeekToChunk(firstMatching)
                 else -> PostChunkAction.PauseAtChunkEnd(allowsAutoPause = true)
             }
         }
 
-        if (practiceSettings.skipOriginalSilence) {
-            val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
-            val nextChunk = if (currentIndex >= 0) {
-                chunks.getOrNull(currentIndex + 1)
-            } else {
-                chunks.firstOrNull { it.startMs >= chunk.endMs }
-            }
-            if (nextChunk != null && nextChunk.startMs > chunk.endMs) {
-                return PostChunkAction.SeekToChunk(nextChunk)
-            }
+        val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
+        val nextChunk = if (currentIndex >= 0) {
+            chunks.getOrNull(currentIndex + 1)
+        } else {
+            chunks.firstOrNull { it.startMs >= chunk.endMs }
+        }
+        if (nextChunk == null && practiceSettings.repeatWholeFile && chunks.isNotEmpty()) {
+            return PostChunkAction.SeekToChunk(chunks.first())
+        }
+        if (practiceSettings.skipOriginalSilence && nextChunk != null && nextChunk.startMs > chunk.endMs) {
+            return PostChunkAction.SeekToChunk(nextChunk)
         }
 
         return PostChunkAction.AdvanceAfter(chunk.endMs)

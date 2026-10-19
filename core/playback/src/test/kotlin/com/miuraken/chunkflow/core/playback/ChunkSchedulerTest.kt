@@ -1184,6 +1184,39 @@ class ChunkSchedulerTest {
         assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
     }
 
+    @Test
+    fun `RepeatWholeFile_チェックボックス選択があっても変更せず全チャンクを再生して末尾から先頭へループする`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 1_500L, origin = ChunkOrigin.AUTO)
+        val c2 = Chunk(ChunkId(2L), startMs = 1_500L, endMs = 3_000L, origin = ChunkOrigin.AUTO)
+        val c3 = Chunk(ChunkId(3L), startMs = 3_000L, endMs = 4_500L, origin = ChunkOrigin.AUTO)
+        scheduler.setChunks(listOf(c1, c2, c3))
+        practiceController.update {
+            it.copy(
+                repeatChunkIds = setOf(c1.id),
+                repeatCheckedOnly = false,
+                repeatWholeFile = true,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        pumpLoopers()
+        assertEquals(c1.id, scheduler.currentChunkId.value)
+
+        // c1 のあと一時停止せず c2 -> c3 へ進む
+        runUntil { scheduler.currentChunkId.value == c2.id }
+        assertEquals(c2.id, scheduler.currentChunkId.value)
+
+        runUntil { scheduler.currentChunkId.value == c3.id }
+        assertEquals(c3.id, scheduler.currentChunkId.value)
+
+        // 末尾チャンク c3 の終端に達したら先頭 c1 へ戻って再生を継続し、repeatChunkIds は変更されない
+        runUntil { scheduler.currentChunkId.value == c1.id }
+        assertEquals(c1.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(setOf(c1.id), practiceController.settings.value.repeatChunkIds)
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,
