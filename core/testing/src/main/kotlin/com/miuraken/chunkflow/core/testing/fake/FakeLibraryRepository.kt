@@ -227,6 +227,29 @@ class FakeLibraryRepository(
         return true
     }
 
+    override suspend fun createRealFolder(
+        coursePath: String,
+        languages: LanguagePair,
+        treeUri: String?,
+    ): Boolean {
+        val trimmed = coursePath.trim().trim('/')
+        if (trimmed.isEmpty()) return false
+        courseFolders.update { list ->
+            val existing = list.firstOrNull { it.coursePath == trimmed }
+            val resolvedTreeUri = existing?.treeUri?.takeIf { it.isNotBlank() }
+                ?: treeUri?.takeIf { it.isNotBlank() }
+            list.filterNot { it.coursePath == trimmed } +
+                LibraryCourseFolder(
+                    coursePath = trimmed,
+                    kind = LibraryFolderKind.LOCAL_DIRECTORY,
+                    languagePair = languages,
+                    treeUri = resolvedTreeUri,
+                    lastScannedAtEpochMs = existing?.lastScannedAtEpochMs ?: 0L,
+                )
+        }
+        return true
+    }
+
     override suspend fun moveItemsToCourse(
         mediaIds: Set<MediaId>,
         targetCourse: String,

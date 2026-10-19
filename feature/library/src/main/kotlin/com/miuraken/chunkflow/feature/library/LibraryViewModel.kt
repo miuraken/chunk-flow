@@ -321,6 +321,8 @@ data class PendingImportConfig(
     ),
     val initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     val treeUri: Uri? = null,
+    val parentFolderName: String? = null,
+    val parentDirectoryUri: String? = null,
 )
 
 /**
@@ -861,28 +863,132 @@ data class LibraryUiState(
     }
 
     /**
-     * ファイル追加時の格納先フォルダ選択プルダウンに表示する既存フォルダ名の一覧。
+     * ファイル追加時の格納先フォルダ選択プルダウンに表示するフォルダ名の一覧。
      *
-     * 先頭には必ず既定の仮想フォルダ `"default"`（[LibraryCourseFolder.DEFAULT_IMPORTED_COURSE]）を置き、
-     * 続いて既存のフォルダ名を自然昇順で並べる。
+     * 追加対象ファイルの親フォルダ名（存在する場合）を先頭に置き、
+     * 続いて既存の仮想フォルダのみを自然昇順で並べる（他の実フォルダは含めない）。
      */
     val availableImportFolders: List<String>
         get() {
-            val defaultFolder = LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
-            val folderNames = linkedSetOf<String>()
+            val parentFolder = pendingImportConfig?.parentFolderName
+                ?.trim()
+                ?.trim('/')
+                ?.takeIf { it.isNotBlank() }
+            val virtualFolderNames = linkedSetOf<String>()
             for (folder in courseFolders) {
                 val path = folder.coursePath.trim('/').takeIf { it.isNotBlank() } ?: continue
-                folderNames += path
+                if (!isRealFolder(path)) {
+                    virtualFolderNames += path
+                }
             }
             for (model in items) {
                 val path = effectivePathOf(model) ?: continue
-                folderNames += path
+                if (!isRealFolder(path)) {
+                    virtualFolderNames += path
+                }
             }
-            val sortedOthers = folderNames
-                .filterNot { it == defaultFolder }
+            val sortedVirtuals = virtualFolderNames
+                .filterNot { it == parentFolder }
                 .sortedWith(::compareFileNamesAscending)
-            return listOf(defaultFolder) + sortedOthers
+            return if (parentFolder != null) {
+                listOf(parentFolder) + sortedVirtuals
+            } else {
+                sortedVirtuals
+            }
         }
+
+    /**
+     * 「ファイルを追加」アイコンタップ時にファイル選択ダイアログで初期表示するディレクトリの SAF ドキュメント URI 文字列を返す。
+     *
+     * - フォルダタブで実フォルダの内部にいる場合: その実フォルダのディレクトリ
+     * - フォルダタブで仮想フォルダの内部にいる場合: そのフォルダに最後に追加されたファイルのあったディレクトリ
+     * - 上記以外、または対象ディレクトリが見当たらない場合: sdcard のルート
+     */
+    fun resolveInitialImportDirectoryUriString(
+        directoryExists: (String) -> Boolean = ::defaultDirectoryExists,
+    ): String {
+        if (selectedTab != LibraryViewTab.FOLDERS) {
+            return SDCARD_ROOT_DOCUMENT_URI_STRING
+        }
+        val dirPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+            ?: return SDCARD_ROOT_DOCUMENT_URI_STRING
+
+        val resolved: Pair<String, String?>? = if (isRealFolder(dirPath)) {
+            resolveRealFolderDirectoryUriAndLocalPath(dirPath)
+        } else {
+            val latestItem = itemsInDirectoryTree(dirPath).fold(null as LibraryItemUiModel?) { acc, elem ->
+                if (acc == null || elem.item.importedAtEpochMs >= acc.item.importedAtEpochMs) {
+                    elem
+                } else {
+                    acc
+                }
+            }?.item
+            latestItem?.let { item ->
+                resolveParentSafDirectoryUriAndLocalPathFromFile(
+                    localFilePath = item.localFilePath,
+                    sourceUri = item.sourceUri,
+                )
+            }
+        }
+
+        val (safUri, localPath) = resolved ?: return SDCARD_ROOT_DOCUMENT_URI_STRING
+        return if (localPath == null || directoryExists(localPath)) {
+            safUri
+        } else {
+            SDCARD_ROOT_DOCUMENT_URI_STRING
+        }
+    }
+
+    private fun resolveRealFolderDirectoryUriAndLocalPath(dirPath: String): Pair<String, String?>? {
+        val exactTreeUri = courseFolders.firstOrNull { folder ->
+            folder.coursePath.trim('/') == dirPath && !folder.treeUri.isNullOrBlank()
+        }?.treeUri
+        if (exactTreeUri != null) {
+            resolveSafDirectoryUriAndLocalPathFromFolderUri(exactTreeUri)?.let { return it }
+        }
+
+        val ancestorFolder = courseFolders
+            .filter { folder ->
+                val path = folder.coursePath.trim('/')
+                path.isNotBlank() && dirPath.startsWith("$path/") && !folder.treeUri.isNullOrBlank()
+            }
+            .maxByOrNull { it.coursePath.trim('/').length }
+        val ancestorTreeUri = ancestorFolder?.treeUri
+        if (ancestorFolder != null && ancestorTreeUri != null) {
+            val basePath = ancestorFolder.coursePath.trim('/')
+            val subPath = dirPath.removePrefix("$basePath/").trim('/')
+            resolveSafDirectoryUriAndLocalPathFromFolderUri(
+                uriString = ancestorTreeUri,
+                subPath = subPath,
+            )?.let { return it }
+        }
+
+        val directItems = items.filter { effectivePathOf(it) == dirPath }
+        for (model in directItems) {
+            resolveParentSafDirectoryUriAndLocalPathFromFile(
+                localFilePath = model.item.localFilePath,
+                sourceUri = model.item.sourceUri,
+            )?.let { return it }
+        }
+
+        for (model in itemsInDirectoryTree(dirPath)) {
+            val resolved = resolveParentSafDirectoryUriAndLocalPathFromFile(
+                localFilePath = model.item.localFilePath,
+                sourceUri = model.item.sourceUri,
+            ) ?: continue
+            val itemCourse = effectivePathOf(model) ?: continue
+            if (itemCourse == dirPath) return resolved
+            if (itemCourse.startsWith("$dirPath/")) {
+                val relSuffix = "/" + itemCourse.removePrefix("$dirPath/").trim('/')
+                val localPath = resolved.second
+                if (localPath != null && localPath.endsWith(relSuffix)) {
+                    val trimmedLocal = localPath.removeSuffix(relSuffix).ifEmpty { "/" }
+                    return localDirectoryPathToSafDocumentUriString(trimmedLocal) to trimmedLocal
+                }
+            }
+        }
+        return null
+    }
 
     /**
      * 複数選択モードで対象となる全教材 ID の一覧（選択中のディレクトリ配下の教材と選択中の教材、重複なし）。
@@ -1118,7 +1224,11 @@ sealed interface LibraryEvent {
     ) : LibraryEvent
 
     /** SAF で選択された URI の一覧を取り込む。 */
-    data class ImportUris(val uris: List<Uri>) : LibraryEvent
+    data class ImportUris(
+        val uris: List<Uri>,
+        val parentFolderName: String? = null,
+        val parentDirectoryUri: String? = null,
+    ) : LibraryEvent
 
     /** 取り込みフォルダの設定ダイアログ（コース名・対象言語・ベース言語）を確定して実行する。 */
     data class ConfirmImportConfig(
@@ -1727,11 +1837,24 @@ class LibraryViewModel @Inject constructor(
 
             is LibraryEvent.ImportUris -> {
                 if (event.uris.isNotEmpty()) {
+                    val firstUri = event.uris.first()
+                    val resolvedParentFolder = event.parentFolderName
+                        ?.trim()
+                        ?.trim('/')
+                        ?.takeIf { it.isNotBlank() }
+                        ?: extractParentFolderNameFromUri(firstUri)
+                    val resolvedParentDirUri = event.parentDirectoryUri
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: extractParentDirectoryUriFromFileUri(firstUri)
+                    val initialCourse = resolvedParentFolder ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
                     pendingImportConfig.value = PendingImportConfig(
                         uris = event.uris,
-                        initialCourse = LibraryCourseFolder.DEFAULT_IMPORTED_COURSE,
+                        initialCourse = initialCourse,
                         initialLanguages = defaultLanguagePair,
                         treeUri = null,
+                        parentFolderName = resolvedParentFolder,
+                        parentDirectoryUri = resolvedParentDirUri,
                     )
                 }
             }
@@ -1761,12 +1884,19 @@ class LibraryViewModel @Inject constructor(
                         sttOverride = event.sttOverride,
                     )
                 } else {
-                    val targetCourse = normalizedCourse ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+                    val targetCourse = normalizedCourse
+                        ?: config.parentFolderName
+                        ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
+                    val parentFolder = config.parentFolderName?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
+                    val isParentRealFolder = parentFolder != null &&
+                        targetCourse.trim('/') == parentFolder
                     importUris(
                         uris = config.uris,
                         course = targetCourse,
                         languages = normalizedLanguages,
                         sttOverride = event.sttOverride,
+                        treatAsRealFolder = isParentRealFolder,
+                        parentDirectoryUri = if (isParentRealFolder) config.parentDirectoryUri else null,
                     )
                 }
             }
@@ -2201,6 +2331,12 @@ class LibraryViewModel @Inject constructor(
             is LibraryEvent.CreateVirtualFolder -> {
                 val cleanFolder = event.folderName.trim().trim('/')
                 if (cleanFolder.isNotEmpty()) {
+                    if (pendingImportConfig.value?.parentFolderName?.trim('/') == cleanFolder) {
+                        pendingImportConfig.value = pendingImportConfig.value?.copy(
+                            parentFolderName = null,
+                            parentDirectoryUri = null,
+                        )
+                    }
                     val normalizedTarget = event.languages.target.value.trim().lowercase().ifBlank { "en" }
                     val normalizedBase = event.languages.base?.value?.trim()?.lowercase()?.ifBlank { null }
                     val normalizedPair = LanguagePair(
@@ -2650,6 +2786,8 @@ class LibraryViewModel @Inject constructor(
         course: String?,
         languages: LanguagePair,
         sttOverride: ItemSttOverride = ItemSttOverride.NONE,
+        treatAsRealFolder: Boolean = false,
+        parentDirectoryUri: String? = null,
     ) {
         if (uris.isEmpty()) return
         val effectiveCourse = course?.trim()?.takeIf { it.isNotEmpty() }
@@ -2657,10 +2795,18 @@ class LibraryViewModel @Inject constructor(
         val normalizedFolder = effectiveCourse.trim('/').ifBlank { LibraryCourseFolder.DEFAULT_IMPORTED_COURSE }
         importJob?.cancel()
         importJob = viewModelScope.launch {
-            libraryRepository.createVirtualFolder(
-                coursePath = effectiveCourse,
-                languages = languages,
-            )
+            if (treatAsRealFolder) {
+                libraryRepository.createRealFolder(
+                    coursePath = effectiveCourse,
+                    languages = languages,
+                    treeUri = parentDirectoryUri,
+                )
+            } else {
+                libraryRepository.createVirtualFolder(
+                    coursePath = effectiveCourse,
+                    languages = languages,
+                )
+            }
             libraryRepository.import(
                 uris = uris,
                 course = effectiveCourse,

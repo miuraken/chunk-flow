@@ -4,9 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.LruCache
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -241,6 +244,24 @@ private fun formatEpochMsLocal(epochMs: Long): String = runCatching {
         .format(LAST_ACCESSED_FORMATTER)
 }.getOrDefault("")
 
+internal class OpenMultipleAudioDocumentsInput(
+    val mimeTypes: Array<String>,
+    val initialDirectoryUri: Uri? = null,
+)
+
+internal object OpenMultipleAudioDocumentsContract :
+    ActivityResultContract<OpenMultipleAudioDocumentsInput, List<Uri>>() {
+    private val delegate = ActivityResultContracts.OpenMultipleDocuments()
+
+    override fun createIntent(context: Context, input: OpenMultipleAudioDocumentsInput): Intent = delegate.createIntent(context, input.mimeTypes).apply {
+        if (input.initialDirectoryUri != null) {
+            putExtra(DocumentsContract.EXTRA_INITIAL_URI, input.initialDirectoryUri)
+        }
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): List<Uri> = delegate.parseResult(resultCode, intent)
+}
+
 /**
  * ライブラリ画面の Route。画面遷移のコールバックと SAF ピッカー（フォルダ指定・ファイル選択）を扱い、[LibraryScreen] に状態を渡す。
  */
@@ -287,10 +308,17 @@ fun LibraryRoute(
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments(),
+        contract = OpenMultipleAudioDocumentsContract,
     ) { uris ->
         if (uris.isNotEmpty()) {
-            viewModel.onEvent(LibraryEvent.ImportUris(uris))
+            val firstUri = uris.first()
+            viewModel.onEvent(
+                LibraryEvent.ImportUris(
+                    uris = uris,
+                    parentFolderName = extractParentFolderNameFromUri(firstUri, context.contentResolver),
+                    parentDirectoryUri = extractParentDirectoryUriFromFileUri(firstUri, context.contentResolver),
+                ),
+            )
         }
     }
 
@@ -300,9 +328,17 @@ fun LibraryRoute(
             when (event) {
                 LibraryEvent.RequestImportDirectory -> directoryPickerLauncher.launch(null)
 
-                LibraryEvent.RequestImport -> filePickerLauncher.launch(
-                    arrayOf("audio/*"),
-                )
+                LibraryEvent.RequestImport -> {
+                    val initialDirUri = runCatching {
+                        state.resolveInitialImportDirectoryUriString().toUri()
+                    }.getOrNull()
+                    filePickerLauncher.launch(
+                        OpenMultipleAudioDocumentsInput(
+                            mimeTypes = arrayOf("audio/*"),
+                            initialDirectoryUri = initialDirUri,
+                        ),
+                    )
+                }
 
                 is LibraryEvent.OpenItem -> {
                     viewModel.onEvent(event)

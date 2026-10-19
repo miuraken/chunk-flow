@@ -678,6 +678,29 @@ class DefaultLibraryRepository(
         true
     }
 
+    override suspend fun createRealFolder(
+        coursePath: String,
+        languages: LanguagePair,
+        treeUri: String?,
+    ): Boolean = withContext(ioDispatcher) {
+        val normalizedCourse = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() }
+            ?: return@withContext false
+        val existing = courseFolderDao.getByPath(normalizedCourse)
+        val resolvedTreeUri = existing?.treeUri?.takeIf { it.isNotBlank() }
+            ?: treeUri?.takeIf { it.isNotBlank() }
+        courseFolderDao.upsert(
+            CourseFolderEntity(
+                coursePath = normalizedCourse,
+                kind = LibraryFolderKind.LOCAL_DIRECTORY.name,
+                targetLang = languages.target.value,
+                baseLang = languages.base?.value,
+                treeUri = resolvedTreeUri,
+                lastScannedAt = existing?.lastScannedAt ?: clock(),
+            ),
+        )
+        true
+    }
+
     override suspend fun moveItemsToCourse(
         mediaIds: Set<MediaId>,
         targetCourse: String,
@@ -1299,6 +1322,7 @@ class DefaultLibraryRepository(
             mediaItemDao.upsert(
                 current.copy(
                     storageState = AudioStorageState.APP_MANAGED.name,
+                    sourceUri = uri.toString(),
                     localFilePath = null,
                 ),
             )
@@ -1343,6 +1367,7 @@ class DefaultLibraryRepository(
             mp3HasHeader = mp3Info?.hasHeader ?: false,
             mp3SamplesPerFrame = mp3Info?.samplesPerFrame ?: Mp3HeaderInfo.SAMPLES_PER_FRAME_MPEG1,
             mp3EncoderDelay = mp3Info?.encoderDelay ?: Mp3HeaderInfo.DEFAULT_LAME_ENCODER_DELAY,
+            sourceUri = uri.toString(),
         )
         val initialState = ItemStateEntity(
             mediaId = newMediaId.value,

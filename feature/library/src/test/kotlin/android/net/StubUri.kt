@@ -9,6 +9,7 @@ import sun.misc.Unsafe
 internal abstract class StubUriBase : Uri()
 
 internal class StubUri private constructor() : StubUriBase() {
+    var rawUri: String? = null
     override fun isHierarchical(): Boolean = true
     override fun isOpaque(): Boolean = false
     override fun isRelative(): Boolean = false
@@ -31,16 +32,18 @@ internal class StubUri private constructor() : StubUriBase() {
     override fun getPathSegments(): MutableList<String> = mutableListOf("1")
     override fun getLastPathSegment(): String = "1"
     override fun buildUpon(): Builder = throw UnsupportedOperationException()
-    override fun toString(): String = "content://media/1"
+    override fun toString(): String = rawUri ?: "content://media/1"
     override fun describeContents(): Int = 0
     override fun writeToParcel(out: Parcel, flags: Int) = Unit
 
     companion object {
-        fun create(): Uri {
+        fun create(uriString: String = "content://media/1"): Uri {
             val field = Unsafe::class.java.getDeclaredField("theUnsafe")
             field.isAccessible = true
             val unsafe = field.get(null) as Unsafe
-            return unsafe.allocateInstance(StubUri::class.java) as Uri
+            val instance = unsafe.allocateInstance(StubUri::class.java) as StubUri
+            instance.rawUri = uriString
+            return instance
         }
     }
 }

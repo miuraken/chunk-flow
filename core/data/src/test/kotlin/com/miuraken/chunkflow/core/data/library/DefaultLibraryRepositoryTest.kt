@@ -1354,6 +1354,15 @@ class DefaultLibraryRepositoryTest {
         val movedItem = assertNotNull(repo.observeItem(mediaId).first())
         assertEquals("HSK4/Part1", movedItem.course)
         assertEquals(targetLangs, movedItem.languagePair)
+        assertEquals(uri.toString(), movedItem.sourceUri)
+
+        val realLangs = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+        val parentDirUri = "content://com.android.externalstorage.documents/document/primary%3AMusic%2FKorean"
+        assertTrue(repo.createRealFolder("  Korean  ", realLangs, treeUri = parentDirUri))
+        val realFolder = repo.observeCourseFolders().first().first { it.coursePath == "Korean" }
+        assertEquals(LibraryFolderKind.LOCAL_DIRECTORY, realFolder.kind)
+        assertEquals(realLangs, realFolder.languagePair)
+        assertEquals(parentDirUri, realFolder.treeUri)
     }
 
     private fun registerTreeDirectoryWithChunkFlowDir(

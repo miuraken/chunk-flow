@@ -301,6 +301,7 @@ internal fun ImportConfigDialog(
         mutableStateOf(
             if (isFileImport) {
                 config.initialCourse?.takeIf { it.isNotBlank() }
+                    ?: config.parentFolderName?.takeIf { it.isNotBlank() }
                     ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
             } else {
                 config.initialCourse.orEmpty()
@@ -317,9 +318,12 @@ internal fun ImportConfigDialog(
     var showNewVirtualFolderDialog by rememberSaveable { mutableStateOf(false) }
     var newVirtualFolderName by rememberSaveable { mutableStateOf("") }
 
-    val folderOptions = remember(availableFolders, courseText) {
+    val folderOptions = remember(config, availableFolders, courseText) {
         buildList {
-            add(LibraryCourseFolder.DEFAULT_IMPORTED_COURSE)
+            val parentFolder = config.parentFolderName?.trim()?.takeIf { it.isNotBlank() }
+            if (parentFolder != null) {
+                add(parentFolder)
+            }
             availableFolders.forEach { folder ->
                 val trimmed = folder.trim()
                 if (trimmed.isNotBlank() && trimmed !in this) {

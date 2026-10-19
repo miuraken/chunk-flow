@@ -1314,10 +1314,98 @@ class LibraryViewModelTest {
         assertTrue(state.isRealFolder("韓国語講座/初級"))
         assertFalse(state.isRealFolder("マイ単語帳"))
 
-        // ファイル追加時の利用可能フォルダ一覧には先頭に "default" が含まれる
-        assertEquals("default", state.availableImportFolders.first())
-        assertTrue("韓国語講座" in state.availableImportFolders)
-        assertTrue("マイ単語帳" in state.availableImportFolders)
+        // ファイル追加時の利用可能フォルダ一覧には、ファイルの親フォルダ名と既存の仮想フォルダのみが含まれ、他の実フォルダは含まれない
+        val fileInParentUri = StubUri.create(
+            "content://com.android.externalstorage.documents/document/primary%3AMusic%2FNHK%E3%83%A9%E3%82%B8%E3%82%AA%2F01.mp3",
+        )
+        viewModel.onEvent(LibraryEvent.ImportUris(listOf(fileInParentUri)))
+        val stateAfterImport = viewModel.uiState.value
+        assertEquals("NHKラジオ", stateAfterImport.pendingImportConfig?.initialCourse)
+        assertEquals("NHKラジオ", stateAfterImport.pendingImportConfig?.parentFolderName)
+        assertEquals(listOf("NHKラジオ", "マイ単語帳"), stateAfterImport.availableImportFolders)
+        assertFalse("韓国語講座" in stateAfterImport.availableImportFolders)
+
+        // 親ディレクトリ（NHKラジオ）を選択して確定すると、仮想フォルダではなく実フォルダとして登録される
+        viewModel.onEvent(
+            LibraryEvent.ConfirmImportConfig(
+                course = "NHKラジオ",
+                languages = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+            ),
+        )
+        assertTrue(viewModel.uiState.value.isRealFolder("NHKラジオ"))
+    }
+
+    @Test
+    fun `フォルダ内部からのファイル追加_実フォルダと仮想フォルダとディレクトリ不在時の初期ディレクトリURI解決`() = runTest {
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(
+                SampleMaterials.jaKo.item.copy(
+                    id = com.miuraken.chunkflow.core.model.MediaId("v-old"),
+                    course = "マイ単語帳",
+                    importedAtEpochMs = 1_000L,
+                    sourceUri = "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fold.mp3",
+                ),
+                SampleMaterials.jaKo.item.copy(
+                    id = com.miuraken.chunkflow.core.model.MediaId("v-latest"),
+                    course = "マイ単語帳",
+                    importedAtEpochMs = 5_000L,
+                    sourceUri = "content://com.android.externalstorage.documents/document/primary%3AMusic%2FPimsleur%2Flatest.mp3",
+                ),
+            ),
+        )
+        repo.createRealFolder(
+            coursePath = "韓国語講座",
+            languages = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+            treeUri = "content://com.android.externalstorage.documents/tree/primary%3AAudiobooks%2FKoreanCourse",
+        )
+        repo.createVirtualFolder(
+            "マイ単語帳",
+            LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        repo.createVirtualFolder(
+            "空の仮想フォルダ",
+            LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. ルート階層では sdcard ルートが返る
+        assertEquals(
+            SDCARD_ROOT_DOCUMENT_URI_STRING,
+            viewModel.uiState.value.resolveInitialImportDirectoryUriString(),
+        )
+
+        // 2. 実フォルダ内部ではその実フォルダのディレクトリ URI が返る
+        viewModel.onEvent(LibraryEvent.OpenDirectory("韓国語講座"))
+        assertEquals(
+            "content://com.android.externalstorage.documents/document/primary%3AAudiobooks%2FKoreanCourse",
+            viewModel.uiState.value.resolveInitialImportDirectoryUriString { true },
+        )
+        // ディレクトリが存在しない場合は sdcard ルートにフォールバックする
+        assertEquals(
+            SDCARD_ROOT_DOCUMENT_URI_STRING,
+            viewModel.uiState.value.resolveInitialImportDirectoryUriString { false },
+        )
+
+        // 3. 仮想フォルダ内部では最後に追加されたファイル（importedAtEpochMs が最大）の親ディレクトリ URI が返る
+        viewModel.onEvent(LibraryEvent.OpenDirectory("マイ単語帳"))
+        assertEquals(
+            "content://com.android.externalstorage.documents/document/primary%3AMusic%2FPimsleur",
+            viewModel.uiState.value.resolveInitialImportDirectoryUriString { true },
+        )
+        // 最後のファイルの親ディレクトリが存在しない場合は sdcard ルートにフォールバックする
+        assertEquals(
+            SDCARD_ROOT_DOCUMENT_URI_STRING,
+            viewModel.uiState.value.resolveInitialImportDirectoryUriString { false },
+        )
+
+        // 4. ファイルが1つもない仮想フォルダ内部では sdcard ルートが返る
+        viewModel.onEvent(LibraryEvent.OpenDirectory("空の仮想フォルダ"))
+        assertEquals(
+            SDCARD_ROOT_DOCUMENT_URI_STRING,
+            viewModel.uiState.value.resolveInitialImportDirectoryUriString { true },
+        )
     }
 
     @Test

@@ -96,6 +96,15 @@ interface LibraryRepository {
     ): Boolean = false
 
     /**
+     * 実フォルダ（ファイルシステム上の親ディレクトリに対応するコースフォルダ）を登録・更新する。
+     */
+    suspend fun createRealFolder(
+        coursePath: String,
+        languages: LanguagePair,
+        treeUri: String? = null,
+    ): Boolean = false
+
+    /**
      * 複数の教材を指定したコース（フォルダ）へ移動する。
      */
     suspend fun moveItemsToCourse(
