@@ -141,7 +141,7 @@ fun PlayerScreenSourceMissingErrorScreenshot() {
 fun PlayerScreenTranscriptionProgressScreenshot() {
     val sample = SampleMaterials.jaKo
     val item = sample.item
-    // 先頭の 2 件は文字起こし済み、3 件目を文字起こし中、残りは待機中にする
+    // 先頭の 2 件は文字起こし済み、3・4 件目は言語判定済み・文字起こし未完了、5 件目は未判定にする
     val chunks = sample.chunks.mapIndexed { index, chunk ->
         val transcript = sample.transcripts[chunk.id]
         val isTranscribed = index < 2
@@ -150,7 +150,7 @@ fun PlayerScreenTranscriptionProgressScreenshot() {
             startMs = chunk.startMs,
             endMs = chunk.endMs,
             text = if (isTranscribed) transcript?.text else null,
-            language = if (isTranscribed) transcript?.language else null,
+            language = if (index < 4) transcript?.language else null,
             textVariants = if (isTranscribed) transcript?.textVariants.orEmpty() else emptyMap(),
             origin = chunk.origin,
         )

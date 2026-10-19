@@ -895,9 +895,16 @@ private fun ZoomedWaveformCanvas(
         }
     }
 
-    // 波形画像の色分けに使うのはチャンクの時刻と言語だけなので、選択状態や文字起こしの本文が変わっても作り直さない
+    // 波形画像の色分けに使うのはチャンクの時刻・言語・文字起こし完了有無だけなので、選択状態や本文の内容が変わっても作り直さない
     val chunkColorKeys = remember(chunks) {
-        chunks.map { ChunkColorKey(startMs = it.startMs, endMs = it.endMs, language = it.language) }
+        chunks.map {
+            ChunkColorKey(
+                startMs = it.startMs,
+                endMs = it.endMs,
+                language = it.language,
+                isTranscribed = !it.text.isNullOrBlank(),
+            )
+        }
     }
 
     // 近傍画像の解像度と範囲（中心時刻の前後に解像度の 4 倍の幅）。範囲が変わらなければ作り直さない
@@ -946,6 +953,7 @@ private fun ZoomedWaveformCanvas(
                 baseWavePeakColor = baseWavePeakColor,
                 baseWaveRmsColor = baseWaveRmsColor,
                 dummyWaveColor = dummyWaveColor,
+                desaturateUntranscribedChunks = true,
             )
         }
     }
@@ -1000,6 +1008,7 @@ private fun ZoomedWaveformCanvas(
                 baseWavePeakColor = baseWavePeakColor,
                 baseWaveRmsColor = baseWaveRmsColor,
                 dummyWaveColor = dummyWaveColor,
+                desaturateUntranscribedChunks = true,
             )
         }
     }
@@ -1181,6 +1190,7 @@ private fun ZoomedWaveformCanvas(
                         baseWavePeakColor = baseWavePeakColor,
                         baseWaveRmsColor = baseWaveRmsColor,
                         dummyWaveColor = dummyWaveColor,
+                        desaturateUntranscribedChunks = true,
                     )
                 } else {
                     null
@@ -1350,12 +1360,37 @@ private fun ZoomedWaveformCanvas(
     )
 }
 
-/** 波形画像の色分けに使うチャンクの情報（時刻と言語）。これが変わったときだけ画像を作り直す。 */
+/** 波形画像の色分けに使うチャンクの情報（時刻・言語・文字起こし完了有無）。これが変わったときだけ画像を作り直す。 */
 private data class ChunkColorKey(
     val startMs: Long,
     val endMs: Long,
     val language: LanguageTag?,
+    val isTranscribed: Boolean = false,
 )
+
+/** 未文字起こしチャンクの波形を描画するときに残す彩度の割合（0.0 = 完全なグレースケール、1.0 = 元の色）。 */
+internal const val UNTRANSCRIBED_WAVEFORM_SATURATION: Float = 0.25f
+
+/**
+ * 波形の色 [color] の彩度を [saturationFactor]（`0f..1f`）に落とした色を返す。
+ *
+ * 知覚輝度（Rec.601: `0.299R + 0.587G + 0.114B`）に基づくグレースケール成分と元の RGB 成分を線形補間し、
+ * アルファ値はそのまま維持する。拡大波形で文字起こしがまだ完了していないチャンクの波形（「折れ線」部分）の
+ * 彩度を落として文字起こし済みチャンクと区別するために用いる。
+ */
+internal fun desaturateWaveformColor(
+    color: Color,
+    saturationFactor: Float = UNTRANSCRIBED_WAVEFORM_SATURATION,
+): Color {
+    val factor = saturationFactor.coerceIn(0f, 1f)
+    val gray = 0.299f * color.red + 0.587f * color.green + 0.114f * color.blue
+    return Color(
+        red = (gray + (color.red - gray) * factor).coerceIn(0f, 1f),
+        green = (gray + (color.green - gray) * factor).coerceIn(0f, 1f),
+        blue = (gray + (color.blue - gray) * factor).coerceIn(0f, 1f),
+        alpha = color.alpha,
+    )
+}
 
 /** 近傍画像の解像度 [levelMs]（その表示窓で画面幅いっぱいになる時間幅）と、描く時間範囲 [range]。 */
 private data class LocalStripSpec(
@@ -1531,6 +1566,9 @@ private class WaveformBitmapStrip(
 /**
  * 指定された時間範囲 `[startMs, endMs]` の波形を、言語役割別の色（ベース言語: 青、対象言語: 赤、不明領域: グレイ）で
  * アルファチャンネル付き [ImageBitmap] ストリップとしてレンダリングする。
+ *
+ * [desaturateUntranscribedChunks] が `true` のとき、文字起こしがまだ完了していないチャンク（`chunk.text.isNullOrBlank()`）の
+ * 波形バーの彩度を [desaturateWaveformColor] で落として文字起こし済みチャンクと区別する。
  */
 private fun renderWaveformBitmapStrip(
     waveform: Waveform?,
@@ -1548,6 +1586,7 @@ private fun renderWaveformBitmapStrip(
     baseWavePeakColor: Color,
     baseWaveRmsColor: Color,
     dummyWaveColor: Color,
+    desaturateUntranscribedChunks: Boolean = false,
 ): WaveformBitmapStrip {
     val safeWidthPx = totalWidthPx.coerceIn(1, MAX_TOTAL_STRIP_WIDTH_PX)
     val safeHeightPx = heightPx.coerceAtLeast(1)
@@ -1600,6 +1639,30 @@ private fun renderWaveformBitmapStrip(
         color = baseWaveRmsColor
         isAntiAlias = true
     }
+    val untranscribedUnknownPeakPaint = Paint().apply {
+        color = desaturateWaveformColor(unknownWavePeakColor)
+        isAntiAlias = true
+    }
+    val untranscribedUnknownRmsPaint = Paint().apply {
+        color = desaturateWaveformColor(unknownWaveRmsColor)
+        isAntiAlias = true
+    }
+    val untranscribedTargetPeakPaint = Paint().apply {
+        color = desaturateWaveformColor(targetWavePeakColor)
+        isAntiAlias = true
+    }
+    val untranscribedTargetRmsPaint = Paint().apply {
+        color = desaturateWaveformColor(targetWaveRmsColor)
+        isAntiAlias = true
+    }
+    val untranscribedBasePeakPaint = Paint().apply {
+        color = desaturateWaveformColor(baseWavePeakColor)
+        isAntiAlias = true
+    }
+    val untranscribedBaseRmsPaint = Paint().apply {
+        color = desaturateWaveformColor(baseWaveRmsColor)
+        isAntiAlias = true
+    }
     val dummyPaint = Paint().apply {
         color = dummyWaveColor
         isAntiAlias = true
@@ -1650,15 +1713,24 @@ private fun renderWaveformBitmapStrip(
 
             val isTarget = matchedChunk != null && matchesLanguageRole(matchedChunk.language, languagePair?.target)
             val isBase = matchedChunk != null && matchesLanguageRole(matchedChunk.language, languagePair?.base)
+            val isUntranscribed = desaturateUntranscribedChunks &&
+                matchedChunk != null &&
+                matchedChunk.text.isNullOrBlank()
 
             val peakPaint = when {
+                isTarget && isUntranscribed -> untranscribedTargetPeakPaint
                 isTarget -> targetPeakPaint
+                isBase && isUntranscribed -> untranscribedBasePeakPaint
                 isBase -> basePeakPaint
+                isUntranscribed -> untranscribedUnknownPeakPaint
                 else -> unknownPeakPaint
             }
             val rmsPaint = when {
+                isTarget && isUntranscribed -> untranscribedTargetRmsPaint
                 isTarget -> targetRmsPaint
+                isBase && isUntranscribed -> untranscribedBaseRmsPaint
                 isBase -> baseRmsPaint
+                isUntranscribed -> untranscribedUnknownRmsPaint
                 else -> unknownRmsPaint
             }
 
@@ -1803,13 +1875,13 @@ private fun DrawScope.drawLoopRangeOnOverview(
 @Composable
 private fun WaveformSectionPreview() {
     val material = SampleMaterials.jaKo
-    val chunks = material.chunks.map { chunk ->
+    val chunks = material.chunks.mapIndexed { index, chunk ->
         val transcript = material.transcripts[chunk.id]
         ChunkUi(
             id = chunk.id,
             startMs = chunk.startMs,
             endMs = chunk.endMs,
-            text = transcript?.text,
+            text = if (index < 2) transcript?.text else null,
             language = transcript?.language,
         )
     }

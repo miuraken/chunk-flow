@@ -1,8 +1,10 @@
 package com.miuraken.chunkflow.feature.player
 
+import androidx.compose.ui.graphics.Color
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ZoomedWaveformRenderTest {
     @Test
@@ -47,5 +49,17 @@ class ZoomedWaveformRenderTest {
         // 音声の範囲に収める
         assertEquals(0L, zoomedTouchXToMs(x = 0f, widthPx = 1_000, centerMs = 1_000L, windowMs = 30_000L, durationMs = 60_000L))
         assertEquals(60_000L, zoomedTouchXToMs(x = 1_000f, widthPx = 1_000, centerMs = 59_000L, windowMs = 30_000L, durationMs = 60_000L))
+    }
+
+    @Test
+    fun `desaturateWaveformColor_アルファを維持しつつRGBの彩度を落とす`() {
+        val original = Color(0xFF1565C0).copy(alpha = 0.65f)
+        val desaturated = desaturateWaveformColor(original)
+
+        assertEquals(original.alpha, desaturated.alpha, 0.001f)
+        val originalSpread = maxOf(original.red, original.green, original.blue) - minOf(original.red, original.green, original.blue)
+        val desaturatedSpread = maxOf(desaturated.red, desaturated.green, desaturated.blue) - minOf(desaturated.red, desaturated.green, desaturated.blue)
+        assertTrue(desaturatedSpread < originalSpread)
+        assertEquals(originalSpread * UNTRANSCRIBED_WAVEFORM_SATURATION, desaturatedSpread, 0.01f)
     }
 }
