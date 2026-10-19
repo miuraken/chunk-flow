@@ -21,9 +21,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,6 +33,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -52,6 +55,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
@@ -101,6 +105,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -122,12 +127,16 @@ import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.AudioStorageState
+import com.miuraken.chunkflow.core.model.Chunk
+import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
+import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.testing.fixture.SampleLibraryPreviewParameterProvider
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
 import java.io.File
@@ -147,6 +156,9 @@ private val FavoriteStarColor = Color(0xFFFFB300)
 
 /** デフォルトの音符サムネイル背景色（落ち着いたグレー）。 */
 private val DefaultThumbnailBackgroundColor = Color(0xFF8A8A8E)
+
+/** 文字起こし完了（緑丸アイコン）の落ち着いたグリーン背景色（#19532b）。 */
+private val CompletedTranscriptBadgeColor = Color(0xFF19532B)
 
 /** この割合（%）を超えて聴いた教材を既習として、進捗バーと再生状況を緑系で表示する。 */
 private const val COMPLETED_PROGRESS_PERCENT_THRESHOLD = 95
@@ -570,12 +582,19 @@ fun LibraryScreen(
             }
         },
         bottomBar = {
-            state.miniPlayer?.let { miniPlayer ->
-                MiniPlayerBar(
-                    miniPlayer = miniPlayer,
-                    onOpenPlayer = { onEvent(LibraryEvent.OpenItem(miniPlayer.mediaId)) },
-                    onTogglePlayPause = { onEvent(LibraryEvent.ToggleMiniPlayerPlayPause) },
+            if (state.selectedTab == LibraryViewTab.BOOKMARKS) {
+                LibraryBookmarkPlaybackController(
+                    state = state,
+                    onEvent = onEvent,
                 )
+            } else {
+                state.miniPlayer?.let { miniPlayer ->
+                    MiniPlayerBar(
+                        miniPlayer = miniPlayer,
+                        onOpenPlayer = { onEvent(LibraryEvent.OpenItem(miniPlayer.mediaId)) },
+                        onTogglePlayPause = { onEvent(LibraryEvent.ToggleMiniPlayerPlayPause) },
+                    )
+                }
             }
         },
     ) { innerPadding ->
@@ -597,7 +616,11 @@ fun LibraryScreen(
                 onSelectTab = { tab -> onEvent(LibraryEvent.SelectTab(tab)) },
             )
 
-            if (state.items.isEmpty() && state.courseFolders.isEmpty() && state.selectedTab != LibraryViewTab.PLAYLISTS) {
+            if (state.items.isEmpty() &&
+                state.courseFolders.isEmpty() &&
+                state.selectedTab != LibraryViewTab.PLAYLISTS &&
+                state.selectedTab != LibraryViewTab.BOOKMARKS
+            ) {
                 LibraryEmptyContent(
                     onImportDirectoryClick = { onEvent(LibraryEvent.RequestImportDirectory) },
                     onImportFilesClick = { onEvent(LibraryEvent.RequestImport) },
@@ -625,6 +648,14 @@ fun LibraryScreen(
 
                     LibraryViewTab.PLAYLISTS -> {
                         LibraryPlaylistsTabContent(
+                            state = state,
+                            onEvent = onEvent,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+
+                    LibraryViewTab.BOOKMARKS -> {
+                        LibraryBookmarksTabContent(
                             state = state,
                             onEvent = onEvent,
                             modifier = Modifier.weight(1f),
@@ -844,18 +875,20 @@ private fun LibraryViewTabRow(
                 LibraryViewTab.FOLDERS -> R.string.library_tab_folders
                 LibraryViewTab.FILES -> R.string.library_tab_files
                 LibraryViewTab.PLAYLISTS -> R.string.library_tab_playlists
+                LibraryViewTab.BOOKMARKS -> R.string.library_tab_bookmarks
             }
             Tab(
                 selected = selectedTab == tab,
                 onClick = { onSelectTab(tab) },
-                text = {
-                    Text(
-                        text = stringResource(labelRes),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-            )
+            ) {
+                Text(
+                    text = stringResource(labelRes),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 14.dp),
+                )
+            }
         }
     }
 }
@@ -2389,7 +2422,7 @@ private fun LibraryItemRow(
                         transcriptStatus = itemModel.transcriptStatus,
                         transcriptProgressPercent = itemModel.transcriptProgressPercent,
                         isTranscribing = itemModel.isTranscribing,
-                        completedBadgeColor = langPalette.completedProgressIndicator,
+                        completedBadgeColor = CompletedTranscriptBadgeColor,
                     )
                     if (itemModel.isAnalyzing) {
                         Text(
@@ -3077,6 +3110,576 @@ private fun MiniPlayerBar(
     }
 }
 
+@Composable
+private fun LibraryBookmarksTabContent(
+    state: LibraryUiState,
+    onEvent: (LibraryEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bookmarkedFiles = state.bookmarkedFiles
+    val activePlaybackMediaId = state.activePlaybackMediaId ?: state.miniPlayer?.mediaId
+    val activePlaybackChunkId = state.activePlaybackChunkId
+    val isPlaying = state.miniPlayer?.isPlaying == true
+
+    if (bookmarkedFiles.isEmpty()) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(horizontal = 32.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.BookmarkBorder,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(48.dp),
+                )
+                Text(
+                    text = stringResource(R.string.library_bookmarks_empty),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = stringResource(R.string.library_bookmarks_empty_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(
+            items = bookmarkedFiles,
+            key = { fileModel -> "bookmark_file_${fileModel.mediaId.value}" },
+        ) { fileModel ->
+            LibraryBookmarkedFileAccordionCard(
+                fileModel = fileModel,
+                activePlaybackMediaId = activePlaybackMediaId,
+                activePlaybackChunkId = activePlaybackChunkId,
+                isPlaying = isPlaying,
+                onToggleExpand = {
+                    onEvent(LibraryEvent.ToggleBookmarkFileAccordion(fileModel.mediaId))
+                },
+                onPlayChunk = { chunkId ->
+                    onEvent(LibraryEvent.PlayBookmarkedChunk(fileModel.mediaId, chunkId))
+                },
+                onToggleChunkBookmark = { chunkId ->
+                    onEvent(LibraryEvent.ToggleChunkBookmark(fileModel.mediaId, chunkId))
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LibraryBookmarkedFileAccordionCard(
+    fileModel: LibraryBookmarkedFileUiModel,
+    activePlaybackMediaId: MediaId?,
+    activePlaybackChunkId: ChunkId?,
+    isPlaying: Boolean,
+    onToggleExpand: () -> Unit,
+    onPlayChunk: (ChunkId) -> Unit,
+    onToggleChunkBookmark: (ChunkId) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val item = fileModel.itemModel.item
+    val folderText = fileModel.folderName?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.library_bookmarks_unassigned_folder)
+    val expandCollapseCd = if (fileModel.isExpanded) {
+        stringResource(R.string.library_bookmarks_collapse_cd, item.title)
+    } else {
+        stringResource(R.string.library_bookmarks_expand_cd, item.title)
+    }
+    val isActiveFile = activePlaybackMediaId == item.id
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = if (isActiveFile) 2.dp else 0.dp,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleExpand)
+                    .semantics { contentDescription = expandCollapseCd }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = folderText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Bookmark,
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
+                        )
+                        Text(
+                            text = stringResource(
+                                R.string.library_bookmarks_chunk_count,
+                                fileModel.bookmarkedChunks.size,
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+
+                Icon(
+                    imageVector = if (fileModel.isExpanded) {
+                        ChunkFlowIcons.ExpandLess
+                    } else {
+                        ChunkFlowIcons.ExpandMore
+                    },
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+
+            if (fileModel.isExpanded) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    fileModel.bookmarkedChunks.forEachIndexed { index, chunkModel ->
+                        val isActiveChunk = isActiveFile &&
+                            activePlaybackChunkId == chunkModel.chunk.id
+                        LibraryBookmarkedChunkRow(
+                            chunkModel = chunkModel,
+                            languagePair = item.languagePair,
+                            isActive = isActiveChunk,
+                            isPlaying = isActiveChunk && isPlaying,
+                            onClick = { onPlayChunk(chunkModel.chunk.id) },
+                            onToggleBookmark = { onToggleChunkBookmark(chunkModel.chunk.id) },
+                        )
+                        if (index < fileModel.bookmarkedChunks.lastIndex) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryBookmarkedChunkRow(
+    chunkModel: LibraryBookmarkedChunkUiModel,
+    languagePair: LanguagePair,
+    isActive: Boolean,
+    isPlaying: Boolean,
+    onClick: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val chunk = chunkModel.chunk
+    val transcript = chunkModel.transcript
+    val languageTag = transcript?.language
+    val langPalette = chunkFlowLanguagePalette()
+    val containerColor = if (isActive) {
+        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+    } else {
+        Color.Transparent
+    }
+    val textColor = if (isActive) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val fallbackText = stringResource(
+        R.string.library_bookmarks_chunk_fallback_label,
+        chunkModel.chunkNumber,
+    )
+    val displayText = transcript?.text?.takeIf { it.isNotBlank() } ?: fallbackText
+    val removeBookmarkCd = stringResource(R.string.library_bookmarks_remove_cd)
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        color = containerColor,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min)
+                .padding(end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .fillMaxHeight()
+                    .background(
+                        if (isActive) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            Color.Transparent
+                        },
+                    ),
+            )
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = formatDurationMs(chunk.startMs),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        .widthIn(min = 44.dp)
+                        .padding(end = 6.dp),
+                )
+                if (languageTag != null) {
+                    val isBase = languageTag == languagePair.base
+                    val badgeContainer = if (isBase) {
+                        langPalette.baseBadgeContainer
+                    } else {
+                        langPalette.targetBadgeContainer
+                    }
+                    val badgeContent = if (isBase) {
+                        langPalette.onBaseBadgeContainer
+                    } else {
+                        langPalette.onTargetBadgeContainer
+                    }
+                    Surface(
+                        color = badgeContainer,
+                        contentColor = badgeContent,
+                        shape = MaterialTheme.shapes.extraSmall,
+                    ) {
+                        Text(
+                            text = languageTag.value.lowercase(Locale.ROOT),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(
+                    text = displayText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                    color = textColor,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (isPlaying) {
+                Icon(
+                    imageVector = ChunkFlowIcons.AudioFile,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(end = 2.dp)
+                        .size(16.dp),
+                )
+            }
+            IconButton(
+                onClick = onToggleBookmark,
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Bookmark,
+                    contentDescription = removeBookmarkCd,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryBookmarkPlaybackController(
+    state: LibraryUiState,
+    onEvent: (LibraryEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val activeMediaId = state.activePlaybackMediaId ?: state.miniPlayer?.mediaId
+    val activeFile = state.bookmarkedFiles.firstOrNull { it.mediaId == activeMediaId }
+    val activeChunk = state.activeBookmarkedChunk
+    val miniPlayer = state.miniPlayer
+    val isPlaying = miniPlayer?.isPlaying == true
+    val hasPlayableTarget = activeChunk != null ||
+        miniPlayer != null ||
+        state.bookmarkedFiles.any { it.bookmarkedChunks.isNotEmpty() }
+
+    val seekBackSeconds = (state.seekBackMs / 1_000L).coerceAtLeast(1L).toInt()
+    val seekForwardSeconds = (state.seekForwardMs / 1_000L).coerceAtLeast(1L).toInt()
+    val playPauseCd = if (isPlaying) {
+        stringResource(R.string.library_mini_player_pause)
+    } else {
+        stringResource(R.string.library_mini_player_play)
+    }
+
+    val titleText = activeFile?.title
+        ?: miniPlayer?.title
+        ?: stringResource(R.string.library_bookmarks_controller_idle)
+    val subtitleText: String? = if (activeChunk != null) {
+        val chunkLabel = activeChunk.transcript?.text?.takeIf { it.isNotBlank() }
+            ?: stringResource(
+                R.string.library_bookmarks_chunk_fallback_label,
+                activeChunk.chunkNumber,
+            )
+        "${formatDurationMs(activeChunk.chunk.startMs)} · $chunkLabel"
+    } else if (miniPlayer != null) {
+        if (miniPlayer.positionMs > 0L) {
+            stringResource(
+                R.string.library_item_duration_progress,
+                formatDurationMs(miniPlayer.positionMs),
+                formatDurationMs(miniPlayer.durationMs),
+            )
+        } else {
+            formatDurationMs(miniPlayer.durationMs)
+        }
+    } else {
+        null
+    }
+    val openMediaId = activeFile?.mediaId ?: miniPlayer?.mediaId
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 4.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (openMediaId != null) {
+                            Modifier.clickable { onEvent(LibraryEvent.OpenItem(openMediaId)) }
+                        } else {
+                            Modifier
+                        },
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.Bookmark,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = titleText,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (subtitleText != null) {
+                        Text(
+                            text = subtitleText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BookmarkSeekStepButton(
+                    icon = ChunkFlowIcons.SeekBack,
+                    badgeLabel = stringResource(
+                        R.string.library_bookmarks_seek_back_label,
+                        seekBackSeconds,
+                    ),
+                    contentDescription = stringResource(
+                        R.string.library_bookmarks_seek_back_cd,
+                        seekBackSeconds,
+                    ),
+                    enabled = hasPlayableTarget,
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerSeekBack) },
+                )
+
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(
+                        onClick = { onEvent(LibraryEvent.BookmarkPlayerPreviousChunk) },
+                        enabled = hasPlayableTarget,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.SkipPrevious,
+                            contentDescription = stringResource(
+                                R.string.library_bookmarks_prev_chunk_cd,
+                            ),
+                            modifier = Modifier.size(26.dp),
+                        )
+                    }
+                    Text(
+                        text = stringResource(R.string.library_bookmarks_prev_chunk_label),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                FilledIconButton(
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerTogglePlayPause) },
+                    enabled = hasPlayableTarget,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) {
+                            ChunkFlowIcons.Pause
+                        } else {
+                            ChunkFlowIcons.Play
+                        },
+                        contentDescription = playPauseCd,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
+
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(
+                        onClick = { onEvent(LibraryEvent.BookmarkPlayerNextChunk) },
+                        enabled = hasPlayableTarget,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.SkipNext,
+                            contentDescription = stringResource(
+                                R.string.library_bookmarks_next_chunk_cd,
+                            ),
+                            modifier = Modifier.size(26.dp),
+                        )
+                    }
+                    Text(
+                        text = stringResource(R.string.library_bookmarks_next_chunk_label),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                BookmarkSeekStepButton(
+                    icon = ChunkFlowIcons.SeekForward,
+                    badgeLabel = stringResource(
+                        R.string.library_bookmarks_seek_forward_label,
+                        seekForwardSeconds,
+                    ),
+                    contentDescription = stringResource(
+                        R.string.library_bookmarks_seek_forward_cd,
+                        seekForwardSeconds,
+                    ),
+                    enabled = hasPlayableTarget,
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerSeekForward) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookmarkSeekStepButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    badgeLabel: String,
+    contentDescription: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        IconButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+        Text(
+            text = badgeLabel,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = FontFamily.Monospace,
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @ChunkFlowPreviews
 @Composable
 private fun LibraryScreenPreview(
@@ -3324,6 +3927,73 @@ private fun LibraryScreenPlaylistsTabPreview() {
                     title = first.title,
                     isPlaying = true,
                     durationMs = first.durationMs,
+                ),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun LibraryScreenBookmarksTabPreview() {
+    val jaKo = SampleMaterials.jaKo
+    val longSentence = SampleMaterials.longSentence
+    val firstBookmarkedChunks = jaKo.chunks.take(3).mapIndexed { idx, chunk ->
+        LibraryBookmarkedChunkUiModel(
+            chunk = chunk,
+            chunkNumber = idx + 1,
+            transcript = jaKo.transcripts[chunk.id],
+        )
+    }
+    val secondBookmarkedChunks = longSentence.chunks.take(2).mapIndexed { idx, chunk ->
+        LibraryBookmarkedChunkUiModel(
+            chunk = chunk,
+            chunkNumber = idx + 1,
+            transcript = longSentence.transcripts[chunk.id],
+        )
+    }
+    val uiItems = listOf(
+        LibraryItemUiModel(
+            item = jaKo.item.copy(
+                title = "ピンズラー 韓国語 01",
+                course = "ピンズラー韓国語 I",
+            ),
+            chunkCount = jaKo.chunks.size,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.COMPLETED,
+            transcriptProgressPercent = 100,
+        ),
+        LibraryItemUiModel(
+            item = longSentence.item.copy(
+                title = "ニュースリスニング 第3課",
+                course = "中級韓国語",
+            ),
+            chunkCount = longSentence.chunks.size,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.PARTIAL,
+            transcriptProgressPercent = 60,
+        ),
+    )
+    val activeChunk = firstBookmarkedChunks.first()
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = uiItems,
+                selectedTab = LibraryViewTab.BOOKMARKS,
+                bookmarkedChunksByMedia = mapOf(
+                    jaKo.item.id to firstBookmarkedChunks,
+                    longSentence.item.id to secondBookmarkedChunks,
+                ),
+                expandedBookmarkMediaIds = setOf(jaKo.item.id),
+                activePlaybackMediaId = jaKo.item.id,
+                activePlaybackChunkId = activeChunk.chunk.id,
+                miniPlayer = MiniPlayerUiState(
+                    mediaId = jaKo.item.id,
+                    title = "ピンズラー 韓国語 01",
+                    isPlaying = true,
+                    durationMs = jaKo.item.durationMs,
+                    positionMs = activeChunk.chunk.startMs,
                 ),
             ),
             onEvent = {},

@@ -194,3 +194,71 @@ fun LibraryScreenFilesTabScreenshot() {
         )
     }
 }
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryScreenBookmarksTabScreenshot() {
+    val jaKo = com.miuraken.chunkflow.core.testing.fixture.SampleMaterials.jaKo
+    val longSentence = com.miuraken.chunkflow.core.testing.fixture.SampleMaterials.longSentence
+    val firstBookmarkedChunks = jaKo.chunks.take(3).mapIndexed { idx, chunk ->
+        LibraryBookmarkedChunkUiModel(
+            chunk = chunk,
+            chunkNumber = idx + 1,
+            transcript = jaKo.transcripts[chunk.id],
+        )
+    }
+    val secondBookmarkedChunks = longSentence.chunks.take(2).mapIndexed { idx, chunk ->
+        LibraryBookmarkedChunkUiModel(
+            chunk = chunk,
+            chunkNumber = idx + 1,
+            transcript = longSentence.transcripts[chunk.id],
+        )
+    }
+    val uiItems = listOf(
+        LibraryItemUiModel(
+            item = jaKo.item.copy(
+                title = "ピンズラー 韓国語 01",
+                course = "ピンズラー韓国語 I",
+            ),
+            chunkCount = jaKo.chunks.size,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.COMPLETED,
+            transcriptProgressPercent = 100,
+        ),
+        LibraryItemUiModel(
+            item = longSentence.item.copy(
+                title = "ニュースリスニング 第3課",
+                course = "中級韓国語",
+            ),
+            chunkCount = longSentence.chunks.size,
+            hasTranscript = true,
+            transcriptStatus = LibraryTranscriptStatus.PARTIAL,
+            transcriptProgressPercent = 60,
+        ),
+    )
+    val activeChunk = firstBookmarkedChunks.first()
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = uiItems,
+                selectedTab = LibraryViewTab.BOOKMARKS,
+                bookmarkedChunksByMedia = mapOf(
+                    jaKo.item.id to firstBookmarkedChunks,
+                    longSentence.item.id to secondBookmarkedChunks,
+                ),
+                expandedBookmarkMediaIds = setOf(jaKo.item.id),
+                activePlaybackMediaId = jaKo.item.id,
+                activePlaybackChunkId = activeChunk.chunk.id,
+                miniPlayer = MiniPlayerUiState(
+                    mediaId = jaKo.item.id,
+                    title = "ピンズラー 韓国語 01",
+                    isPlaying = true,
+                    durationMs = jaKo.item.durationMs,
+                    positionMs = activeChunk.chunk.startMs,
+                ),
+            ),
+            onEvent = {},
+        )
+    }
+}

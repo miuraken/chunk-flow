@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -19,9 +20,11 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -117,17 +120,16 @@ fun SettingsRoute(
     )
 }
 
-/**
- * 設定画面のステートレス Composable。
- */
-
 @Composable
 private fun sttEngineDisplayName(engine: SttEngine): String = when (engine) {
     SttEngine.ML_KIT -> stringResource(R.string.settings_engine_ml_kit)
-    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.settings_engine_speech_recognizer)
-    SttEngine.SHERPA_ONNX -> stringResource(R.string.settings_engine_sherpa_onnx)
+    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.settings_stt_engine_speech_recognizer)
+    SttEngine.SHERPA_ONNX -> stringResource(R.string.settings_stt_engine_sherpa_onnx)
 }
 
+/**
+ * 設定画面のステートレス Composable。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -136,6 +138,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     initialTab: Int = SettingsTab.PLAYBACK.ordinal,
     expandFirstAccordion: Boolean = false,
+    initialExpandedLanguages: Set<LanguageTag> = emptySet(),
 ) {
     var selectedTabOrdinal by rememberSaveable { mutableIntStateOf(initialTab) }
     val selectedTab = SettingsTab.entries.getOrElse(selectedTabOrdinal) { SettingsTab.PLAYBACK }
@@ -145,6 +148,14 @@ fun SettingsScreen(
         if (!isInspectionMode && selectedTab == SettingsTab.TRANSCRIPTION) {
             onEvent(SettingsEvent.RefreshRecognitionModels)
         }
+    }
+
+    state.sherpaDownloadDialog?.let { dialogState ->
+        SherpaDownloadModalDialog(
+            dialogState = dialogState,
+            onConfirm = { onEvent(SettingsEvent.ConfirmSherpaModelDownload) },
+            onDismiss = { onEvent(SettingsEvent.DismissSherpaModelDownloadDialog) },
+        )
     }
 
     Scaffold(
@@ -226,6 +237,7 @@ fun SettingsScreen(
                             sttEngineByLanguage = state.sttEngineByLanguage,
                             onEvent = onEvent,
                             expandFirstAccordion = expandFirstAccordion,
+                            initialExpandedLanguages = initialExpandedLanguages,
                         )
                     }
 
@@ -532,6 +544,7 @@ private fun TranscriptionSettingsSection(
     sttEngineByLanguage: Map<LanguageTag, SttEngine>,
     onEvent: (SettingsEvent) -> Unit,
     expandFirstAccordion: Boolean = false,
+    initialExpandedLanguages: Set<LanguageTag> = emptySet(),
 ) {
     SettingsCard(title = stringResource(R.string.settings_section_transcription)) {
         Row(
@@ -566,24 +579,6 @@ private fun TranscriptionSettingsSection(
     }
 
     SettingsCard(title = stringResource(R.string.settings_section_speech_models)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = stringResource(R.string.settings_speech_models_description),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 8.dp),
-            )
-            TextButton(onClick = { onEvent(SettingsEvent.RefreshRecognitionModels) }) {
-                Text(text = stringResource(R.string.settings_speech_models_refresh))
-            }
-        }
-
         val displayEntries = LanguageSettings.SELECTABLE_LANGUAGES.filter {
             enabledLanguages.contains(LanguageTag(it.code))
         }
@@ -605,239 +600,14 @@ private fun TranscriptionSettingsSection(
                 onPreferredEngineChange = { engine ->
                     onEvent(SettingsEvent.SetSttEngineForLanguage(langTag, engine))
                 },
-                onRequestDownload = { engine ->
-                    onEvent(SettingsEvent.RequestSttModelDownload(info.language, engine))
-                },
                 onDeleteSherpaModel = {
                     onEvent(SettingsEvent.DeleteSherpaModel(info.language))
                 },
-                initialExpanded = expandFirstAccordion,
+                initialExpanded = (expandFirstAccordion && index == 0) ||
+                    initialExpandedLanguages.contains(langTag),
             )
         }
     }
-}
-
-@Composable
-private fun transcriptionEngineLabelAndDescription(
-    engine: OnDeviceTranscriptionEngine,
-): Pair<String, String> = when (engine) {
-    OnDeviceTranscriptionEngine.AUTO -> Pair(
-        stringResource(R.string.settings_engine_auto_title),
-        stringResource(R.string.settings_engine_auto_desc),
-    )
-
-    OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> Pair(
-        stringResource(R.string.settings_engine_android_title),
-        stringResource(R.string.settings_engine_android_desc),
-    )
-
-    OnDeviceTranscriptionEngine.SHERPA_ONNX -> Pair(
-        stringResource(R.string.settings_engine_sherpa_title),
-        stringResource(R.string.settings_engine_sherpa_desc),
-    )
-
-    OnDeviceTranscriptionEngine.ML_KIT -> Pair(
-        stringResource(R.string.settings_engine_mlkit_title),
-        stringResource(R.string.settings_engine_mlkit_desc),
-    )
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun SpeechModelRow(
-    info: OnDeviceLanguageModelInfo,
-    onRequestDownload: (SttEngine) -> Unit,
-    onDeleteSherpaModel: () -> Unit,
-) {
-    val (osStatusLabel, osContainerColor, osContentColor) = modelStatusStyle(info.status)
-    val (sherpaStatusLabel, sherpaContainerColor, sherpaContentColor) = modelStatusStyle(info.sherpaModelStatus)
-    val (mlKitStatusLabel, mlKitContainerColor, mlKitContentColor) = modelStatusStyle(info.mlKitStatus)
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = speechModelLanguageDisplayName(info.language),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
-                info.resolvedBcp47Tag?.let { bcp47Tag ->
-                    Text(
-                        text = stringResource(R.string.settings_speech_model_locale_tag, bcp47Tag),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (info.mlKitStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
-                    info.mlKitStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
-                ) {
-                    val actionLabel = if (info.mlKitStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
-                        stringResource(R.string.settings_speech_model_action_mlkit_retry)
-                    } else {
-                        stringResource(R.string.settings_speech_model_action_mlkit_download)
-                    }
-                    OutlinedButton(onClick = { onRequestDownload(SttEngine.ML_KIT) }) {
-                        Text(text = actionLabel, style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-
-                if (info.status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
-                    info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
-                ) {
-                    val actionLabel = if (info.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
-                        stringResource(R.string.settings_speech_model_action_retry)
-                    } else {
-                        stringResource(R.string.settings_speech_model_action_download)
-                    }
-                    OutlinedButton(onClick = { onRequestDownload(SttEngine.SPEECH_RECOGNIZER) }) {
-                        Text(text = actionLabel, style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-
-                if (info.sherpaModelStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
-                    info.sherpaModelStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
-                ) {
-                    val sherpaActionLabel = if (info.sherpaModelStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED) {
-                        stringResource(R.string.settings_speech_model_action_sherpa_retry)
-                    } else {
-                        stringResource(R.string.settings_speech_model_action_sherpa_download)
-                    }
-                    OutlinedButton(onClick = { onRequestDownload(SttEngine.SHERPA_ONNX) }) {
-                        Text(text = sherpaActionLabel, style = MaterialTheme.typography.labelMedium)
-                    }
-                } else if (info.canDeleteSherpaModel &&
-                    info.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
-                ) {
-                    TextButton(onClick = onDeleteSherpaModel) {
-                        Text(
-                            text = stringResource(R.string.settings_speech_model_action_sherpa_delete),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
-                }
-            }
-        }
-
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            if (info.mlKitStatus != OnDeviceLanguageModelStatus.UNSUPPORTED) {
-                val modeLabel = when (info.mlKitMode) {
-                    com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED -> " (高度)"
-                    com.miuraken.chunkflow.core.model.MlKitRecognitionMode.BASIC -> " (基本)"
-                    null -> ""
-                }
-                Surface(
-                    color = mlKitContainerColor,
-                    contentColor = mlKitContentColor,
-                    shape = RoundedCornerShape(6.dp),
-                ) {
-                    Text(
-                        text = stringResource(R.string.settings_speech_model_mlkit_prefix, mlKitStatusLabel + modeLabel),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
-            }
-
-            Surface(
-                color = osContainerColor,
-                contentColor = osContentColor,
-                shape = RoundedCornerShape(6.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.settings_speech_model_os_prefix, osStatusLabel),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-
-            if (info.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED) {
-                val sizeMb = (info.sherpaModelSizeBytes / (1024L * 1024L)).toInt()
-                val sherpaBadgeText = if (sizeMb > 0) {
-                    stringResource(R.string.settings_speech_model_sherpa_size_mb, sizeMb, sherpaStatusLabel)
-                } else {
-                    stringResource(R.string.settings_speech_model_sherpa_prefix, sherpaStatusLabel)
-                }
-                Surface(
-                    color = sherpaContainerColor,
-                    contentColor = sherpaContentColor,
-                    shape = RoundedCornerShape(6.dp),
-                ) {
-                    Text(
-                        text = sherpaBadgeText,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun modelStatusStyle(
-    status: OnDeviceLanguageModelStatus,
-): Triple<String, androidx.compose.ui.graphics.Color, androidx.compose.ui.graphics.Color> = when (status) {
-    OnDeviceLanguageModelStatus.CHECKING -> Triple(
-        stringResource(R.string.settings_speech_model_status_checking),
-        MaterialTheme.colorScheme.surfaceVariant,
-        MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    OnDeviceLanguageModelStatus.INSTALLED -> Triple(
-        stringResource(R.string.settings_speech_model_status_installed),
-        MaterialTheme.colorScheme.primaryContainer,
-        MaterialTheme.colorScheme.onPrimaryContainer,
-    )
-
-    OnDeviceLanguageModelStatus.NOT_INSTALLED -> Triple(
-        stringResource(R.string.settings_speech_model_status_not_installed),
-        MaterialTheme.colorScheme.secondaryContainer,
-        MaterialTheme.colorScheme.onSecondaryContainer,
-    )
-
-    OnDeviceLanguageModelStatus.DOWNLOADING -> Triple(
-        stringResource(R.string.settings_speech_model_status_downloading),
-        MaterialTheme.colorScheme.tertiaryContainer,
-        MaterialTheme.colorScheme.onTertiaryContainer,
-    )
-
-    OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> Triple(
-        stringResource(R.string.settings_speech_model_status_download_failed),
-        MaterialTheme.colorScheme.errorContainer,
-        MaterialTheme.colorScheme.onErrorContainer,
-    )
-
-    OnDeviceLanguageModelStatus.UNSUPPORTED -> Triple(
-        stringResource(R.string.settings_speech_model_status_unsupported),
-        MaterialTheme.colorScheme.surfaceVariant,
-        MaterialTheme.colorScheme.onSurfaceVariant,
-    )
 }
 
 @Composable
@@ -944,27 +714,43 @@ private fun LanguageSettingsSection(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SttEngineAccordion(
     info: OnDeviceLanguageModelInfo,
     preferredEngine: SttEngine?,
     onPreferredEngineChange: (SttEngine?) -> Unit,
-    onRequestDownload: (SttEngine) -> Unit,
     onDeleteSherpaModel: () -> Unit,
     initialExpanded: Boolean = false,
 ) {
     val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
 
-    // Auto order based on preferred engine
-    val tryOrder = SttEngine.tryOrder(preferredEngine)
-    val firstUsable = SttEngineSelection.firstUsableEngine(tryOrder, info)
+    val autoResolvedEngine = SttEngineSelection.firstUsableEngine(SttEngine.AUTO_ORDER, info)
+        ?: SttEngine.ML_KIT
+    val autoLabel = stringResource(
+        R.string.settings_stt_engine_auto_with_resolved,
+        sttEngineDisplayName(autoResolvedEngine),
+    )
+    val currentEngineLabel = when (preferredEngine) {
+        null -> autoLabel
+        else -> sttEngineDisplayName(preferredEngine)
+    }
+    val sizeMb = SherpaDownloadDialogState.resolveSizeMb(info.sherpaModelSizeBytes)
+    val isSherpaInstalled = info.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
+    val sherpaLabel = if (isSherpaInstalled) {
+        stringResource(R.string.settings_stt_engine_sherpa_downloaded, sizeMb)
+    } else {
+        stringResource(R.string.settings_stt_engine_sherpa_not_downloaded, sizeMb)
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .selectable(selected = expanded.value, onClick = { expanded.value = !expanded.value }, role = Role.Button)
+                .selectable(
+                    selected = expanded.value,
+                    onClick = { expanded.value = !expanded.value },
+                    role = Role.Button,
+                )
                 .padding(vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -975,7 +761,7 @@ private fun SttEngineAccordion(
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = if (firstUsable != null) stringResource(R.string.settings_stt_engine_current, sttEngineDisplayName(firstUsable)) else stringResource(R.string.settings_stt_engine_unsupported),
+                    text = stringResource(R.string.settings_stt_engine_current, currentEngineLabel),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -987,36 +773,131 @@ private fun SttEngineAccordion(
         }
 
         AnimatedVisibility(visible = expanded.value) {
-            Column(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, bottom = 8.dp)) {
-                Text(stringResource(R.string.settings_stt_engine_priority), style = MaterialTheme.typography.labelMedium)
-
-                val options = listOf(
-                    null to stringResource(R.string.settings_stt_engine_auto),
-                    SttEngine.ML_KIT to stringResource(R.string.settings_stt_engine_mlkit),
-                    SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.settings_stt_engine_speech_recognizer),
-                    SttEngine.SHERPA_ONNX to stringResource(R.string.settings_stt_engine_sherpa_onnx),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, bottom = 8.dp)
+                    .selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_stt_engine_priority),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp),
                 )
 
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    options.forEach { (engine, label) ->
-                        FilterChip(
-                            selected = preferredEngine == engine,
-                            onClick = { onPreferredEngineChange(engine) },
-                            label = { Text(label) },
+                val options: List<Pair<SttEngine?, String>> = listOf(
+                    null to autoLabel,
+                    SttEngine.ML_KIT to stringResource(R.string.settings_stt_engine_mlkit_radio),
+                    SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.settings_stt_engine_speech_recognizer),
+                    SttEngine.SHERPA_ONNX to sherpaLabel,
+                )
+
+                options.forEach { (engine, label) ->
+                    val isSelected = preferredEngine == engine
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = isSelected,
+                                onClick = { onPreferredEngineChange(engine) },
+                                role = Role.RadioButton,
+                            )
+                            .padding(vertical = 4.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = null,
                         )
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                        if (engine == SttEngine.SHERPA_ONNX && isSherpaInstalled) {
+                            IconButton(
+                                onClick = onDeleteSherpaModel,
+                                modifier = Modifier
+                                    .padding(start = 4.dp)
+                                    .size(32.dp),
+                            ) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.Delete,
+                                    contentDescription = stringResource(
+                                        R.string.settings_speech_model_action_sherpa_delete,
+                                    ),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                SpeechModelRow(
-                    info = info,
-                    onRequestDownload = onRequestDownload,
-                    onDeleteSherpaModel = onDeleteSherpaModel,
-                )
             }
         }
     }
+}
+
+@Composable
+private fun SherpaDownloadModalDialog(
+    dialogState: SherpaDownloadDialogState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = {
+            if (!dialogState.isDownloading) {
+                onDismiss()
+            }
+        },
+        title = {
+            Text(text = stringResource(R.string.settings_sherpa_download_dialog_title))
+        },
+        text = {
+            if (dialogState.isDownloading) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.padding(vertical = 8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                    Text(
+                        text = stringResource(
+                            R.string.settings_sherpa_downloading_message,
+                            dialogState.sizeMb,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            } else {
+                val messageRes = if (dialogState.isFailed) {
+                    R.string.settings_sherpa_download_failed_message
+                } else {
+                    R.string.settings_sherpa_download_confirm_message
+                }
+                Text(
+                    text = stringResource(messageRes, dialogState.sizeMb),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        },
+        confirmButton = {
+            if (!dialogState.isDownloading) {
+                TextButton(onClick = onConfirm) {
+                    Text(text = stringResource(R.string.settings_sherpa_download_confirm_button))
+                }
+            }
+        },
+        dismissButton = {
+            if (!dialogState.isDownloading) {
+                TextButton(onClick = onDismiss) {
+                    Text(text = stringResource(R.string.settings_sherpa_download_cancel_button))
+                }
+            }
+        },
+    )
 }
 
 @ChunkFlowPreviews
@@ -1025,26 +906,46 @@ internal fun SettingsScreenTranscriptionTabPreview() {
     ChunkFlowTheme {
         SettingsScreen(
             state = SettingsUiState(
+                settings = com.miuraken.chunkflow.core.model.UserSettings(
+                    enabledLanguages = setOf(
+                        LanguageTag("en"),
+                        LanguageTag("ja"),
+                        LanguageTag("ko"),
+                    ),
+                    sttEngineByLanguage = mapOf(
+                        LanguageTag("en") to SttEngine.ML_KIT,
+                        LanguageTag("ko") to SttEngine.SHERPA_ONNX,
+                    ),
+                ),
                 languageModels = listOf(
+                    OnDeviceLanguageModelInfo(
+                        language = LanguageTag("en"),
+                        status = OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        mlKitStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelSizeBytes = 98L * 1024L * 1024L,
+                    ),
                     OnDeviceLanguageModelInfo(
                         language = LanguageTag("ja"),
                         status = OnDeviceLanguageModelStatus.INSTALLED,
-                        sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
                         mlKitStatus = OnDeviceLanguageModelStatus.INSTALLED,
                         mlKitMode = com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED,
-                        sherpaModelSizeBytes = 50 * 1024 * 1024,
-                        canDeleteSherpaModel = true,
+                        sherpaModelSizeBytes = 98L * 1024L * 1024L,
                     ),
                     OnDeviceLanguageModelInfo(
-                        language = LanguageTag("en"),
-                        status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
-                        sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
-                        mlKitStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                        language = LanguageTag("ko"),
+                        status = OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                        mlKitStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelSizeBytes = 98L * 1024L * 1024L,
+                        canDeleteSherpaModel = true,
                     ),
                 ),
             ),
             onEvent = {},
             initialTab = SettingsTab.TRANSCRIPTION.ordinal,
+            initialExpandedLanguages = setOf(LanguageTag("ja"), LanguageTag("ko")),
         )
     }
 }

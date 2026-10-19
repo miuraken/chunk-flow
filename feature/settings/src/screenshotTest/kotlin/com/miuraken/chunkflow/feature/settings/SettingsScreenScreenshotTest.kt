@@ -42,27 +42,46 @@ fun SettingsScreenTranscriptionTabPreview() {
     ChunkFlowTheme {
         SettingsScreen(
             state = SettingsUiState(
+                settings = UserSettings(
+                    enabledLanguages = setOf(
+                        LanguageTag("en"),
+                        LanguageTag("ja"),
+                        LanguageTag("ko"),
+                    ),
+                    sttEngineByLanguage = mapOf(
+                        LanguageTag("en") to com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
+                        LanguageTag("ko") to com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+                    ),
+                ),
                 languageModels = listOf(
+                    com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                        language = LanguageTag("en"),
+                        status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelSizeBytes = 98L * 1024L * 1024L,
+                    ),
                     com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
                         language = LanguageTag("ja"),
                         status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
-                        sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
                         mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
                         mlKitMode = com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED,
-                        sherpaModelSizeBytes = 50 * 1024 * 1024,
-                        canDeleteSherpaModel = true,
+                        sherpaModelSizeBytes = 98L * 1024L * 1024L,
                     ),
                     com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
-                        language = LanguageTag("en"),
-                        status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
-                        sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
-                        mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                        language = LanguageTag("ko"),
+                        status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                        sherpaModelSizeBytes = 98L * 1024L * 1024L,
+                        canDeleteSherpaModel = true,
                     ),
                 ),
             ),
             onEvent = {},
             initialTab = 2, // TRANSCRIPTION
-            expandFirstAccordion = true,
+            initialExpandedLanguages = setOf(LanguageTag("ja"), LanguageTag("ko")),
         )
     }
 }

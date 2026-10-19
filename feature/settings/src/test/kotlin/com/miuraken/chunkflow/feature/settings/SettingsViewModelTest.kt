@@ -376,4 +376,56 @@ class SettingsViewModelTest {
         )
         assertFalse(zhAfterDelete.canDeleteSherpaModel)
     }
+
+    @Test
+    fun `未ダウンロードのsherpa_onnx選択で確認ダイアログが表示されダウンロード完了後にラジオボタンが切り替わる`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val analysisRepo = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository().apply {
+            languageModelInfos[LanguageTag("ja")] =
+                com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                    language = LanguageTag("ja"),
+                    status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                    sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    sherpaModelSizeBytes = 103_609_903L, // 98 MB
+                )
+        }
+        val viewModel = SettingsViewModel(repo, analysisRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 未ダウンロードの sherpa-onnx を選択すると、まだエンジン設定は切り替わらず確認ダイアログが開く
+        viewModel.onEvent(
+            SettingsEvent.SetSttEngineForLanguage(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            ),
+        )
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
+        val dialog = viewModel.uiState.value.sherpaDownloadDialog
+        assertEquals(LanguageTag("ja"), dialog?.language)
+        assertEquals(98, dialog?.sizeMb)
+        assertEquals(false, dialog?.isDownloading)
+
+        // キャンセルするとダイアログが閉じ、エンジン設定も変わらない
+        viewModel.onEvent(SettingsEvent.DismissSherpaModelDownloadDialog)
+        assertNull(viewModel.uiState.value.sherpaDownloadDialog)
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
+
+        // 再度選択してダウンロードを確定すると、ダウンロード完了後にダイアログが閉じ sherpa-onnx に切り替わる
+        viewModel.onEvent(
+            SettingsEvent.SetSttEngineForLanguage(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            ),
+        )
+        viewModel.onEvent(SettingsEvent.ConfirmSherpaModelDownload)
+        assertNull(viewModel.uiState.value.sherpaDownloadDialog)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")],
+        )
+
+        // モデルを削除すると自動 (null) に戻る
+        viewModel.onEvent(SettingsEvent.DeleteSherpaModel(LanguageTag("ja")))
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
+    }
 }

@@ -41,14 +41,39 @@ data class DeviceLanguageOption(
 )
 
 /**
+ * 未ダウンロードの `sherpa-onnx` を選択した際に表示するモーダルダイアログの状態。
+ *
+ * @property language ダウンロード対象の言語タグ。
+ * @property sizeMb モデルの目安サイズ（MB、既定は 98）。
+ * @property isDownloading モーダルダイアログ内でダウンロード実行中かどうか。
+ * @property isFailed ダウンロードに失敗したかどうか。
+ */
+data class SherpaDownloadDialogState(
+    val language: LanguageTag,
+    val sizeMb: Int = DEFAULT_SHERPA_MODEL_SIZE_MB,
+    val isDownloading: Boolean = false,
+    val isFailed: Boolean = false,
+) {
+    companion object {
+        /** `sherpa-onnx` Whisper Tiny モデルの既定目安サイズ（MB）。 */
+        const val DEFAULT_SHERPA_MODEL_SIZE_MB: Int = 98
+
+        /** バイトサイズから表示用の MB サイズを算出する。 */
+        fun resolveSizeMb(sizeBytes: Long): Int = ((sizeBytes / (1024L * 1024L)).toInt()).takeIf { it > 0 } ?: DEFAULT_SHERPA_MODEL_SIZE_MB
+    }
+}
+
+/**
  * 設定画面の UI 状態（F9.1、F3.2、F3.3、F5.2、F6.3）。
  *
  * @property settings 現在のユーザー設定。
  * @property languageModels 言語ごとの端末内音声認識モデルの状態一覧（「文字起こし設定」タブ用）。
+ * @property sherpaDownloadDialog 未ダウンロードの `sherpa-onnx` を選択した際のダウンロードモーダルダイアログ状態。
  */
 data class SettingsUiState(
     val settings: UserSettings = UserSettings(),
     val languageModels: List<OnDeviceLanguageModelInfo> = defaultLanguageModelInfos(),
+    val sherpaDownloadDialog: SherpaDownloadDialogState? = null,
 ) {
     /** 既定の言語ペア。 */
     val defaultLanguagePair: LanguagePair
@@ -298,8 +323,14 @@ sealed interface SettingsEvent {
     /** 端末内文字起こしで使用する認識ライブラリ（エンジン）を変更する。 */
     data class SetTranscriptionEngine(val engine: OnDeviceTranscriptionEngine) : SettingsEvent
 
-    /** 指定した言語の文字起こしエンジンを変更する（null は自動）。 */
+    /** 指定した言語の文字起こしエンジンを変更する（null は自動）。未ダウンロードの `sherpa-onnx` を選んだ場合はダウンロード確認ダイアログを開く。 */
     data class SetSttEngineForLanguage(val language: LanguageTag, val engine: SttEngine?) : SettingsEvent
+
+    /** モーダルダイアログで `sherpa-onnx` モデルのダウンロードを確定・開始し、完了後に `sherpa-onnx` に切り替える。 */
+    data object ConfirmSherpaModelDownload : SettingsEvent
+
+    /** `sherpa-onnx` モデルのダウンロード確認ダイアログを閉じる。 */
+    data object DismissSherpaModelDownloadDialog : SettingsEvent
 
     /** 指定したエンジンと言語のモデルのダウンロード（またはOSへの取得要求）を行う。 */
     data class RequestSttModelDownload(val language: LanguageTag, val engine: SttEngine) : SettingsEvent
@@ -328,15 +359,18 @@ class SettingsViewModel @Inject constructor(
     )
 
     private val languageModelsState = MutableStateFlow(SettingsUiState.defaultLanguageModelInfos())
+    private val sherpaDownloadDialogState = MutableStateFlow<SherpaDownloadDialogState?>(null)
 
     /** 設定画面の UI 状態。 */
     val uiState: StateFlow<SettingsUiState> = combine(
         userSettingsRepository.settings,
         languageModelsState,
-    ) { userSettings, languageModels ->
+        sherpaDownloadDialogState,
+    ) { userSettings, languageModels, sherpaDownloadDialog ->
         SettingsUiState(
             settings = userSettings,
             languageModels = languageModels,
+            sherpaDownloadDialog = sherpaDownloadDialog,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -472,8 +506,74 @@ class SettingsViewModel @Inject constructor(
             }
 
             is SettingsEvent.SetSttEngineForLanguage -> {
+                if (event.engine == SttEngine.SHERPA_ONNX) {
+                    val modelInfo = languageModelsState.value.firstOrNull { it.language == event.language }
+                    if (modelInfo?.sherpaModelStatus != OnDeviceLanguageModelStatus.INSTALLED) {
+                        val sizeMb = SherpaDownloadDialogState.resolveSizeMb(
+                            modelInfo?.sherpaModelSizeBytes ?: 0L,
+                        )
+                        sherpaDownloadDialogState.value = SherpaDownloadDialogState(
+                            language = event.language,
+                            sizeMb = sizeMb,
+                            isDownloading = false,
+                            isFailed = false,
+                        )
+                        return
+                    }
+                }
                 viewModelScope.launch {
                     userSettingsRepository.setSttEngineForLanguage(event.language, event.engine)
+                }
+            }
+
+            SettingsEvent.ConfirmSherpaModelDownload -> {
+                val dialog = sherpaDownloadDialogState.value ?: return
+                if (dialog.isDownloading) return
+                sherpaDownloadDialogState.value = dialog.copy(
+                    isDownloading = true,
+                    isFailed = false,
+                )
+                languageModelsState.update { current ->
+                    current.map { info ->
+                        if (info.language == dialog.language) {
+                            info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
+                        } else {
+                            info
+                        }
+                    }
+                }
+                viewModelScope.launch {
+                    val ok = analysisRepository.requestSttModelDownload(
+                        dialog.language,
+                        SttEngine.SHERPA_ONNX,
+                    )
+                    if (ok) {
+                        refreshLanguageModelsInternal()
+                        userSettingsRepository.setSttEngineForLanguage(
+                            dialog.language,
+                            SttEngine.SHERPA_ONNX,
+                        )
+                        sherpaDownloadDialogState.value = null
+                    } else {
+                        languageModelsState.update { current ->
+                            current.map { info ->
+                                if (info.language == dialog.language) {
+                                    info.copy(sherpaModelStatus = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                } else {
+                                    info
+                                }
+                            }
+                        }
+                        sherpaDownloadDialogState.update { current ->
+                            current?.copy(isDownloading = false, isFailed = true)
+                        }
+                    }
+                }
+            }
+
+            SettingsEvent.DismissSherpaModelDownloadDialog -> {
+                if (sherpaDownloadDialogState.value?.isDownloading != true) {
+                    sherpaDownloadDialogState.value = null
                 }
             }
 
@@ -517,6 +617,10 @@ class SettingsViewModel @Inject constructor(
                 viewModelScope.launch {
                     analysisRepository.deleteSherpaModel(event.language)
                     refreshLanguageModelsInternal()
+                    val normalized = com.miuraken.chunkflow.core.model.LanguageSettings.normalize(event.language)
+                    if (uiState.value.sttEngineByLanguage[normalized] == SttEngine.SHERPA_ONNX) {
+                        userSettingsRepository.setSttEngineForLanguage(event.language, null)
+                    }
                 }
             }
 

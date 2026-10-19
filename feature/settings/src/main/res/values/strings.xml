@@ -2,9 +2,9 @@
 <resources>
     <string name="settings_title">全体設定</string>
     <string name="settings_back">戻る</string>
-    <string name="settings_tab_playback">再生設定</string>
+    <string name="settings_tab_playback">再生</string>
     <string name="settings_tab_segmentation">チャンク分割</string>
-    <string name="settings_tab_transcription">文字起こし設定</string>
+    <string name="settings_tab_transcription">文字起こし</string>
     <string name="settings_section_playback">再生設定</string>
     <string name="settings_seek_back_label">巻き戻し秒数</string>
     <string name="settings_seek_forward_label">早送り秒数</string>
@@ -67,4 +67,31 @@
     <string name="settings_lang_de">ドイツ語 (de)</string>
     <string name="settings_lang_el">ギリシャ語 (el)</string>
     <string name="settings_lang_id">インドネシア語 (id)</string>
-<string name="settings_tab_language">言語</string><string name="settings_search_language">言語を検索</string><string name="settings_language_pinned">おすすめ</string><string name="settings_language_others">すべての言語</string><string name="settings_stt_engine_auto">自動</string><string name="settings_stt_engine_mlkit">ML Kit</string><string name="settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="settings_stt_engine_sherpa_onnx">sherpa-onnx</string><string name="settings_stt_engine_priority">優先するエンジン</string><string name="settings_stt_engine_current">現在: %1$s</string><string name="settings_stt_engine_unsupported">未対応</string><string name="settings_speech_model_mlkit_prefix">ML Kit: %1$s</string><string name="settings_speech_model_action_mlkit_download">ML Kit入手</string><string name="settings_speech_model_action_mlkit_retry">ML Kit再試行</string><string name="settings_engine_ml_kit">ML Kit GenAI</string><string name="settings_engine_speech_recognizer">OS 標準 (SpeechRecognizer)</string><string name="settings_engine_sherpa_onnx">ローカルモデル (sherpa-onnx)</string></resources>
+    <string name="settings_tab_language">言語</string>
+    <string name="settings_search_language">言語を検索</string>
+    <string name="settings_language_pinned">おすすめ</string>
+    <string name="settings_language_others">すべての言語</string>
+    <string name="settings_stt_engine_auto">自動</string>
+    <string name="settings_stt_engine_auto_with_resolved">自動 (%1$s)</string>
+    <string name="settings_stt_engine_mlkit">ML Kit</string>
+    <string name="settings_stt_engine_mlkit_radio">ML Kit Gen AI</string>
+    <string name="settings_stt_engine_speech_recognizer">SpeechRecognizer</string>
+    <string name="settings_stt_engine_sherpa_onnx">sherpa-onnx</string>
+    <string name="settings_stt_engine_sherpa_not_downloaded">sherpa-onnx (%1$dMB/未ダウンロード)</string>
+    <string name="settings_stt_engine_sherpa_downloaded">sherpa-onnx (%1$dMB)</string>
+    <string name="settings_stt_engine_priority">優先するエンジン</string>
+    <string name="settings_stt_engine_current">現在: %1$s</string>
+    <string name="settings_stt_engine_unsupported">未対応</string>
+    <string name="settings_speech_model_mlkit_prefix">ML Kit: %1$s</string>
+    <string name="settings_speech_model_action_mlkit_download">ML Kit入手</string>
+    <string name="settings_speech_model_action_mlkit_retry">ML Kit再試行</string>
+    <string name="settings_engine_ml_kit">ML Kit GenAI</string>
+    <string name="settings_engine_speech_recognizer">OS 標準 (SpeechRecognizer)</string>
+    <string name="settings_engine_sherpa_onnx">ローカルモデル (sherpa-onnx)</string>
+    <string name="settings_sherpa_download_dialog_title">sherpa-onnx モデルのダウンロード</string>
+    <string name="settings_sherpa_download_confirm_message">%1$dMBをダウンロードしていいですか？</string>
+    <string name="settings_sherpa_downloading_message">%1$dMBをダウンロード中…</string>
+    <string name="settings_sherpa_download_failed_message">ダウンロードに失敗しました。もう一度試行しますか？（%1$dMB）</string>
+    <string name="settings_sherpa_download_confirm_button">ダウンロード</string>
+    <string name="settings_sherpa_download_cancel_button">キャンセル</string>
+</resources>

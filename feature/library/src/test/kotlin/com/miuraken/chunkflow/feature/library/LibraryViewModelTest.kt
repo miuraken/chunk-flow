@@ -1423,4 +1423,92 @@ class LibraryViewModelTest {
         assertTrue("韓国語講座" in state.availableImportFolders)
         assertTrue("マイ単語帳" in state.availableImportFolders)
     }
+
+    @Test
+    fun `ブックマークタブ_ファイルごとにブックマーク済みチャンクがアコーディオン表示され直接再生と下部コントローラーが動作する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item1 = sample.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("bm-item-1"),
+            title = "Lesson 1",
+            course = "韓国語講座/初級",
+        )
+        val item2 = sample.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("bm-item-2"),
+            title = "Lesson 2",
+            course = "韓国語講座/中級",
+        )
+        val chunks1 = sample.chunks.take(3)
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2))
+        val playback = FakePlaybackController()
+        val analysis = FakeAnalysisRepository().apply {
+            update(item1.id) {
+                FakeAnalysisRepository.Entry(
+                    chunks = chunks1,
+                    transcripts = sample.transcripts,
+                    bookmarks = listOf(
+                        com.miuraken.chunkflow.core.model.Bookmark(
+                            id = 1L,
+                            mediaId = item1.id,
+                            positionMs = chunks1[0].startMs,
+                        ),
+                        com.miuraken.chunkflow.core.model.Bookmark(
+                            id = 2L,
+                            mediaId = item1.id,
+                            positionMs = chunks1[2].startMs,
+                        ),
+                    ),
+                )
+            }
+        }
+        val viewModel = LibraryViewModel(repo, playback, analysis)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. ブックマークタブへ切り替え。ブックマークがある item1 のみ表示され、初期状態はアコーディオン閉じ（isExpanded = false）
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.BOOKMARKS))
+        assertEquals(LibraryViewTab.BOOKMARKS, viewModel.uiState.value.selectedTab)
+        val bookmarkedFiles = viewModel.uiState.value.bookmarkedFiles
+        assertEquals(1, bookmarkedFiles.size)
+        val fileModel = bookmarkedFiles.single()
+        assertEquals(item1.id, fileModel.mediaId)
+        assertEquals("韓国語講座/初級", fileModel.folderName)
+        assertFalse(fileModel.isExpanded)
+        assertEquals(listOf(chunks1[0].id, chunks1[2].id), fileModel.bookmarkedChunks.map { it.chunk.id })
+
+        // 2. アコーディオンを開閉できる
+        viewModel.onEvent(LibraryEvent.ToggleBookmarkFileAccordion(item1.id))
+        assertTrue(viewModel.uiState.value.bookmarkedFiles.single().isExpanded)
+        viewModel.onEvent(LibraryEvent.ToggleBookmarkFileAccordion(item1.id))
+        assertFalse(viewModel.uiState.value.bookmarkedFiles.single().isExpanded)
+
+        // 3. チャンクをタップするとそのファイルをオープンして該当チャンクの開始位置へシークし直接再生する
+        viewModel.onEvent(LibraryEvent.PlayBookmarkedChunk(item1.id, chunks1[0].id))
+        assertEquals(listOf(item1.id), playback.openedMediaIds)
+        assertEquals(chunks1[0].startMs, playback.position.positionMs)
+        assertTrue(playback.status.value.isPlaying)
+        assertEquals(chunks1[0].id, viewModel.uiState.value.activeBookmarkedChunk?.chunk?.id)
+
+        // 4. 下部再生コントローラーで次のブックマークチャンク・前のブックマークチャンクへ移動できる
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerNextChunk)
+        assertEquals(chunks1[2].startMs, playback.position.positionMs)
+        assertEquals(chunks1[2].id, viewModel.uiState.value.activeBookmarkedChunk?.chunk?.id)
+
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerPreviousChunk)
+        assertEquals(chunks1[0].startMs, playback.position.positionMs)
+        assertEquals(chunks1[0].id, viewModel.uiState.value.activeBookmarkedChunk?.chunk?.id)
+
+        // 5. 下部再生コントローラーの秒数シークと再生・一時停止トグルが動作する
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerSeekForward)
+        assertEquals(chunks1[0].startMs + 5_000L, playback.position.positionMs)
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerSeekBack)
+        assertEquals(chunks1[0].startMs + 2_000L, playback.position.positionMs)
+        viewModel.onEvent(LibraryEvent.BookmarkPlayerTogglePlayPause)
+        assertFalse(playback.status.value.isPlaying)
+
+        // 6. チャンクのブックマークを解除するとリストから除外される
+        viewModel.onEvent(LibraryEvent.ToggleChunkBookmark(item1.id, chunks1[0].id))
+        assertEquals(
+            listOf(chunks1[2].id),
+            viewModel.uiState.value.bookmarkedFiles.single().bookmarkedChunks.map { it.chunk.id },
+        )
+    }
 }

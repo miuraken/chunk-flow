@@ -411,6 +411,9 @@ enum class LibraryViewTab {
 
     /** 最近開いたファイル・よくアクセスするファイル・お気に入り・ユーザー作成プレイリストの再生リストビュー。 */
     PLAYLISTS,
+
+    /** 各音声ファイルでブックマークした音声チャンクをファイルごとのアコーディオンで一覧・直接再生するブックマークビュー。 */
+    BOOKMARKS,
 }
 
 /**
@@ -479,6 +482,44 @@ data class LibraryPlaylistEntryUiModel(
 }
 
 /**
+ * 「ブックマーク」タブに表示する、ブックマークされた音声チャンク 1 件分の UI モデル。
+ *
+ * @property chunk 対象のチャンク。
+ * @property chunkNumber 1 始まりのチャンク連番（ファイル全体のチャンク内での順番）。
+ * @property transcript 対応する文字起こし（未取得・なしの場合は `null`）。
+ * @property note ブックマークのメモ（任意）。
+ */
+data class LibraryBookmarkedChunkUiModel(
+    val chunk: Chunk,
+    val chunkNumber: Int,
+    val transcript: Transcript? = null,
+    val note: String = "",
+)
+
+/**
+ * 「ブックマーク」タブに表示する、ブックマーク付き音声ファイル 1 件分の UI モデル。
+ *
+ * @property itemModel 教材の UI モデル。
+ * @property folderName フォルダ名（未分類の場合は `null`）。
+ * @property bookmarkedChunks ブックマークされているチャンクの一覧（開始時刻昇順）。
+ * @property isExpanded チャンク一覧のアコーディオンが展開されているかどうか（既定は `false` で折りたたみ）。
+ */
+data class LibraryBookmarkedFileUiModel(
+    val itemModel: LibraryItemUiModel,
+    val folderName: String?,
+    val bookmarkedChunks: List<LibraryBookmarkedChunkUiModel>,
+    val isExpanded: Boolean = false,
+) {
+    /** 教材の ID。 */
+    val mediaId: MediaId
+        get() = itemModel.item.id
+
+    /** ファイル名（タイトル）。 */
+    val title: String
+        get() = itemModel.item.title
+}
+
+/**
  * ライブラリ画面の状態（F1.1〜F2.4、F7.1、§7.5.1）。
  *
  * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無・聴取完了・最終アクセス日時を含む）。
@@ -500,7 +541,7 @@ data class LibraryPlaylistEntryUiModel(
  * @property currentDirectoryPath 現在開いているディレクトリの相対パス（ルート階層の場合は `null`）。
  * @property selectedDirectoryPaths 長押し複数選択モードで選択されているディレクトリパスの集合。
  * @property selectedItemIds 長押し複数選択モードで選択されている教材 ID の集合。
- * @property selectedTab 現在選択されているビュータブ（フォルダ / ファイル / 再生リスト）。
+ * @property selectedTab 現在選択されているビュータブ（フォルダ / ファイル / 再生リスト / ブックマーク）。
  * @property fileSearchQuery ファイルビュータブのファイル名検索キーワード。
  * @property fileTargetLanguageFilter ファイルビュータブの対象言語フィルタ（`null` なら全言語）。
  * @property fileSortOption ファイルビュータブのソート種別（名称順 / アクセス日時 / 完了度）。
@@ -509,6 +550,12 @@ data class LibraryPlaylistEntryUiModel(
  * @property playlists DB に保存されているプレイリスト一覧（ユーザー作成プレイリスト＋並び順・アイテム順が上書きされた組み込みプレイリスト）。
  * @property favoriteItemIds お気に入りに登録されている教材 ID の集合。
  * @property queuedItemIds 次に再生するキューに登録されている教材 ID の順序付き一覧。
+ * @property bookmarkedChunksByMedia 教材 ID ごとのブックマークされたチャンク一覧。
+ * @property expandedBookmarkMediaIds 「ブックマーク」タブでアコーディオンを展開している教材 ID の集合（既定は空集合＝すべて折りたたみ）。
+ * @property activePlaybackMediaId 現在再生中または選択中の教材 ID。
+ * @property activePlaybackChunkId 現在再生中または選択中のチャンク ID。
+ * @property seekBackMs 巻き戻し秒数（ミリ秒、既定は 3000ms）。
+ * @property seekForwardMs 早送り秒数（ミリ秒、既定は 5000ms）。
  */
 data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
@@ -549,6 +596,12 @@ data class LibraryUiState(
                 .thenBy { it.item.id.value },
         )
         .map { it.item.id },
+    val bookmarkedChunksByMedia: Map<MediaId, List<LibraryBookmarkedChunkUiModel>> = emptyMap(),
+    val expandedBookmarkMediaIds: Set<MediaId> = emptySet(),
+    val activePlaybackMediaId: MediaId? = null,
+    val activePlaybackChunkId: ChunkId? = null,
+    val seekBackMs: Long = 3_000L,
+    val seekForwardMs: Long = 5_000L,
 ) {
     companion object {
         /** 最近開いたファイル欄およびよくアクセスするファイル欄に表示する最大件数。 */
@@ -1040,6 +1093,42 @@ data class LibraryUiState(
         }
         return null
     }
+
+    /**
+     * 「ブックマーク」タブに表示する、ブックマークされたチャンクを持つファイルの一覧（ファイル名自然昇順）。
+     *
+     * 各ファイルのチャンク一覧は既定でアコーディオンに格納（[LibraryBookmarkedFileUiModel.isExpanded] = `false`）され、
+     * [expandedBookmarkMediaIds] に含まれるファイルのみ展開される。
+     */
+    val bookmarkedFiles: List<LibraryBookmarkedFileUiModel>
+        get() = items
+            .sortedWith { a, b ->
+                val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+            }
+            .mapNotNull { itemModel ->
+                val chunks = bookmarkedChunksByMedia[itemModel.item.id].orEmpty()
+                if (chunks.isEmpty()) {
+                    null
+                } else {
+                    LibraryBookmarkedFileUiModel(
+                        itemModel = itemModel,
+                        folderName = effectivePathOf(itemModel),
+                        bookmarkedChunks = chunks,
+                        isExpanded = itemModel.item.id in expandedBookmarkMediaIds,
+                    )
+                }
+            }
+
+    /**
+     * 現在再生中（または選択中）のチャンクがブックマーク一覧に含まれる場合、その [LibraryBookmarkedChunkUiModel] を返す。
+     */
+    val activeBookmarkedChunk: LibraryBookmarkedChunkUiModel?
+        get() {
+            val mediaId = activePlaybackMediaId ?: miniPlayer?.mediaId ?: return null
+            val chunkId = activePlaybackChunkId ?: return null
+            return bookmarkedChunksByMedia[mediaId]?.firstOrNull { it.chunk.id == chunkId }
+        }
 }
 
 /** ライブラリ画面のイベント。 */
@@ -1198,7 +1287,7 @@ sealed interface LibraryEvent {
     /** 初回起動時の言語選択オンボーディングを完了済みにする。 */
     data object CompleteLanguageOnboarding : LibraryEvent
 
-    /** ライブラリの表示タブ（フォルダ / ファイル / 再生リスト）を切り替える。 */
+    /** ライブラリの表示タブ（フォルダ / ファイル / 再生リスト / ブックマーク）を切り替える。 */
     data class SelectTab(val tab: LibraryViewTab) : LibraryEvent
 
     /** ファイルビューのファイル名検索キーワードを更新する。 */
@@ -1248,6 +1337,30 @@ sealed interface LibraryEvent {
 
     /** 教材 [id] の「次に再生するキュー」への登録状態を切り替える。 */
     data class ToggleQueueItem(val id: MediaId) : LibraryEvent
+
+    /** 「ブックマーク」タブのファイルアコーディオン展開・折りたたみを切り替える。 */
+    data class ToggleBookmarkFileAccordion(val id: MediaId) : LibraryEvent
+
+    /** 「ブックマーク」タブから特定の教材・チャンクを直接再生する。 */
+    data class PlayBookmarkedChunk(val mediaId: MediaId, val chunkId: ChunkId) : LibraryEvent
+
+    /** 「ブックマーク」タブから特定チャンクのブックマーク状態を切り替える（解除する）。 */
+    data class ToggleChunkBookmark(val mediaId: MediaId, val chunkId: ChunkId) : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーの再生 / 一時停止を切り替える。 */
+    data object BookmarkPlayerTogglePlayPause : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーで前のチャンクへ移動する。 */
+    data object BookmarkPlayerPreviousChunk : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーで次のチャンクへ移動する。 */
+    data object BookmarkPlayerNextChunk : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーで数秒戻す。 */
+    data object BookmarkPlayerSeekBack : LibraryEvent
+
+    /** 「ブックマーク」タブ下部の再生コントローラーで数秒進める。 */
+    data object BookmarkPlayerSeekForward : LibraryEvent
 }
 
 private data class ItemAnalysisSummary(
@@ -1257,6 +1370,7 @@ private data class ItemAnalysisSummary(
     val transcriptProgressPercent: Int = 0,
     val isAnalyzing: Boolean = false,
     val isTranscribing: Boolean = false,
+    val bookmarkedChunks: List<LibraryBookmarkedChunkUiModel> = emptyList(),
 )
 
 private data class LibraryRepositorySnapshot(
@@ -1269,6 +1383,8 @@ private data class LibraryRepositorySnapshot(
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     val showLanguageOnboardingDialog: Boolean = false,
+    val seekBackMs: Long = 3_000L,
+    val seekForwardMs: Long = 5_000L,
 )
 
 private data class DialogAndImportSnapshot(
@@ -1295,6 +1411,7 @@ private data class NavigationAndSelectionSnapshot(
     val fileTargetLanguageFilter: LanguageTag? = null,
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val selectedPlaylistId: PlaylistId? = null,
+    val expandedBookmarkMediaIds: Set<MediaId> = emptySet(),
 )
 
 private object EmptyAnalysisRepository : AnalysisRepository {
@@ -1363,6 +1480,7 @@ class LibraryViewModel @Inject constructor(
     private val fileTargetLanguageFilter = MutableStateFlow<LanguageTag?>(null)
     private val fileSortOption = MutableStateFlow(LibraryFileSortOption.NAME)
     private val selectedPlaylistId = MutableStateFlow<PlaylistId?>(null)
+    private val expandedBookmarkMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private var defaultLanguagePair: LanguagePair = LanguagePair(
         target = LanguageTag("en"),
         base = LanguageTag("ja"),
@@ -1398,7 +1516,8 @@ class LibraryViewModel @Inject constructor(
                         analysisRepository.observeTranscripts(item.id),
                         analysisRepository.observeStatus(item.id),
                         analysisRepository.observeLookaheadStatus(item.id),
-                    ) { chunks, transcripts, statusMap, lookaheadStatus ->
+                        analysisRepository.observeBookmarks(item.id),
+                    ) { chunks, transcripts, statusMap, lookaheadStatus, bookmarks ->
                         val transcribedCount = chunks.count { chunk ->
                             transcripts[chunk.id]?.text?.isNotBlank() == true
                         }
@@ -1444,6 +1563,27 @@ class LibraryViewModel @Inject constructor(
                                     lookaheadStatus.queuedChunkIds.isNotEmpty() ||
                                     (lookaheadStatus.backgroundEnabled && lookaheadStatus.enabled && chunks.isNotEmpty())
                                 )
+                        val sortedChunks = chunks.sortedBy { it.startMs }
+                        val bookmarkedChunks = if (bookmarks.isEmpty() || sortedChunks.isEmpty()) {
+                            emptyList()
+                        } else {
+                            sortedChunks.mapIndexedNotNull { idx, chunk ->
+                                val matchingBookmark = bookmarks.firstOrNull { bm ->
+                                    (bm.positionMs >= chunk.startMs && bm.positionMs < chunk.endMs) ||
+                                        bm.positionMs == chunk.startMs
+                                }
+                                if (matchingBookmark != null) {
+                                    LibraryBookmarkedChunkUiModel(
+                                        chunk = chunk,
+                                        chunkNumber = idx + 1,
+                                        transcript = transcripts[chunk.id],
+                                        note = matchingBookmark.note,
+                                    )
+                                } else {
+                                    null
+                                }
+                            }
+                        }
                         item.id to ItemAnalysisSummary(
                             chunkCount = chunks.size,
                             hasTranscript = transcriptStatus != LibraryTranscriptStatus.NONE,
@@ -1451,6 +1591,7 @@ class LibraryViewModel @Inject constructor(
                             transcriptProgressPercent = transcriptProgressPercent,
                             isAnalyzing = statusMap.values.any { it is StageStatus.Running },
                             isTranscribing = isTranscribing,
+                            bookmarkedChunks = bookmarkedChunks,
                         )
                     }
                 }
@@ -1527,13 +1668,15 @@ class LibraryViewModel @Inject constructor(
                 selectedPlaylistId = playlistId,
             )
         },
-    ) { baseNav, tabAndFilter ->
+        expandedBookmarkMediaIds,
+    ) { baseNav, tabAndFilter, expandedBookmarks ->
         baseNav.copy(
             selectedTab = tabAndFilter.selectedTab,
             fileSearchQuery = tabAndFilter.fileSearchQuery,
             fileTargetLanguageFilter = tabAndFilter.fileTargetLanguageFilter,
             fileSortOption = tabAndFilter.fileSortOption,
             selectedPlaylistId = tabAndFilter.selectedPlaylistId,
+            expandedBookmarkMediaIds = expandedBookmarks,
         )
     }
 
@@ -1560,6 +1703,8 @@ class LibraryViewModel @Inject constructor(
                 enabledLanguages = orderEnabledLanguages(userSettings.enabledLanguages),
                 sttEngineByLanguage = userSettings.sttEngineByLanguage,
                 showLanguageOnboardingDialog = !userSettings.hasCompletedLanguageOnboarding,
+                seekBackMs = userSettings.seekBackMs,
+                seekForwardMs = userSettings.seekForwardMs,
             )
         },
         playbackController.status,
@@ -1576,6 +1721,8 @@ class LibraryViewModel @Inject constructor(
             enabledLanguages = repoSnapshot.enabledLanguages,
             sttEngineByLanguage = repoSnapshot.sttEngineByLanguage,
             showLanguageOnboardingDialog = repoSnapshot.showLanguageOnboardingDialog,
+            seekBackMs = repoSnapshot.seekBackMs,
+            seekForwardMs = repoSnapshot.seekForwardMs,
             playbackStatus = playbackStatus,
             dialogAndImport = dialogAndImport,
             navAndSelection = navAndSelection,
@@ -2167,6 +2314,42 @@ class LibraryViewModel @Inject constructor(
                 pendingEditDirectory.value = null
             }
 
+            is LibraryEvent.ToggleBookmarkFileAccordion -> {
+                expandedBookmarkMediaIds.update { current ->
+                    if (event.id in current) current - event.id else current + event.id
+                }
+            }
+
+            is LibraryEvent.PlayBookmarkedChunk -> {
+                playBookmarkedChunk(event.mediaId, event.chunkId)
+            }
+
+            is LibraryEvent.ToggleChunkBookmark -> {
+                viewModelScope.launch {
+                    analysisRepository.toggleChunkBookmark(event.mediaId, event.chunkId)
+                }
+            }
+
+            LibraryEvent.BookmarkPlayerTogglePlayPause -> {
+                toggleBookmarkPlayerPlayPause()
+            }
+
+            LibraryEvent.BookmarkPlayerPreviousChunk -> {
+                seekAdjacentBookmarkedChunk(direction = -1)
+            }
+
+            LibraryEvent.BookmarkPlayerNextChunk -> {
+                seekAdjacentBookmarkedChunk(direction = 1)
+            }
+
+            LibraryEvent.BookmarkPlayerSeekBack -> {
+                seekBookmarkPlayerBy(-uiState.value.seekBackMs)
+            }
+
+            LibraryEvent.BookmarkPlayerSeekForward -> {
+                seekBookmarkPlayerBy(uiState.value.seekForwardMs)
+            }
+
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.RequestImportTranscript,
@@ -2174,6 +2357,110 @@ class LibraryViewModel @Inject constructor(
             LibraryEvent.RequestSelectDriveSyncFolder,
             LibraryEvent.OpenSettings,
             -> Unit
+        }
+    }
+
+    private fun playBookmarkedChunk(mediaId: MediaId, chunkId: ChunkId) {
+        viewModelScope.launch {
+            libraryRepository.recordItemAccess(mediaId)
+            if (playbackController.status.value.mediaId != mediaId) {
+                playbackController.open(mediaId)
+            }
+            playbackController.seekToChunk(chunkId)
+            val player = playbackController.player.value
+            if (player != null && !player.isPlaying) {
+                player.play()
+            } else if (playbackController is FakePlaybackController) {
+                val targetChunk = uiState.value.bookmarkedChunksByMedia[mediaId]
+                    ?.firstOrNull { it.chunk.id == chunkId }
+                    ?.chunk
+                val targetItem = uiState.value.items.firstOrNull { it.item.id == mediaId }?.item
+                if (targetChunk != null) {
+                    playbackController.position.positionMs = targetChunk.startMs
+                }
+                playbackController.statusState.update { current ->
+                    current.copy(
+                        mediaId = mediaId,
+                        isPlaying = true,
+                        durationMs = targetItem?.durationMs ?: current.durationMs,
+                        currentChunkId = chunkId,
+                        autoPauseEndsAtMs = null,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun toggleBookmarkPlayerPlayPause() {
+        val currentState = uiState.value
+        val activeMediaId = playbackController.status.value.mediaId
+        if (activeMediaId == null && currentState.bookmarkedFiles.isNotEmpty()) {
+            val firstFile = currentState.bookmarkedFiles.first()
+            val firstChunkId = firstFile.bookmarkedChunks.firstOrNull()?.chunk?.id
+            if (firstChunkId != null) {
+                playBookmarkedChunk(firstFile.mediaId, firstChunkId)
+                return
+            }
+        }
+        toggleMiniPlayerPlayPause()
+    }
+
+    private fun seekAdjacentBookmarkedChunk(direction: Int) {
+        val currentState = uiState.value
+        val allPairs = currentState.bookmarkedFiles.flatMap { file ->
+            file.bookmarkedChunks.map { file.mediaId to it.chunk.id }
+        }
+        if (allPairs.isNotEmpty()) {
+            val activeMediaId = playbackController.status.value.mediaId
+            val activeChunkId = playbackController.status.value.currentChunkId
+            val currentIndex = if (activeMediaId != null && activeChunkId != null) {
+                allPairs.indexOfFirst { (mId, cId) -> mId == activeMediaId && cId == activeChunkId }
+            } else {
+                -1
+            }
+            if (currentIndex >= 0) {
+                val nextIndex = (currentIndex + direction).coerceIn(0, allPairs.lastIndex)
+                val (targetMediaId, targetChunkId) = allPairs[nextIndex]
+                playBookmarkedChunk(targetMediaId, targetChunkId)
+                return
+            }
+            val sameMediaPairs = if (activeMediaId != null) {
+                allPairs.filter { it.first == activeMediaId }
+            } else {
+                emptyList()
+            }
+            val (targetMediaId, targetChunkId) = if (sameMediaPairs.isNotEmpty()) {
+                if (direction < 0) sameMediaPairs.last() else sameMediaPairs.first()
+            } else {
+                if (direction < 0) allPairs.last() else allPairs.first()
+            }
+            playBookmarkedChunk(targetMediaId, targetChunkId)
+            return
+        }
+        val player = playbackController.player.value
+        if (player != null) {
+            if (direction < 0) {
+                player.seekToPrevious()
+            } else {
+                player.seekToNext()
+            }
+        }
+    }
+
+    private fun seekBookmarkPlayerBy(deltaMs: Long) {
+        val player = playbackController.player.value
+        if (player != null) {
+            val duration = player.duration.takeIf { it > 0L } ?: playbackController.status.value.durationMs
+            val nextPos = (player.currentPosition + deltaMs).let { raw ->
+                if (duration > 0L) raw.coerceIn(0L, duration) else raw.coerceAtLeast(0L)
+            }
+            player.seekTo(nextPos)
+        } else if (playbackController is FakePlaybackController) {
+            val duration = playbackController.status.value.durationMs
+            val nextPos = (playbackController.position.positionMs + deltaMs).let { raw ->
+                if (duration > 0L) raw.coerceIn(0L, duration) else raw.coerceAtLeast(0L)
+            }
+            playbackController.position.positionMs = nextPos
         }
     }
 
@@ -2442,6 +2729,8 @@ class LibraryViewModel @Inject constructor(
         enabledLanguages: List<LanguageTag>,
         sttEngineByLanguage: Map<LanguageTag, SttEngine>,
         showLanguageOnboardingDialog: Boolean,
+        seekBackMs: Long,
+        seekForwardMs: Long,
         playbackStatus: PlaybackStatus,
         dialogAndImport: DialogAndImportSnapshot,
         navAndSelection: NavigationAndSelectionSnapshot,
@@ -2519,6 +2808,10 @@ class LibraryViewModel @Inject constructor(
         }
         val validItemIds = items.mapTo(mutableSetOf()) { it.id }
         val filteredSelectedItemIds = navAndSelection.selectedItemIds.intersect(validItemIds)
+        val filteredExpandedBookmarkIds = navAndSelection.expandedBookmarkMediaIds.intersect(validItemIds)
+        val bookmarkedChunksByMedia = summaries
+            .mapValues { (_, summary) -> summary.bookmarkedChunks }
+            .filterValues { it.isNotEmpty() }
         val favoriteIds = uiItems
             .filter { it.isFavorite }
             .mapTo(linkedSetOf()) { it.item.id }
@@ -2561,6 +2854,12 @@ class LibraryViewModel @Inject constructor(
             playlists = playlists,
             favoriteItemIds = favoriteIds,
             queuedItemIds = queuedIds,
+            bookmarkedChunksByMedia = bookmarkedChunksByMedia,
+            expandedBookmarkMediaIds = filteredExpandedBookmarkIds,
+            activePlaybackMediaId = activeMediaId ?: miniPlayer?.mediaId,
+            activePlaybackChunkId = playbackStatus.currentChunkId,
+            seekBackMs = seekBackMs,
+            seekForwardMs = seekForwardMs,
         )
     }
 }
