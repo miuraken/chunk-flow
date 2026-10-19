@@ -1074,7 +1074,7 @@ private fun ZoomedWaveformCanvas(
         }
     }
 
-    // 波形画像の色分けに使うのはチャンクの時刻・言語・文字起こし完了有無だけなので、選択状態や本文の内容が変わっても作り直さない
+    // 波形画像の色分けに使うのはチャンクの時刻・言語・文字起こし完了有無・スキップ状態だけなので、選択状態や本文の内容が変わっても作り直さない
     val chunkColorKeys = remember(chunks) {
         chunks.map {
             ChunkColorKey(
@@ -1082,6 +1082,7 @@ private fun ZoomedWaveformCanvas(
                 endMs = it.endMs,
                 language = it.language,
                 isTranscribed = !it.text.isNullOrBlank(),
+                isSkipped = it.isSkipped,
             )
         }
     }
@@ -1399,7 +1400,8 @@ private fun ZoomedWaveformCanvas(
                         gapPx = chunkGapPx,
                     )
 
-                    // 1. チャンクの背景（言語の役割で色を分け、隣り合うチャンクは濃さを交互に変えて区別しやすくする）
+                    // 1. チャンクの背景（言語の役割で色を分け、隣り合うチャンクは濃さを交互に変えて区別しやすくする。
+                    // スキップに設定されたチャンクは彩度と不透明度を落とし、背景とのコントラストも下げて表現する）
                     chunks.forEachIndexed { index, chunk ->
                         if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) return@forEachIndexed
                         val rect = chunkRect(chunk) ?: return@forEachIndexed
@@ -1410,7 +1412,11 @@ private fun ZoomedWaveformCanvas(
                         }
                         val emphasis = if (index % 2 == 0) 1f else ALTERNATE_CHUNK_BACKGROUND_EMPHASIS
                         drawRoundRect(
-                            color = roleColor.copy(alpha = roleColor.alpha * emphasis),
+                            color = styleZoomedChunkBackgroundColor(
+                                roleColor = roleColor,
+                                emphasis = emphasis,
+                                isSkipped = chunk.isSkipped,
+                            ),
                             topLeft = rect.topLeft,
                             size = rect.size,
                             cornerRadius = chunkCorner,
@@ -1539,16 +1545,26 @@ private fun ZoomedWaveformCanvas(
     )
 }
 
-/** 波形画像の色分けに使うチャンクの情報（時刻・言語・文字起こし完了有無）。これが変わったときだけ画像を作り直す。 */
+/** 波形画像の色分けに使うチャンクの情報（時刻・言語・文字起こし完了有無・スキップ状態）。これが変わったときだけ画像を作り直す。 */
 private data class ChunkColorKey(
     val startMs: Long,
     val endMs: Long,
     val language: LanguageTag?,
     val isTranscribed: Boolean = false,
+    val isSkipped: Boolean = false,
 )
 
 /** 未文字起こしチャンクの波形を描画するときに残す彩度の割合（0.0 = 完全なグレースケール、1.0 = 元の色）。 */
 internal const val UNTRANSCRIBED_WAVEFORM_SATURATION: Float = 0.25f
+
+/** スキップ対象チャンクの背景および波形を描画するときに残す彩度の割合。 */
+internal const val SKIPPED_CHUNK_SATURATION: Float = 0.15f
+
+/** スキップ対象チャンクの背景の不透明度に乗じる係数（背景とのコントラストを下げる）。 */
+internal const val SKIPPED_CHUNK_BACKGROUND_ALPHA_FACTOR: Float = 0.38f
+
+/** スキップ対象チャンクの波形バーの不透明度に乗じる係数（背景とのコントラストを下げる）。 */
+internal const val SKIPPED_CHUNK_WAVEFORM_ALPHA_FACTOR: Float = 0.42f
 
 /**
  * 波形の色 [color] の彩度を [saturationFactor]（`0f..1f`）に落とした色を返す。
@@ -1569,6 +1585,38 @@ internal fun desaturateWaveformColor(
         blue = (gray + (color.blue - gray) * factor).coerceIn(0f, 1f),
         alpha = color.alpha,
     )
+}
+
+/**
+ * 拡大波形のチャンク背景色 [roleColor] に、偶数/奇数チャンクの強調係数 [emphasis] とスキップ状態 [isSkipped] を反映した色を返す。
+ *
+ * スキップに設定されたチャンクは彩度を [SKIPPED_CHUNK_SATURATION] に落とし、不透明度にも [SKIPPED_CHUNK_BACKGROUND_ALPHA_FACTOR] を掛けて
+ * 周囲の背景とのコントラストを下げる。
+ */
+internal fun styleZoomedChunkBackgroundColor(
+    roleColor: Color,
+    emphasis: Float = 1f,
+    isSkipped: Boolean = false,
+): Color {
+    val base = if (isSkipped) {
+        desaturateWaveformColor(roleColor, saturationFactor = SKIPPED_CHUNK_SATURATION)
+    } else {
+        roleColor
+    }
+    val alphaFactor = if (isSkipped) {
+        emphasis * SKIPPED_CHUNK_BACKGROUND_ALPHA_FACTOR
+    } else {
+        emphasis
+    }
+    return base.copy(alpha = (base.alpha * alphaFactor).coerceIn(0f, 1f))
+}
+
+/**
+ * 拡大波形でスキップに設定されたチャンクの波形バー色 [color] の彩度と不透明度を落とし、背景とのコントラストを下げた色を返す。
+ */
+internal fun styleSkippedWaveformBarColor(color: Color): Color {
+    val desaturated = desaturateWaveformColor(color, saturationFactor = SKIPPED_CHUNK_SATURATION)
+    return desaturated.copy(alpha = (desaturated.alpha * SKIPPED_CHUNK_WAVEFORM_ALPHA_FACTOR).coerceIn(0f, 1f))
 }
 
 /** 近傍画像の解像度 [levelMs]（その表示窓で画面幅いっぱいになる時間幅）と、描く時間範囲 [range]。 */
@@ -1842,6 +1890,30 @@ private fun renderWaveformBitmapStrip(
         color = desaturateWaveformColor(baseWaveRmsColor)
         isAntiAlias = true
     }
+    val skippedUnknownPeakPaint = Paint().apply {
+        color = styleSkippedWaveformBarColor(unknownWavePeakColor)
+        isAntiAlias = true
+    }
+    val skippedUnknownRmsPaint = Paint().apply {
+        color = styleSkippedWaveformBarColor(unknownWaveRmsColor)
+        isAntiAlias = true
+    }
+    val skippedTargetPeakPaint = Paint().apply {
+        color = styleSkippedWaveformBarColor(targetWavePeakColor)
+        isAntiAlias = true
+    }
+    val skippedTargetRmsPaint = Paint().apply {
+        color = styleSkippedWaveformBarColor(targetWaveRmsColor)
+        isAntiAlias = true
+    }
+    val skippedBasePeakPaint = Paint().apply {
+        color = styleSkippedWaveformBarColor(baseWavePeakColor)
+        isAntiAlias = true
+    }
+    val skippedBaseRmsPaint = Paint().apply {
+        color = styleSkippedWaveformBarColor(baseWaveRmsColor)
+        isAntiAlias = true
+    }
     val dummyPaint = Paint().apply {
         color = dummyWaveColor
         isAntiAlias = true
@@ -1892,23 +1964,32 @@ private fun renderWaveformBitmapStrip(
 
             val isTarget = matchedChunk != null && matchesLanguageRole(matchedChunk.language, languagePair?.target)
             val isBase = matchedChunk != null && matchesLanguageRole(matchedChunk.language, languagePair?.base)
+            val isSkipped = desaturateUntranscribedChunks &&
+                matchedChunk != null &&
+                matchedChunk.isSkipped
             val isUntranscribed = desaturateUntranscribedChunks &&
                 matchedChunk != null &&
                 matchedChunk.text.isNullOrBlank()
 
             val peakPaint = when {
+                isTarget && isSkipped -> skippedTargetPeakPaint
                 isTarget && isUntranscribed -> untranscribedTargetPeakPaint
                 isTarget -> targetPeakPaint
+                isBase && isSkipped -> skippedBasePeakPaint
                 isBase && isUntranscribed -> untranscribedBasePeakPaint
                 isBase -> basePeakPaint
+                isSkipped -> skippedUnknownPeakPaint
                 isUntranscribed -> untranscribedUnknownPeakPaint
                 else -> unknownPeakPaint
             }
             val rmsPaint = when {
+                isTarget && isSkipped -> skippedTargetRmsPaint
                 isTarget && isUntranscribed -> untranscribedTargetRmsPaint
                 isTarget -> targetRmsPaint
+                isBase && isSkipped -> skippedBaseRmsPaint
                 isBase && isUntranscribed -> untranscribedBaseRmsPaint
                 isBase -> baseRmsPaint
+                isSkipped -> skippedUnknownRmsPaint
                 isUntranscribed -> untranscribedUnknownRmsPaint
                 else -> unknownRmsPaint
             }

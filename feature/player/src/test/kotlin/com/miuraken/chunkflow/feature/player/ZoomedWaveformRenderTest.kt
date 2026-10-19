@@ -62,4 +62,26 @@ class ZoomedWaveformRenderTest {
         assertTrue(desaturatedSpread < originalSpread)
         assertEquals(originalSpread * UNTRANSCRIBED_WAVEFORM_SATURATION, desaturatedSpread, 0.01f)
     }
+
+    @Test
+    fun `styleZoomedChunkBackgroundColor_and_styleSkippedWaveformBarColor_スキップチャンクは彩度と不透明度を落としてコントラストを下げる`() {
+        val bgOriginal = Color(0xFF1565C0).copy(alpha = 0.28f)
+        val bgNormal = styleZoomedChunkBackgroundColor(roleColor = bgOriginal, emphasis = 1f, isSkipped = false)
+        val bgSkipped = styleZoomedChunkBackgroundColor(roleColor = bgOriginal, emphasis = 1f, isSkipped = true)
+
+        assertEquals(bgOriginal, bgNormal)
+        assertTrue(bgSkipped.alpha < bgNormal.alpha)
+        assertEquals(bgOriginal.alpha * SKIPPED_CHUNK_BACKGROUND_ALPHA_FACTOR, bgSkipped.alpha, 0.005f)
+        val bgNormalSpread = maxOf(bgNormal.red, bgNormal.green, bgNormal.blue) - minOf(bgNormal.red, bgNormal.green, bgNormal.blue)
+        val bgSkippedSpread = maxOf(bgSkipped.red, bgSkipped.green, bgSkipped.blue) - minOf(bgSkipped.red, bgSkipped.green, bgSkipped.blue)
+        assertTrue(bgSkippedSpread < bgNormalSpread)
+
+        val barOriginal = Color(0xFF2196F3).copy(alpha = 0.90f)
+        val barSkipped = styleSkippedWaveformBarColor(barOriginal)
+        assertTrue(barSkipped.alpha < barOriginal.alpha)
+        assertEquals(barOriginal.alpha * SKIPPED_CHUNK_WAVEFORM_ALPHA_FACTOR, barSkipped.alpha, 0.005f)
+        val barOriginalSpread = maxOf(barOriginal.red, barOriginal.green, barOriginal.blue) - minOf(barOriginal.red, barOriginal.green, barOriginal.blue)
+        val barSkippedSpread = maxOf(barSkipped.red, barSkipped.green, barSkipped.blue) - minOf(barSkipped.red, barSkipped.green, barSkipped.blue)
+        assertTrue(barSkippedSpread < barOriginalSpread)
+    }
 }

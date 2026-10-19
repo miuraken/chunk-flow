@@ -338,7 +338,6 @@ fun PlayerScreen(
                         )
                         PlayerTitleMetaRow(
                             course = state.course,
-                            languagePair = state.languagePair,
                         )
                     }
                 },
@@ -1032,65 +1031,19 @@ private fun PlayerChunkList(
 @Composable
 private fun PlayerTitleMetaRow(
     course: String?,
-    languagePair: LanguagePair?,
 ) {
-    if (languagePair == null && course == null) return
-    val langPalette = chunkFlowLanguagePalette()
+    if (course == null) return
     Row(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        languagePair?.let { pair ->
-            val targetText = pair.target.value.lowercase(Locale.ROOT)
-            val baseText = pair.base?.value?.lowercase(Locale.ROOT)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (baseText != null) {
-                    Surface(
-                        color = langPalette.baseBadgeContainer,
-                        contentColor = langPalette.onBaseBadgeContainer,
-                        shape = MaterialTheme.shapes.extraSmall,
-                    ) {
-                        Text(
-                            text = baseText,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                        )
-                    }
-                    Text(
-                        text = "→",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Surface(
-                    color = langPalette.targetBadgeContainer,
-                    contentColor = langPalette.onTargetBadgeContainer,
-                    shape = MaterialTheme.shapes.extraSmall,
-                ) {
-                    Text(
-                        text = targetText,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                    )
-                }
-            }
-        }
-        course?.let { courseName ->
-            Text(
-                text = courseName,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        Text(
+            text = course,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

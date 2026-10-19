@@ -2958,11 +2958,6 @@ private fun LanguagePairBadge(
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                 )
             }
-            Text(
-                text = "→",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Surface(
                 color = langPalette.targetBadgeContainer,
                 contentColor = langPalette.onTargetBadgeContainer,
