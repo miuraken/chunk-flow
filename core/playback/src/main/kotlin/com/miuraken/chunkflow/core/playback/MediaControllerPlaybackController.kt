@@ -357,16 +357,17 @@ class MediaControllerPlaybackController(
         lp.seekBackIncrementMs = userSettings.seekBackMs.coerceAtLeast(1_000L)
         lp.seekForwardIncrementMs = userSettings.seekForwardMs.coerceAtLeast(1_000L)
 
-        // チャンク一覧を取得して LearningPlayer と ChunkScheduler に反映する
+        // チャンク一覧を取得し、MediaItem をセットしてから LearningPlayer と ChunkScheduler に反映する
         val initialChunks = analysisRepository.observeChunks(mediaId).first().sortedBy { it.startMs }
         currentChunks = initialChunks
         lp.chunks = initialChunks
-        observeActiveMediaChunks(mediaId, item.languagePair)
 
         val mediaItem = buildMediaItem(item, playableUri)
         lp.setMediaItem(mediaItem, initialPositionMs)
         lp.setPlaybackSpeed(initialSpeed)
         lp.prepare()
+
+        observeActiveMediaChunks(mediaId, item.languagePair)
         chunkScheduler?.setChunks(initialChunks)
 
         val initialChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(initialPositionMs)?.id
@@ -649,6 +650,7 @@ class MediaControllerPlaybackController(
                 delay(LISTENED_CHECK_INTERVAL_MS)
                 val mediaId = _status.value.mediaId ?: continue
                 if (_status.value.isPlaying) {
+                    chunkScheduler?.syncPlaybackPosition()
                     checkAndMarkListenedOnTick(mediaId, LISTENED_CHECK_INTERVAL_MS)
                     elapsedSinceSaveMs += LISTENED_CHECK_INTERVAL_MS
                     if (elapsedSinceSaveMs >= POSITION_SAVE_INTERVAL_MS) {

@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -77,6 +78,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -119,12 +123,8 @@ import java.util.Locale as JavaLocale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-
-/** 手動スクロール後に自動追従を再開するまでの待機時間（5 秒、§7.5.5）。 */
-private const val AUTO_FOLLOW_RESUME_DELAY_MS: Long = 5_000L
 
 /**
  * チャンクごとの文字起こし進捗段階。
@@ -383,7 +383,8 @@ internal fun resolveTranscriptionProgressCheckbox(
  * 再生位置に同期したチャンク / スクリプト一覧（F5.3、F7.1〜F7.7、F8.1、§7.5.5）。
  *
  * - `LazyColumn` の `key` にチャンク ID を指定し、現在のチャンク（[activeChunkIndex]）を背景色と左端バーで強調する。
- * - 現在のチャンクが変わったら自動スクロールで追従し、手動スクロール後 5 秒間は追従を止めて「現在位置へ戻る」ボタンを表示する。
+ * - 現在のチャンクが変わったら自動スクロールで追従し、ユーザーがチャンクリストをスクロール・操作したときは、
+ *   コントローラーや波形での再生・シーク・チャンク移動（[autoFollowResetToken] の更新）または「現在位置へ戻る」ボタンのタップまで追従を止める。
  * - 各行に言語タグと言語設定（[chineseScript] / [cantoneseScript]）から作った `LocaleList` を適用する。
  * - ブラインドモード（[blindMode]）では対象行をマスクし、タップで一時表示できる。
  * - 言語バッジのタップまたは長押しメニューからチャンクの言語ラベル（学習言語 / 母語 / 未判定 `?`）を手動修正できる（F7.3）。
@@ -450,18 +451,21 @@ fun TranscriptList(
     onOpenFileSettings: () -> Unit = {},
     hasRecordAudioPermission: Boolean = detailedTranscriptionDialog?.hasRecordAudioPermission ?: true,
     onRequestRecordAudioPermission: () -> Unit = {},
+    autoFollowResetToken: Long = 0L,
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val isInspectionMode = LocalInspectionMode.current
 
-    var isProgrammaticScroll by remember { mutableStateOf(false) }
+    var programmaticScrollCount by remember { mutableIntStateOf(0) }
     var isAutoFollowPaused by remember { mutableStateOf(false) }
-    var manualScrollTick by remember { mutableLongStateOf(0L) }
+    var lastHandledResetToken by remember { mutableLongStateOf(autoFollowResetToken) }
+    if (autoFollowResetToken != lastHandledResetToken) {
+        lastHandledResetToken = autoFollowResetToken
+        isAutoFollowPaused = false
+    }
     var rangeSelectionStartChunkId by remember { mutableStateOf<ChunkId?>(null) }
     var editingTextChunk by remember { mutableStateOf<Pair<Int, ChunkUi>?>(null) }
-    var progressOverlayHeightPx by remember { mutableIntStateOf(0) }
-    val density = LocalDensity.current
 
     val displayedChunks = remember(chunks, bookmarksOnly) {
         chunks.mapIndexedNotNull { originalIndex, chunk ->
@@ -478,33 +482,43 @@ fun TranscriptList(
         }
     }
 
-    // ユーザーによる手動スクロールの検出
+    // ユーザーによるドラッグ開始の検出
+    LaunchedEffect(listState.interactionSource) {
+        listState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) {
+                isAutoFollowPaused = true
+            }
+        }
+    }
+
+    // ユーザーによるスクロールの検出（プログラムによるスクロール中は除外）
     LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress && !isProgrammaticScroll) {
+        if (listState.isScrollInProgress && programmaticScrollCount == 0) {
             isAutoFollowPaused = true
-            manualScrollTick++
         }
     }
 
-    // 手動スクロール終了から 5 秒後に自動追従へ復帰
-    LaunchedEffect(isAutoFollowPaused, listState.isScrollInProgress, manualScrollTick) {
-        if (isAutoFollowPaused && !listState.isScrollInProgress) {
-            delay(AUTO_FOLLOW_RESUME_DELAY_MS)
-            isAutoFollowPaused = false
+    val userScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && programmaticScrollCount == 0 && available.y != 0f) {
+                    isAutoFollowPaused = true
+                }
+                return Offset.Zero
+            }
         }
     }
 
-    // activeChunkIndex が変わったときの自動追従スクロール
+    // activeChunkIndex または autoFollowResetToken が変わったときの自動追従スクロール
     if (!isInspectionMode) {
-        LaunchedEffect(activeDisplayIndex, displayedChunks.size) {
+        LaunchedEffect(activeDisplayIndex, displayedChunks.size, autoFollowResetToken) {
             val targetIdx = activeDisplayIndex ?: return@LaunchedEffect
             if (!isAutoFollowPaused && targetIdx in displayedChunks.indices) {
-                val scrollTargetIdx = (targetIdx - 2).coerceAtLeast(0)
-                isProgrammaticScroll = true
+                programmaticScrollCount++
                 try {
-                    listState.animateScrollToItem(scrollTargetIdx)
+                    listState.animateScrollToItem(targetIdx)
                 } finally {
-                    isProgrammaticScroll = false
+                    programmaticScrollCount--
                 }
             }
         }
@@ -522,9 +536,6 @@ fun TranscriptList(
     val selectedChunks = remember(chunks) {
         chunks.filter { it.isRepeatChecked }
     }
-
-    // 進捗カードと、リストの端・ほかの部品との間隔
-    val progressOverlayMargin = 8.dp
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -589,7 +600,8 @@ fun TranscriptList(
                 state = listState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    .nestedScroll(userScrollConnection),
                 contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp),
             ) {
                 items(
@@ -635,9 +647,13 @@ fun TranscriptList(
                         selectedChunks = selectedChunks,
                         onSetChunksSkipped = onSetChunksSkipped,
                         positionProvider = positionProvider,
+                        onUserInteract = {
+                            isAutoFollowPaused = true
+                        },
                         onRowClick = {
                             val startId = rangeSelectionStartChunkId
                             if (startId != null) {
+                                isAutoFollowPaused = true
                                 rangeSelectionStartChunkId = null
                                 val ordered = orderChunkRange(chunks, startId, chunk.id)
                                 if (ordered != null) {
@@ -650,6 +666,7 @@ fun TranscriptList(
                                     )
                                 }
                             } else if (isMasked) {
+                                isAutoFollowPaused = true
                                 onToggleRevealChunk(chunk.id)
                             } else {
                                 onSeekToChunk(chunk.id)
@@ -659,30 +676,39 @@ fun TranscriptList(
                             onSeekToChunk(chunk.id)
                         },
                         onToggleBookmark = {
+                            isAutoFollowPaused = true
                             onToggleBookmark(chunk.id)
                         },
                         onToggleRepeatChunk = {
+                            isAutoFollowPaused = true
                             onToggleRepeatChunk(chunk.id)
                         },
                         onStartRangeSelection = {
+                            isAutoFollowPaused = true
                             rangeSelectionStartChunkId = chunk.id
                         },
                         onUpdateLanguage = { newLang ->
+                            isAutoFollowPaused = true
                             onUpdateChunkLanguage(chunk.id, newLang)
                         },
                         onRequestEditText = {
+                            isAutoFollowPaused = true
                             editingTextChunk = index to chunk
                         },
                         onRetranscribeChunk = {
+                            isAutoFollowPaused = true
                             onRetranscribeChunk(chunk.id)
                         },
                         onOpenDetailedTranscription = {
+                            isAutoFollowPaused = true
                             onOpenDetailedTranscription(chunk.id)
                         },
                         onMoveChunkBoundary = { newStartMs, newEndMs ->
+                            isAutoFollowPaused = true
                             onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
                         },
                         onDeleteChunk = {
+                            isAutoFollowPaused = true
                             onDeleteChunk(chunk.id)
                         },
                     )
@@ -696,12 +722,11 @@ fun TranscriptList(
                 onClick = {
                     isAutoFollowPaused = false
                     coroutineScope.launch {
-                        val scrollTargetIdx = (activeDisplayIndex - 2).coerceAtLeast(0)
-                        isProgrammaticScroll = true
+                        programmaticScrollCount++
                         try {
-                            listState.animateScrollToItem(scrollTargetIdx)
+                            listState.animateScrollToItem(activeDisplayIndex)
                         } finally {
-                            isProgrammaticScroll = false
+                            programmaticScrollCount--
                         }
                     }
                 },
@@ -1122,6 +1147,7 @@ private fun TranscriptChunkRow(
     onOpenDetailedTranscription: () -> Unit = {},
     onMoveChunkBoundary: (Long, Long) -> Unit,
     onDeleteChunk: () -> Unit = {},
+    onUserInteract: () -> Unit = {},
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -1228,7 +1254,10 @@ private fun TranscriptChunkRow(
                 .background(rowBackground)
                 .combinedClickable(
                     onClick = onRowClick,
-                    onLongClick = { menuExpanded = true },
+                    onLongClick = {
+                        onUserInteract()
+                        menuExpanded = true
+                    },
                 )
                 .padding(end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,

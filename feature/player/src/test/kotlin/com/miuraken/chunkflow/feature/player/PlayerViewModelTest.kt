@@ -2722,4 +2722,72 @@ class PlayerViewModelTest {
         assertEquals(countBeforeDelete - 2, viewModel.uiState.value.chunks.size)
         assertEquals(d2.startMs to d2.endMs, viewModel.uiState.value.chunks.first().startMs to viewModel.uiState.value.chunks.first().endMs)
     }
+
+    @Test
+    fun `チャンクリスト自動追従の再開トークン_再生開始やシークやチャンク移動と波形カーソル移動で更新され一時停止では更新されない`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        var lastToken = viewModel.uiState.value.autoFollowResetToken
+        assertEquals(0L, lastToken)
+
+        // 1. 再生開始 (TogglePlayPause: 停止 -> 再生) でトークンが更新される
+        viewModel.onEvent(PlayerEvent.TogglePlayPause)
+        assertTrue(viewModel.uiState.value.isPlaying)
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        // 2. 一時停止 (TogglePlayPause: 再生 -> 一時停止) ではトークンは更新されない
+        viewModel.onEvent(PlayerEvent.TogglePlayPause)
+        assertFalse(viewModel.uiState.value.isPlaying)
+        assertEquals(lastToken, viewModel.uiState.value.autoFollowResetToken)
+
+        // 3. 早送り (SeekForward) / 巻き戻し (SeekBack) でトークンが更新される
+        viewModel.onEvent(PlayerEvent.SeekForward)
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        viewModel.onEvent(PlayerEvent.SeekBack)
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        // 4. チャンク移動 (NextChunk / PreviousChunk / SeekToFileStart) でトークンが更新される
+        viewModel.onEvent(PlayerEvent.NextChunk)
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        viewModel.onEvent(PlayerEvent.PreviousChunk)
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        viewModel.onEvent(PlayerEvent.SeekToFileStart)
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        // 5. 波形上のカーソル移動 (SeekTo / DismissWaveformRangeAndSeek / ClearWaveformRangeToCenter) やチャンクタップ (SeekToChunk) で更新される
+        viewModel.onEvent(PlayerEvent.SeekTo(3_500L))
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        viewModel.onEvent(PlayerEvent.SeekToChunk(sample.chunks[2].id))
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(1_000L, 4_000L)))
+        viewModel.onEvent(PlayerEvent.DismissWaveformRangeAndSeek(2_500L))
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+        lastToken = viewModel.uiState.value.autoFollowResetToken
+
+        viewModel.onEvent(PlayerEvent.SetLoopMode(LoopMode.AbRange(1_000L, 4_000L)))
+        viewModel.onEvent(PlayerEvent.ClearWaveformRangeToCenter)
+        assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
+    }
 }

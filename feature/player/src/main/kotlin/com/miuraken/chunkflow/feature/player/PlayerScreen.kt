@@ -942,6 +942,7 @@ private fun PlayerChunkList(
     TranscriptList(
         chunks = state.chunks,
         activeChunkIndex = state.activeChunkIndex,
+        autoFollowResetToken = state.autoFollowResetToken,
         languagePair = state.languagePair,
         hasSameTargetAndBaseLanguage = state.hasSameTargetAndBaseLanguage,
         isAllTranscriptionEmptyAfterCompletion = state.isAllTranscriptionEmptyAfterCompletion,

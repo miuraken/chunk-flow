@@ -145,13 +145,13 @@ class ChunkScheduler(
         pausedAtChunkEndPositionMs = null
         shouldRestartSelectedChunksOnPlay = true
         languagePair = initialLanguagePair
+        chunks = emptyList()
+        transcripts = emptyMap()
+        bookmarks = emptyList()
+        cancelPendingMessage()
 
         if (mediaId == null) {
-            chunks = emptyList()
-            transcripts = emptyMap()
-            bookmarks = emptyList()
             updateState(chunkId = null, autoPauseEndsAt = null)
-            cancelPendingMessage()
             return
         }
 
@@ -189,7 +189,7 @@ class ChunkScheduler(
      */
     fun setChunks(newChunks: List<Chunk>) {
         val sorted = newChunks.sortedBy { it.startMs }
-        if (chunks == sorted) return
+        if (chunks == sorted && pendingMessage != null) return
         chunks = sorted
         val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
         updateState(
@@ -205,7 +205,11 @@ class ChunkScheduler(
     fun setTranscripts(newTranscripts: Map<ChunkId, Transcript>) {
         if (transcripts == newTranscripts) return
         transcripts = newTranscripts
-        reschedule()
+        if (practiceSettings.languageFilter != LanguageFilter.ALL &&
+            practiceSettings.languageFilter != LanguageFilter.CHECKED_ONLY
+        ) {
+            reschedule()
+        }
     }
 
     /**
@@ -236,6 +240,7 @@ class ChunkScheduler(
     fun startSingleChunkPlayback(chunkId: ChunkId) {
         val targetChunk = chunks.firstOrNull { it.id == chunkId } ?: return
         cancelAutoPause()
+        cancelPendingMessage()
         completedLoopCount = 0
         pausedAtChunkEndPositionMs = null
         shouldRestartSelectedChunksOnPlay = true
@@ -255,6 +260,7 @@ class ChunkScheduler(
     fun playFromSelectedChunk(chunkId: ChunkId) {
         val targetChunk = chunks.firstOrNull { it.id == chunkId } ?: return
         cancelAutoPause()
+        cancelPendingMessage()
         completedLoopCount = 0
         singleChunkPlaybackId = null
         pausedAtChunkEndPositionMs = null
@@ -275,6 +281,40 @@ class ChunkScheduler(
         singleChunkPlaybackId = null
         if (_autoPauseEndsAtMs.value != null && !isHandlingAutoPause && !isResumingFromAutoPause) {
             resumeFromAutoPauseEarly(ensurePlaying = false)
+        }
+    }
+
+    /**
+     * 再生中に現在の再生位置と予約済み境界を照合し、万一 [PlayerMessage] の配送が遅延またはスキップされた場合や
+     * A-B リピート中に複数チャンクを跨いだ場合に [currentChunkId] と次の境界予約を同期する。
+     */
+    fun syncPlaybackPosition() {
+        if (!exoPlayer.playWhenReady || _autoPauseEndsAtMs.value != null) return
+        if (chunks.isEmpty()) return
+        val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+        if (practiceSettings.loop is LoopMode.AbRange) {
+            val activeId = findChunkAt(nowMs)?.id
+            if (activeId != null && activeId != _currentChunkId.value) {
+                updateState(chunkId = activeId, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+            }
+            return
+        }
+        val payload = pendingMessagePayload
+        if (payload != null) {
+            if (nowMs >= payload.boundaryMs + MISSED_BOUNDARY_THRESHOLD_MS) {
+                cancelPendingMessage()
+                onBoundaryDelivered(payload)
+            }
+            return
+        }
+        if (singleChunkPlaybackId == null) {
+            val activeChunk = chunks.firstOrNull { nowMs in it.startMs until it.endMs }
+            if (activeChunk != null) {
+                if (_currentChunkId.value != activeChunk.id) {
+                    updateState(chunkId = activeChunk.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                }
+                reschedule()
+            }
         }
     }
 
@@ -317,6 +357,7 @@ class ChunkScheduler(
         if (_autoPauseEndsAtMs.value != null) {
             cancelAutoPause()
         }
+        cancelPendingMessage()
         updateState(
             chunkId = findChunkAt(newPosMs)?.id,
             autoPauseEndsAt = null,
@@ -869,8 +910,7 @@ class ChunkScheduler(
 
     private fun scheduleBoundaryMessage(payload: BoundaryPayload, persistent: Boolean) {
         val existing = pendingMessage
-        if (persistent &&
-            existing != null &&
+        if (existing != null &&
             !existing.isCanceled &&
             pendingMessagePayload == payload
         ) {
@@ -913,6 +953,8 @@ class ChunkScheduler(
             }
 
             is BoundaryPayload.ChunkStart -> {
+                pendingMessage = null
+                pendingMessagePayload = null
                 val chunk = payload.chunk
                 updateState(chunkId = chunk.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
                 scheduleBoundaryMessage(
@@ -1535,6 +1577,7 @@ class ChunkScheduler(
         const val WAKE_LOCK_MARGIN_MS: Long = 5_000L
 
         private const val END_OF_CHUNK_MARGIN_MS: Long = 100L
+        private const val MISSED_BOUNDARY_THRESHOLD_MS: Long = 50L
         private const val WAKE_LOCK_TAG: String = "ChunkFlow:AutoPauseWakeLock"
 
         /**

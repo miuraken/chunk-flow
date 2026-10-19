@@ -1263,6 +1263,50 @@ class ChunkSchedulerTest {
         assertEquals(setOf(c1.id), practiceController.settings.value.repeatChunkIds)
     }
 
+    @Test
+    fun `syncPlaybackPosition_AbRange再生中も現在位置に応じてcurrentChunkIdが追従する`() {
+        scheduler.setChunks(sampleChunks)
+        practiceController.update {
+            it.copy(loop = LoopMode.AbRange(startMs = 500L, endMs = 6_000L))
+        }
+        pumpLoopers()
+
+        exoPlayer.seekTo(500L)
+        pumpLoopers()
+        exoPlayer.play()
+        pumpLoopers()
+        assertEquals(chunk1.id, scheduler.currentChunkId.value)
+
+        // chunk2 の範囲 (2000..4500) に進んだとき syncPlaybackPosition により currentChunkId が chunk2 に更新される
+        runUntil {
+            scheduler.syncPlaybackPosition()
+            scheduler.currentChunkId.value == chunk2.id
+        }
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+
+        // chunk3 の範囲 (4500..7000) に進んだとき syncPlaybackPosition により currentChunkId が chunk3 に更新される
+        runUntil {
+            scheduler.syncPlaybackPosition()
+            scheduler.currentChunkId.value == chunk3.id
+        }
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+    }
+
+    @Test
+    fun `bindMedia_同一チャンク一覧を再設定してもPlayerMessageが再スケジュールされ境界でcurrentChunkIdが進む`() {
+        scheduler.setChunks(sampleChunks)
+        pumpLoopers()
+
+        // 別のメディアまたは再バインドで bindMedia が呼ばれたあと、同じ sampleChunks が渡されても境界監視が機能する
+        scheduler.bindMedia(MediaId("rebound-media"))
+        scheduler.setChunks(sampleChunks)
+        pumpLoopers()
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk2.id }
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,

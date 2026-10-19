@@ -721,6 +721,7 @@ data class PlayerUiState(
     val nextMediaId: MediaId? = null,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLanguageFilterFallbackHighlighted: Boolean = false,
+    val autoFollowResetToken: Long = 0L,
 ) {
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
@@ -1206,6 +1207,7 @@ private data class LocalUiSnapshot(
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLookaheadEnabled: Boolean = false,
     val isLanguageFilterFallbackHighlighted: Boolean = false,
+    val autoFollowResetToken: Long = 0L,
 )
 
 /**
@@ -3475,10 +3477,19 @@ class PlayerViewModel @Inject constructor(
 
     private fun resolveActiveMediaId(): MediaId? = uiState.value.mediaId ?: currentMediaId.value ?: playbackController.status.value.mediaId
 
+    private fun requestAutoFollowResume() {
+        localUiState.update { it.copy(autoFollowResetToken = it.autoFollowResetToken + 1L) }
+    }
+
     private fun togglePlayPause() {
         val player = playbackController.player.value
+        val isCurrentlyPlaying = playbackController.status.value.isPlaying || player?.isPlaying == true
+        val isAutoPaused = playbackController.status.value.autoPauseEndsAtMs != null
+        if (!isCurrentlyPlaying || isAutoPaused) {
+            requestAutoFollowResume()
+        }
         if (player != null) {
-            if (playbackController.status.value.isPlaying || player.isPlaying) {
+            if (isCurrentlyPlaying) {
                 player.pause()
             } else {
                 player.play()
@@ -3489,6 +3500,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekTo(targetPositionMs: Long) {
+        requestAutoFollowResume()
         val durationMs = uiState.value.durationMs
         val clampedMs = if (durationMs > 0L) {
             targetPositionMs.coerceIn(0L, durationMs)
@@ -3501,6 +3513,7 @@ class PlayerViewModel @Inject constructor(
         }
         val matchingChunk = uiState.value.chunks.firstOrNull { clampedMs >= it.startMs && clampedMs < it.endMs }
             ?: uiState.value.chunks.firstOrNull { clampedMs in it.startMs..it.endMs }
+            ?: uiState.value.chunks.lastOrNull { it.startMs <= clampedMs }
         if (playbackController is FakePlaybackController) {
             playbackController.position.positionMs = clampedMs
             if (matchingChunk != null) {
@@ -3551,6 +3564,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekToChunk(chunkId: ChunkId) {
+        requestAutoFollowResume()
         playbackController.updatePractice { current ->
             val tempId = current.temporaryRepeatChunkId
             val isRepeatActive = !current.repeatWholeFile && (current.repeatCheckedOnly || current.loop !is LoopMode.Off)
@@ -3587,6 +3601,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekToAdjacentChunk(direction: Int) {
+        requestAutoFollowResume()
         val player = playbackController.player.value
         if (player != null) {
             if (direction < 0) {
@@ -3610,6 +3625,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekToFileStart() {
+        requestAutoFollowResume()
         val firstChunk = uiState.value.chunks.firstOrNull { !it.isSkipped }
             ?: uiState.value.chunks.firstOrNull()
         if (firstChunk != null) {
@@ -3620,6 +3636,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekToCheckedChunk(direction: Int) {
+        requestAutoFollowResume()
         val chunks = uiState.value.chunks
         if (chunks.isEmpty()) return
         val posMs = playbackController.position.currentPositionMs()
@@ -3720,6 +3737,11 @@ class PlayerViewModel @Inject constructor(
         }
         val activeIndex = status.currentChunkId?.let { activeId ->
             chunkUis.indexOfFirst { it.id == activeId }.takeIf { it >= 0 }
+                ?: run {
+                    val posMs = playbackController.position.currentPositionMs().coerceAtLeast(0L)
+                    chunkUis.indexOfFirst { posMs in it.startMs until it.endMs }.takeIf { it >= 0 }
+                        ?: chunkUis.indexOfLast { it.startMs <= posMs }.takeIf { it >= 0 }
+                }
         }
         val resolvedOrigin = analysis.chunks.firstOrNull()?.origin
             ?: itemState?.chunkSource
@@ -3799,6 +3821,7 @@ class PlayerViewModel @Inject constructor(
             nextMediaId = nextMediaId,
             backgroundSpeechRecognizerWarning = local.backgroundSpeechRecognizerWarning,
             isLanguageFilterFallbackHighlighted = local.isLanguageFilterFallbackHighlighted,
+            autoFollowResetToken = local.autoFollowResetToken,
         )
     }
 
