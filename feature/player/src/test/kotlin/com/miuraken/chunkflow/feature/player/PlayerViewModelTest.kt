@@ -2261,4 +2261,29 @@ class PlayerViewModelTest {
         assertEquals(LanguageTag("ja"), updatedChunk0.language)
         assertTrue(viewModel.uiState.value.hasTranscript)
     }
+
+    @Test
+    fun `ToggleChunkRepeatまたはSetChunkSelected_チャンク選択時にChunkRangeループがOffに解除される`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c0 = sample.chunks[0].id
+        val c1 = sample.chunks[1].id
+        playback.updatePractice {
+            it.copy(loop = LoopMode.ChunkRange(firstChunkId = c0, lastChunkId = c1, times = null))
+        }
+        assertEquals(LoopMode.ChunkRange(c0, c1, null), viewModel.uiState.value.practice.loop)
+
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(chunkId = c0, selected = true))
+        assertEquals(LoopMode.Off, viewModel.uiState.value.practice.loop)
+        assertEquals(setOf(c0), viewModel.uiState.value.practice.repeatChunkIds)
+    }
 }

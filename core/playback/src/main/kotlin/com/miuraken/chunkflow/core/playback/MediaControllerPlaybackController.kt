@@ -159,9 +159,13 @@ class MediaControllerPlaybackController(
     internal fun getOrCreateLearningPlayer(): LearningPlayer {
         learningPlayerInstance?.let { return it }
         val inner = rawPlayerFactory()
-        val learning = LearningPlayer(inner) {
-            currentChunks.filterNot { it.isSkipped }.ifEmpty { currentChunks }.map { it.startMs }
-        }
+        val learning = LearningPlayer(
+            player = inner,
+            selectedChunkIdsProvider = { practiceController.settings.value.repeatChunkIds },
+            chunkStartsMsProvider = {
+                currentChunks.filterNot { it.isSkipped }.ifEmpty { currentChunks }.map { it.startMs }
+            },
+        )
         learning.chunks = currentChunks
         learning.addListener(ControllerPlayerListener())
         rawPlayerInstance = inner
@@ -377,10 +381,12 @@ class MediaControllerPlaybackController(
             val isMultiSelectedTarget = repeatChunkIds.size >= 2 && chunkId in repeatChunkIds
 
             if (isMultiSelectedTarget) {
-                scheduler?.singleChunkPlaybackId = null
-                scheduler?.cancelAutoPause()
-                lp?.seekTo(targetChunk.startMs)
-                lp?.play()
+                if (scheduler != null) {
+                    scheduler.playFromSelectedChunk(chunkId)
+                } else {
+                    lp?.seekTo(targetChunk.startMs)
+                    lp?.play()
+                }
             } else {
                 val shouldStartSingleChunkPlayback =
                     lp?.isPlaying != true || scheduler?.isSingleChunkPlaybackActive == true

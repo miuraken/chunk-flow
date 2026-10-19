@@ -1716,7 +1716,10 @@ class PlayerViewModel @Inject constructor(
                     } else {
                         current.repeatChunkIds + event.chunkId
                     }
-                    val nextLoop = if (nextIds.isNotEmpty() && current.loop is LoopMode.SingleChunk) {
+                    val nextLoop = if (
+                        nextIds.isNotEmpty() &&
+                        (current.loop is LoopMode.SingleChunk || current.loop is LoopMode.ChunkRange)
+                    ) {
                         LoopMode.Off
                     } else {
                         current.loop
@@ -1738,7 +1741,10 @@ class PlayerViewModel @Inject constructor(
                     if (nextIds == current.repeatChunkIds) {
                         current
                     } else {
-                        val nextLoop = if (nextIds.isNotEmpty() && current.loop is LoopMode.SingleChunk) {
+                        val nextLoop = if (
+                            nextIds.isNotEmpty() &&
+                            (current.loop is LoopMode.SingleChunk || current.loop is LoopMode.ChunkRange)
+                        ) {
                             LoopMode.Off
                         } else {
                             current.loop

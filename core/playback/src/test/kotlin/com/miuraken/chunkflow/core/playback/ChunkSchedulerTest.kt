@@ -1074,6 +1074,116 @@ class ChunkSchedulerTest {
         assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
     }
 
+    @Test
+    fun `RepeatChunkIds_拡大波形等で再生ヘッドが最後の選択チャンク内にある状態で選択して再生すると先頭の選択チャンクから順番に再生し途中一時停止からは再開する`() {
+        scheduler.setChunks(sampleChunks)
+        // 拡大波形をパンして最後の選択対象となる chunk3 の中央 (5_500ms) に再生ヘッドがある状態を再現
+        exoPlayer.seekTo(5_500L)
+        pumpLoopers()
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+
+        // chunk1 と chunk3 を選択（リピート OFF、AutoPause 800ms）
+        practiceController.update {
+            it.copy(
+                repeatChunkIds = setOf(chunk1.id, chunk3.id),
+                repeatCheckedOnly = false,
+                autoPause = AutoPause.Fixed(pauseMs = 800L),
+                autoPauseScope = AutoPauseScope.ALL_CHUNKS,
+            )
+        }
+        pumpLoopers()
+
+        // 再生ボタンを押すと chunk3 の途中からではなく先頭の選択チャンク chunk1 (0ms) から再生を開始する
+        exoPlayer.play()
+        pumpLoopers()
+        assertEquals(chunk1.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in chunk1.startMs..(chunk1.startMs + 250L))
+
+        // chunk1 終端で AutoPause に入り、800ms 経過後に非選択の chunk2 を飛ばして chunk3 へ進む
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        shadowOf(Looper.getMainLooper()).idleFor(800L, TimeUnit.MILLISECONDS)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in chunk3.startMs..(chunk3.startMs + 300L))
+
+        // chunk3 の再生途中で一時停止し、選択を変えずにそのまま再生を再開した場合は chunk1 に戻らず続きから再生する
+        runUntil { exoPlayer.currentPosition >= chunk3.startMs + 700L }
+        exoPlayer.pause()
+        pumpLoopers()
+        val pausedPos = exoPlayer.currentPosition
+        assertTrue(pausedPos in (chunk3.startMs + 600L) until chunk3.endMs)
+
+        exoPlayer.play()
+        pumpLoopers()
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition >= pausedPos)
+
+        // 最後の選択チャンク chunk3 の終端で自動停止する
+        runUntil { !exoPlayer.playWhenReady }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+    }
+
+    @Test
+    fun `RepeatChunkIds_AutoPause待機中に手動で早期再開しても非選択チャンクを再生せず次の選択チャンクへ進む`() {
+        scheduler.setChunks(sampleChunks)
+        practiceController.update {
+            it.copy(
+                repeatChunkIds = setOf(chunk1.id, chunk3.id),
+                repeatCheckedOnly = true,
+                autoPause = AutoPause.Fixed(pauseMs = 2_000L),
+                autoPauseScope = AutoPauseScope.ALL_CHUNKS,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertEquals(chunk1.id, scheduler.currentChunkId.value)
+
+        // AutoPause 中に「今すぐ再開」（onUserPlayPauseCommand + play）を行うと、非選択の chunk2 ではなく chunk3 の先頭へ進む
+        scheduler.onUserPlayPauseCommand()
+        exoPlayer.play()
+        pumpLoopers()
+
+        assertNull(scheduler.autoPauseEndsAtMs.value)
+        assertTrue(exoPlayer.playWhenReady)
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in chunk3.startMs..(chunk3.startMs + 300L))
+    }
+
+    @Test
+    fun `RepeatChunkIds_再生中に文字起こし更新でrescheduleが呼ばれても非選択チャンクをスキップして選択チャンクのみ再生する`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO)
+        val c2 = Chunk(ChunkId(2L), startMs = 2_600L, endMs = 4_000L, origin = ChunkOrigin.AUTO)
+        val c3 = Chunk(ChunkId(3L), startMs = 4_800L, endMs = 6_500L, origin = ChunkOrigin.AUTO)
+        scheduler.setChunks(listOf(c1, c2, c3))
+        practiceController.update {
+            it.copy(
+                repeatChunkIds = setOf(c1.id, c3.id),
+                repeatCheckedOnly = false,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        pumpLoopers()
+        assertEquals(c1.id, scheduler.currentChunkId.value)
+
+        // バックグラウンド言語判定・文字起こし更新により setTranscripts -> reschedule が呼ばれても c2 は再生されない
+        scheduler.setTranscripts(mapOf(c1.id to sampleTranscript(c1.id, "One", "en")))
+        pumpLoopers()
+
+        runUntil { scheduler.currentChunkId.value == c3.id }
+        pumpLoopers()
+        assertEquals(c3.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,

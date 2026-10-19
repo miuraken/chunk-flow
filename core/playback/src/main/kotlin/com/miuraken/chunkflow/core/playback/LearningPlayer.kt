@@ -9,6 +9,7 @@ import androidx.media3.common.util.Util
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.miuraken.chunkflow.core.model.Chunk
+import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.UserSettings
 
 /**
@@ -22,6 +23,7 @@ import com.miuraken.chunkflow.core.model.UserSettings
 @OptIn(UnstableApi::class)
 class LearningPlayer(
     player: Player,
+    private val selectedChunkIdsProvider: () -> Set<ChunkId> = { emptySet() },
     private val chunkStartsMsProvider: () -> List<Long> = { emptyList() },
 ) : ForwardingSimpleBasePlayer(player) {
 
@@ -169,7 +171,16 @@ class LearningPlayer(
     }
 
     private fun resolveChunkStartsMs(): List<Long> = if (chunks.isNotEmpty()) {
-        chunks.filterNot { it.isSkipped }.ifEmpty { chunks }.map { it.startMs }
+        val selectedIds = selectedChunkIdsProvider()
+        val selectedChunks = if (selectedIds.isNotEmpty()) {
+            chunks.filter { it.id in selectedIds && !it.isSkipped }
+        } else {
+            emptyList()
+        }
+        val activeChunks = selectedChunks.ifEmpty {
+            chunks.filterNot { it.isSkipped }.ifEmpty { chunks }
+        }
+        activeChunks.map { it.startMs }
     } else {
         chunkStartsMsProvider()
     }

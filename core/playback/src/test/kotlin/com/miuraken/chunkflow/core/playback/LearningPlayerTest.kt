@@ -101,6 +101,39 @@ class LearningPlayerTest {
         assertEquals(0L, innerPlayer.currentPosition)
     }
 
+    @Test
+    fun `handleSeek_選択チャンクがある場合は選択チャンク間のみを前後に移動する`() {
+        val innerPlayer = ControllableStubPlayer(
+            initialPositionMs = 1_500L,
+            reportedDurationUs = Util.msToUs(60_000L),
+        )
+        val selectedIds = setOf(ChunkId(1L), ChunkId(3L))
+        val learningPlayer = LearningPlayer(
+            player = innerPlayer,
+            selectedChunkIdsProvider = { selectedIds },
+        )
+        learningPlayer.chunks = listOf(
+            Chunk(ChunkId(1L), 0L, 5_000L, ChunkOrigin.AUTO),
+            Chunk(ChunkId(2L), 5_000L, 12_000L, ChunkOrigin.AUTO),
+            Chunk(ChunkId(3L), 12_000L, 20_000L, ChunkOrigin.AUTO),
+            Chunk(ChunkId(4L), 20_000L, 30_000L, ChunkOrigin.AUTO),
+        )
+
+        // 次チャンク移動で非選択の Chunk(2) を飛ばして選択済みの Chunk(3) (12_000ms) へ移動する
+        learningPlayer.seekToNext()
+        assertEquals(12_000L, innerPlayer.currentPosition)
+
+        // Chunk(3) 以降には選択チャンクがないため seekToNext() しても Chunk(4) には進まない
+        innerPlayer.seekTo(13_000L)
+        learningPlayer.seekToNext()
+        assertEquals(13_000L, innerPlayer.currentPosition)
+
+        // Chunk(3) の開始直後 (< 1000ms) から前チャンク移動で非選択の Chunk(2) を飛ばして Chunk(1) (0ms) へ戻る
+        innerPlayer.seekTo(12_400L)
+        learningPlayer.seekToPrevious()
+        assertEquals(0L, innerPlayer.currentPosition)
+    }
+
     private class ControllableStubPlayer(
         initialPositionMs: Long,
         private val reportedDurationUs: Long,
