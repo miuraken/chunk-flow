@@ -68,6 +68,10 @@
 | git | `git status/diff/log/add/commit/switch`、`git worktree` | 全員（自分のブランチ）。統合は lead |
 
 - 長時間かかるコマンドは、止まらないように `gtimeout <秒> <コマンド>` で上限を付けて実行します（例: `gtimeout 900 ./gradlew build`）。
+- **Gradle デーモンのパイプ保持によるハング防止（重要）**:
+  - `./gradlew`（特に `validateDebugScreenshotTest` / `updateDebugScreenshotTest` など）を `run_command` で実行すると、起動された Gradle デーモンやワーカープロセスが標準入出力を引き継ぎ、`./gradlew` や `gtimeout` 自体が終了した後もパイプが閉じず `run_command` のバックグラウンドタスクが終わらないことがあります。
+  - `./gradlew` を実行するときは、末尾に `< /dev/null` を付け、さらに `run_command` の引数 **`NotificationTimeoutSeconds`（例: `60`〜`120`）を必ず指定**してください。
+  - コマンドがバックグラウンドタスク（`task-xxxx`）に移行した場合、タイムアウト通知（`NotificationTimeoutSeconds` または `schedule` ツール）を設定せずにターンを終了して無期限に待機してはいけません。タスクのログファイルを `view_file` で確認し、すでに `BUILD SUCCESSFUL` / `BUILD FAILED` が出力されているのにタスクが完了していない場合は、`manage_task`（`Action="kill"`）でタスクを明示的に終了させてから次に進みます。
 - Gradle は Android Studio の JBR で動かします（Homebrew の JDK はこの Mac では起動できない。ADR 0001）。ターミナルからは `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew ...` のように実行します。
 - ネットワークからのインストール（`pip install`、`brew install`、新しい Gradle の依存など）は勝手に行いません。§8 の手順で lead に依頼します。
 - リポジトリの外のファイル（`~/.gradle`、`~/.androidrc` などの設定）を変更しません。必要なら人間に依頼します。

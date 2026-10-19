@@ -28,7 +28,7 @@ commandExecutionPolicy: auto
 1. 変更した画面・部品に `@ChunkFlowPreviews` 付きのプレビューを用意する（状態は `core:testing` のプレビュー用フィクスチャを使う。足りない状態は lead に依頼する）。
 2. 画像を作って自分で見る。
    - `main` の作業ツリーで、Android Studio が起動している場合: `android studio render-compose-preview --output-image-file=<png> --print-semantics <ファイル> <プレビュー名>`
-   - それ以外（別の worktree など）: `./gradlew :<module>:updateDebugScreenshotTest` で画像を作る（基準画像を作り直すので、コミットする前に差分を確かめる）。
+   - それ以外（別の worktree など）: `./gradlew :<module>:updateDebugScreenshotTest < /dev/null`（または `validateDebugScreenshotTest < /dev/null`）で画像を作る（基準画像を作り直すので、コミットする前に差分を確かめる）。Gradle デーモンのパイプ保持によるハングを防ぐため、`< /dev/null` と `run_command` の `NotificationTimeoutSeconds`（`60`〜`120`）を必ず付け、バックグラウンド化した場合はログに `BUILD SUCCESSFUL` / `BUILD FAILED` が出た時点でタスクが残っていれば `manage_task`（`kill`）で終了させる。
    - 動いているアプリの確認: `android run` でインストールしてから、`android screen capture` と `android layout`。
 3. はみ出し、重なり、切れた文字、字形の誤り、48dp 未満のタップ領域、説明文のないボタンがないかを確かめて直す。セマンティクスの JSON で、TalkBack で読まれる内容も確かめる。
 4. 報告に、ライト / ダーク、文字サイズ 2.0 倍、タブレットの画像を添える。見た目が変わる基準画像の更新は、人間の承認を得てからマージしてもらう。

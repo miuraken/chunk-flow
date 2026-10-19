@@ -15,4 +15,4 @@ description: "Jetpack Compose の画面・UI 部品・プレビュー・スク�
 - アクセシビリティ: アイコンだけのボタンに `contentDescription`、タップ領域 48dp 以上、色だけで意味を伝えない。独自の操作（波形）には `semantics` で役割と `customActions` を付ける。
 - テキストは `Text` でプレーンテキストとして表示する（HTML を解釈しない）。スクリプトの行には言語に合った `localeList` を付ける。
 - **プレビュー**: 画面と主要な部品に `@ChunkFlowPreviews` を付け、状態は `core:testing` のプレビュー用フィクスチャ（`PreviewParameterProvider`）から渡す。プレビューの中で ViewModel、Repository、ネットワーク、ファイルを使わない。
-- **スクリーンショットテスト**: `src/screenshotTest/` に `@PreviewTest` を付けたプレビューを置く。見た目が変わる基準画像の更新は人間の承認を得てからマージする（設計書 §10.5）。
+- **スクリーンショットテスト**: `src/screenshotTest/` に `@PreviewTest` を付けたプレビューを置く。見た目が変わる基準画像の更新は人間の承認を得てからマージする（設計書 §10.5）。実行時（`validateDebugScreenshotTest` / `updateDebugScreenshotTest`）は Gradle デーモンのパイプ保持によるハングを防ぐため、コマンド末尾に `< /dev/null` を付け、`run_command` の `NotificationTimeoutSeconds`（例: `60`〜`120`）を必ず指定する。バックグラウンド化した場合はログを確認し、`BUILD SUCCESSFUL` / `BUILD FAILED` 出力後もタスクが残っていれば `manage_task`（`kill`）で終了させる。
