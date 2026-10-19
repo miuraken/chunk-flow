@@ -179,13 +179,35 @@ data class SettingsUiState(
         /** 既定の再生速度のプリセット一覧（1.0x を除く）。 */
         val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f)
 
+        /** 固定自動ポーズ秒数の既定値（ミリ秒: 1.0 秒）。 */
+        const val DEFAULT_AUTO_PAUSE_FIXED_MS: Long = 1_000L
+
+        /** 固定自動ポーズ秒数の最小値（ミリ秒: 0.0 秒）。 */
+        const val MIN_AUTO_PAUSE_FIXED_MS: Long = 0L
+
+        /** 固定自動ポーズ秒数の最大値（ミリ秒: 4.0 秒）。 */
+        const val MAX_AUTO_PAUSE_FIXED_MS: Long = 4_000L
+
+        /** 固定自動ポーズ秒数の刻み幅（ミリ秒: 0.5 秒）。 */
+        const val AUTO_PAUSE_FIXED_STEP_MS: Long = 500L
+
+        /** チャンク長比例の自動ポーズ倍率の既定値（1.0 倍）。 */
+        const val DEFAULT_AUTO_PAUSE_PROPORTIONAL_FACTOR: Float = 1.0f
+
+        /** チャンク長比例の自動ポーズ倍率の最小値（0.5 倍）。 */
+        const val MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR: Float = 0.5f
+
+        /** チャンク長比例の自動ポーズ倍率の最大値（3.0 倍）。 */
+        const val MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR: Float = 3.0f
+
+        /** チャンク長比例の自動ポーズ倍率の刻み幅（0.5 倍）。 */
+        const val AUTO_PAUSE_PROPORTIONAL_STEP: Float = 0.5f
+
         /** 既定の自動ポーズの選択肢。 */
         val AUTO_PAUSE_OPTIONS: List<AutoPause> = listOf(
             AutoPause.Off,
-            AutoPause.Fixed(1_500L),
-            AutoPause.Fixed(3_000L),
-            AutoPause.Proportional(factor = 1.0f),
-            AutoPause.Proportional(factor = 1.5f),
+            AutoPause.Fixed(DEFAULT_AUTO_PAUSE_FIXED_MS),
+            AutoPause.Proportional(factor = DEFAULT_AUTO_PAUSE_PROPORTIONAL_FACTOR),
         )
 
         /** 既定の自動ポーズ対象言語範囲の選択肢。 */
@@ -412,8 +434,32 @@ class SettingsViewModel @Inject constructor(
             }
 
             is SettingsEvent.SetDefaultAutoPause -> {
+                val sanitized = when (val ap = event.autoPause) {
+                    AutoPause.Off -> AutoPause.Off
+
+                    is AutoPause.Fixed -> {
+                        val clamped = ap.pauseMs.coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_FIXED_MS,
+                            SettingsUiState.MAX_AUTO_PAUSE_FIXED_MS,
+                        )
+                        val steps = (clamped.toDouble() / SettingsUiState.AUTO_PAUSE_FIXED_STEP_MS).roundToInt()
+                        AutoPause.Fixed(steps * SettingsUiState.AUTO_PAUSE_FIXED_STEP_MS)
+                    }
+
+                    is AutoPause.Proportional -> {
+                        val clamped = ap.factor.coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                            SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                        )
+                        val steps = (clamped / SettingsUiState.AUTO_PAUSE_PROPORTIONAL_STEP).roundToInt()
+                        AutoPause.Proportional(
+                            factor = steps * SettingsUiState.AUTO_PAUSE_PROPORTIONAL_STEP,
+                            minMs = ap.minMs,
+                        )
+                    }
+                }
                 viewModelScope.launch {
-                    userSettingsRepository.setDefaultAutoPause(event.autoPause)
+                    userSettingsRepository.setDefaultAutoPause(sanitized)
                 }
             }
 

@@ -72,8 +72,23 @@ class SettingsViewModelTest {
         val viewModel = SettingsViewModel(repo)
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
+        assertEquals(1_000L, SettingsUiState.DEFAULT_AUTO_PAUSE_FIXED_MS)
+        assertEquals(1.0f, SettingsUiState.DEFAULT_AUTO_PAUSE_PROPORTIONAL_FACTOR)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(0)))
+        assertEquals(AutoPause.Fixed(0), viewModel.uiState.value.defaultAutoPause)
+
         viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(1_500)))
         assertEquals(AutoPause.Fixed(1_500), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(5_000)))
+        assertEquals(AutoPause.Fixed(4_000), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Proportional(factor = 0.5f)))
+        assertEquals(AutoPause.Proportional(factor = 0.5f), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Proportional(factor = 3.5f)))
+        assertEquals(AutoPause.Proportional(factor = 3.0f), viewModel.uiState.value.defaultAutoPause)
 
         viewModel.onEvent(
             SettingsEvent.SetDefaultAutoPauseScope(

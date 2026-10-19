@@ -100,8 +100,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
         when (autoPause) {
             AutoPause.Off -> Unit
 
-            is AutoPause.Fixed -> require(autoPause.pauseMs > 0L) {
-                "pauseMs must be > 0: ${autoPause.pauseMs}"
+            is AutoPause.Fixed -> require(autoPause.pauseMs >= 0L) {
+                "pauseMs must be >= 0: ${autoPause.pauseMs}"
             }
 
             is AutoPause.Proportional -> {
@@ -376,7 +376,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
 
             raw.startsWith(PREFIX_FIXED) -> {
                 val pauseMs = raw.removePrefix(PREFIX_FIXED).toLongOrNull()
-                if (pauseMs != null && pauseMs > 0L) AutoPause.Fixed(pauseMs) else AutoPause.Off
+                if (pauseMs != null && pauseMs >= 0L) AutoPause.Fixed(pauseMs) else AutoPause.Off
             }
 
             raw.startsWith(PREFIX_PROPORTIONAL) -> {

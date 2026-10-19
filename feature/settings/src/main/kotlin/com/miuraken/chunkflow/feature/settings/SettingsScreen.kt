@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,6 +41,9 @@ import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -50,6 +54,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +66,7 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -255,7 +261,7 @@ fun SettingsScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaybackSettingsSection(
     seekBackMs: Long,
@@ -266,6 +272,39 @@ private fun PlaybackSettingsSection(
     skipOriginalSilence: Boolean,
     onEvent: (SettingsEvent) -> Unit,
 ) {
+    var fixedSeconds by rememberSaveable {
+        mutableFloatStateOf(
+            (defaultAutoPause as? AutoPause.Fixed)?.let {
+                (it.pauseMs / 1_000f).coerceIn(0f, 4.0f)
+            } ?: (SettingsUiState.DEFAULT_AUTO_PAUSE_FIXED_MS / 1_000f),
+        )
+    }
+    var proportionalFactor by rememberSaveable {
+        mutableFloatStateOf(
+            (defaultAutoPause as? AutoPause.Proportional)?.factor?.coerceIn(
+                SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+            ) ?: SettingsUiState.DEFAULT_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+        )
+    }
+
+    LaunchedEffect(defaultAutoPause) {
+        when (defaultAutoPause) {
+            is AutoPause.Fixed -> {
+                fixedSeconds = (defaultAutoPause.pauseMs / 1_000f).coerceIn(0f, 4.0f)
+            }
+
+            is AutoPause.Proportional -> {
+                proportionalFactor = defaultAutoPause.factor.coerceIn(
+                    SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                    SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                )
+            }
+
+            AutoPause.Off -> Unit
+        }
+    }
+
     SettingsCard(title = stringResource(R.string.settings_section_playback)) {
         Text(
             text = stringResource(R.string.settings_seek_back_label),
@@ -290,7 +329,7 @@ private fun PlaybackSettingsSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         Text(
             text = stringResource(R.string.settings_seek_forward_label),
@@ -315,7 +354,7 @@ private fun PlaybackSettingsSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -355,7 +394,7 @@ private fun PlaybackSettingsSection(
         )
 
         FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             SettingsUiState.SPEED_PRESETS.forEach { preset ->
@@ -372,62 +411,13 @@ private fun PlaybackSettingsSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         Text(
-            text = stringResource(R.string.settings_default_auto_pause_label),
+            text = stringResource(R.string.settings_section_skip_silence),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Medium,
         )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.AUTO_PAUSE_OPTIONS.forEach { option ->
-                FilterChip(
-                    selected = defaultAutoPause == option,
-                    onClick = { onEvent(SettingsEvent.SetDefaultAutoPause(option)) },
-                    label = { Text(text = autoPauseLabel(option)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
-                )
-            }
-        }
-
-        FlowRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.forEach { scopeOption ->
-                val isSelected = defaultAutoPauseScope == scopeOption
-                Row(
-                    modifier = Modifier
-                        .selectable(
-                            selected = isSelected,
-                            onClick = { onEvent(SettingsEvent.SetDefaultAutoPauseScope(scopeOption)) },
-                            role = Role.RadioButton,
-                        )
-                        .padding(vertical = 4.dp, horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(
-                        selected = isSelected,
-                        onClick = null,
-                    )
-                    Text(
-                        text = autoPauseScopeLabel(scopeOption),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(start = 6.dp),
-                    )
-                }
-            }
-        }
-
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -436,28 +426,201 @@ private fun PlaybackSettingsSection(
                     onValueChange = { onEvent(SettingsEvent.SetSkipOriginalSilence(it)) },
                     role = Role.Checkbox,
                 )
-                .padding(vertical = 4.dp, horizontal = 4.dp),
+                .padding(vertical = 2.dp, horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Checkbox(
                 checked = skipOriginalSilence,
                 onCheckedChange = null,
             )
-            Column(
+            Text(
+                text = stringResource(R.string.settings_skip_original_silence_label),
+                style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(start = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.settings_skip_original_silence_label),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    text = stringResource(R.string.settings_skip_original_silence_description),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Text(
+            text = stringResource(R.string.settings_default_auto_pause_label),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium,
+        )
+
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.forEachIndexed { index, scopeOption ->
+                val isSelected = defaultAutoPauseScope == scopeOption
+                SegmentedButton(
+                    selected = isSelected,
+                    onClick = { onEvent(SettingsEvent.SetDefaultAutoPauseScope(scopeOption)) },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.size,
+                    ),
+                    icon = {},
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                    label = {
+                        Text(
+                            text = autoPauseScopeLabel(scopeOption),
+                            style = MaterialTheme.typography.labelMedium,
+                            textAlign = TextAlign.Center,
+                        )
+                    },
                 )
             }
+        }
+
+        val isOffSelected = defaultAutoPause is AutoPause.Off
+        val isFixedSelected = defaultAutoPause is AutoPause.Fixed
+        val isProportionalSelected = defaultAutoPause is AutoPause.Proportional
+        val displayFixedSeconds = if (defaultAutoPause is AutoPause.Fixed) {
+            (defaultAutoPause.pauseMs / 1_000f).coerceIn(0f, 4.0f)
+        } else {
+            fixedSeconds
+        }
+        val displayProportionalFactor = if (defaultAutoPause is AutoPause.Proportional) {
+            defaultAutoPause.factor.coerceIn(
+                SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+            )
+        } else {
+            proportionalFactor
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableGroup(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = isOffSelected,
+                        onClick = { onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Off)) },
+                        role = Role.RadioButton,
+                    )
+                    .padding(vertical = 2.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = isOffSelected,
+                    onClick = null,
+                )
+                Text(
+                    text = stringResource(R.string.settings_auto_pause_off),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = isFixedSelected,
+                        onClick = {
+                            val pauseMs = ((displayFixedSeconds * 2f).roundToInt() * 500L)
+                                .coerceIn(
+                                    SettingsUiState.MIN_AUTO_PAUSE_FIXED_MS,
+                                    SettingsUiState.MAX_AUTO_PAUSE_FIXED_MS,
+                                )
+                            onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(pauseMs)))
+                        },
+                        role = Role.RadioButton,
+                    )
+                    .padding(vertical = 2.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = isFixedSelected,
+                    onClick = null,
+                )
+                Text(
+                    text = stringResource(R.string.settings_auto_pause_fixed, displayFixedSeconds),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+
+            Slider(
+                value = displayFixedSeconds,
+                onValueChange = { rawValue ->
+                    val snappedSteps = (rawValue * 2f).roundToInt().coerceIn(0, 8)
+                    val snappedSeconds = snappedSteps * 0.5f
+                    fixedSeconds = snappedSeconds
+                    onEvent(
+                        SettingsEvent.SetDefaultAutoPause(
+                            AutoPause.Fixed(pauseMs = snappedSteps * 500L),
+                        ),
+                    )
+                },
+                valueRange = 0f..4.0f,
+                steps = 7,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .padding(start = 32.dp, end = 8.dp),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = isProportionalSelected,
+                        onClick = {
+                            val snappedFactor = ((displayProportionalFactor * 2f).roundToInt() * 0.5f)
+                                .coerceIn(
+                                    SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                                    SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                                )
+                            onEvent(
+                                SettingsEvent.SetDefaultAutoPause(
+                                    AutoPause.Proportional(factor = snappedFactor),
+                                ),
+                            )
+                        },
+                        role = Role.RadioButton,
+                    )
+                    .padding(vertical = 2.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = isProportionalSelected,
+                    onClick = null,
+                )
+                Text(
+                    text = stringResource(
+                        R.string.settings_auto_pause_proportional,
+                        displayProportionalFactor,
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+
+            Slider(
+                value = displayProportionalFactor,
+                onValueChange = { rawValue ->
+                    val snappedSteps = (rawValue * 2f).roundToInt().coerceIn(1, 6)
+                    val snappedFactor = snappedSteps * 0.5f
+                    proportionalFactor = snappedFactor
+                    onEvent(
+                        SettingsEvent.SetDefaultAutoPause(
+                            AutoPause.Proportional(factor = snappedFactor),
+                        ),
+                    )
+                },
+                valueRange = 0.5f..3.0f,
+                steps = 4,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .padding(start = 32.dp, end = 8.dp),
+            )
         }
     }
 }
@@ -672,13 +835,6 @@ private fun SettingsCard(
             content()
         }
     }
-}
-
-@Composable
-private fun autoPauseLabel(autoPause: AutoPause): String = when (autoPause) {
-    AutoPause.Off -> stringResource(R.string.settings_auto_pause_off)
-    is AutoPause.Fixed -> stringResource(R.string.settings_auto_pause_fixed, autoPause.pauseMs / 1_000f)
-    is AutoPause.Proportional -> stringResource(R.string.settings_auto_pause_proportional, autoPause.factor)
 }
 
 @Composable

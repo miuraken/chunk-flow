@@ -129,8 +129,11 @@ class DataStoreUserSettingsRepositoryTest {
         assertFailsWith<IllegalArgumentException> {
             repository.setDefaultLanguagePair(LanguagePair(target = LanguageTag(""), base = LanguageTag("ja")))
         }
+        repository.setDefaultAutoPause(AutoPause.Fixed(pauseMs = 0L))
+        assertEquals(AutoPause.Fixed(pauseMs = 0L), repository.settings.first().defaultAutoPause)
+
         assertFailsWith<IllegalArgumentException> {
-            repository.setDefaultAutoPause(AutoPause.Fixed(pauseMs = 0L))
+            repository.setDefaultAutoPause(AutoPause.Fixed(pauseMs = -1L))
         }
         assertFailsWith<IllegalArgumentException> {
             repository.setDefaultAutoPause(AutoPause.Proportional(factor = 0f, minMs = 1_000L))
