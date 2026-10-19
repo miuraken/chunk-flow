@@ -233,8 +233,9 @@ fun WaveformSection(
         mutableLongStateOf(DEFAULT_ZOOM_WINDOW_MS.coerceIn(MIN_ZOOM_WINDOW_MS, maxWindowMs))
     }
 
-    // 拡大波形の近傍画像（15 秒 / 7.5 秒の解像度）を描く範囲の中心時刻
-    var cachedAnchorCenterMs by remember(waveform) {
+    // 拡大波形の近傍画像（15 秒 / 7.5 秒の解像度）を描く範囲の中心時刻。
+    // プログレッシブ波形更新のたびにリセットされてちらつくのを防ぐため effectiveDurationMs をキーにする
+    var cachedAnchorCenterMs by remember(effectiveDurationMs) {
         mutableLongStateOf(positionProvider.currentPositionMs().coerceIn(0L, effectiveDurationMs))
     }
 
@@ -530,7 +531,51 @@ private fun OverviewWaveformCanvas(
     onNextChunk: () -> Unit,
     onSeekBack: () -> Unit,
 ) {
+    val isInspectionMode = LocalInspectionMode.current
     var dragFraction by remember { mutableFloatStateOf(0f) }
+    var canvasWidthPx by remember { mutableIntStateOf(0) }
+    var canvasHeightPx by remember { mutableIntStateOf(0) }
+
+    val chunkColorKeys = remember(chunks) {
+        chunks.map { ChunkColorKey(startMs = it.startMs, endMs = it.endMs, language = it.language) }
+    }
+    val cachedOverviewStrip = remember(
+        waveform,
+        durationMs,
+        canvasWidthPx,
+        canvasHeightPx,
+        chunkColorKeys,
+        languagePair,
+        unknownWavePeakColor,
+        unknownWaveRmsColor,
+        targetWavePeakColor,
+        targetWaveRmsColor,
+        baseWavePeakColor,
+        baseWaveRmsColor,
+        dummyWaveColor,
+    ) {
+        if (canvasWidthPx <= 0 || canvasHeightPx <= 0) {
+            null
+        } else {
+            renderWaveformBitmapStrip(
+                waveform = waveform,
+                downsampler = downsampler,
+                startMs = 0L,
+                endMs = durationMs,
+                totalWidthPx = canvasWidthPx,
+                heightPx = canvasHeightPx,
+                chunks = chunks,
+                languagePair = languagePair,
+                unknownWavePeakColor = unknownWavePeakColor,
+                unknownWaveRmsColor = unknownWaveRmsColor,
+                targetWavePeakColor = targetWavePeakColor,
+                targetWaveRmsColor = targetWaveRmsColor,
+                baseWavePeakColor = baseWavePeakColor,
+                baseWaveRmsColor = baseWaveRmsColor,
+                dummyWaveColor = dummyWaveColor,
+            )
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -538,6 +583,10 @@ private fun OverviewWaveformCanvas(
             .height(36.dp)
             .clipToBounds()
             .systemGestureExclusion()
+            .onSizeChanged { newSize ->
+                canvasWidthPx = newSize.width
+                canvasHeightPx = newSize.height
+            }
             .semantics {
                 contentDescription = contentDescriptionText
                 progressBarRangeInfo = ProgressBarRangeInfo(
@@ -591,25 +640,29 @@ private fun OverviewWaveformCanvas(
                 )
             }
             .drawWithCache {
-                val widthPx = size.width.roundToInt().coerceAtLeast(1)
-                val heightPx = size.height.roundToInt().coerceAtLeast(1)
-                val overviewStrip = renderWaveformBitmapStrip(
-                    waveform = waveform,
-                    downsampler = downsampler,
-                    startMs = 0L,
-                    endMs = durationMs,
-                    totalWidthPx = widthPx,
-                    heightPx = heightPx,
-                    chunks = chunks,
-                    languagePair = languagePair,
-                    unknownWavePeakColor = unknownWavePeakColor,
-                    unknownWaveRmsColor = unknownWaveRmsColor,
-                    targetWavePeakColor = targetWavePeakColor,
-                    targetWaveRmsColor = targetWaveRmsColor,
-                    baseWavePeakColor = baseWavePeakColor,
-                    baseWaveRmsColor = baseWaveRmsColor,
-                    dummyWaveColor = dummyWaveColor,
-                )
+                val overviewStrip = cachedOverviewStrip ?: if (isInspectionMode) {
+                    val widthPx = size.width.roundToInt().coerceAtLeast(1)
+                    val heightPx = size.height.roundToInt().coerceAtLeast(1)
+                    renderWaveformBitmapStrip(
+                        waveform = waveform,
+                        downsampler = downsampler,
+                        startMs = 0L,
+                        endMs = durationMs,
+                        totalWidthPx = widthPx,
+                        heightPx = heightPx,
+                        chunks = chunks,
+                        languagePair = languagePair,
+                        unknownWavePeakColor = unknownWavePeakColor,
+                        unknownWaveRmsColor = unknownWaveRmsColor,
+                        targetWavePeakColor = targetWavePeakColor,
+                        targetWaveRmsColor = targetWaveRmsColor,
+                        baseWavePeakColor = baseWavePeakColor,
+                        baseWaveRmsColor = baseWaveRmsColor,
+                        dummyWaveColor = dummyWaveColor,
+                    )
+                } else {
+                    null
+                }
 
                 onDrawBehind {
                     // フレーム更新の購読（描画フェーズのみ）
@@ -638,11 +691,13 @@ private fun OverviewWaveformCanvas(
                     }
 
                     // アルファチャンネル画像としてキャッシュ済みの全体波形を描画
-                    drawWaveformBitmapStrip(
-                        strip = overviewStrip,
-                        windowStartMs = 0L,
-                        windowEndMs = durationMs,
-                    )
+                    overviewStrip?.let { strip ->
+                        drawWaveformBitmapStrip(
+                            strip = strip,
+                            windowStartMs = 0L,
+                            windowEndMs = durationMs,
+                        )
+                    }
 
                     // 拡大波形の表示範囲枠（ビューポート矩形）
                     val halfWindow = zoomWindowMs / 2L
@@ -845,12 +900,24 @@ private fun ZoomedWaveformCanvas(
         chunks.map { ChunkColorKey(startMs = it.startMs, endMs = it.endMs, language = it.language) }
     }
 
+    // 近傍画像の解像度と範囲（中心時刻の前後に解像度の 4 倍の幅）。範囲が変わらなければ作り直さない
+    val localStripSpec: LocalStripSpec? = renderLevelMs?.let { levelMs ->
+        LocalStripSpec(
+            levelMs = levelMs,
+            range = localStripRangeFor(anchorMs = cachedAnchorCenterMs, levelMs = levelMs, durationMs = durationMs),
+        )
+    }
+
+    // 近傍画像（localStrip）有効時は、全体画像（最大 16,384px）を言語判定やプログレッシブ更新のたびに再生成しない
+    val fullStripWaveformKey: Any? = if (localStripSpec == null) waveform else (waveform != null)
+    val fullStripChunkKey: Any = if (localStripSpec == null) chunkColorKeys else chunkColorKeys.isNotEmpty()
+
     val fullWaveformStrip = remember(
-        waveform,
+        fullStripWaveformKey,
         durationMs,
         canvasWidthPx,
         canvasHeightPx,
-        chunkColorKeys,
+        fullStripChunkKey,
         languagePair,
         unknownWavePeakColor,
         unknownWaveRmsColor,
@@ -883,19 +950,23 @@ private fun ZoomedWaveformCanvas(
         }
     }
 
-    // 近傍画像の解像度と範囲（中心時刻の前後に解像度の 4 倍の幅）。範囲が変わらなければ作り直さない
-    val localStripSpec: LocalStripSpec? = renderLevelMs?.let { levelMs ->
-        LocalStripSpec(
-            levelMs = levelMs,
-            range = localStripRangeFor(anchorMs = cachedAnchorCenterMs, levelMs = levelMs, durationMs = durationMs),
-        )
+    // 近傍画像の範囲内にあるチャンクと言語、および範囲内の波形データが変わったときだけ近傍画像を作り直す
+    // （ファイル後半のデコード進行や言語判定更新によって現在表示中の拡大波形が再生成・フラッシュするのを防ぐ）
+    val localChunkColorKeys = remember(chunkColorKeys, localStripSpec) {
+        val spec = localStripSpec ?: return@remember emptyList()
+        chunkColorKeys.filter { it.endMs > spec.range.first && it.startMs < spec.range.last }
     }
+    val localWaveformSliceHash = remember(waveform, localStripSpec) {
+        val spec = localStripSpec ?: return@remember 0
+        waveformSliceContentHash(waveform, spec.range)
+    }
+
     val localStrip = remember(
         localStripSpec,
-        waveform,
+        localWaveformSliceHash,
         canvasWidthPx,
         canvasHeightPx,
-        chunkColorKeys,
+        localChunkColorKeys,
         languagePair,
         unknownWavePeakColor,
         unknownWaveRmsColor,
@@ -1291,6 +1362,31 @@ private data class LocalStripSpec(
     val levelMs: Long,
     val range: LongRange,
 )
+
+/**
+ * [waveform] のうち指定された時間範囲 [range] に含まれるビンの内容ハッシュを計算する。
+ *
+ * ファイル後半のプログレッシブ波形更新で、表示中の近傍範囲 `[range.first, range.last]` の波形データが変わっていない場合に
+ * `localStrip` の再レンダリングをスキップするために用いる。
+ */
+private fun waveformSliceContentHash(
+    waveform: Waveform?,
+    range: LongRange,
+): Int {
+    if (waveform == null || waveform.peak.isEmpty()) return 0
+    val binCount = waveform.peak.size
+    val binMs = waveform.binMs.coerceAtLeast(1)
+    val startBin = (range.first / binMs).toInt().coerceIn(0, binCount)
+    val endBin = ((range.last + binMs - 1) / binMs).toInt().coerceIn(startBin, binCount)
+    var hash = waveform.binMs
+    hash = 31 * hash + startBin
+    hash = 31 * hash + endBin
+    for (i in startBin until endBin) {
+        hash = 31 * hash + waveform.peak[i].toInt()
+        hash = 31 * hash + waveform.rms[i].toInt()
+    }
+    return hash
+}
 
 /**
  * 近傍画像の解像度（その表示窓で画面幅いっぱいになる時間幅）を、操作が落ち着いたあとの表示窓 [settledWindowMs] から決める。

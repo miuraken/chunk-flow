@@ -94,28 +94,87 @@ interface ChunkDao {
         }
         val oldSkippedIntervals = oldChunks.filter { it.isSkipped }.map { it.startMs to it.endMs }
 
-        val normalizedToInsert = newChunks.map { chunk ->
+        // 境界とアルゴリズムバージョンが一致する既存チャンクは ID を維持して再利用する。
+        // 漸進的分割や再分割で確定済みチャンクの ID が変わるのを防ぎ、UI のチラつきや文字起こしの瞬断を抑える。
+        val availableOldChunks = ArrayDeque(oldChunks)
+        val reusedOldIds = HashSet<Long>(oldChunks.size)
+        val skippedTrueIdsToUpdate = mutableListOf<Long>()
+        val skippedFalseIdsToUpdate = mutableListOf<Long>()
+
+        val pendingChunks = ArrayList<ChunkEntity>(newChunks.size)
+        val insertIndices = mutableListOf<Int>()
+        val chunksToInsert = mutableListOf<ChunkEntity>()
+
+        for ((index, chunk) in newChunks.withIndex()) {
             val inheritsSkipped =
                 chunk.isSkipped ||
                     oldSkippedIntervals.any { (sStart, sEnd) ->
                         max(chunk.startMs, sStart) < min(chunk.endMs, sEnd)
                     }
-            chunk.copy(id = 0L, mediaId = mediaId, origin = origin, isSkipped = inheritsSkipped)
-        }
-        val insertedIds = if (normalizedToInsert.isEmpty()) {
-            emptyList()
-        } else {
-            insertAll(normalizedToInsert)
-        }
-        val insertedChunks = normalizedToInsert.mapIndexed { index, chunk ->
-            chunk.copy(id = insertedIds[index])
+            val matchIndex = availableOldChunks.indexOfFirst { old ->
+                val canPreserveOrReplaceTranscript =
+                    preserveAllOldTranscripts ||
+                        oldTranscriptsByChunkId[old.id] == null ||
+                        oldTranscriptsByChunkId[old.id]?.userEdited == true ||
+                        newTranscriptsByIndex.containsKey(index)
+                canPreserveOrReplaceTranscript &&
+                    old.startMs == chunk.startMs &&
+                    old.endMs == chunk.endMs &&
+                    old.algorithmVersion == chunk.algorithmVersion
+            }
+            if (matchIndex >= 0) {
+                val matchedOld = availableOldChunks.removeAt(matchIndex)
+                reusedOldIds.add(matchedOld.id)
+                if (matchedOld.isSkipped != inheritsSkipped) {
+                    if (inheritsSkipped) {
+                        skippedTrueIdsToUpdate.add(matchedOld.id)
+                    } else {
+                        skippedFalseIdsToUpdate.add(matchedOld.id)
+                    }
+                }
+                pendingChunks.add(
+                    chunk.copy(
+                        id = matchedOld.id,
+                        mediaId = mediaId,
+                        origin = origin,
+                        isSkipped = inheritsSkipped,
+                    ),
+                )
+            } else {
+                val normalized = chunk.copy(
+                    id = 0L,
+                    mediaId = mediaId,
+                    origin = origin,
+                    isSkipped = inheritsSkipped,
+                )
+                pendingChunks.add(normalized)
+                insertIndices.add(index)
+                chunksToInsert.add(normalized)
+            }
         }
 
-        if (insertedChunks.isNotEmpty()) {
+        if (skippedTrueIdsToUpdate.isNotEmpty()) {
+            updateSkippedByIds(mediaId, skippedTrueIdsToUpdate, skipped = true)
+        }
+        if (skippedFalseIdsToUpdate.isNotEmpty()) {
+            updateSkippedByIds(mediaId, skippedFalseIdsToUpdate, skipped = false)
+        }
+
+        val insertedIds = if (chunksToInsert.isEmpty()) {
+            emptyList()
+        } else {
+            insertAll(chunksToInsert)
+        }
+        for ((i, targetIndex) in insertIndices.withIndex()) {
+            pendingChunks[targetIndex] = pendingChunks[targetIndex].copy(id = insertedIds[i])
+        }
+        val resolvedChunks = pendingChunks.toList()
+
+        if (resolvedChunks.isNotEmpty()) {
             val transcriptsToSave = LinkedHashMap<Long, TranscriptEntity>()
             // 1. 新しい文字起こし（再取り込み時など）をまず配置する
             for ((index, template) in newTranscriptsByIndex) {
-                val targetChunk = insertedChunks.getOrNull(index) ?: continue
+                val targetChunk = resolvedChunks.getOrNull(index) ?: continue
                 transcriptsToSave[targetChunk.id] = template.copy(chunkId = targetChunk.id)
             }
 
@@ -123,7 +182,11 @@ interface ChunkDao {
             for (oldChunk in oldChunks) {
                 val oldTranscript = oldTranscriptsByChunkId[oldChunk.id] ?: continue
                 if (!preserveAllOldTranscripts && !oldTranscript.userEdited) continue
-                val matchedNewChunk = findBestMatchingChunk(oldChunk, insertedChunks) ?: continue
+                val matchedNewChunk = if (oldChunk.id in reusedOldIds) {
+                    resolvedChunks.firstOrNull { it.id == oldChunk.id }
+                } else {
+                    findBestMatchingChunk(oldChunk, resolvedChunks)
+                } ?: continue
                 // userEdited な文字起こしは新しい文字起こしより優先して上書きする
                 val existing = transcriptsToSave[matchedNewChunk.id]
                 if (existing == null || oldTranscript.userEdited || !existing.userEdited) {
@@ -131,15 +194,19 @@ interface ChunkDao {
                 }
             }
 
-            if (transcriptsToSave.isNotEmpty()) {
-                upsertTranscripts(transcriptsToSave.values.toList())
+            val transcriptsToUpsert = transcriptsToSave.values.filter { desired ->
+                oldTranscriptsByChunkId[desired.chunkId] != desired
+            }
+            if (transcriptsToUpsert.isNotEmpty()) {
+                upsertTranscripts(transcriptsToUpsert)
             }
         }
 
-        if (oldChunkIds.isNotEmpty()) {
-            deleteByIds(oldChunkIds)
+        val chunkIdsToDelete = oldChunkIds.filterNot { it in reusedOldIds }
+        if (chunkIdsToDelete.isNotEmpty()) {
+            deleteByIds(chunkIdsToDelete)
         }
-        return insertedChunks
+        return resolvedChunks
     }
 
     companion object {

@@ -1739,77 +1739,15 @@ class DefaultLibraryRepository(
         }
     }
 
+    @Suppress("UnusedParameter")
     private suspend fun handleReattachedAudioAnalysis(mediaId: MediaId, course: String?) {
         scheduledAnalysisMediaIds.remove(mediaId)
-        val item = mediaItemDao.getById(mediaId.value)
-        val state = itemStateDao.getByMediaId(mediaId.value)
-        if (item != null && !DefaultAnalysisRepository.isItemUnaccessed(item, state)) {
-            requestAnalysisForMedia(mediaId)
-        } else {
-            scheduleCourseAnalysisUpToLimit(course ?: item?.course)
-        }
     }
 
+    @Suppress("UnusedParameter")
     private suspend fun scheduleCourseAnalysisUpToLimit(course: String?) {
-        val allItems = mediaItemDao.observeAll().first()
-            .filter { it.course == course }
-        if (allItems.isEmpty()) return
-
-        val statesByMediaId = itemStateDao.observeAll().first()
-            .associateBy { it.mediaId }
-
-        val unaccessedItems = allItems
-            .filter { item ->
-                DefaultAnalysisRepository.isItemUnaccessed(item, statesByMediaId[item.id]) &&
-                    isAudioSourceAvailable(item)
-            }
-            .sortedWith(
-                compareBy<MediaItemEntity, String>(naturalFileNameComparator) { it.title }
-                    .thenBy { it.id },
-            )
-
-        if (unaccessedItems.isEmpty()) return
-
-        var activeOrDoneCount = 0
-        val pendingCandidates = mutableListOf<MediaId>()
-        for (item in unaccessedItems) {
-            val itemId = MediaId(item.id)
-            if (isAnalysisRequestedOrDone(itemId)) {
-                activeOrDoneCount += 1
-            } else {
-                pendingCandidates += itemId
-            }
-        }
-
-        val slotsRemaining =
-            (DefaultAnalysisRepository.MAX_UNACCESSED_ANALYZED_PER_FOLDER - activeOrDoneCount)
-                .coerceAtLeast(0)
-        for (candidateId in pendingCandidates.take(slotsRemaining)) {
-            requestAnalysisForMedia(candidateId)
-        }
-    }
-
-    private suspend fun isAnalysisRequestedOrDone(id: MediaId): Boolean {
-        if (id in scheduledAnalysisMediaIds) return true
-        val statusByStage = runCatching { analysisRepository.observeStatus(id).first() }
-            .getOrDefault(emptyMap())
-        val featuresStatus = statusByStage[AnalysisStage.FEATURES]
-        val segStatus = statusByStage[AnalysisStage.SEGMENTATION]
-        val featuresActiveOrDone = featuresStatus is StageStatus.NotStarted ||
-            featuresStatus is StageStatus.Running ||
-            featuresStatus is StageStatus.Done
-        val segActiveOrDone = segStatus is StageStatus.NotStarted ||
-            segStatus is StageStatus.Running ||
-            segStatus is StageStatus.Done
-        return featuresActiveOrDone && segActiveOrDone
-    }
-
-    private suspend fun requestAnalysisForMedia(id: MediaId) {
-        scheduledAnalysisMediaIds.add(id)
-        analysisRepository.requestAnalysis(
-            id,
-            setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION),
-        )
+        // ライブラリへの追加・フォルダ取り込み段階では自動解析を開始せず、
+        // 再生画面でファイルが選択された時点（prioritizeOpenedMediaAnalysis）で開始する。
     }
 
     private suspend fun importSingleFile(

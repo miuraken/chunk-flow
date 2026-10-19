@@ -2350,7 +2350,7 @@ class DefaultAnalysisRepositoryTest {
         ep1FirstAttemptStarted.await()
 
         // 2. ユーザーが未解析の ep_3 を開く -> ep_1 のバックグラウンド解析に割り込んで ep_3 が先に完了し、
-        //    その後 ep_1 が再開・完了し、さらにフォルダ内の未アクセス解析済みが 2 件 (ep_1, ep_2) になるよう ep_2 まで解析される
+        //    その後 ep_1 が再開・完了する（未選択の ep_2 / ep_4 は自動開始しない）
         val openJob = launch(dispatcher) {
             repository.prioritizeOpenedMediaAnalysis(epIds[2])
         }
@@ -2363,10 +2363,10 @@ class DefaultAnalysisRepositoryTest {
         // 開いた ep_3 はアクセス済み (updatedAt > 0) として記録されていること
         assertTrue((itemStateDao.getByMediaId(epIds[2].value)?.updatedAt ?: 0L) > 0L)
 
-        // ep_3（アクセス済み）に加え、未アクセスの ep_1 と ep_2 の 2 件が解析完了し、3 件目の未アクセス ep_4 は解析されないこと
+        // 開いた ep_3 と実行中だった ep_1 が完了し、未選択の ep_2・ep_4 は自動解析されないこと
         assertEquals(StageStatus.Done, repository.observeStatus(epIds[2]).first()[AnalysisStage.SEGMENTATION])
         assertEquals(StageStatus.Done, repository.observeStatus(epIds[0]).first()[AnalysisStage.SEGMENTATION])
-        assertEquals(StageStatus.Done, repository.observeStatus(epIds[1]).first()[AnalysisStage.SEGMENTATION])
+        assertNull(repository.observeStatus(epIds[1]).first()[AnalysisStage.SEGMENTATION])
         assertNull(repository.observeStatus(epIds[3]).first()[AnalysisStage.SEGMENTATION])
     }
 

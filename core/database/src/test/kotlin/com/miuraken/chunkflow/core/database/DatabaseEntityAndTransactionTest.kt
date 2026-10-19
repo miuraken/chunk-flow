@@ -203,6 +203,46 @@ class DatabaseEntityAndTransactionTest {
         assertEquals("新しい認識2", transcripts[inserted[1].id]?.text)
     }
 
+    @Test
+    fun `replaceChunksTransaction_境界が一致する既存チャンクはIDを維持し新規チャンクのみ採番する`() = runTest {
+        val dao = InMemoryChunkDao()
+        val firstBatch = dao.replaceChunksTransaction(
+            mediaId = mediaId.value,
+            origin = "AUTO",
+            newChunks = listOf(
+                ChunkEntity(mediaId = mediaId.value, startMs = 0L, endMs = 1_500L, origin = "AUTO", algorithmVersion = 1),
+                ChunkEntity(mediaId = mediaId.value, startMs = 2_000L, endMs = 3_500L, origin = "AUTO", algorithmVersion = 1),
+            ),
+            preserveAllOldTranscripts = true,
+        )
+        dao.upsertTranscripts(
+            listOf(
+                TranscriptEntity(
+                    chunkId = firstBatch[0].id,
+                    text = "",
+                    language = "ko",
+                    engine = "mlkit-lid",
+                    userEdited = false,
+                ),
+            ),
+        )
+
+        val secondBatch = dao.replaceChunksTransaction(
+            mediaId = mediaId.value,
+            origin = "AUTO",
+            newChunks = listOf(
+                ChunkEntity(mediaId = mediaId.value, startMs = 0L, endMs = 1_500L, origin = "AUTO", algorithmVersion = 1),
+                ChunkEntity(mediaId = mediaId.value, startMs = 2_000L, endMs = 3_500L, origin = "AUTO", algorithmVersion = 1),
+                ChunkEntity(mediaId = mediaId.value, startMs = 4_000L, endMs = 5_500L, origin = "AUTO", algorithmVersion = 1),
+            ),
+            preserveAllOldTranscripts = true,
+        )
+
+        assertEquals(firstBatch[0].id, secondBatch[0].id)
+        assertEquals(firstBatch[1].id, secondBatch[1].id)
+        assertEquals("ko", dao.getTranscriptsByChunkIds(listOf(secondBatch[0].id)).single().language)
+    }
+
     private class InMemoryChunkDao : ChunkDao {
         private var nextId = 1L
         val chunks = mutableListOf<ChunkEntity>()

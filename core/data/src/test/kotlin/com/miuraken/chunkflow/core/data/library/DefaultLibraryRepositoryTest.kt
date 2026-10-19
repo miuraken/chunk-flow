@@ -210,9 +210,9 @@ class DefaultLibraryRepositoryTest {
         // ADR 0008: MPEG-1 (1152) + LAME (576) = 1728 サンプル @ 44.1kHz -> +39ms
         assertEquals(39, item.transcriptOffsetMs)
 
-        // 解析ジョブ（FEATURES + SEGMENTATION）が自動で投入されていること（§7.1 手順 6）
+        // ライブラリ取り込み段階では解析ジョブを自動投入せず、再生画面を開いた時点で開始すること
         assertEquals(
-            listOf(mediaId to setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION)),
+            emptyList<Pair<MediaId, Set<AnalysisStage>>>(),
             analysisRepository.requestedAnalyses,
         )
 
@@ -511,7 +511,7 @@ class DefaultLibraryRepositoryTest {
         assertEquals(1, secondDone.duplicates)
         assertEquals(emptySet(), repo.observeMissingAudioIds().first())
         assertEquals(
-            listOf(mediaId to setOf(AnalysisStage.FEATURES, AnalysisStage.SEGMENTATION)),
+            emptyList<Pair<MediaId, Set<AnalysisStage>>>(),
             analysisRepository.requestedAnalyses,
         )
 
@@ -1412,17 +1412,17 @@ class DefaultLibraryRepositoryTest {
         val importedTitles = done.mediaIds.mapNotNull { id -> repo.observeItem(id).first()?.title }
         assertEquals(listOf("lesson1", "lesson2", "lesson10"), importedTitles)
 
-        // 取り込み直後はフォルダ内の未アクセス解析済み（または解析中）ファイルが 2 件になるよう先頭 2 件のみリクエストされる
-        assertEquals(done.mediaIds.take(2), analysisRepository.requestedAnalyses.map { it.first })
+        // フォルダ取り込み直後は全ファイルの追加のみを行い、自動解析は開始しないこと
+        assertEquals(emptyList<MediaId>(), analysisRepository.requestedAnalyses.map { it.first })
 
-        // 先頭 1 件にアクセス（再生位置更新）すると、未アクセス解析済みが 1 件（2件未満）になるため 3 件目が自動補充される
+        // 再生位置更新だけでは自動補充を行わないこと（再生画面を開いた時点で prioritizeOpenedMediaAnalysis により開始）
         repo.updatePlaybackPosition(
             id = done.mediaIds[0],
             positionMs = 5_000L,
             speed = 1.0f,
             updatedAtEpochMs = 1_800_000_000_000L,
         )
-        assertEquals(done.mediaIds, analysisRepository.requestedAnalyses.map { it.first })
+        assertEquals(emptyList<MediaId>(), analysisRepository.requestedAnalyses.map { it.first })
     }
 
     @Test
@@ -1454,8 +1454,8 @@ class DefaultLibraryRepositoryTest {
         assertEquals(30, done.mediaIds.size)
         assertEquals(0, done.duplicates)
 
-        // 自動解析は未アクセス上限 2 件（track_01, track_02）のみリクエストされること
-        assertEquals(done.mediaIds.take(2), analysisRepository.requestedAnalyses.map { it.first })
+        // フォルダ取り込み段階では自動解析を開始せず、まず全ファイルをライブラリに追加すること
+        assertEquals(emptyList<MediaId>(), analysisRepository.requestedAnalyses.map { it.first })
     }
 
     @Test

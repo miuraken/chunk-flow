@@ -23,4 +23,19 @@ class Waveform(
 
     /** 波形の長さ（ミリ秒）。ビン数 × [binMs]。 */
     val durationMs: Long get() = peak.size.toLong() * binMs
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Waveform) return false
+        return binMs == other.binMs &&
+            peak.contentEquals(other.peak) &&
+            rms.contentEquals(other.rms)
+    }
+
+    override fun hashCode(): Int {
+        var result = binMs
+        result = 31 * result + peak.contentHashCode()
+        result = 31 * result + rms.contentHashCode()
+        return result
+    }
 }

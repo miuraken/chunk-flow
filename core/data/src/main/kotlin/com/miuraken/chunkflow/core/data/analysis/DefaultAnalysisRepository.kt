@@ -97,6 +97,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
@@ -259,7 +260,11 @@ class DefaultAnalysisRepository(
 
     override fun observeWaveform(id: MediaId): Flow<Waveform?> {
         val statusTrigger = analysisStateDao.observeByMediaId(id.value)
-        val manualTrigger = waveformRefreshEvents.onStart { emit(id) }
+            .map { list -> list.firstOrNull { it.stage == AnalysisStage.FEATURES.name }?.status }
+            .distinctUntilChanged()
+        val manualTrigger = waveformRefreshEvents
+            .filter { it == id }
+            .onStart { emit(id) }
         return combine(statusTrigger, manualTrigger) { _, _ ->
             readWaveformFromDisk(id)
         }
@@ -365,36 +370,6 @@ class DefaultAnalysisRepository(
             analysisStateDao.upsertAll(initialEntities)
 
             val highPriority = explicitHighPriority || pipelineGate.isMediaOpen(id)
-            runCatching {
-                val inputData = Data.Builder()
-                    .putString(AnalysisWorker.KEY_MEDIA_ID, id.value)
-                    .putStringArray(
-                        AnalysisWorker.KEY_STAGES,
-                        stages.map { it.name }.toTypedArray(),
-                    )
-                    .putBoolean(AnalysisWorker.KEY_HIGH_PRIORITY, highPriority)
-                    .build()
-                val request = OneTimeWorkRequestBuilder<AnalysisWorker>()
-                    .setInputData(inputData)
-                    .addTag(AnalysisWorker.tagForMedia(id))
-                    .addTag(AnalysisWorker.uniqueWorkName(id))
-                    .build()
-                val workManager = WorkManager.getInstance(context)
-                if (highPriority) {
-                    workManager.enqueueUniqueWork(
-                        AnalysisWorker.priorityWorkName(id),
-                        ExistingWorkPolicy.REPLACE,
-                        request,
-                    )
-                } else {
-                    workManager.enqueueUniqueWork(
-                        AnalysisWorker.SEQUENTIAL_WORK_NAME,
-                        ExistingWorkPolicy.APPEND_OR_REPLACE,
-                        request,
-                    )
-                }
-            }
-
             val decoder = audioStreamDecoder
             if (decoder != null) {
                 val lidBarrier = if (AnalysisStage.SEGMENTATION in stages) {
@@ -413,8 +388,6 @@ class DefaultAnalysisRepository(
                                     mediaId = id,
                                     requestedStages = stages,
                                     decoder = decoder,
-                                    // 同じ要求でワーカー（AnalysisWorker）も登録しているので、どちらが後になっても、
-                                    // 済んでいれば飛ばす（優先度にかかわらず。以前は開いているファイルで同じ解析が 2 回走っていた）
                                     skipIfAlreadyDone = true,
                                 )
                                 true
@@ -429,6 +402,36 @@ class DefaultAnalysisRepository(
                     if (lidBarrier != null) {
                         activePipelinedLidJobs.remove(id, lidBarrier)
                         lidBarrier.complete(Unit)
+                    }
+                }
+            } else {
+                runCatching {
+                    val inputData = Data.Builder()
+                        .putString(AnalysisWorker.KEY_MEDIA_ID, id.value)
+                        .putStringArray(
+                            AnalysisWorker.KEY_STAGES,
+                            stages.map { it.name }.toTypedArray(),
+                        )
+                        .putBoolean(AnalysisWorker.KEY_HIGH_PRIORITY, highPriority)
+                        .build()
+                    val request = OneTimeWorkRequestBuilder<AnalysisWorker>()
+                        .setInputData(inputData)
+                        .addTag(AnalysisWorker.tagForMedia(id))
+                        .addTag(AnalysisWorker.uniqueWorkName(id))
+                        .build()
+                    val workManager = WorkManager.getInstance(context)
+                    if (highPriority) {
+                        workManager.enqueueUniqueWork(
+                            AnalysisWorker.priorityWorkName(id),
+                            ExistingWorkPolicy.REPLACE,
+                            request,
+                        )
+                    } else {
+                        workManager.enqueueUniqueWork(
+                            AnalysisWorker.SEQUENTIAL_WORK_NAME,
+                            ExistingWorkPolicy.APPEND_OR_REPLACE,
+                            request,
+                        )
                     }
                 }
             }
@@ -561,6 +564,54 @@ class DefaultAnalysisRepository(
                 val lidConsumerJob = if (lidLanguagePair != null && lidRequestChannel != null) {
                     launch(computeDispatcher) {
                         val lidStartedAt = clock()
+                        val pendingStreamLidResults =
+                            ArrayList<Pair<PcmChunkLanguageRequest, OnDeviceChunkTranscriptionResult?>>()
+                        var lastStreamLidFlushMs = lidStartedAt
+
+                        suspend fun flushPendingStreamLidResultsLocked() {
+                            if (pendingStreamLidResults.isEmpty()) return
+                            val batch = ArrayList(pendingStreamLidResults)
+                            pendingStreamLidResults.clear()
+
+                            val currentAutoChunks = chunkDao.getByMediaIdAndOrigin(
+                                mediaId.value,
+                                ChunkOrigin.AUTO.name,
+                            )
+                            if (currentAutoChunks.isEmpty()) return
+
+                            val pendingUpserts = LinkedHashMap<Long, OnDeviceChunkTranscriptionResult>()
+                            val pendingDeletes = LinkedHashSet<Long>()
+                            for ((req, detected) in batch) {
+                                val matchedChunk = currentAutoChunks.firstOrNull { it.id == req.chunkId }
+                                    ?: currentAutoChunks.firstOrNull {
+                                        kotlin.math.abs(it.startMs - req.startMs) <= 50L &&
+                                            kotlin.math.abs(it.endMs - req.endMs) <= 50L
+                                    }
+                                    ?: currentAutoChunks
+                                        .map { c ->
+                                            c to (minOf(req.endMs, c.endMs) - maxOf(req.startMs, c.startMs))
+                                        }
+                                        .filter { it.second > 0L }
+                                        .maxByOrNull { it.second }
+                                        ?.first
+                                if (matchedChunk != null) {
+                                    if (detected?.language != null) {
+                                        pendingUpserts[matchedChunk.id] = detected
+                                        pendingDeletes.remove(matchedChunk.id)
+                                    } else {
+                                        pendingUpserts.remove(matchedChunk.id)
+                                        pendingDeletes.add(matchedChunk.id)
+                                    }
+                                }
+                            }
+                            withContext(NonCancellable) {
+                                flushPendingLidTranscriptWrites(
+                                    pendingUpserts = pendingUpserts,
+                                    pendingDeletes = pendingDeletes,
+                                )
+                            }
+                        }
+
                         try {
                             onDeviceChunkTranscriber.detectChunkLanguagesFromPcmStream(
                                 audioScopeKey = lidAudioScopeKey,
@@ -571,47 +622,17 @@ class DefaultAnalysisRepository(
                                 audioFile = localAudioFile,
                             ) { req, detected ->
                                 chunkPersistenceMutex.withLock {
-                                    val currentAutoChunks = chunkDao.getByMediaIdAndOrigin(
-                                        mediaId.value,
-                                        ChunkOrigin.AUTO.name,
-                                    )
-                                    val matchedChunk = currentAutoChunks.firstOrNull { it.id == req.chunkId }
-                                        ?: currentAutoChunks.firstOrNull {
-                                            kotlin.math.abs(it.startMs - req.startMs) <= 50L &&
-                                                kotlin.math.abs(it.endMs - req.endMs) <= 50L
-                                        }
-                                        ?: currentAutoChunks
-                                            .map { c ->
-                                                c to (minOf(req.endMs, c.endMs) - maxOf(req.startMs, c.startMs))
-                                            }
-                                            .filter { it.second > 0L }
-                                            .maxByOrNull { it.second }
-                                            ?.first
-                                    if (matchedChunk != null) {
-                                        val latestTranscript = transcriptDao.getByChunkId(matchedChunk.id)
-                                        val isOverwritableLidOnly = latestTranscript != null &&
-                                            latestTranscript.isLanguageIdOnly() &&
-                                            !latestTranscript.userEdited
-                                        val alreadyHasProtectedLanguageOrText = latestTranscript != null &&
-                                            !isOverwritableLidOnly && (
-                                                latestTranscript.text.isNotBlank() ||
-                                                    latestTranscript.userEdited ||
-                                                    (
-                                                        !latestTranscript.language.isNullOrBlank() &&
-                                                            !latestTranscript.language.equals("und", ignoreCase = true)
-                                                        )
-                                                )
-                                        if (!alreadyHasProtectedLanguageOrText) {
-                                            withContext(NonCancellable) {
-                                                if (detected?.language != null) {
-                                                    persistLanguageOnlyTranscript(matchedChunk.id, detected)
-                                                } else if (isOverwritableLidOnly) {
-                                                    transcriptDao.deleteByChunkId(matchedChunk.id)
-                                                }
-                                            }
-                                        }
-                                    }
+                                    pendingStreamLidResults.add(req to detected)
                                     processedLidRanges.add(ChunkTimeRange(startMs = req.startMs, endMs = req.endMs))
+                                    val nowMs = clock()
+                                    val isClockAdvancing = nowMs > lidStartedAt
+                                    val shouldFlush = !isClockAdvancing ||
+                                        nowMs - lastStreamLidFlushMs >= LID_DB_BATCH_FLUSH_INTERVAL_MS ||
+                                        pendingStreamLidResults.size >= LID_DB_BATCH_MAX_SIZE
+                                    if (shouldFlush) {
+                                        flushPendingStreamLidResultsLocked()
+                                        lastStreamLidFlushMs = nowMs
+                                    }
                                 }
                                 lidCompletedCount.incrementAndGet()
                             }
@@ -627,6 +648,9 @@ class DefaultAnalysisRepository(
                             }
                         } finally {
                             withContext(NonCancellable) {
+                                chunkPersistenceMutex.withLock {
+                                    flushPendingStreamLidResultsLocked()
+                                }
                                 val done = lidCompletedCount.get()
                                 val total = lidTotalEnqueuedCount.get()
                                 if (total > 0) {
@@ -711,14 +735,17 @@ class DefaultAnalysisRepository(
                                 throw AnalysisPreemptedException()
                             }
                             val currentMs = clock()
-                            // 30 秒区間ごとの保存は、最初の区間はすぐ公開し、2 回目以降は前の保存から一定時間あける
-                            // （デコードが速いと 30 秒区間が数百 ms ごとにそろい、そのたびに波形全体を書き直すことになるため）
+                            val isClockAdvancing = currentMs > now
+                            // 初回プレビュー後は、十分な新規デコード区間が溜まり、かつ実時間でも一定間隔が経過したときのみ波形ファイルを書き直す
+                            // （実機では 15 秒区間が約 30ms ごとにデコードされるため、OR 条件だと秒間 30 回以上ファイル書き直し・UI 再描画が走ってしまう）
                             val hasNew15sSegment =
                                 accumulator.size - lastSavedDecodedBins >= FeatureAccumulator.BINS_PER_15_SECONDS - 2
                             val shouldSaveWaveform = if (!firstProgressiveSaved) {
                                 accumulator.size >= FeatureAccumulator.BINS_PER_INITIAL_PREVIEW - 2
+                            } else if (isClockAdvancing) {
+                                currentMs - lastCheckpointMs >= 600L && hasNew15sSegment
                             } else {
-                                currentMs - lastCheckpointMs >= 1_000L || hasNew15sSegment
+                                hasNew15sSegment
                             }
                             val shouldUpdateProgress =
                                 currentMs - lastProgressUpdateMs >= AnalysisWorker.PROGRESS_DB_INTERVAL_MS
@@ -787,14 +814,16 @@ class DefaultAnalysisRepository(
                                         }
                                     }
                                     progressiveConfirmedCount = confirmedChunks.size
-                                    analysisStateDao.upsert(
-                                        StageStatus.Running(progress = progress.fraction).toEntity(
-                                            mediaId = mediaId,
-                                            stage = AnalysisStage.SEGMENTATION,
-                                            algorithmVersion = CURRENT_ALGORITHM_VERSION,
-                                            updatedAtEpochMs = currentMs,
-                                        ),
-                                    )
+                                    if (shouldUpdateProgress) {
+                                        analysisStateDao.upsert(
+                                            StageStatus.Running(progress = progress.fraction).toEntity(
+                                                mediaId = mediaId,
+                                                stage = AnalysisStage.SEGMENTATION,
+                                                algorithmVersion = CURRENT_ALGORITHM_VERSION,
+                                                updatedAtEpochMs = currentMs,
+                                            ),
+                                        )
+                                    }
                                 }
                             }
 
@@ -1222,6 +1251,25 @@ class DefaultAnalysisRepository(
                 )
             }
 
+            val lidFlushMutex = Mutex()
+            val pendingLidUpserts = LinkedHashMap<Long, OnDeviceChunkTranscriptionResult>()
+            val pendingLidDeletes = LinkedHashSet<Long>()
+            var lastLidFlushMs = languageDetectionStartedAt
+
+            suspend fun flushPendingBatchLocked() {
+                if (pendingLidUpserts.isEmpty() && pendingLidDeletes.isEmpty()) return
+                val upsertsSnapshot = LinkedHashMap(pendingLidUpserts)
+                val deletesSnapshot = LinkedHashSet(pendingLidDeletes)
+                pendingLidUpserts.clear()
+                pendingLidDeletes.clear()
+                withContext(NonCancellable) {
+                    flushPendingLidTranscriptWrites(
+                        pendingUpserts = upsertsSnapshot,
+                        pendingDeletes = deletesSnapshot,
+                    )
+                }
+            }
+
             try {
                 onDeviceChunkTranscriber.detectChunkLanguages(
                     audioFile = audioFile,
@@ -1231,27 +1279,26 @@ class DefaultAnalysisRepository(
                     computeDispatcher = computeDispatcher,
                 ) { index, detected ->
                     val chunk = targetChunks[index]
-                    // 判定の間に別の処理で本文または手動設定言語が入っていれば、上書きしない。既存の仮判定（LIDのみ）は再判定結果で更新または消去する
-                    val latestTranscript = transcriptDao.getByChunkId(chunk.id)
-                    val isOverwritableLidOnly = latestTranscript != null &&
-                        latestTranscript.isLanguageIdOnly() &&
-                        !latestTranscript.userEdited
-                    val alreadyHasProtectedLanguageOrText = latestTranscript != null &&
-                        !isOverwritableLidOnly && (
-                            latestTranscript.text.isNotBlank() ||
-                                latestTranscript.userEdited ||
-                                (!latestTranscript.language.isNullOrBlank() && !latestTranscript.language.equals("und", ignoreCase = true))
-                            )
-                    if (!alreadyHasProtectedLanguageOrText) {
-                        withContext(NonCancellable) {
-                            if (detected?.language != null) {
-                                persistLanguageOnlyTranscript(chunk.id, detected)
-                            } else if (isOverwritableLidOnly) {
-                                transcriptDao.deleteByChunkId(chunk.id)
-                            }
+                    lidFlushMutex.withLock {
+                        if (detected?.language != null) {
+                            pendingLidUpserts[chunk.id] = detected
+                            pendingLidDeletes.remove(chunk.id)
+                        } else {
+                            pendingLidUpserts.remove(chunk.id)
+                            pendingLidDeletes.add(chunk.id)
+                        }
+                        completed += 1
+                        val nowMs = clock()
+                        val isClockAdvancing = nowMs > languageDetectionStartedAt
+                        val pendingCount = pendingLidUpserts.size + pendingLidDeletes.size
+                        val shouldFlush = !isClockAdvancing ||
+                            nowMs - lastLidFlushMs >= LID_DB_BATCH_FLUSH_INTERVAL_MS ||
+                            pendingCount >= LID_DB_BATCH_MAX_SIZE
+                        if (shouldFlush) {
+                            flushPendingBatchLocked()
+                            lastLidFlushMs = nowMs
                         }
                     }
-                    completed += 1
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -1265,6 +1312,9 @@ class DefaultAnalysisRepository(
                 }
             } finally {
                 withContext(NonCancellable) {
+                    lidFlushMutex.withLock {
+                        flushPendingBatchLocked()
+                    }
                     updateQueuedChunkIdsState(id)
                     persistTranscriptBackupFile(id)
                     val elapsedMs = (clock() - languageDetectionStartedAt).coerceAtLeast(0L)
@@ -1716,6 +1766,58 @@ class DefaultAnalysisRepository(
         )
     }
 
+    /**
+     * 並列言語判定の結果をまとめて DB へ反映し、Room の変更通知（および波形・チャンクの再描画）頻度を抑制する。
+     */
+    private suspend fun flushPendingLidTranscriptWrites(
+        pendingUpserts: Map<Long, OnDeviceChunkTranscriptionResult>,
+        pendingDeletes: Set<Long>,
+    ) {
+        if (pendingUpserts.isEmpty() && pendingDeletes.isEmpty()) return
+        val targetChunkIds = (pendingUpserts.keys + pendingDeletes).toList()
+        val existingByChunkId = transcriptDao.getByChunkIds(targetChunkIds).associateBy { it.chunkId }
+        val now = clock()
+        val entitiesToUpsert = ArrayList<TranscriptEntity>(pendingUpserts.size)
+
+        for ((chunkId, result) in pendingUpserts) {
+            val language = result.language?.value?.trim()
+                ?.takeIf { it.isNotEmpty() && !it.equals("und", ignoreCase = true) }
+                ?: continue
+            val existing = existingByChunkId[chunkId]
+            val isOverwritableLidOnly = existing != null &&
+                existing.isLanguageIdOnly() &&
+                !existing.userEdited
+            val alreadyHasProtectedLanguageOrText = existing != null &&
+                !isOverwritableLidOnly && (
+                    existing.text.isNotBlank() ||
+                        existing.userEdited ||
+                        (!existing.language.isNullOrBlank() && !existing.language.equals("und", ignoreCase = true))
+                    )
+            if (alreadyHasProtectedLanguageOrText) continue
+            if (existing != null && existing.language == language && existing.engine == result.engineId.value) continue
+            entitiesToUpsert += TranscriptEntity(
+                chunkId = chunkId,
+                text = "",
+                textVariants = existing?.textVariants ?: "{}",
+                language = language,
+                languageConfidence = result.confidence,
+                words = existing?.words ?: "[]",
+                engine = result.engineId.value,
+                userEdited = false,
+                createdAt = now,
+            )
+        }
+        if (entitiesToUpsert.isNotEmpty()) {
+            transcriptDao.upsertAll(entitiesToUpsert)
+        }
+        for (chunkId in pendingDeletes) {
+            val existing = existingByChunkId[chunkId] ?: continue
+            if (existing.isLanguageIdOnly() && !existing.userEdited) {
+                transcriptDao.deleteByChunkId(chunkId)
+            }
+        }
+    }
+
     override suspend fun setLookaheadEnabled(id: MediaId, enabled: Boolean) {
         explicitlyConfiguredLookaheadMediaIds.add(id)
         if (enabled) {
@@ -1942,8 +2044,6 @@ class DefaultAnalysisRepository(
                     }
                 }
             }
-
-            scheduleCourseAnalysisUpToLimit(mediaItem.course)
         }
     }
 
@@ -4319,6 +4419,8 @@ class DefaultAnalysisRepository(
         const val MAX_UNACCESSED_ANALYZED_PER_FOLDER: Int = 2
 
         private const val BACKGROUND_YIELD_POLL_MS: Long = 20L
+        private const val LID_DB_BATCH_FLUSH_INTERVAL_MS: Long = 400L
+        private const val LID_DB_BATCH_MAX_SIZE: Int = 16
         private const val MANUAL_LANGUAGE_ENGINE_ID: String = "manual-language"
         private const val USER_EDIT_ENGINE_ID: String = "user"
         private const val MAX_TRANSCRIPT_TEXT_CODE_POINTS: Int = 2_000
