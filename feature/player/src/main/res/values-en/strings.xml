@@ -247,4 +247,5 @@
     <string name="player_menu_lang_filter_only_play">only</string>
     <string name="player_floating_controls_title">Playback Controls</string>
     <string name="player_floating_controls_close_cd">Close floating controls</string>
+    <string name="player_transcription_progress_close_cd">Close transcription progress</string>
 </resources>

@@ -30,6 +30,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -710,11 +711,12 @@ internal fun computeTranscriptionProgressSummary(
 }
 
 /**
- * 文字起こしの進捗を、チャンクリストの下部に重ねて表示するカード。
+ * 文字起こしの進捗を、チャンクリストの上部に重ねて表示するカード。
  *
- * - 1 行目: 全体の進捗（完了数 / 対象数と待機数。強制文字起こし中はその要約）と「中断」ボタン
+ * - 1 行目: 左上の「閉じる（×）」ボタン、スピナー、全体の進捗（完了数 / 対象数。強制文字起こし中はその要約）
  * - 2 行目: 進捗バー
  * - 3 行目: 処理中のチャンクの番号・ステップ・補足（エンジンや言語）・経過時間
+ * - 最下行: バックグラウンド文字起こし設定チェックボックスと、右下の「中断」ボタン
  *
  * 同じチャンクで [TRANSCRIPTION_STALL_WARNING_MS] 以上止まっているときは、カードを errorContainer の色にし、
  * 3 行目の末尾に短い注意を付ける（行は増やさない）。診断ログはファイル設定シートから開く。
@@ -727,6 +729,7 @@ internal fun TranscriptionProgressOverlay(
     modifier: Modifier = Modifier,
     transcribedChunkCount: Int = lookaheadStatus.completedCount,
     totalChunkCount: Int = max(lookaheadStatus.totalTargetCount, lookaheadStatus.completedCount),
+    onDismiss: () -> Unit = {},
     onToggleBackgroundTranscription: (Boolean) -> Unit = {},
     onRequestRecognitionModelDownload: (LanguageTag) -> Unit = {},
     onOpenFileSettings: () -> Unit = {},
@@ -816,38 +819,40 @@ internal fun TranscriptionProgressOverlay(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, top = 2.dp, end = 4.dp, bottom = 10.dp),
+                .padding(start = 6.dp, top = 4.dp, end = 6.dp, bottom = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Close,
+                        contentDescription = stringResource(R.string.player_transcription_progress_close_cd),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
                 ChunkTranscriptionSpinner(stage = ChunkTranscriptionStage.TRANSCRIBING)
                 Text(
                     text = summaryText,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 6.dp),
                 )
-                TextButton(
-                    onClick = onAbortTranscription,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
-                ) {
-                    Text(
-                        text = stringResource(R.string.player_transcription_abort_button),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
             }
 
             LinearProgressIndicator(
                 progress = { overallProgress },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(end = 8.dp)
+                    .padding(horizontal = 6.dp)
                     .height(5.dp)
                     .clip(RoundedCornerShape(3.dp)),
                 // 既定のトラックの色はカードの色（secondaryContainer）と同じで見えないため、文字色を薄くして使う
@@ -860,32 +865,8 @@ internal fun TranscriptionProgressOverlay(
                 fontWeight = if (isStalled) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(end = 8.dp),
+                modifier = Modifier.padding(horizontal = 6.dp),
             )
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(6.dp))
-                    .toggleable(
-                        value = lookaheadStatus.backgroundEnabled,
-                        role = Role.Checkbox,
-                        onValueChange = onToggleBackgroundTranscription,
-                    )
-                    .padding(top = 2.dp, bottom = 2.dp, end = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Checkbox(
-                    checked = lookaheadStatus.backgroundEnabled,
-                    onCheckedChange = null,
-                    modifier = Modifier.size(20.dp),
-                )
-                Text(
-                    text = stringResource(R.string.player_transcription_progress_background_checkbox),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
 
             val unpreparedLanguages = remember(lookaheadStatus.recognitionModelIssues) {
                 extractUnpreparedModelIssueLanguages(lookaheadStatus.recognitionModelIssues)
@@ -900,7 +881,7 @@ internal fun TranscriptionProgressOverlay(
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(end = 8.dp, top = 2.dp),
+                        .padding(start = 6.dp, end = 6.dp, top = 2.dp),
                 ) {
                     Column(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
@@ -932,6 +913,49 @@ internal fun TranscriptionProgressOverlay(
                             )
                         }
                     }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(6.dp))
+                        .toggleable(
+                            value = lookaheadStatus.backgroundEnabled,
+                            role = Role.Checkbox,
+                            onValueChange = onToggleBackgroundTranscription,
+                        )
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Checkbox(
+                        checked = lookaheadStatus.backgroundEnabled,
+                        onCheckedChange = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.player_transcription_progress_background_checkbox),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                TextButton(
+                    onClick = onAbortTranscription,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.player_transcription_abort_button),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }

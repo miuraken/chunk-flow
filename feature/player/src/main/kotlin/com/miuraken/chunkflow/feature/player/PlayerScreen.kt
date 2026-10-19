@@ -852,6 +852,9 @@ private fun PlayerChunkList(
         onToggleBackgroundTranscription = { enabled ->
             onEvent(PlayerEvent.SetBackgroundTranscriptionEnabled(enabled))
         },
+        onDismissTranscriptionProgress = {
+            onEvent(PlayerEvent.ToggleTranscriptionProgress)
+        },
         onResetTranscription = {
             onEvent(PlayerEvent.ResetTranscription)
         },

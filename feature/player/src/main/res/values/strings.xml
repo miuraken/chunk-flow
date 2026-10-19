@@ -247,4 +247,5 @@
     <string name="player_menu_lang_filter_only_play">のみ再生</string>
     <string name="player_floating_controls_title">再生コントロール</string>
     <string name="player_floating_controls_close_cd">フローティングコントローラーを閉じる</string>
+    <string name="player_transcription_progress_close_cd">文字起こし進捗を閉じる</string>
 </resources>
