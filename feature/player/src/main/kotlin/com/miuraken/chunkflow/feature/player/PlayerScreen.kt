@@ -767,11 +767,10 @@ fun PlayerScreen(
 private val CompletedTranscriptBadgeColor = Color(0xFF19532B)
 
 /**
- * 再生画面 TopAppBar の設定アイコン右に表示する文字起こし進捗バッジ。
+ * 再生画面 TopAppBar の設定アイコン左に表示する文字起こし進捗バッジ。
  *
  * - 全チャンクの文字起こしが完了している場合は、ライブラリ画面と同様に緑丸＋白抜きの文字起こしアイコンを表示する。
- * - 未完了の場合は `{文字起こしアイコン}{スピナー（実行中のみ）}{進捗率%}` を表示し、タップでオン（再開）/ オフ（一時停止）を切り替えられる。
- * - 停止中（オフ）であることが視覚的に伝わるよう、停止中は表示を薄く（alpha 0.32f）する。
+ * - 未完了の場合は `{文字起こしアイコン}{スピナー（実行中のみ）}{進捗率%}` をトグルバッジとして表示し、タップでオン（再開）/ オフ（一時停止）を切り替えられる。
  */
 @Composable
 private fun PlayerTranscriptionStatusBadge(
@@ -823,47 +822,71 @@ private fun PlayerTranscriptionStatusBadge(
         "文字起こし停止中 $progressPercent%（タップして再開）"
     }
 
-    Row(
+    val badgeContainerColor = if (isRunning) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+    }
+    val badgeContentColor = if (isRunning) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+    }
+    val badgeBorder = if (isRunning) {
+        null
+    } else {
+        FilterChipDefaults.filterChipBorder(enabled = true, selected = false)
+    }
+
+    Surface(
+        shape = FilterChipDefaults.shape,
+        color = badgeContainerColor,
+        contentColor = badgeContentColor,
+        border = badgeBorder,
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
+            .heightIn(min = FilterChipDefaults.Height)
+            .clip(FilterChipDefaults.shape)
             .clickable { onToggleTranscription(!isRunning) }
-            .padding(horizontal = 6.dp, vertical = 4.dp)
-            .alpha(if (isRunning) 1f else 0.32f)
             .semantics(mergeDescendants = true) {
                 contentDescription = statusDescription
             },
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = ChunkFlowIcons.SpeechToText,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp),
-        )
-        if (isRunning) {
-            if (LocalInspectionMode.current) {
-                CircularProgressIndicator(
-                    progress = { 0.75f },
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    trackColor = Color.Transparent,
-                )
-            } else {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(12.dp),
-                    strokeWidth = 1.5.dp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = ChunkFlowIcons.SpeechToText,
+                contentDescription = null,
+                tint = badgeContentColor,
+                modifier = Modifier.size(18.dp),
+            )
+            if (isRunning) {
+                if (LocalInspectionMode.current) {
+                    CircularProgressIndicator(
+                        progress = { 0.75f },
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                        color = badgeContentColor,
+                        trackColor = Color.Transparent,
+                    )
+                } else {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                        color = badgeContentColor,
+                    )
+                }
             }
+            Text(
+                text = "$progressPercent%",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isRunning) FontWeight.SemiBold else FontWeight.Normal,
+                color = badgeContentColor,
+                maxLines = 1,
+            )
         }
-        Text(
-            text = "$progressPercent%",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
     }
 }
 
