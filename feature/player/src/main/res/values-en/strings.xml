@@ -108,6 +108,7 @@
     <string name="player_menu_lang_filter_target">Target only</string>
     <string name="player_menu_lang_filter_base">Base only</string>
     <string name="player_menu_lang_filter_code">%1$s only</string>
+    <string name="player_menu_lang_filter_checked_only">☑ only</string>
     <string name="player_chunk_set_lang_target">Set as target (%1$s)</string>
     <string name="player_chunk_set_lang_base">Set as base (%1$s)</string>
     <string name="player_chunk_set_lang_unknown">Reset language (-)</string>

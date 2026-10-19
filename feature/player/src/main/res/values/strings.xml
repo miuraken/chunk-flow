@@ -108,6 +108,7 @@
     <string name="player_menu_lang_filter_target">学習言語のみ</string>
     <string name="player_menu_lang_filter_base">母語のみ</string>
     <string name="player_menu_lang_filter_code">%1$sのみ</string>
+    <string name="player_menu_lang_filter_checked_only">☑ のみ</string>
     <string name="player_chunk_set_lang_target">学習言語（%1$s）に設定</string>
     <string name="player_chunk_set_lang_base">母語（%1$s）に設定</string>
     <string name="player_chunk_set_lang_unknown">言語を未判定（-）に戻す</string>

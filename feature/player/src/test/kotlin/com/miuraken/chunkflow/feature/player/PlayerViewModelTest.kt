@@ -2581,4 +2581,61 @@ class PlayerViewModelTest {
         assertEquals(targetChunk.startMs, playback.position.positionMs)
         assertEquals(targetChunk.startMs, libraryRepo.observeItemState(item.id).first()?.positionMs)
     }
+
+    @Test
+    fun `言語フィルタCHECKED_ONLY_チェックありでのみ選択でき全チェック解除でALLに戻りハイライトされる`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        viewModel.open(item.id)
+
+        val c0 = sample.chunks[0].id
+        val c2 = sample.chunks[2].id
+
+        // 1. 何もチェックされていない状態では CHECKED_ONLY は選択できない（ALL のまま）
+        viewModel.onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.CHECKED_ONLY))
+        assertEquals(LanguageFilter.ALL, viewModel.uiState.value.practice.languageFilter)
+        assertFalse(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
+
+        // 2. チャンク c0, c2 にチェックを入れると CHECKED_ONLY を選択できる
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c0))
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c2))
+        viewModel.onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.CHECKED_ONLY))
+        assertEquals(LanguageFilter.CHECKED_ONLY, viewModel.uiState.value.practice.languageFilter)
+        assertFalse(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
+
+        // 3. 1 つだけチェックを外してもまだ c2 が残っているので CHECKED_ONLY が維持される
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c0))
+        assertEquals(LanguageFilter.CHECKED_ONLY, viewModel.uiState.value.practice.languageFilter)
+        assertFalse(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
+
+        // 4. 最後のチェック c2 を外すと、自動的に ALL に戻り、数秒間バッジがハイライトされる
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c2))
+        assertTrue(viewModel.uiState.value.practice.repeatChunkIds.isEmpty())
+        assertEquals(LanguageFilter.ALL, viewModel.uiState.value.practice.languageFilter)
+        assertTrue(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
+
+        // 5. 3 秒経過するとハイライトが消える
+        testScheduler.advanceTimeBy(LANGUAGE_FILTER_FALLBACK_HIGHLIGHT_MS)
+        testScheduler.runCurrent()
+        assertFalse(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
+
+        // 6. ClearChunkSelection でも全チェックが外れた場合は ALL に戻りハイライトされる
+        viewModel.onEvent(PlayerEvent.ToggleChunkRepeat(c0))
+        viewModel.onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.CHECKED_ONLY))
+        assertEquals(LanguageFilter.CHECKED_ONLY, viewModel.uiState.value.practice.languageFilter)
+        viewModel.onEvent(PlayerEvent.ClearChunkSelection)
+        assertEquals(LanguageFilter.ALL, viewModel.uiState.value.practice.languageFilter)
+        assertTrue(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
+
+        testScheduler.advanceTimeBy(LANGUAGE_FILTER_FALLBACK_HIGHLIGHT_MS)
+        testScheduler.runCurrent()
+        assertFalse(viewModel.uiState.value.isLanguageFilterFallbackHighlighted)
+    }
 }

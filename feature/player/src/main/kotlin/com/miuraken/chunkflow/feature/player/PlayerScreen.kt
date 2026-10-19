@@ -5,6 +5,12 @@ import android.content.pm.PackageManager
 import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -1252,19 +1258,50 @@ private fun ChunkDisplaySettingsStrip(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 1. 「言語」（[base][target]、[base]、[target]）
+            // 1. 「言語」（[base][target]、[base]、[target]、☑ のみ）
             val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
-            val isLanguageFilterEnabled = state.hasTranscript || state.hasChunkLanguage
+            val hasLangOrTranscript = state.hasTranscript || state.hasChunkLanguage
+            val hasCheckedChunks = state.practice.repeatChunkIds.isNotEmpty()
+            val isLanguageFilterEnabled = hasLangOrTranscript ||
+                hasCheckedChunks ||
+                languageFilter == LanguageFilter.CHECKED_ONLY ||
+                state.isLanguageFilterFallbackHighlighted
             val isLangFilterSelected = languageFilter != LanguageFilter.ALL
-            val langFilterContainerColor = if (isLangFilterSelected) {
-                MaterialTheme.colorScheme.secondaryContainer
+            val isInspection = LocalInspectionMode.current
+            val highlightPulseAlpha = if (state.isLanguageFilterFallbackHighlighted && !isInspection) {
+                val infiniteTransition = rememberInfiniteTransition(label = "langFilterFallbackHighlight")
+                val animatedAlpha by infiniteTransition.animateFloat(
+                    initialValue = 1f,
+                    targetValue = 0.25f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 500),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "langFilterFallbackAlpha",
+                )
+                animatedAlpha
             } else {
-                MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+                1f
             }
-            val langFilterBorder = if (isLangFilterSelected) {
-                null
-            } else {
-                FilterChipDefaults.filterChipBorder(enabled = isLanguageFilterEnabled, selected = false)
+            val langFilterContainerColor = when {
+                state.isLanguageFilterFallbackHighlighted ->
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f * highlightPulseAlpha)
+
+                isLangFilterSelected ->
+                    MaterialTheme.colorScheme.secondaryContainer
+
+                else ->
+                    MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+            }
+            val langFilterBorder = when {
+                state.isLanguageFilterFallbackHighlighted ->
+                    BorderStroke(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = highlightPulseAlpha))
+
+                isLangFilterSelected ->
+                    null
+
+                else ->
+                    FilterChipDefaults.filterChipBorder(enabled = isLanguageFilterEnabled, selected = false)
             }
             val baseDisplayCode = baseLangCode ?: stringResource(R.string.player_settings_base_lang_label)
             val targetDisplayCode = targetLangCode ?: stringResource(R.string.player_settings_target_lang_label)
@@ -1329,6 +1366,15 @@ private fun ChunkDisplaySettingsStrip(
                                     contentColor = langPalette.onTargetBadgeContainer,
                                 )
                             }
+
+                            LanguageFilter.CHECKED_ONLY -> {
+                                Text(
+                                    text = stringResource(R.string.player_menu_lang_filter_checked_only),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    maxLines = 1,
+                                )
+                            }
                         }
                     }
                 }
@@ -1384,6 +1430,7 @@ private fun ChunkDisplaySettingsStrip(
                                 )
                             }
                         },
+                        enabled = hasLangOrTranscript,
                         onClick = {
                             langFilterMenuExpanded = false
                             onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.BASE_ONLY))
@@ -1407,9 +1454,24 @@ private fun ChunkDisplaySettingsStrip(
                                 )
                             }
                         },
+                        enabled = hasLangOrTranscript,
                         onClick = {
                             langFilterMenuExpanded = false
                             onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.TARGET_ONLY))
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = stringResource(R.string.player_menu_lang_filter_checked_only),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                            )
+                        },
+                        enabled = hasCheckedChunks,
+                        onClick = {
+                            langFilterMenuExpanded = false
+                            onEvent(PlayerEvent.SetLanguageFilter(LanguageFilter.CHECKED_ONLY))
                         },
                     )
                 }

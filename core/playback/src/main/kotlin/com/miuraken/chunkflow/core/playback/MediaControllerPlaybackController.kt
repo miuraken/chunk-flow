@@ -27,6 +27,7 @@ import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
@@ -162,7 +163,11 @@ class MediaControllerPlaybackController(
             player = inner,
             selectedChunkIdsProvider = {
                 val practice = practiceController.settings.value
-                if (practice.repeatWholeFile) emptySet() else practice.repeatChunkIds
+                if (practice.repeatWholeFile || practice.languageFilter != LanguageFilter.CHECKED_ONLY) {
+                    emptySet()
+                } else {
+                    practice.repeatChunkIds
+                }
             },
             chunkStartsMsProvider = {
                 currentChunks.filterNot { it.isSkipped }.ifEmpty { currentChunks }.map { it.startMs }
@@ -321,15 +326,18 @@ class MediaControllerPlaybackController(
 
         // 保存済みの学習モード（言語フィルタ・チャンク種別）を復元する。
         // 自動ポーズは常に全体設定の再生設定（UserSettings.defaultAutoPause / defaultAutoPauseScope）に従う（ループは常に Off、§7.2.5）。
+        // 初回ロード時はチェック状態（repeatChunkIds）が空のため、CHECKED_ONLY が保存されていても ALL にフォールバックする。
         if (savedState != null) {
             activeChunkSource = savedState.chunkSource
+            val restoredFilter = savedState.languageFilter.takeUnless { it == LanguageFilter.CHECKED_ONLY }
+                ?: LanguageFilter.ALL
             practiceController.setSettings(
                 PracticeSettings(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
                     skipOriginalSilence = userSettings.skipOriginalSilence,
-                    languageFilter = savedState.languageFilter,
+                    languageFilter = restoredFilter,
                 ),
             )
         } else {
@@ -382,6 +390,7 @@ class MediaControllerPlaybackController(
             val practice = practiceController.settings.value
             val repeatChunkIds = practice.repeatChunkIds
             val isSelectedRepeatTarget = !practice.repeatWholeFile &&
+                practice.languageFilter == LanguageFilter.CHECKED_ONLY &&
                 chunkId in repeatChunkIds &&
                 (repeatChunkIds.size >= 2 || (practice.repeatCheckedOnly && practice.temporaryRepeatChunkId == chunkId))
 
@@ -511,13 +520,15 @@ class MediaControllerPlaybackController(
 
         if (savedState != null) {
             activeChunkSource = savedState.chunkSource
+            val restoredFilter = savedState.languageFilter.takeUnless { it == LanguageFilter.CHECKED_ONLY }
+                ?: LanguageFilter.ALL
             practiceController.setSettings(
                 PracticeSettings(
                     loop = LoopMode.Off,
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
                     skipOriginalSilence = userSettings.skipOriginalSilence,
-                    languageFilter = savedState.languageFilter,
+                    languageFilter = restoredFilter,
                 ),
             )
         } else {

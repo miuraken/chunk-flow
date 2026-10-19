@@ -574,7 +574,10 @@ class PlaybackControllerTest {
 
         // 1チャンクのみ選択時は停止中のタップで単発再生モードになる
         controller.updatePractice {
-            it.copy(repeatChunkIds = setOf(chunk1.id))
+            it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
+                repeatChunkIds = setOf(chunk1.id),
+            )
         }
         controller.seekToChunk(chunk1.id)
         runCurrent()
@@ -582,11 +585,33 @@ class PlaybackControllerTest {
         runCurrent()
         assertTrue(controller.chunkScheduler?.isSingleChunkPlaybackActive == true)
 
-        // 2チャンク以上を選択して選択チャンクをタップすると単発再生モードにならず順次再生を開始する
+        // 2チャンク以上を選択していても CHECKED_ONLY 以外（ALL）のときは停止中のタップで単発再生モードになる
         exoPlayer.pause()
         shadowOf(Looper.getMainLooper()).idle()
         controller.updatePractice {
-            it.copy(repeatChunkIds = setOf(chunk1.id, chunk3.id), repeatCheckedOnly = false)
+            it.copy(
+                languageFilter = LanguageFilter.ALL,
+                repeatChunkIds = setOf(chunk1.id, chunk3.id),
+                repeatCheckedOnly = false,
+            )
+        }
+        runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
+        controller.seekToChunk(chunk1.id)
+        runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
+        runCurrent()
+        assertTrue(controller.chunkScheduler?.isSingleChunkPlaybackActive == true)
+
+        // CHECKED_ONLY で2チャンク以上を選択して選択チャンクをタップすると単発再生モードにならず順次再生を開始する
+        exoPlayer.pause()
+        shadowOf(Looper.getMainLooper()).idle()
+        controller.updatePractice {
+            it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
+                repeatChunkIds = setOf(chunk1.id, chunk3.id),
+                repeatCheckedOnly = false,
+            )
         }
         runCurrent()
         shadowOf(Looper.getMainLooper()).idle()

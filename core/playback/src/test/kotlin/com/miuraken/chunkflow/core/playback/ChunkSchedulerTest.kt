@@ -468,7 +468,7 @@ class ChunkSchedulerTest {
     }
 
     @Test
-    fun `RepeatChunkIds_複数チャンクを選択すると選択チャンクだけを時系列の順に再生しリピートONで繰り返しOFFで1周して止まる`() {
+    fun `RepeatChunkIds_CHECKED_ONLY選択時は選択チャンクだけを時系列の順に再生しリピートONで繰り返しOFFで1周して止まる`() {
         val chunk4 = Chunk(
             id = ChunkId(4L),
             startMs = 7_000L,
@@ -477,9 +477,10 @@ class ChunkSchedulerTest {
         )
         scheduler.setChunks(listOf(chunk1, chunk2, chunk3, chunk4))
 
-        // 停止中に chunk2 と chunk4 を選択し、リピートを ON にしても、再生位置（0ms、chunk1）はその場で動かさない
+        // 停止中に chunk2 と chunk4 を選択し、CHECKED_ONLY + リピート ON にしても、再生位置（0ms、chunk1）はその場で動かさない
         practiceController.update {
             it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(chunk2.id, chunk4.id),
                 repeatCheckedOnly = true,
             )
@@ -526,7 +527,10 @@ class ChunkSchedulerTest {
 
         // 選択をすべて外すと通常再生に戻り、chunk2 終端で chunk3 へ進む
         practiceController.update {
-            it.copy(repeatChunkIds = emptySet())
+            it.copy(
+                languageFilter = LanguageFilter.ALL,
+                repeatChunkIds = emptySet(),
+            )
         }
         pumpLoopers()
         exoPlayer.seekTo(chunk2.startMs)
@@ -538,10 +542,38 @@ class ChunkSchedulerTest {
     }
 
     @Test
+    fun `RepeatChunkIds_CHECKED_ONLY以外の言語フィルタ選択時はチェックボックスの状態が再生ロジックに一切影響しない`() {
+        scheduler.setChunks(sampleChunks)
+        // chunk1 のみにチェックが入っており repeatCheckedOnly = true であっても、languageFilter が ALL のときは無視される
+        practiceController.update {
+            it.copy(
+                languageFilter = LanguageFilter.ALL,
+                repeatChunkIds = setOf(chunk1.id),
+                repeatCheckedOnly = true,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        pumpLoopers()
+        assertEquals(chunk1.id, scheduler.currentChunkId.value)
+
+        // chunk1 終端でループせずそのまま chunk2 -> chunk3 へ通常再生される
+        runUntil { scheduler.currentChunkId.value == chunk2.id }
+        pumpLoopers()
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+        assertEquals(chunk3.id, scheduler.currentChunkId.value)
+    }
+
+    @Test
     fun `RepeatChunkIds_1つのチャンクだけチェックした場合はそのチャンクを無限ループ再生する`() {
         scheduler.setChunks(sampleChunks)
         practiceController.update {
             it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(chunk1.id),
                 repeatCheckedOnly = true,
             )
@@ -607,7 +639,11 @@ class ChunkSchedulerTest {
     fun `startSingleChunkPlayback_選択中でもリピートがOFFなら対象チャンクを1回だけ再生して終端で停止する`() {
         scheduler.setChunks(sampleChunks)
         practiceController.update {
-            it.copy(repeatChunkIds = setOf(chunk1.id, chunk2.id), repeatCheckedOnly = false)
+            it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
+                repeatChunkIds = setOf(chunk1.id, chunk2.id),
+                repeatCheckedOnly = false,
+            )
         }
         pumpLoopers()
 
@@ -627,7 +663,11 @@ class ChunkSchedulerTest {
     fun `startSingleChunkPlayback_リピートONで対象チャンクが選択されている場合は他チャンクへ移らずそのチャンクのみを繰り返し解除で停止する`() {
         scheduler.setChunks(sampleChunks)
         practiceController.update {
-            it.copy(repeatChunkIds = setOf(chunk1.id, chunk2.id), repeatCheckedOnly = true)
+            it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
+                repeatChunkIds = setOf(chunk1.id, chunk2.id),
+                repeatCheckedOnly = true,
+            )
         }
         pumpLoopers()
 
@@ -870,6 +910,7 @@ class ChunkSchedulerTest {
         practiceController.update {
             it.copy(
                 loop = LoopMode.SingleChunk(chunkId = chunk1.id, times = null),
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(chunk1.id, chunk3.id),
                 repeatCheckedOnly = true,
                 autoPause = AutoPause.Fixed(pauseMs = 1_000L),
@@ -909,6 +950,7 @@ class ChunkSchedulerTest {
         scheduler.setChunks(sampleChunks)
         practiceController.update {
             it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(chunk1.id, chunk3.id),
                 repeatCheckedOnly = false,
             )
@@ -1082,9 +1124,10 @@ class ChunkSchedulerTest {
         pumpLoopers()
         assertEquals(chunk3.id, scheduler.currentChunkId.value)
 
-        // chunk1 と chunk3 を選択（リピート OFF、AutoPause 800ms）
+        // chunk1 と chunk3 を選択（CHECKED_ONLY、リピート OFF、AutoPause 800ms）
         practiceController.update {
             it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(chunk1.id, chunk3.id),
                 repeatCheckedOnly = false,
                 autoPause = AutoPause.Fixed(pauseMs = 800L),
@@ -1131,6 +1174,7 @@ class ChunkSchedulerTest {
         scheduler.setChunks(sampleChunks)
         practiceController.update {
             it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(chunk1.id, chunk3.id),
                 repeatCheckedOnly = true,
                 autoPause = AutoPause.Fixed(pauseMs = 2_000L),
@@ -1164,6 +1208,7 @@ class ChunkSchedulerTest {
         scheduler.setChunks(listOf(c1, c2, c3))
         practiceController.update {
             it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(c1.id, c3.id),
                 repeatCheckedOnly = false,
             )
@@ -1192,6 +1237,7 @@ class ChunkSchedulerTest {
         scheduler.setChunks(listOf(c1, c2, c3))
         practiceController.update {
             it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
                 repeatChunkIds = setOf(c1.id),
                 repeatCheckedOnly = false,
                 repeatWholeFile = true,

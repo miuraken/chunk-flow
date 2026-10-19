@@ -68,7 +68,7 @@ enum class AutoPauseScope {
     AFTER_BASE_LANGUAGE,
 }
 
-/** 言語フィルタ再生（F6.4）。 */
+/** 言語・選択フィルタ再生（F6.4）。 */
 enum class LanguageFilter {
     /** すべてのチャンクを再生する。 */
     ALL,
@@ -78,6 +78,9 @@ enum class LanguageFilter {
 
     /** 母語のチャンクだけを再生する。 */
     BASE_ONLY,
+
+    /** チェックボックスで選択したチャンク（[PracticeSettings.repeatChunkIds]）だけを順番に再生する（「☑ のみ」）。 */
+    CHECKED_ONLY,
 }
 
 /**
@@ -86,10 +89,10 @@ enum class LanguageFilter {
  * @property loop リピートのモード。
  * @property autoPause 自動ポーズの設定。
  * @property autoPauseScope 自動ポーズを入れるチャンクの範囲。
- * @property languageFilter 言語フィルタ。
+ * @property languageFilter 言語・選択フィルタ。
  * @property bookmarksOnly ブックマークしたチャンクだけを再生するフィルタ（F8.1）。
- * @property repeatChunkIds 選択したチャンク（チャンクリストのチェックボックス、拡大波形の長押し、または一時チェック）の ID の集合。空でない場合、選択したチャンクだけを時系列の順に再生する。
- * @property repeatCheckedOnly 下部再生コントロールの「リピート」トグルが ON かどうか（デフォルトは `false`）。`true` かつ [repeatChunkIds] が空でない場合は選択したチャンクを繰り返し、`false` の場合は最後の選択チャンクのあとで一時停止する。
+ * @property repeatChunkIds 選択したチャンク（チャンクリストのチェックボックス、拡大波形の長押し、または一時チェック）の ID の集合。[languageFilter] が [LanguageFilter.CHECKED_ONLY] の場合、選択したチャンクだけを時系列の順に再生する。
+ * @property repeatCheckedOnly 下部再生コントロールの「リピート」トグルが ON かどうか（デフォルトは `false`）。`true` かつ [languageFilter] が [LanguageFilter.CHECKED_ONLY] で [repeatChunkIds] が空でない場合は選択したチャンクを繰り返し、`false` の場合は最後の選択チャンクのあとで一時停止する。
  * @property temporaryRepeatChunkId 未選択状態でリピートバッジを有効化した際に再生中のチャンクへ付与された「一時チェック」のチャンク ID（高々 1 つ）。見た目や再生時の扱いは通常のチェック（[repeatChunkIds]）と同じだが、(1) 一時チェック中に他のチャンクをタップしてシークすると新しいチャンクへ一時チェックが移り、(2) 他のチャンクにチェックが入れられると恒久的なチェックへ移行（`null` にクリア）し、(3) リピート解除時には一時チェックのみが [repeatChunkIds] から解除される。
  * @property skipOriginalSilence 元音声のチャンク間の無音区間（`[chunk.endMs, nextChunk.startMs)`）をスキップして次のチャンクへ進むかどうか。
  * @property repeatWholeFile ファイル全体をリピートするかどうか（リピートバッジの長押しで確認後 ON、もう一度タップで OFF。チャンクの選択やチェックボックスは変更しない）。

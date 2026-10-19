@@ -333,18 +333,14 @@ class ChunkScheduler(
             resumeFromAutoPauseEarly(ensurePlaying = playWhenReady)
             return
         }
-        // チャンクを選択しているときは、選択変更後・手動シーク後・選択範囲外・最後の選択チャンク終端付近から再生を始めたら最初の選択チャンクへ移る（リピートの ON / OFF によらない）
+        // 「☑ のみ」（LanguageFilter.CHECKED_ONLY）を選択しているときは、選択変更後・手動シーク後・選択範囲外・最後の選択チャンク終端付近から再生を始めたら最初の選択チャンクへ移る（リピートの ON / OFF によらない）
         if (playWhenReady &&
             singleChunkPlaybackId == null &&
             _autoPauseEndsAtMs.value == null &&
             practiceSettings.loop !is LoopMode.AbRange &&
             practiceSettings.loop !is LoopMode.ChunkRange
         ) {
-            val repeatChunks = if (practiceSettings.repeatWholeFile) {
-                emptyList()
-            } else {
-                chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
-            }
+            val repeatChunks = activeRepeatChunks()
             if (repeatChunks.isNotEmpty()) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 val lastRepeatChunk = repeatChunks.last()
@@ -428,16 +424,18 @@ class ChunkScheduler(
         val oldRepeatChunkIds = practiceSettings.repeatChunkIds
         val oldRepeatCheckedOnly = practiceSettings.repeatCheckedOnly
         val oldRepeatWholeFile = practiceSettings.repeatWholeFile
+        val oldLanguageFilter = practiceSettings.languageFilter
         practiceSettings = newSettings
 
+        val isCheckedOnly = newSettings.languageFilter == LanguageFilter.CHECKED_ONLY
         if (newSettings.repeatWholeFile ||
-            newSettings.repeatChunkIds.size >= 2 ||
-            (newSettings.temporaryRepeatChunkId != null && newSettings.repeatCheckedOnly)
+            (isCheckedOnly && newSettings.repeatChunkIds.size >= 2) ||
+            (isCheckedOnly && newSettings.temporaryRepeatChunkId != null && newSettings.repeatCheckedOnly)
         ) {
             singleChunkPlaybackId = null
         }
 
-        if (oldRepeatChunkIds != newSettings.repeatChunkIds &&
+        if ((oldRepeatChunkIds != newSettings.repeatChunkIds || oldLanguageFilter != newSettings.languageFilter) &&
             !exoPlayer.playWhenReady &&
             _autoPauseEndsAtMs.value == null
         ) {
@@ -451,7 +449,8 @@ class ChunkScheduler(
         if (_autoPauseEndsAtMs.value != null) {
             if (oldRepeatChunkIds != newSettings.repeatChunkIds ||
                 oldRepeatCheckedOnly != newSettings.repeatCheckedOnly ||
-                oldRepeatWholeFile != newSettings.repeatWholeFile
+                oldRepeatWholeFile != newSettings.repeatWholeFile ||
+                oldLanguageFilter != newSettings.languageFilter
             ) {
                 autoPausedChunk?.let { chunk ->
                     pendingPostPauseAction = determinePostChunkAction(chunk)
@@ -471,12 +470,10 @@ class ChunkScheduler(
             newSettings.loop !is LoopMode.AbRange &&
             newSettings.loop !is LoopMode.ChunkRange
         ) {
-            val repeatChunks = if (newSettings.repeatWholeFile) {
-                emptyList()
-            } else {
-                chunks.filter { it.id in newSettings.repeatChunkIds && !it.isSkipped }
-            }
-            if (repeatChunks.size >= 2) {
+            val repeatChunks = activeRepeatChunks(newSettings)
+            val switchedToCheckedOnly =
+                oldLanguageFilter != newSettings.languageFilter && newSettings.languageFilter == LanguageFilter.CHECKED_ONLY
+            if (repeatChunks.size >= 2 || (switchedToCheckedOnly && repeatChunks.isNotEmpty())) {
                 val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 if (repeatChunks.none { nowMs in it.startMs until it.endMs }) {
                     val target = repeatChunks.firstOrNull { it.startMs >= nowMs } ?: repeatChunks.first()
@@ -545,11 +542,7 @@ class ChunkScheduler(
         val useSkipFilter = chunks.any { it.isSkipped }
         val useLanguageFilter = filter != LanguageFilter.ALL && isLanguageFilterApplicable(filter)
         val useBookmarkFilter = practiceSettings.bookmarksOnly && chunks.any(::isChunkBookmarked)
-        val repeatChunks = if (practiceSettings.repeatWholeFile) {
-            emptyList()
-        } else {
-            chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
-        }
+        val repeatChunks = activeRepeatChunks()
         val hasSelectedRepeatChunks = repeatChunks.isNotEmpty()
         if (singleChunkPlaybackId == null &&
             loopMode !is LoopMode.ChunkRange &&
@@ -1040,7 +1033,11 @@ class ChunkScheduler(
                     PostChunkAction.PauseAtChunkEnd(allowsAutoPause = false)
                 }
             }
-            return if (!practiceSettings.repeatWholeFile && chunk.id in practiceSettings.repeatChunkIds && practiceSettings.repeatCheckedOnly) {
+            return if (!practiceSettings.repeatWholeFile &&
+                practiceSettings.languageFilter == LanguageFilter.CHECKED_ONLY &&
+                chunk.id in practiceSettings.repeatChunkIds &&
+                practiceSettings.repeatCheckedOnly
+            ) {
                 PostChunkAction.SeekToChunk(chunk)
             } else {
                 singleChunkPlaybackId = null
@@ -1079,15 +1076,11 @@ class ChunkScheduler(
             }
         }
 
-        // チェックボックス（拡大波形の長押し）で選択したチャンク（repeatChunkIds）を時系列の順に再生する。
+        // 「☑ のみ」（LanguageFilter.CHECKED_ONLY）のときのみ、チェックボックス（または拡大波形の長押し）で選択したチャンク（repeatChunkIds）を時系列の順に再生する。
         // 最後の選択チャンクのあとは、リピートが ON なら最初へ戻り、OFF なら一時停止する。
         // ただしファイル全体リピート（repeatWholeFile）が ON の間はチェックボックスの状態を変更せずに全チャンク再生を行う。
         // LoopMode.SingleChunk が残っていても複数選択チャンクの順次再生・リピートが妨げられないよう SingleChunk より先に判定する。
-        val repeatChunks = if (practiceSettings.repeatWholeFile) {
-            emptyList()
-        } else {
-            chunks.filter { it.id in practiceSettings.repeatChunkIds && !it.isSkipped }
-        }
+        val repeatChunks = activeRepeatChunks()
         if (repeatChunks.isNotEmpty()) {
             val selectedIndex = repeatChunks.indexOfFirst { it.id == chunk.id }
             val nextTarget: Chunk? = if (selectedIndex >= 0) {
@@ -1436,9 +1429,20 @@ class ChunkScheduler(
         }
     }
 
+    private fun activeRepeatChunks(settings: PracticeSettings = practiceSettings): List<Chunk> {
+        if (settings.repeatWholeFile || settings.languageFilter != LanguageFilter.CHECKED_ONLY) {
+            return emptyList()
+        }
+        return chunks.filter { it.id in settings.repeatChunkIds && !it.isSkipped }
+    }
+
     private fun isLanguageFilterApplicable(filter: LanguageFilter): Boolean = when (filter) {
-        LanguageFilter.ALL -> false
+        LanguageFilter.ALL,
+        LanguageFilter.CHECKED_ONLY,
+        -> false
+
         LanguageFilter.TARGET_ONLY -> languagePair != null && transcripts.isNotEmpty()
+
         LanguageFilter.BASE_ONLY -> languagePair?.base != null && transcripts.isNotEmpty()
     }
 
@@ -1462,8 +1466,12 @@ class ChunkScheduler(
         val pair = languagePair ?: return true
         val chunkLang = transcripts[chunkId]?.language ?: return false
         return when (filter) {
-            LanguageFilter.ALL -> true
+            LanguageFilter.ALL,
+            LanguageFilter.CHECKED_ONLY,
+            -> true
+
             LanguageFilter.TARGET_ONLY -> isSameOrCompatibleLanguage(chunkLang, pair.target)
+
             LanguageFilter.BASE_ONLY -> pair.base?.let { isSameOrCompatibleLanguage(chunkLang, it) } == true
         }
     }

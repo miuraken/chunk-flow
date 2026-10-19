@@ -720,6 +720,7 @@ data class PlayerUiState(
     val enabledLanguages: List<LanguageTag> = UserSettings.DEFAULT_ENABLED_LANGUAGES.toList(),
     val nextMediaId: MediaId? = null,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
+    val isLanguageFilterFallbackHighlighted: Boolean = false,
 ) {
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
@@ -944,7 +945,7 @@ sealed interface PlayerEvent {
     /** 瞬間作文モード（母語チャンクの後に自動ポーズ）の ON / OFF を切り替える（F6.5）。 */
     data object ToggleInstantComposition : PlayerEvent
 
-    /** 言語フィルタ再生（すべて / 学習言語のみ / 母語のみ）を変更する（F6.4）。 */
+    /** 言語フィルタ再生（すべて / 学習言語のみ / 母語のみ / ☑ のみ）を変更する（F6.4）。 */
     data class SetLanguageFilter(val filter: LanguageFilter) : PlayerEvent
 
     /** ブックマークのみ再生フィルタ（`PracticeSettings.bookmarksOnly`）の ON / OFF を切り替える（F8.1）。 */
@@ -1154,6 +1155,9 @@ private const val RECOGNITION_MODEL_REFRESH_INTERVAL_MS: Long = 30_000L
 /** 言語バッジの最後のトグルから、文字起こしのやり直しを始めるまでの待ち時間（誤タップ対策）。 */
 internal const val LANGUAGE_TOGGLE_COMMIT_DELAY_MS: Long = 1_000L
 
+/** 「☑ のみ」からすべてのチェックが外れて「両方」へ自動復帰したときに言語フィルタバッジを強調表示する時間（ミリ秒）。 */
+internal const val LANGUAGE_FILTER_FALLBACK_HIGHLIGHT_MS: Long = 3_000L
+
 private data class AnalysisSnapshot(
     val status: Map<AnalysisStage, StageStatus> = emptyMap(),
     val waveform: Waveform? = null,
@@ -1186,6 +1190,7 @@ private data class LocalUiSnapshot(
     val hasRecordAudioPermission: Boolean = true,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLookaheadEnabled: Boolean = false,
+    val isLanguageFilterFallbackHighlighted: Boolean = false,
 )
 
 /**
@@ -1233,6 +1238,7 @@ class PlayerViewModel @Inject constructor(
     private var savedSpeedBeforeDetailedPreview: Float? = null
     private var retranscribeJob: Job? = null
     private var chunkSeekPrioritizeJob: Job? = null
+    private var languageFilterHighlightJob: Job? = null
 
     /** 高頻度で変わる再生位置のプロバイダ（§6.2）。 */
     val positionProvider: PositionProvider
@@ -1581,6 +1587,8 @@ class PlayerViewModel @Inject constructor(
         retranscribeJob = null
         chunkSeekPrioritizeJob?.cancel()
         chunkSeekPrioritizeJob = null
+        languageFilterHighlightJob?.cancel()
+        languageFilterHighlightJob = null
         prioritizedMediaIds.update { it - mediaId }
         val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
         localUiState.value = LocalUiSnapshot(isLookaheadEnabled = enabled)
@@ -1694,7 +1702,7 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.AdjustCustomSpeed -> setCustomSpeed(uiState.value.customSpeed + event.delta)
 
             is PlayerEvent.SetLoopMode -> {
-                playbackController.updatePractice {
+                updatePracticeWithCheckedFallback {
                     it.copy(
                         loop = event.loopMode,
                         repeatChunkIds = if (event.loopMode is LoopMode.Off) emptySet() else it.repeatChunkIds,
@@ -1730,7 +1738,7 @@ class PlayerViewModel @Inject constructor(
                     ?: chunks.firstOrNull { posMs in it.startMs..it.endMs }?.id
                     ?: chunks.firstOrNull { !it.isSkipped }?.id
                     ?: chunks.firstOrNull()?.id
-                playbackController.updatePractice { current ->
+                updatePracticeWithCheckedFallback { current ->
                     if (current.repeatWholeFile) {
                         current.copy(repeatWholeFile = false)
                     } else {
@@ -1750,12 +1758,14 @@ class PlayerViewModel @Inject constructor(
                             )
                         } else if (current.repeatChunkIds.isNotEmpty()) {
                             current.copy(
+                                languageFilter = LanguageFilter.CHECKED_ONLY,
                                 repeatCheckedOnly = true,
                                 temporaryRepeatChunkId = null,
                             )
                         } else if (activeChunkId != null) {
                             current.copy(
                                 loop = LoopMode.Off,
+                                languageFilter = LanguageFilter.CHECKED_ONLY,
                                 repeatChunkIds = setOf(activeChunkId),
                                 repeatCheckedOnly = true,
                                 temporaryRepeatChunkId = activeChunkId,
@@ -1832,6 +1842,20 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetLanguageFilter -> {
+                if (event.filter == LanguageFilter.CHECKED_ONLY &&
+                    playbackController.practice.value.repeatChunkIds.isEmpty()
+                ) {
+                    return
+                }
+                languageFilterHighlightJob?.cancel()
+                languageFilterHighlightJob = null
+                localUiState.update { state ->
+                    if (state.isLanguageFilterFallbackHighlighted) {
+                        state.copy(isLanguageFilterFallbackHighlighted = false)
+                    } else {
+                        state
+                    }
+                }
                 playbackController.updatePractice { it.copy(languageFilter = event.filter) }
             }
 
@@ -1859,7 +1883,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.ToggleChunkRepeat -> {
-                playbackController.updatePractice { current ->
+                updatePracticeWithCheckedFallback { current ->
                     val isUnchecking = event.chunkId in current.repeatChunkIds
                     val nextIds = if (isUnchecking) {
                         current.repeatChunkIds - event.chunkId
@@ -1889,7 +1913,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetChunkSelected -> {
-                playbackController.updatePractice { current ->
+                updatePracticeWithCheckedFallback { current ->
                     val nextIds = if (event.selected) {
                         current.repeatChunkIds + event.chunkId
                     } else {
@@ -1922,7 +1946,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             PlayerEvent.ClearChunkSelection -> {
-                playbackController.updatePractice { current ->
+                updatePracticeWithCheckedFallback { current ->
                     if (current.repeatChunkIds.isEmpty() && current.temporaryRepeatChunkId == null) {
                         current
                     } else {
@@ -1952,7 +1976,7 @@ class PlayerViewModel @Inject constructor(
                         val merged = analysisRepository.mergeChunks(id, chunkIds)
                         if (merged) {
                             // 連結するとチャンクの ID が変わるため、選択を外す
-                            playbackController.updatePractice {
+                            updatePracticeWithCheckedFallback {
                                 it.copy(repeatChunkIds = emptySet(), temporaryRepeatChunkId = null)
                             }
                         }
@@ -2283,7 +2307,7 @@ class PlayerViewModel @Inject constructor(
                                 .filter { (it.startMs to it.endMs) in selectedRanges }
                                 .map { it.id }
                                 .toSet()
-                            playbackController.updatePractice { current ->
+                            updatePracticeWithCheckedFallback { current ->
                                 current.copy(
                                     repeatChunkIds = preservedIds,
                                     temporaryRepeatChunkId = current.temporaryRepeatChunkId?.takeIf { it in preservedIds },
@@ -3040,8 +3064,8 @@ class PlayerViewModel @Inject constructor(
             return list.subList(idx, list.size) + list.subList(0, idx)
         }
 
-        // 1. 複数選択リピート中
-        if (!practice.repeatWholeFile && practice.repeatCheckedOnly && practice.repeatChunkIds.isNotEmpty()) {
+        // 1. 「☑ のみ」選択時
+        if (practice.languageFilter == LanguageFilter.CHECKED_ONLY && practice.repeatChunkIds.isNotEmpty()) {
             val checked = chunks.filter { it.id in practice.repeatChunkIds }
             val unchecked = chunks.filterNot { it.id in practice.repeatChunkIds }
             return rotateFromPosition(checked) + rotateFromPosition(unchecked)
@@ -3165,7 +3189,7 @@ class PlayerViewModel @Inject constructor(
                         .filter { (it.startMs to it.endMs) in selectedRanges }
                         .map { it.id }
                         .toSet()
-                    playbackController.updatePractice { current ->
+                    updatePracticeWithCheckedFallback { current ->
                         if (current.repeatChunkIds.isEmpty()) {
                             current
                         } else {
@@ -3581,7 +3605,38 @@ class PlayerViewModel @Inject constructor(
             enabledLanguages = settings.enabledLanguages.toList(),
             nextMediaId = nextMediaId,
             backgroundSpeechRecognizerWarning = local.backgroundSpeechRecognizerWarning,
+            isLanguageFilterFallbackHighlighted = local.isLanguageFilterFallbackHighlighted,
         )
+    }
+
+    /**
+     * [PracticeSettings] を更新し、もし `languageFilter == LanguageFilter.CHECKED_ONLY` の状態で
+     * `repeatChunkIds` がすべて外れた場合は `LanguageFilter.ALL` へ自動フォールバックし、
+     * 言語フィルタバッジのハイライト演出を発火する。
+     */
+    private fun updatePracticeWithCheckedFallback(transform: (PracticeSettings) -> PracticeSettings) {
+        var didFallback = false
+        playbackController.updatePractice { current ->
+            val updated = transform(current)
+            if (updated.languageFilter == LanguageFilter.CHECKED_ONLY && updated.repeatChunkIds.isEmpty()) {
+                didFallback = true
+                updated.copy(languageFilter = LanguageFilter.ALL)
+            } else {
+                updated
+            }
+        }
+        if (didFallback) {
+            triggerLanguageFilterFallbackHighlight()
+        }
+    }
+
+    private fun triggerLanguageFilterFallbackHighlight() {
+        languageFilterHighlightJob?.cancel()
+        localUiState.update { it.copy(isLanguageFilterFallbackHighlighted = true) }
+        languageFilterHighlightJob = viewModelScope.launch {
+            delay(LANGUAGE_FILTER_FALLBACK_HIGHLIGHT_MS)
+            localUiState.update { it.copy(isLanguageFilterFallbackHighlighted = false) }
+        }
     }
 
     private fun isValidLanguageTag(tag: LanguageTag): Boolean {
