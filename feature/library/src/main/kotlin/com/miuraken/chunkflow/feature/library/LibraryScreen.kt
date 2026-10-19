@@ -2519,7 +2519,9 @@ private fun LibraryItemRow(
 
             // 2 行目: 言語ペアバッジ + SpeechToText 文字起こし状態 + 右端に ☆ と ✏️
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 28.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(
@@ -2581,28 +2583,28 @@ private fun LibraryItemRow(
                         }
                     }
                 }
-                if (onToggleFavoriteClick != null) {
-                    IconButton(
-                        onClick = onToggleFavoriteClick,
-                        modifier = Modifier.size(28.dp),
-                    ) {
-                        Icon(
-                            imageVector = if (isFavorite) {
-                                ChunkFlowIcons.Favorite
-                            } else {
-                                ChunkFlowIcons.FavoriteBorder
-                            },
-                            contentDescription = favoriteCd,
-                            tint = if (isFavorite) {
-                                FavoriteStarColor
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                            },
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                }
                 if (!isSelectionMode) {
+                    if (onToggleFavoriteClick != null) {
+                        IconButton(
+                            onClick = onToggleFavoriteClick,
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (isFavorite) {
+                                    ChunkFlowIcons.Favorite
+                                } else {
+                                    ChunkFlowIcons.FavoriteBorder
+                                },
+                                contentDescription = favoriteCd,
+                                tint = if (isFavorite) {
+                                    FavoriteStarColor
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                                },
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = onEditMetadataClick,
                         modifier = Modifier.size(28.dp),
@@ -2684,9 +2686,11 @@ private fun LibraryItemRow(
                     text = durationProgressText,
                     style = MaterialTheme.typography.labelSmall,
                     color = progressStatusColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.align(Alignment.CenterVertically),
                 )
-                if (formattedLastAccessed != null) {
+                if (!isSelectionMode && formattedLastAccessed != null) {
                     Row(
                         modifier = Modifier.align(Alignment.CenterVertically),
                         verticalAlignment = Alignment.CenterVertically,
@@ -2707,6 +2711,7 @@ private fun LibraryItemRow(
                             text = formattedLastAccessed,
                             style = MaterialTheme.typography.labelSmall,
                             color = lastAccessedColor,
+                            maxLines = 1,
                         )
                     }
                 }
