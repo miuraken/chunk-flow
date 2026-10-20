@@ -12,6 +12,8 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -304,6 +306,14 @@ fun LibraryScreen(
                                 text = titleText,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                modifier = if (!isSelection) {
+                                    Modifier.clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                    ) { onEvent(LibraryEvent.ResetToFoldersRoot) }
+                                } else {
+                                    Modifier
+                                },
                             )
                         }
                     },
@@ -465,7 +475,10 @@ fun LibraryScreen(
             ) {
                 ImportStatusBanner(importState = state.importState)
 
-                if (state.items.isEmpty() &&
+                if (state.isLoading) {
+                    // 初回ロード中は「教材がまだありません」を表示しない（空の領域を確保）
+                    Spacer(modifier = Modifier.weight(1f))
+                } else if (state.items.isEmpty() &&
                     state.courseFolders.isEmpty() &&
                     state.selectedTab != LibraryViewTab.PLAYLISTS &&
                     state.selectedTab != LibraryViewTab.BOOKMARKS

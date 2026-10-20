@@ -1797,4 +1797,63 @@ class LibraryViewModelTest {
             viewModel.uiState.value.currentDirectories.mapNotNull { it.name },
         )
     }
+
+    @Test
+    fun `初回ロード状態_未購読時のinitialValueではisLoadingがtrueでshouldShowEmptyContentがfalseになり購読後はisLoadingがfalseになる`() = runTest {
+        val item1 = SampleMaterials.jaKo.item
+        val repo = FakeLibraryRepository(initialItems = listOf(item1))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+
+        // 1. Flow がまだ 1 度も emit していない初期値では isLoading = true であり、LibraryEmptyContent は表示しない
+        assertTrue(viewModel.uiState.value.isLoading)
+        assertFalse(viewModel.uiState.value.shouldShowEmptyContent)
+
+        // 2. isLoading = true の状態では items と courseFolders が空でも shouldShowEmptyContent は false
+        assertFalse(LibraryUiState(isLoading = true).shouldShowEmptyContent)
+        // isLoading = false かつ items と courseFolders が空のときは shouldShowEmptyContent が true
+        assertTrue(LibraryUiState(isLoading = false).shouldShowEmptyContent)
+
+        // 3. 購読開始後は即座にデータが反映され isLoading = false になる
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+        assertFalse(viewModel.uiState.value.isLoading)
+        assertEquals(1, viewModel.uiState.value.items.size)
+        assertFalse(viewModel.uiState.value.shouldShowEmptyContent)
+    }
+
+    @Test
+    fun `ResetToFoldersRoot_別タブやサブフォルダや選択モードからフォルダタブのルート階層へ戻る`() = runTest {
+        val item = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("reset-item-1"),
+            course = "韓国語/初級",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. サブフォルダ「韓国語/初級」を開き、再生リストタブでプレイリストを選択し、さらにアイテム選択状態にする
+        viewModel.onEvent(LibraryEvent.OpenDirectory("韓国語/初級"))
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.PLAYLISTS))
+        viewModel.onEvent(LibraryEvent.SelectPlaylistCategory(LibraryPlaylistCategory.FAVORITES))
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item.id))
+
+        assertEquals(LibraryViewTab.PLAYLISTS, viewModel.uiState.value.selectedTab)
+        assertEquals("韓国語/初級", viewModel.uiState.value.currentDirectoryPath)
+        assertEquals(LibraryPlaylistCategory.FAVORITES.playlistId, viewModel.uiState.value.selectedPlaylistId)
+        assertTrue(viewModel.uiState.value.isSelectionMode)
+
+        // 2. トップバーの「ライブラリ」タイトルタップ（ResetToFoldersRoot）でフォルダタブのルートへ戻り選択も解除される
+        viewModel.onEvent(LibraryEvent.ResetToFoldersRoot)
+
+        assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
+        assertNull(viewModel.uiState.value.currentDirectoryPath)
+        assertNull(viewModel.uiState.value.selectedPlaylistId)
+        assertFalse(viewModel.uiState.value.isSelectionMode)
+
+        // 3. ファイルタブにいる状態からでも ResetToFoldersRoot でフォルダタブのルートへ戻る
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.FILES))
+        assertEquals(LibraryViewTab.FILES, viewModel.uiState.value.selectedTab)
+        viewModel.onEvent(LibraryEvent.ResetToFoldersRoot)
+        assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
+        assertNull(viewModel.uiState.value.currentDirectoryPath)
+    }
 }

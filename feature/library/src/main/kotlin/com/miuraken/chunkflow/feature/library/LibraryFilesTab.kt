@@ -198,7 +198,7 @@ internal fun LibraryFilesTabContent(
             }
         }
 
-        if (filteredFiles.isEmpty()) {
+        if (!state.isLoading && filteredFiles.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -212,7 +212,7 @@ internal fun LibraryFilesTabContent(
                     textAlign = TextAlign.Center,
                 )
             }
-        } else {
+        } else if (filteredFiles.isNotEmpty()) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),

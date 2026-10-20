@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -497,6 +498,7 @@ data class LibraryBookmarkedFileUiModel(
  * @property activePlaybackChunkId 現在再生中または選択中のチャンク ID。
  * @property seekBackMs 巻き戻し秒数（ミリ秒、既定は 3000ms）。
  * @property seekForwardMs 早送り秒数（ミリ秒、既定は 5000ms）。
+ * @property isLoading 初回データ読み込み中かどうか。
  */
 data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
@@ -545,6 +547,7 @@ data class LibraryUiState(
     val playbackSpeed: Float = 1.0f,
     val customPlaybackSpeed: Float = 1.5f,
     val practice: PracticeSettings = PracticeSettings(),
+    val isLoading: Boolean = false,
 ) {
     companion object {
         /** 最近開いたファイル欄およびよくアクセスするファイル欄に表示する最大件数。 */
@@ -1263,6 +1266,16 @@ data class LibraryUiState(
             val chunkId = activePlaybackChunkId ?: return null
             return bookmarkedChunksByMedia[mediaId]?.firstOrNull { it.chunk.id == chunkId }
         }
+
+    /**
+     * 「教材がまだありません」の空状態画面（`LibraryEmptyContent`）を表示すべきかどうか。
+     */
+    val shouldShowEmptyContent: Boolean
+        get() = !isLoading &&
+            items.isEmpty() &&
+            courseFolders.isEmpty() &&
+            selectedTab != LibraryViewTab.PLAYLISTS &&
+            selectedTab != LibraryViewTab.BOOKMARKS
 }
 
 /** ライブラリ画面のイベント。 */
@@ -1308,6 +1321,9 @@ sealed interface LibraryEvent {
 
     /** 1 つ上の親ディレクトリ階層へ戻る。 */
     data object NavigateUp : LibraryEvent
+
+    /** フォルダタブのルート階層へ戻る。 */
+    data object ResetToFoldersRoot : LibraryEvent
 
     /** ディレクトリ [directoryPath] の複数選択状態を切り替える。 */
     data class ToggleDirectorySelection(val directoryPath: String) : LibraryEvent
@@ -1733,6 +1749,7 @@ class LibraryViewModel @Inject constructor(
                     }
                 }
                 combine(perItemFlows) { pairs -> pairs.toMap() }
+                    .onStart { emit(emptyMap()) }
             }
         }
 
@@ -1823,7 +1840,7 @@ class LibraryViewModel @Inject constructor(
             ) { items, courseFolders, playlists -> Triple(items, courseFolders, playlists) },
             libraryRepository.observeItemStates(),
             analysisSummaries,
-            libraryRepository.observeMissingAudioIds(),
+            libraryRepository.observeMissingAudioIds().onStart { emit(emptySet()) },
             userSettingsRepository.settings,
         ) { (items, courseFolders, playlists), itemStates, summaries, missingAudioIds, userSettings ->
             LibraryRepositorySnapshot(
@@ -1867,7 +1884,7 @@ class LibraryViewModel @Inject constructor(
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = LibraryUiState(),
+        initialValue = LibraryUiState(isLoading = true),
     )
 
     /** 画面からのイベントを処理する。 */
@@ -1997,6 +2014,13 @@ class LibraryViewModel @Inject constructor(
                         null
                     }
                 }
+            }
+
+            LibraryEvent.ResetToFoldersRoot -> {
+                clearSelectionInternal()
+                selectedTab.value = LibraryViewTab.FOLDERS
+                currentDirectoryPath.value = null
+                selectedPlaylistId.value = null
             }
 
             is LibraryEvent.SelectTab -> {

@@ -448,7 +448,7 @@ class DefaultLibraryRepositoryTest {
     fun `import_バックアップ復元後のようにDB行だけあり音声ファイルが欠損している場合は重複取り込みで音声ファイルを再結合する`() = runTest {
         val audioBytes = "backup-restore-audio-bytes".encodeToByteArray()
         val uri1 = registerContent("restore1", "lesson.mp3", audioBytes.size.toLong(), audioBytes)
-        val repo = createRepository()
+        val repo = createRepository(UnconfinedTestDispatcher(testScheduler))
 
         val firstDone = repo.import(listOf(uri1)).toList().last() as ImportProgress.Done
         val mediaId = firstDone.mediaIds.single()
@@ -1291,7 +1291,7 @@ class DefaultLibraryRepositoryTest {
             ),
         )
 
-        val repo = createRepository()
+        val repo = createRepository(UnconfinedTestDispatcher(testScheduler))
         val done = repo.linkLocalDirectory(treeUri).toList().last() as ImportProgress.Done
         assertEquals(1, done.mediaIds.size)
         assertEquals(0, done.transcriptsAttached)

@@ -1223,7 +1223,7 @@ class DefaultLibraryRepository(
                 }
             }
         }
-    }
+    }.flowOn(ioDispatcher)
 
     override suspend fun exportTranscriptText(
         id: MediaId,
