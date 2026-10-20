@@ -198,8 +198,8 @@ class MediaControllerPlaybackController(
                 },
             )
             chunkScheduler = scheduler
-            learning.onUserPlayWhenReadyCommand = {
-                scheduler.onUserPlayPauseCommand()
+            learning.onUserPlayWhenReadyCommand = { playWhenReady ->
+                scheduler.onUserPlayPauseCommand(playWhenReady)
             }
         }
 

@@ -38,9 +38,9 @@ class LearningPlayer(
 
     /**
      * ユーザ（UI または MediaSession）から再生・一時停止コマンドが発行されたときに呼ばれるコールバック。
-     * 自動ポーズ中の手動操作によるタイマー解除（§7.2.4）に使用する。
+     * 自動ポーズ中の手動操作によるタイマー解除（§7.2.4）および非選択チャンク位置からの開始時シーク先行実行に使用する。
      */
-    var onUserPlayWhenReadyCommand: (() -> Unit)? = null
+    var onUserPlayWhenReadyCommand: ((playWhenReady: Boolean) -> Unit)? = null
 
     /**
      * DB（`AudioItem.durationMs`）から判明している教材の長さ（ミリ秒）。
@@ -117,7 +117,7 @@ class LearningPlayer(
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        onUserPlayWhenReadyCommand?.invoke()
+        onUserPlayWhenReadyCommand?.invoke(playWhenReady)
         return super.handleSetPlayWhenReady(playWhenReady)
     }
 
