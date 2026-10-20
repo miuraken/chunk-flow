@@ -150,7 +150,9 @@
     <string name="library_import_config_new_virtual_folder_name_label">New virtual folder name</string>
     <string name="library_edit_real_folder_dialog_title">Folder settings: %1$s</string>
     <string name="library_bookmarks_open_in_player_cd">Go to this chunk in file</string>
-    <string name="library_import_done_into_folder_suffix"> imported under %1$s</string>
+    <string name="library_import_done_single_into_folder">Added "%1$s" to "%2$s"</string>
+    <string name="library_import_done_multiple_into_folder">Added %1$d files to "%2$s"</string>
+    <string name="library_import_snackbar_open">Open</string>
     <string name="library_target_lang_change_confirm_title">Change target language?</string>
     <string name="library_target_lang_change_confirm_message">Changing the target language will clear all current transcript and language detection data and restart language detection.</string>
     <string name="library_target_lang_change_confirm_ok">Change and clear</string>

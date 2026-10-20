@@ -330,8 +330,7 @@ private fun LibraryDirectoryRow(
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
     val containerColor = when {
         isSelected -> MaterialTheme.colorScheme.secondaryContainer
-        directory.isRealFolder -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
-        else -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.32f)
+        else -> MaterialTheme.colorScheme.surfaceContainer
     }
     val folderIconTint = if (directory.isRealFolder) {
         MaterialTheme.colorScheme.primary

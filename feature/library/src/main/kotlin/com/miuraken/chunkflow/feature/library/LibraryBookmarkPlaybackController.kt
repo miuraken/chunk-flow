@@ -8,9 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -23,10 +21,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowPlayPauseButton
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowTransportButton
 import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackControlStrip
 import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContent
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -50,11 +49,6 @@ internal fun LibraryBookmarkPlaybackController(
 
     val seekBackSeconds = (state.seekBackMs / 1_000L).coerceAtLeast(1L).toInt()
     val seekForwardSeconds = (state.seekForwardMs / 1_000L).coerceAtLeast(1L).toInt()
-    val playPauseCd = if (isPlaying) {
-        stringResource(R.string.library_mini_player_pause)
-    } else {
-        stringResource(R.string.library_mini_player_play)
-    }
 
     val titleText = activeFile?.title
         ?: miniPlayer?.title
@@ -150,90 +144,59 @@ internal fun LibraryBookmarkPlaybackController(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                BookmarkSeekStepButton(
+                ChunkFlowTransportButton(
                     icon = ChunkFlowIcons.SeekBack,
-                    badgeLabel = stringResource(
-                        R.string.library_bookmarks_seek_back_label,
-                        seekBackSeconds,
-                    ),
                     contentDescription = stringResource(
                         R.string.library_bookmarks_seek_back_cd,
                         seekBackSeconds,
                     ),
-                    enabled = hasPlayableTarget,
                     onClick = { onEvent(LibraryEvent.BookmarkPlayerSeekBack) },
+                    label = stringResource(
+                        R.string.library_bookmarks_seek_back_label,
+                        seekBackSeconds,
+                    ),
+                    enabled = hasPlayableTarget,
+                    size = BookmarkTransportButtonSize,
                 )
 
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconButton(
-                        onClick = { onEvent(LibraryEvent.BookmarkPlayerPreviousChunk) },
-                        enabled = hasPlayableTarget,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.SkipPrevious,
-                            contentDescription = stringResource(
-                                R.string.library_bookmarks_prev_chunk_cd,
-                            ),
-                            modifier = Modifier.size(26.dp),
-                        )
-                    }
-                    Text(
-                        text = stringResource(R.string.library_bookmarks_prev_chunk_label),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                FilledIconButton(
-                    onClick = { onEvent(LibraryEvent.BookmarkPlayerTogglePlayPause) },
+                ChunkFlowTransportButton(
+                    icon = ChunkFlowIcons.SkipPrevious,
+                    contentDescription = stringResource(R.string.library_bookmarks_prev_chunk_cd),
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerPreviousChunk) },
+                    label = stringResource(R.string.library_bookmarks_prev_chunk_label),
                     enabled = hasPlayableTarget,
-                    modifier = Modifier.size(48.dp),
-                ) {
-                    Icon(
-                        imageVector = if (isPlaying) {
-                            ChunkFlowIcons.Pause
-                        } else {
-                            ChunkFlowIcons.Play
-                        },
-                        contentDescription = playPauseCd,
-                        modifier = Modifier.size(26.dp),
-                    )
-                }
+                    size = BookmarkTransportButtonSize,
+                )
 
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconButton(
-                        onClick = { onEvent(LibraryEvent.BookmarkPlayerNextChunk) },
-                        enabled = hasPlayableTarget,
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.SkipNext,
-                            contentDescription = stringResource(
-                                R.string.library_bookmarks_next_chunk_cd,
-                            ),
-                            modifier = Modifier.size(26.dp),
-                        )
-                    }
-                    Text(
-                        text = stringResource(R.string.library_bookmarks_next_chunk_label),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                ChunkFlowPlayPauseButton(
+                    isPlaying = isPlaying,
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerTogglePlayPause) },
+                    size = BookmarkPlayPauseButtonSize,
+                    enabled = hasPlayableTarget,
+                )
 
-                BookmarkSeekStepButton(
+                ChunkFlowTransportButton(
+                    icon = ChunkFlowIcons.SkipNext,
+                    contentDescription = stringResource(R.string.library_bookmarks_next_chunk_cd),
+                    onClick = { onEvent(LibraryEvent.BookmarkPlayerNextChunk) },
+                    label = stringResource(R.string.library_bookmarks_next_chunk_label),
+                    enabled = hasPlayableTarget,
+                    size = BookmarkTransportButtonSize,
+                )
+
+                ChunkFlowTransportButton(
                     icon = ChunkFlowIcons.SeekForward,
-                    badgeLabel = stringResource(
-                        R.string.library_bookmarks_seek_forward_label,
-                        seekForwardSeconds,
-                    ),
                     contentDescription = stringResource(
                         R.string.library_bookmarks_seek_forward_cd,
                         seekForwardSeconds,
                     ),
-                    enabled = hasPlayableTarget,
                     onClick = { onEvent(LibraryEvent.BookmarkPlayerSeekForward) },
+                    label = stringResource(
+                        R.string.library_bookmarks_seek_forward_label,
+                        seekForwardSeconds,
+                    ),
+                    enabled = hasPlayableTarget,
+                    size = BookmarkTransportButtonSize,
                 )
             }
         }
@@ -255,36 +218,8 @@ internal fun LibraryBookmarkPlaybackController(
 
 private val BOOKMARK_SPEED_PRESETS = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f)
 
-@Composable
-private fun BookmarkSeekStepButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    badgeLabel: String,
-    contentDescription: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        IconButton(
-            onClick = onClick,
-            enabled = enabled,
-            modifier = Modifier.size(40.dp),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                modifier = Modifier.size(22.dp),
-            )
-        }
-        Text(
-            text = badgeLabel,
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontFamily = FontFamily.Monospace,
-            ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
+/** 前後ブックマーク・秒送りボタンの一辺（M3 の最小タップ領域 48dp）。 */
+private val BookmarkTransportButtonSize = 48.dp
+
+/** 再生 / 一時停止ボタンの一辺。 */
+private val BookmarkPlayPauseButtonSize = 56.dp

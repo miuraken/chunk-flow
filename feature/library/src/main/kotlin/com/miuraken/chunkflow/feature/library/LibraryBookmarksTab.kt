@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -137,11 +139,15 @@ internal fun LibraryBookmarksTabContent(
                 )
             },
             confirmButton = {
-                TextButton(
+                Button(
                     onClick = {
                         pendingClearFile = null
                         onEvent(LibraryEvent.ClearBookmarksForMedia(targetFile.mediaId))
                     },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
                 ) {
                     Text(text = stringResource(R.string.library_bookmarks_clear_file_yes))
                 }

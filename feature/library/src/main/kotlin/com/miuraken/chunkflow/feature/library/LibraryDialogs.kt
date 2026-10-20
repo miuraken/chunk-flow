@@ -609,6 +609,7 @@ internal fun CreateVirtualFolderDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun EditItemMetadataDialog(
     item: AudioItem,
@@ -628,62 +629,78 @@ internal fun EditItemMetadataDialog(
         mutableStateOf(normalizeDialogLanguageCode(item.languagePair.base?.value.orEmpty()))
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OutlinedTextField(
-                    value = courseText,
-                    onValueChange = { courseText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_course_label)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+    val content: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedTextField(
+                value = courseText,
+                onValueChange = { courseText = it },
+                label = { Text(text = stringResource(R.string.library_edit_course_label)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
 
-                LanguagePairDropdownSection(
-                    targetLangCode = targetLangText,
-                    baseLangCode = baseLangText,
-                    onTargetLangChange = { targetLangText = it },
-                    onBaseLangChange = { baseLangText = it },
-                    sttEngineByLanguage = sttEngineByLanguage,
-                    enabledLanguages = enabledLanguages,
-                    onToggleEnabledLanguage = onToggleEnabledLanguage,
-                    onOpenLanguageSettings = onOpenLanguageSettings,
-                    confirmTargetLangChange = true,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
-                    val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
-                    onConfirm(
-                        courseText.trim().ifBlank { null },
-                        LanguagePair(
-                            target = LanguageTag(cleanTarget),
-                            base = cleanBase?.let { LanguageTag(it) },
-                        ),
-                        ItemSttOverride.NONE,
-                    )
-                },
+            LanguagePairDropdownSection(
+                targetLangCode = targetLangText,
+                baseLangCode = baseLangText,
+                onTargetLangChange = { targetLangText = it },
+                onBaseLangChange = { baseLangText = it },
+                sttEngineByLanguage = sttEngineByLanguage,
+                enabledLanguages = enabledLanguages,
+                onToggleEnabledLanguage = onToggleEnabledLanguage,
+                onOpenLanguageSettings = onOpenLanguageSettings,
+                confirmTargetLangChange = true,
+            )
+
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.End),
             ) {
-                Text(text = stringResource(R.string.library_edit_save))
+                TextButton(onClick = onDismiss) {
+                    Text(text = stringResource(R.string.library_edit_cancel))
+                }
+                Button(
+                    onClick = {
+                        val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
+                        val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
+                        onConfirm(
+                            courseText.trim().ifBlank { null },
+                            LanguagePair(
+                                target = LanguageTag(cleanTarget),
+                                base = cleanBase?.let { LanguageTag(it) },
+                            ),
+                            ItemSttOverride.NONE,
+                        )
+                    },
+                ) {
+                    Text(text = stringResource(R.string.library_edit_save))
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(text = stringResource(R.string.library_edit_cancel))
-            }
-        },
-    )
+        }
+    }
+
+    if (androidx.compose.ui.platform.LocalInspectionMode.current) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = MaterialTheme.shapes.extraLarge,
+        ) {
+            content()
+        }
+    } else {
+        androidx.compose.material3.ModalBottomSheet(
+            onDismissRequest = onDismiss,
+        ) {
+            content()
+        }
+    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun EditDirectoryMetadataDialog(
     directoryEdit: PendingDirectoryEdit,
@@ -706,79 +723,90 @@ internal fun EditDirectoryMetadataDialog(
 
     val folderDisplayName = directoryEdit.currentCourse?.substringAfterLast('/').orEmpty()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = if (directoryEdit.isRealFolder) {
-            {
+    val content: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (directoryEdit.isRealFolder) {
                 Text(
                     text = stringResource(
                         R.string.library_edit_real_folder_dialog_title,
                         folderDisplayName,
                     ),
+                    style = MaterialTheme.typography.titleLarge,
+                )
+            } else {
+                OutlinedTextField(
+                    value = courseText,
+                    onValueChange = { courseText = it },
+                    label = { Text(text = stringResource(R.string.library_edit_course_label)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-        } else {
-            null
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (!directoryEdit.isRealFolder) {
-                    OutlinedTextField(
-                        value = courseText,
-                        onValueChange = { courseText = it },
-                        label = { Text(text = stringResource(R.string.library_edit_course_label)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
 
-                LanguagePairDropdownSection(
-                    targetLangCode = targetLangText,
-                    baseLangCode = baseLangText,
-                    onTargetLangChange = { targetLangText = it },
-                    onBaseLangChange = { baseLangText = it },
-                    sttEngineByLanguage = sttEngineByLanguage,
-                    enabledLanguages = enabledLanguages,
-                    onToggleEnabledLanguage = onToggleEnabledLanguage,
-                    onOpenLanguageSettings = onOpenLanguageSettings,
-                    confirmTargetLangChange = true,
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
-                    val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
-                    val nextCourse = if (directoryEdit.isRealFolder) {
-                        directoryEdit.currentCourse
-                    } else {
-                        courseText.trim().ifBlank { null }
-                    }
-                    onConfirm(
-                        nextCourse,
-                        LanguagePair(
-                            target = LanguageTag(cleanTarget),
-                            base = cleanBase?.let { LanguageTag(it) },
-                        ),
-                        ItemSttOverride.NONE,
-                    )
-                },
+            LanguagePairDropdownSection(
+                targetLangCode = targetLangText,
+                baseLangCode = baseLangText,
+                onTargetLangChange = { targetLangText = it },
+                onBaseLangChange = { baseLangText = it },
+                sttEngineByLanguage = sttEngineByLanguage,
+                enabledLanguages = enabledLanguages,
+                onToggleEnabledLanguage = onToggleEnabledLanguage,
+                onOpenLanguageSettings = onOpenLanguageSettings,
+                confirmTargetLangChange = true,
+            )
+
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.End),
             ) {
-                Text(text = stringResource(R.string.library_edit_save))
+                TextButton(onClick = onDismiss) {
+                    Text(text = stringResource(R.string.library_edit_cancel))
+                }
+                Button(
+                    onClick = {
+                        val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
+                        val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
+                        val nextCourse = if (directoryEdit.isRealFolder) {
+                            directoryEdit.currentCourse
+                        } else {
+                            courseText.trim().ifBlank { null }
+                        }
+                        onConfirm(
+                            nextCourse,
+                            LanguagePair(
+                                target = LanguageTag(cleanTarget),
+                                base = cleanBase?.let { LanguageTag(it) },
+                            ),
+                            ItemSttOverride.NONE,
+                        )
+                    },
+                ) {
+                    Text(text = stringResource(R.string.library_edit_save))
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(text = stringResource(R.string.library_edit_cancel))
-            }
-        },
-    )
+        }
+    }
+
+    if (androidx.compose.ui.platform.LocalInspectionMode.current) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = MaterialTheme.shapes.extraLarge,
+        ) {
+            content()
+        }
+    } else {
+        androidx.compose.material3.ModalBottomSheet(
+            onDismissRequest = onDismiss,
+        ) {
+            content()
+        }
+    }
 }
 
 @ChunkFlowPreviews

@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -394,7 +395,7 @@ internal fun CreatePlaylistDialog(
             )
         },
         confirmButton = {
-            TextButton(
+            Button(
                 onClick = { onConfirm(name.trim()) },
                 enabled = name.isNotBlank(),
             ) {
@@ -503,7 +504,7 @@ internal fun AddToPlaylistDialog(
         },
         confirmButton = {
             if (isCreatingNew) {
-                TextButton(
+                Button(
                     onClick = { onCreateAndAdd(newPlaylistName.trim()) },
                     enabled = newPlaylistName.isNotBlank(),
                 ) {

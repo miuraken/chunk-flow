@@ -150,7 +150,9 @@
     <string name="library_import_config_new_virtual_folder_name_label">新しい仮想フォルダの名前</string>
     <string name="library_edit_real_folder_dialog_title">フォルダ設定：%1$s</string>
     <string name="library_bookmarks_open_in_player_cd">このファイルの該当チャンクへ移動</string>
-    <string name="library_import_done_into_folder_suffix"> を %1$sの下に取り込みました</string>
+    <string name="library_import_done_single_into_folder">「%1$s」を「%2$s」に追加しました</string>
+    <string name="library_import_done_multiple_into_folder">%1$d 件を「%2$s」に追加しました</string>
+    <string name="library_import_snackbar_open">開く</string>
     <string name="library_target_lang_change_confirm_title">学習対象言語を変更しますか？</string>
     <string name="library_target_lang_change_confirm_message">学習対象言語を切り替えると、現在の文字起こしデータと言語判定データがすべてクリアされ、言語判定がやり直されます。</string>
     <string name="library_target_lang_change_confirm_ok">変更してクリア</string>
