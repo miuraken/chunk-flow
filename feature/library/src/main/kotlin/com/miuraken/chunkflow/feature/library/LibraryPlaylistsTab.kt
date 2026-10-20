@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.model.PlaylistId
 
 @Composable
@@ -112,7 +113,7 @@ internal fun LibraryPlaylistsTabContent(
                         imageVector = activeIcon,
                         contentDescription = null,
                         tint = if (activePlaylist.builtInCategory == LibraryPlaylistCategory.FAVORITES) {
-                            FavoriteStarColor
+                            chunkFlowExtendedColors().favorite
                         } else {
                             MaterialTheme.colorScheme.primary
                         },
@@ -280,7 +281,7 @@ private fun LibraryPlaylistEntryRow(
                     imageVector = playlistEntryIcon(entry),
                     contentDescription = null,
                     tint = if (entry.builtInCategory == LibraryPlaylistCategory.FAVORITES) {
-                        FavoriteStarColor
+                        chunkFlowExtendedColors().favorite
                     } else {
                         MaterialTheme.colorScheme.primary
                     },

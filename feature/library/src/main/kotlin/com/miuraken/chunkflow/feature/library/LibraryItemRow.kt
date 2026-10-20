@@ -63,8 +63,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguagePairBadge
-import com.miuraken.chunkflow.core.designsystem.component.playback.CompletedTranscriptBadgeColor
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
@@ -79,12 +79,6 @@ import kotlinx.coroutines.withContext
 
 private val LAST_ACCESSED_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm", Locale.ROOT)
-
-/** お気に入り登録済み（⭐️）の塗りつぶし星アイコン色。 */
-internal val FavoriteStarColor = Color(0xFFFFB300)
-
-/** デフォルトの音符サムネイル背景色（落ち着いたグレー）。 */
-private val DefaultThumbnailBackgroundColor = Color(0xFF8A8A8E)
 
 /** この割合（%）を超えて聴いた教材を既習として、進捗バーと再生状況を緑系で表示する。 */
 internal const val COMPLETED_PROGRESS_PERCENT_THRESHOLD = 95
@@ -316,7 +310,7 @@ internal fun LibraryItemRow(
                         transcriptStatus = itemModel.transcriptStatus,
                         transcriptProgressPercent = itemModel.transcriptProgressPercent,
                         isTranscribing = itemModel.isTranscribing,
-                        completedBadgeColor = CompletedTranscriptBadgeColor,
+                        completedBadgeColor = chunkFlowExtendedColors().transcriptCompleted,
                     )
                     if (itemModel.isAnalyzing) {
                         Text(
@@ -355,7 +349,7 @@ internal fun LibraryItemRow(
                                 },
                                 contentDescription = favoriteCd,
                                 tint = if (isFavorite) {
-                                    FavoriteStarColor
+                                    chunkFlowExtendedColors().favorite
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
                                 },
@@ -499,7 +493,7 @@ private fun TranscriptStatusIndicator(
                 Icon(
                     imageVector = ChunkFlowIcons.SpeechToText,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = chunkFlowExtendedColors().onTranscriptCompleted,
                     modifier = Modifier.size(14.dp),
                 )
             }
@@ -631,13 +625,13 @@ internal fun AudioItemThumbnail(
         else -> {
             Box(
                 modifier = modifier
-                    .background(color = DefaultThumbnailBackgroundColor, shape = shape),
+                    .background(color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = shape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = ChunkFlowIcons.MusicNote,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp),
                 )
             }
@@ -647,16 +641,18 @@ internal fun AudioItemThumbnail(
 
 @Composable
 private fun PreviewPimsleurArtwork(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier.background(Color.White)) {
+    val palette = chunkFlowLanguagePalette()
+    val background = MaterialTheme.colorScheme.surfaceContainerLow
+    Canvas(modifier = modifier.background(background)) {
         val w = size.width
         val h = size.height
         drawRect(
-            color = Color(0xFF0D47A1),
+            color = palette.baseWaveformRms,
             topLeft = Offset.Zero,
             size = Size(w * 0.55f, h),
         )
         drawCircle(
-            color = Color(0xFF1976D2),
+            color = palette.baseWaveformPeak,
             radius = w * 0.42f,
             center = Offset(w * 0.35f, h * 0.45f),
         )
@@ -667,27 +663,29 @@ private fun PreviewPimsleurArtwork(modifier: Modifier = Modifier) {
             lineTo(0f, h)
             close()
         }
-        drawPath(path = wavePath, color = Color(0xFF42A5F5).copy(alpha = 0.75f))
+        drawPath(path = wavePath, color = palette.baseChunkBackground.copy(alpha = 0.75f))
     }
 }
 
 @Composable
 private fun PreviewBookArtwork(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier.background(Color(0xFFECEFF1))) {
+    val palette = chunkFlowLanguagePalette()
+    val colorScheme = MaterialTheme.colorScheme
+    Canvas(modifier = modifier.background(colorScheme.surfaceContainerLow)) {
         val w = size.width
         val h = size.height
         drawRect(
-            color = Color(0xFF81D4FA),
+            color = palette.baseChunkBackground,
             topLeft = Offset(w * 0.08f, h * 0.08f),
             size = Size(w * 0.84f, h * 0.28f),
         )
         drawRect(
-            color = Color(0xFF90A4AE),
+            color = colorScheme.outlineVariant,
             topLeft = Offset(w * 0.08f, h * 0.36f),
             size = Size(w * 0.84f, h * 0.56f),
         )
         drawRect(
-            color = Color(0xFF546E7A),
+            color = colorScheme.onSurfaceVariant,
             topLeft = Offset(w * 0.18f, h * 0.48f),
             size = Size(w * 0.64f, h * 0.34f),
         )
