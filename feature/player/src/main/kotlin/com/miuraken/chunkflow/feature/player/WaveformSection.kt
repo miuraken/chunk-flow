@@ -74,6 +74,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -146,6 +147,22 @@ internal const val ZOOM_SETTLE_DELAY_MS: Long = 200L
 
 /** 未完成の波形を表示時に左から右へ漸次的に更新表示するアニメーションの所要時間（ミリ秒）。 */
 private const val PROGRESSIVE_WAVEFORM_REVEAL_DURATION_MS: Long = 320L
+
+/**
+ * 波形上に描くチャンク面の角丸半径。
+ * 波形は Canvas に密に並ぶ内容（部品ではない）なので、M3 の Shape scale ではなく波形固有の寸法として持つ。
+ * チャンクの高さ（数十 dp）に対して十分小さく、隣接チャンクの 1dp の隙間と干渉しない値。
+ */
+private val WAVEFORM_CHUNK_CORNER_RADIUS: Dp = 4.dp
+
+/** ミニマップ（全体波形）の再生位置バーの幅。角丸半径は幅の半分（ピル形）。 */
+private val MINIMAP_PLAYHEAD_BAR_WIDTH: Dp = 4.dp
+
+/** ミニマップの再生位置バーの上下に付けるつまみの幅。 */
+private val MINIMAP_PLAYHEAD_KNOB_WIDTH: Dp = 10.dp
+
+/** ミニマップの再生位置バーのつまみの高さ。角丸半径は高さの半分（ピル形）。 */
+private val MINIMAP_PLAYHEAD_KNOB_HEIGHT: Dp = 6.dp
 
 private const val MAX_BITMAP_TILE_WIDTH_PX: Int = 2048
 private const val MAX_TOTAL_STRIP_WIDTH_PX: Int = 16_384
@@ -565,12 +582,14 @@ private fun ZoomedWaveformHeaderStatusArea(
             }
             val trackColor = colorScheme.surfaceContainerHighest.copy(alpha = 0.55f)
             val fillColor = colorScheme.primary.copy(alpha = 0.22f)
+            val progressCornerSize = MaterialTheme.shapes.extraSmall.topStart
             Row(
                 modifier = modifier
                     .fillMaxWidth()
                     .drawWithCache {
                         onDrawBehind {
-                            val corner = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                            val cornerPx = progressCornerSize.toPx(size, this)
+                            val corner = CornerRadius(cornerPx, cornerPx)
                             drawRoundRect(color = trackColor, cornerRadius = corner)
                             if (progressFraction > 0f) {
                                 drawRoundRect(
@@ -672,12 +691,14 @@ private fun ZoomedWaveformHeaderStatusArea(
 
             val trackColor = colorScheme.surfaceContainerHighest.copy(alpha = 0.55f)
             val fillColor = colorScheme.primary.copy(alpha = 0.22f)
+            val progressCornerSize = MaterialTheme.shapes.extraSmall.topStart
             Row(
                 modifier = modifier
                     .fillMaxWidth()
                     .drawWithCache {
                         onDrawBehind {
-                            val corner = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                            val cornerPx = progressCornerSize.toPx(size, this)
+                            val corner = CornerRadius(cornerPx, cornerPx)
                             drawRoundRect(color = trackColor, cornerRadius = corner)
                             if (progressFraction > 0f) {
                                 drawRoundRect(
@@ -1137,8 +1158,8 @@ private fun OverviewWaveformCanvas(
                     // 現在位置を示すバー（太めのハンドル形状）
                     val playheadX = ((currentPosMs.toFloat() / durationMs.toFloat()) * size.width)
                         .coerceIn(0f, size.width)
-                    val barWidthPx = 4.dp.toPx()
-                    val barRadiusPx = 2.dp.toPx()
+                    val barWidthPx = MINIMAP_PLAYHEAD_BAR_WIDTH.toPx()
+                    val barRadiusPx = barWidthPx * 0.5f
                     drawRoundRect(
                         color = playheadColor,
                         topLeft = Offset(
@@ -1148,9 +1169,9 @@ private fun OverviewWaveformCanvas(
                         size = Size(barWidthPx, size.height),
                         cornerRadius = CornerRadius(barRadiusPx, barRadiusPx),
                     )
-                    val knobWidthPx = 10.dp.toPx()
-                    val knobHeightPx = 6.dp.toPx()
-                    val knobRadiusPx = 3.dp.toPx()
+                    val knobWidthPx = MINIMAP_PLAYHEAD_KNOB_WIDTH.toPx()
+                    val knobHeightPx = MINIMAP_PLAYHEAD_KNOB_HEIGHT.toPx()
+                    val knobRadiusPx = knobHeightPx * 0.5f
                     val knobLeft = (playheadX - knobWidthPx * 0.5f)
                         .coerceIn(0f, (size.width - knobWidthPx).coerceAtLeast(0f))
                     drawRoundRect(
@@ -1734,7 +1755,8 @@ private fun ZoomedWaveformCanvas(
                 }
                 val baseFullStrip = baseFullWaveformStrip
                 val chunkGapPx = 1.dp.toPx()
-                val chunkCorner = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                val chunkCornerPx = WAVEFORM_CHUNK_CORNER_RADIUS.toPx()
+                val chunkCorner = CornerRadius(chunkCornerPx, chunkCornerPx)
                 val selectedStrokePx = 2.dp.toPx()
                 val activeStrokePx = 1.5.dp.toPx()
                 val badgeRadiusPx = 7.dp.toPx()

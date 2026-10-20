@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -535,7 +534,7 @@ fun PlayerScreen(
                 val clampedY = floatingOffsetY.coerceIn(0f, maxOffsetY)
 
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
+                    shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     tonalElevation = 6.dp,
                     shadowElevation = 8.dp,
