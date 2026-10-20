@@ -51,7 +51,7 @@
 ### 3.2 言語色の調和（Phase A、designsystem）
 - 方式: HCT 色空間で、母語 / 学習言語の**基準色相**（青 ≈ 250°、ピンク ≈ 350°）を `primary` の色相へ**部分的に**寄せる（`Blend.harmonize` 相当。寄せる割合は 0.5 以下で調整）。トーンは `ColorScheme` のコンテナ（ライト: T90 前後、ダーク: T30 前後）に合わせて生成し、行背景 / バッジ / 波形 / チャンク面の各トーンを 1 つの色相から派生させる。
 - 制約（テストで固定する）: 調和後の 2 色相の差 ≥ 60°、バッジのコンテナと文字のコントラスト比 ≥ 4.5:1、`primary` と学習言語の色相差 ≥ 30°（`primary` と見分けるため）。
-- 実装: `material-color-utilities` の HCT / Blend は純 Kotlin 移植が小さい（`Hct`、`Cam16`、`Blend`）。依存を追加せず `core:designsystem` に移植するか、依存（`com.google.android.material:material` の `MaterialColors.harmonize`）を加えるかは lead が決める（依存追加は AGENTS.md §8）。
+- 実装（**決定 2026-10-20**）: 依存を追加せず、`material-color-utilities`（Apache-2.0）の `Hct` / `Cam16` / `ViewingConditions` / `Blend.harmonize` 相当を**純 Kotlin で `core:designsystem` に移植**する（`theme/colorutil/` パッケージ。出典とライセンス表記をファイル先頭の KDoc に残す）。移植の正しさは、既知の入力に対する HCT 変換と調和結果の数値テストで固定する。
 
 ### 3.3 ライブラリの構造（Phase C）
 - `NavigationSuiteScaffold`（`material3-adaptive-navigation-suite`）で 4 行き先。アイコン: フォルダ / 一覧 / 再生リスト / ブックマーク。選択状態の TopAppBar（N 件選択中）は維持。

@@ -19,6 +19,7 @@ Chunk Flow の UI は Material 3 の上に載っているが、画面構造（�
    - フォルダタブ下部の「最近開いたファイル」セクションは、再生リストタブから同じ内容に到達できるため**廃止してよい**。
    - ブックマークタブ専用の再生コントローラーは、ミニプレイヤーの展開状態に統合する（詳細は計画書 §3.3）。
 2. **言語役割のカラー（母語 / 学習言語）はダイナミックカラーに調和させる。** ただしアプリ全体の統一感を優先し、母語と学習言語が見分けられる色相差を保つ（計画書 §3.4）。
+   - 調和の実装は、依存を追加せず `material-color-utilities` の HCT / `Blend.harmonize` 相当を**純 Kotlin で `core:designsystem` に移植**する（人間の判断。2026-10-20）。
 3. **M3 Expressive の API を積極的に採用する**（`ButtonGroup`、`ToggleButton`、`SplitButton`、`FloatingToolbar`、`LoadingIndicator`、`MotionScheme` など）。端末や OS の版に依存する要素（ダイナミックカラー以外）は増やさない。Experimental API の使用箇所は `core:designsystem` のラッパーに閉じ込める。
 4. **書体は既定のまま**（同梱しない）。`Typography` は M3 既定の書体で 15 スタイル（+ Expressive の Emphasized）を定義する。
 5. **評価用 APK は現在のアプリを上書きする**（applicationId は変えない）。そのため移行ブランチでは **Room のスキーマと DataStore のキーを変更しない**。
