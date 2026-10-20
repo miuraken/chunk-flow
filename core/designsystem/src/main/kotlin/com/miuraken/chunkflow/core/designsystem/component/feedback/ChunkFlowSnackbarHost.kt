@@ -58,7 +58,10 @@ fun ChunkFlowSnackbarHost(
  *
  * material3 1.5.0-beta01 の `Snackbar(snackbarData)` は、メッセージが 2 行になるときと `withDismissAction` のときに
  * アクションが本文に重なって描かれる（基準画像で確認）。そのため M3 既定の色・形はそのままに、
- * 本文・アクション・閉じるボタンを `Row` で並べる。material3 側が直ったら `Snackbar(snackbarData)` に戻す。
+ * 本文・アクション・閉じるボタンを `Row` で並べる。
+ *
+ * TODO(designsystem): material3 を **1.5.0-beta01** より新しい版に上げたときに `Snackbar(snackbarData)` で
+ *   2 行メッセージ / `withDismissAction` の描画を確認し、直っていればこの関数を削除して既定の描画に戻す。
  */
 @Composable
 private fun ChunkFlowSnackbar(data: SnackbarData) {
