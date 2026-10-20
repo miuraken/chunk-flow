@@ -4,9 +4,9 @@ Phase 0 のスパイクの報告と、そこから決めた ADR の対応です�
 
 | スパイク | 担当 | 報告 | 決めた ADR |
 | --- | --- | --- | --- |
-| S1 PC の文字起こしパイプライン | transcriber | [S1-pipeline-prototype.md](S1-pipeline-prototype.md)（合成音声）、[S1-real-materials.md](S1-real-materials.md)（実際の教材） | [0009](../adr/0009-transcriber-parameters.md) |
 | S2 再生エンジン | playback | [S2-playback.md](S2-playback.md) | [0006](../adr/0006-mp3-seeking.md)、[0007](../adr/0007-chunk-boundary-timing.md)、[0008](../adr/0008-time-axis-alignment.md) |
-| S3 デコードと時間軸 | audio-analysis | [S3-audio-analysis.md](S3-audio-analysis.md)、[S3-onnx-whisper-lid.md](S3-onnx-whisper-lid.md)（言語判定の推論の ONNX Runtime 化。実機の結果は ADR 0010 §2.6） | [0005](../adr/0005-analysis-decoding.md)、[0008](../adr/0008-time-axis-alignment.md)、[0010](../adr/0010-on-device-speech-and-whisper-lid.md) |
+| S3 デコードと時間軸・言語判定 | audio-analysis | [S3-audio-analysis.md](S3-audio-analysis.md)、[S3-onnx-whisper-lid.md](S3-onnx-whisper-lid.md)（言語判定の推論の ONNX Runtime 化。実機の結果は ADR 0010 §2.6） | [0005](../adr/0005-analysis-decoding.md)、[0008](../adr/0008-time-axis-alignment.md)、[0010](../adr/0010-on-device-speech-and-whisper-lid.md) |
+| S4 ML Kit GenAI Speech Recognition | transcriber | [S4-mlkit-textai.md](S4-mlkit-textai.md) | [0011](../adr/0011-stt-engine-selection-and-language-settings.md) |
 
 S2・S3 の数値はすべてエミュレータ（Pixel_8_Pro、android-36）で測ったものです。時間軸（シークの誤差、クリックの時刻）とメモリは
 出力のタイミングに依存しない測り方ですが、速度とタイミング（ループの行き過ぎ、自動ポーズの遅れ）は参考値です。
@@ -30,5 +30,3 @@ Pixel 実機（Pixel 8 クラス）がつながったら行う計測と、人間
 | D10 | 前 / 次ボタン | Bluetooth イヤホン（または有線のリモコン）の前 / 次でチャンクを移動できるか | S2 §7 の 6 | 0007、§7.2.3 |
 | D11 | AAC のシーク後の誤差 | +23.2ms（シーク後だけ）が実機でも同じか | S2 §7 の 2 | 0008 |
 | D12 | 耳で聞こえる位置 | AudioTrack の出力遅延を含めた位置とのずれ | 未作成 | 0008 |
-| H3 | 言語の確認表（人間） | 実際の教材 3 本の正解率（1 秒以上 / 未満）。平滑化・ヒンディー語の判断の材料 | S1-real-materials §5 | 0009 |
-| H4 | NVIDIA の PC（人間） | Linux / WSL2 での `uv sync` と pytest、faster-whisper の RTF、mlx との結果の差、turbo の `yue` の確率 | S1-pipeline-prototype §6 | 0009 |

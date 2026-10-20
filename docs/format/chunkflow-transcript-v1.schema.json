@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/miuraken/chunk-flow/blob/main/docs/format/chunkflow-transcript-v1.schema.json",
   "title": "chunkflow-transcript v1",
-  "description": "Chunk Flow の文字起こしファイルの形式（設計書 §7.4.3）。PC ツール（tools/transcriber）とアプリ（core:transcript）の間の契約。JSON Schema だけで表せない規則（重なり、言語ペアとの一致など）は README.md の「意味の検証」を参照。知らないフィールドは無視する（フィールドの追加は互換）ため、additionalProperties は制限しない。",
+  "description": "Chunk Flow の文字起こしファイルの形式（設計書 §7.4）。アプリのローカル保存・取り込み・エクスポートで使われる標準契約。JSON Schema だけで表せない規則（重なり、言語ペアとの一致など）は README.md の「意味の検証」を参照。知らないフィールドは無視する（フィールドの追加は互換）ため、additionalProperties は制限しない。",
   "type": "object",
   "required": [
     "format",

@@ -1,7 +1,6 @@
 # 文字起こしの形式 `chunkflow-transcript` v1
 
-PC ツール（`tools/transcriber/`）とアプリ（`core:transcript`）の間の契約です（設計書 §7.4.3、D13）。
-アプリと PC ツールが共有するのは、このディレクトリの JSON Schema とサンプルだけです（§5.2）。
+アプリ（`core:transcript` および `core:data`）が文字起こしのローカル永続化（`<stem>.chunkflow.json`）・外部ファイル取り込み・エクスポートで使用する標準 JSON 形式の契約です（設計書 §7.4）。
 このディレクトリは lead の担当です。変更は AGENTS.md §7（設計書 §10.3）の手順で依頼してください。
 
 | ファイル | 内容 |
@@ -15,7 +14,7 @@ PC ツール（`tools/transcriber/`）とアプリ（`core:transcript`）の間�
 
 ## 検証の順序
 
-アプリ（`TranscriptParser`）も PC ツールも、次の順に検証します。前の段階で拒否したら、後の段階は行いません。
+アプリ（`TranscriptParser`）は次の順に検証します。前の段階で拒否したら、後の段階は行いません。
 
 | 段階 | 内容 | 失敗したときの `TranscriptError` |
 | --- | --- | --- |
@@ -37,30 +36,30 @@ JSON Schema だけでは表せない規則です。`.github/scripts/validate_tra
 | S1 | `languages.base` があるとき、`languages.target` と異なる |
 | S2 | 各セグメントで `startMs < endMs` |
 | S3 | セグメントは `startMs` の順に並び、重ならない（前のセグメントの `endMs` ≤ 次の `startMs`。接していてもよい） |
-| S4 | 各セグメントの `endMs` ≤ `audio.durationMs`（取り込み時に、実際の音声の長さを超えた分を切り詰めるのは別の処理。§7.4.6） |
+| S4 | 各セグメントの `endMs` ≤ `audio.durationMs`（取り込み時に、実際の音声の長さを超えた分を切り詰めるのは別の処理。§7.4） |
 | S5 | `lang` は `languages.target` か `languages.base` と完全に一致するか、`null`（省略も `null`） |
 | S6 | `words` の各単語で `startMs < endMs`、セグメントの範囲内、`startMs` の順で重ならない |
 
-検証ではなく、書き手（PC ツール）が守る規則:
+書き手（アプリのエクスポート・永続化処理および外部生成ツール）が守る規則:
 
 - テキストは NFC に正規化し、マークアップを含めない。読み手（アプリ）は NFC でないテキストを拒否せず、NFC に正規化して取り込む。
 - `text` の字体: 中国語（`zh`）は簡体字、広東語（`yue`）は香港式の繁体字の口語。もう一方の字体は `textVariants`（`Hans` / `Hant`）に入れる。単語には `textVariants` を持たせない。
 - `lang` と `langProb` は、判定した場合は常に書く（省略は「判定していない」の意味で `null` と同じに扱う）。
 - 単一言語の教材では `languages.base` を省略する（`null` も可）。
-- `words[].text` は前後の空白を除いて書く（Whisper の単語は先頭に空白が付くことがある）。読み手は念のため前後の空白を除いて扱う。
+- `words[].text` は前後の空白を除いて書く。読み手は念のため前後の空白を除いて扱う。
 
-### `langProb` の意味と値（transcriber からの確認への回答。2026-10-14）
+### `langProb` の意味と値
 
-`langProb` は「`lang` に書いた言語の、言語ペアの 2 言語の中での確率」です（判定の段階で最も確率の高かった言語の確率ではない）。
+`langProb` は「`lang` に書いた言語の、言語ペアの 2 言語の中での確率」です。
 
 | 場合 | `lang` | `langProb` |
 | --- | --- | --- |
 | 判定できた（通常） | 判定した言語 | その言語の確率（0〜1） |
 | 判定できなかった | `null` | **`null`**（または省略）。読み手は `lang` が `null` のとき `langProb` を無視する |
-| 文字体系の確認（§7.4.4 の手順 5）で、もう一方の言語を採った | 採った言語 | 採った言語の確率をそのまま書く。**0.5 未満になってよい**（許容する）。読み手は `langProb` が 0.5 以上だと仮定しない |
+| 文字体系・語彙の確認で、もう一方の言語を採った | 採った言語 | 採った言語の確率をそのまま書く。**0.5 未満になってよい**（許容する）。読み手は `langProb` が 0.5 以上だと仮定しない |
 | 単一言語の教材（判定を省いた） | `languages.target` | **1.0 または省略** |
 
-- 確率を言語ペアの外の言語に配分しない（2 言語の確率の和で割って正規化した値を書く）。§7.4.5 の `zh` と `yue` の合算の例外では、合算した後の値を書く。
+- 確率を言語ペアの外の言語に配分しない（2 言語の確率の和で割って正規化した値を書く）。
 
 ### `generator` の任意の項目
 
@@ -69,9 +68,9 @@ Schema は `generator` の知らない項目を拒否しないが、下の 3 つ
 
 | 項目 | 型 | 内容 |
 | --- | --- | --- |
-| `modelRepo` | 文字列（200 文字以内） | モデルの取得元（例: `mlx-community/whisper-large-v3-mlx`） |
+| `modelRepo` | 文字列（200 文字以内） | モデルの取得元 |
 | `modelRevision` | 文字列（200 文字以内） | モデルのリビジョン（コミットハッシュなど） |
-| `vad` | オブジェクト | VAD の名前・版・主なパラメータ（例: `{"name": "silero-vad", "version": "6.2.3", "mergeGapMs": 100}`）。中身は自由 |
+| `vad` | オブジェクト | VAD の名前・版・主なパラメータ。中身は自由 |
 
 ## 正しいサンプル
 
@@ -121,4 +120,4 @@ Schema は `generator` の知らない項目を拒否しないが、下の 3 つ
 uv run --no-project --with jsonschema python .github/scripts/validate_transcript_examples.py
 ```
 
-CI（`.github/workflows/ci.yml`）でも実行します。アプリのパーサのテスト（core:transcript）と PC ツールのテスト（tools/transcriber）も、このディレクトリのサンプルを読みます（§9）。
+CI（`.github/workflows/ci.yml`）でも実行します。アプリのパーサのテスト（`core:transcript`）も、このディレクトリのサンプルを読みます（§9）。

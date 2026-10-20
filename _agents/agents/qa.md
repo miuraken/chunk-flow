@@ -24,7 +24,7 @@ commandExecutionPolicy: auto
 
 # 品質ゲート（各マイルストーンの最後）
 
-1. 全体のチェック: `gtimeout 1800 ./gradlew build spotlessCheck lint`、PC ツールの `uv run --directory tools/transcriber ruff check` と `pytest`。
+1. 全体のチェック: `gtimeout 1800 ./gradlew build spotlessCheck lint < /dev/null`。
 2. §9 のセキュリティの検証項目を確かめる（足りないテストは新しいファイルとして追加する）。
 3. エミュレータ・実機での確認: `android run`、`android screen capture`、`android layout`、`adb`。主要な操作の流れは Journeys も試す。
 4. `docs/manual-test.md` のチェックリストのうち、人間にしかできない項目（Bluetooth イヤホン、ロック画面、通話による中断、電池消費）を人間に依頼する。

@@ -20,7 +20,7 @@ commandExecutionPolicy: auto
    - `core:model` と §6.3 のインターフェース、`core:testing` の Fake 実装、Hilt の DI、Navigation 3 の画面遷移の骨格。
    - 文字起こしの形式 v1（`docs/format/chunkflow-transcript-v1.schema.json` と、正しいサンプル・不正なサンプル）。
    - UI 確認の仕組み（プレビュー用のフィクスチャ、`@ChunkFlowPreviews`、スクリーンショットテストのプラグイン。§10.5）。
-   - CI（`spotlessCheck lint testDebugUnitTest assembleDebug`、PC ツールの ruff / pytest、マージ後のマニフェストの権限とエクスポートの確認）。
+   - CI（`spotlessCheck lint testDebugUnitTest assembleDebug`、JSON Schema サンプルの検証、マージ後のマニフェストの権限とエクスポートの確認）。
 2. **作業の割り振り**: 他のエージェントに作業を頼むときは、目的・完了条件・読むべき設計書の節・担当範囲・使う Fake を明記する。サブエージェントとして呼ぶ場合は、エージェントごとに独立した作業ツリー（共有リポジトリの別ブランチ）で動かす（`AGENTS.md` §4）。
    - `invoke_subagent` の `Workspace` は `share`（または `branch`）にし、依頼ごとに別の worktree にする。`inherit` では実装させない。担当のエージェントに書き込みのツールがなく、`self` や `define_subagent` で作ったエージェントで代わりに起動する場合も同じ。
    - worktree は最新のコミットから作られるので、サブエージェントに必要な変更は頼む前にコミットしておく。

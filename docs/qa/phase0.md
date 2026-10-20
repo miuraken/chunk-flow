@@ -16,9 +16,9 @@
 | --- | --- | --- | --- |
 | 1 | `./gradlew build` が通る | **達成** | `./gradlew check validateDebugScreenshotTest` および `./gradlew build` がエラー・警告なしで成功（Spotless / ktlint、Android Lint `warningsAsErrors = true`、JVM 単体テスト、スクリーンショットテスト 17 枚、Debug / Release アセンブルを含む） |
 | 2 | 空の画面の間を遷移できる | **達成** | `:app` の `ChunkFlowNavDisplay`（Navigation 3）にて `LibraryKey`（初期画面）→ `PlayerKey`（仮の教材を開くボタン）および `SettingsKey`（設定ボタン）への遷移・戻る操作が構成されていることをコードとプレビュー基準画像で確認。実機・エミュレータでのタップ操作手順は [`docs/manual-test.md`](../manual-test.md) §1 に記載 |
-| 3 | 形式 v1 の Schema とサンプルがそろっている | **達成** | [`docs/format/chunkflow-transcript-v1.schema.json`](../format/chunkflow-transcript-v1.schema.json)、[`docs/format/README.md`](../format/README.md)、および `docs/format/examples/`（正常系 10 件・異常系 24 件）が揃い、`validate_transcript_examples.py` と `tools/transcriber` の pytest の双方で全件検証済み |
-| 4 | スパイクの報告がそろっている | **達成** | S1（[`S1-pipeline-prototype.md`](../spikes/S1-pipeline-prototype.md)、[`S1-real-materials.md`](../spikes/S1-real-materials.md)）、S2（[`S2-playback.md`](../spikes/S2-playback.md)）、S3（[`S3-audio-analysis.md`](../spikes/S3-audio-analysis.md)）および一覧（[`docs/spikes/README.md`](../spikes/README.md)）が揃っている |
-| 5 | ADR がそろっている | **達成** | [`docs/adr/0001`](../adr/0001-module-structure-and-versions.md)〜[`0009`](../adr/0009-transcriber-parameters.md) の全 9 件が作成・承認済みであり、結論が `design_doc.md`（Draft v0.6）に反映されている |
+| 3 | 形式 v1 の Schema とサンプルがそろっている | **達成** | [`docs/format/chunkflow-transcript-v1.schema.json`](../format/chunkflow-transcript-v1.schema.json)、[`docs/format/README.md`](../format/README.md)、および `docs/format/examples/`（正常系 10 件・異常系 24 件）が揃い、`validate_transcript_examples.py` で全件検証済み |
+| 4 | スパイクの報告がそろっている | **達成** | S2（[`S2-playback.md`](../spikes/S2-playback.md)）、S3（[`S3-audio-analysis.md`](../spikes/S3-audio-analysis.md)）および一覧（[`docs/spikes/README.md`](../spikes/README.md)）が揃っている |
+| 5 | ADR がそろっている | **達成** | [`docs/adr/0001`](../adr/0001-module-structure-and-versions.md)〜[`0008`](../adr/0008-time-axis-alignment.md) が作成・承認済みであり、結論が `design_doc.md` に反映されている |
 
 ---
 
@@ -28,12 +28,9 @@
 | --- | --- | --- | --- | --- |
 | 1 | Android 全体チェック + スクリーンショット検証 | `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ANDROID_HOME="$HOME/Library/Android/sdk" gtimeout 600 ./gradlew check validateDebugScreenshotTest < /dev/null` | **PASS**（exit 0） | 全モジュールの `spotlessCheck`、`lint`、`testDebugUnitTest` / `test`、および `:feature:library:validateDebugScreenshotTest`（17 枚）が成功 |
 | 2 | Android 全体ビルド（Debug / Release） | `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ANDROID_HOME="$HOME/Library/Android/sdk" gtimeout 600 ./gradlew build < /dev/null` | **PASS**（exit 0） | `:app`・`:spikes:playback`・`:spikes:audio` を含む全モジュールのビルドが成功 |
-| 3 | マージ後のマニフェスト検査（Debug / Release） | `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ANDROID_HOME="$HOME/Library/Android/sdk" gtimeout 300 ./gradlew :app:processDebugMainManifest :app:processReleaseMainManifest < /dev/null && gtimeout 60 uv run --directory tools/transcriber --locked python ../../.github/scripts/check_manifest.py < /dev/null` | **PASS**（exit 0） | `processDebugMainManifest` / `processReleaseMainManifest` / `processDebugManifest` の 3 ファイルすべて `OK`（ADR 0004・設計書 §8.2 準拠） |
-| 4 | 文字起こし形式 v1 サンプル検証 | `gtimeout 60 uv run --directory tools/transcriber --locked python ../../.github/scripts/validate_transcript_examples.py < /dev/null` | **PASS**（exit 0） | 正しいサンプル 10 件、不正なサンプル 24 件すべて期待どおり判定（計 34 件 `OK`） |
-| 5 | PC ツール（`tools/transcriber`）静的解析 | `gtimeout 120 uv run --directory tools/transcriber --locked ruff check < /dev/null` | **PASS**（exit 0） | `All checks passed!` |
-| 6 | PC ツール（`tools/transcriber`）単体テスト | `gtimeout 180 uv run --directory tools/transcriber --locked pytest < /dev/null` | **PASS**（exit 0） | `195 passed, 1 skipped, 1 deselected in 20.65s`（スキップ 1 件は Linux 専用の faster-whisper テスト、deselected 1 件は実モデル `-m model` テスト） |
-| 7 | `uv.lock` のパッケージ取得元検査 | `tools/transcriber/uv.lock` 内の全 `source` / URL の検索 | **PASS** | ローカルパッケージ（`editable = "."`）を除く全パッケージが `registry = "https://pypi.org/simple"` および `https://files.pythonhosted.org/...` であり、社内プロキシ URL は一切含まれない |
-| 8 | 秘密情報・実教材ファイルの追跡検査 | `git status --short && git ls-files sample_files/` および音声・鍵拡張子の検索 | **PASS** | 音声ファイル（`.mp3` / `.m4a` / `.wav` 等）、`sample_files/`、秘密鍵・認証情報は Git に一切追跡されていない |
+| 3 | マージ後のマニフェスト検査（Debug / Release） | `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ANDROID_HOME="$HOME/Library/Android/sdk" gtimeout 300 ./gradlew :app:processDebugMainManifest :app:processReleaseMainManifest < /dev/null && python3 .github/scripts/check_manifest.py` | **PASS**（exit 0） | `processDebugMainManifest` / `processReleaseMainManifest` / `processDebugManifest` の 3 ファイルすべて `OK`（ADR 0004・設計書 §8.2 準拠） |
+| 4 | 文字起こし形式 v1 サンプル検証 | `uv run --no-project --with jsonschema python .github/scripts/validate_transcript_examples.py` | **PASS**（exit 0） | 正しいサンプル 10 件、不正なサンプル 24 件すべて期待どおり判定（計 34 件 `OK`） |
+| 5 | 秘密情報・実教材ファイルの追跡検査 | `git status --short && git ls-files sample_files/` および音声・鍵拡張子の検索 | **PASS** | 音声ファイル（`.mp3` / `.m4a` / `.wav` 等）、`sample_files/`、秘密鍵・認証情報は Git に一切追跡されていない |
 
 ---
 

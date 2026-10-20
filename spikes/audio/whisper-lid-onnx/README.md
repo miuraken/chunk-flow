@@ -17,10 +17,10 @@ ONNX Runtime（CPU）で動かすための変換スクリプトと確認スク�
 
 ## 実行方法
 
-Python は文字起こしツールの仮想環境を使う（numpy・onnxruntime・protobuf が入っている。新しいパッケージは入れない）。
+Python は `uv run` で必要なパッケージ（`numpy`, `onnxruntime`, `protobuf`）を指定して実行する。
 
 ```sh
-PY=/Users/miuraken/src/gogaku-player/tools/transcriber/.venv/bin/python
+PY="uv run --no-project --with numpy,onnxruntime,protobuf python"
 ASSETS=../../../core/media/src/main/assets   # このディレクトリから見た位置
 
 # ONNX を作る（アプリに入れているもの。何度作っても同じバイト列になる）
@@ -34,9 +34,8 @@ $PY verify_onnx.py --bin $ASSETS/whisper_tiny_lid_q8q4.bin --onnx $ASSETS/whispe
 $PY bench_onnx.py --bin $ASSETS/whisper_tiny_lid_q8q4.bin --out-dir <作業用ディレクトリ>
 
 # Lint（このディレクトリで実行する。ほかの場所からだと、このディレクトリのモジュールを first-party と判定できない）
-RUFF=/Users/miuraken/src/gogaku-player/tools/transcriber/.venv/bin/ruff
-$RUFF format --check --line-length 100 --target-version py312 .
-$RUFF check --line-length 100 --target-version py312 --select E,F,W,I,B,UP,SIM,RUF \
+uvx ruff format --check --line-length 100 --target-version py312 .
+uvx ruff check --line-length 100 --target-version py312 --select E,F,W,I,B,UP,SIM,RUF \
     --ignore RUF001,RUF002,RUF003,E501 .
 ```
 

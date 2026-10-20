@@ -13,10 +13,10 @@
 
 ## 2. プロジェクトの概要
 
-- **Chunk Flow**: 語学学習用のオーディオプレイヤー（Android、個人利用）。音声を発話単位の「チャンク」に分け、チャンク単位のリピート・自動ポーズ・言語別の再生を行う。
-- **文字起こしは PC で行う**: `tools/transcriber/`（Python + Whisper）が `chunkflow-transcript` 形式の JSON を作り、アプリはそれを取り込む。アプリと PC ツールは `docs/format/` の JSON Schema とサンプルだけでつながる。
+- **Chunk Flow**: 語学学習用のオーディオプレイヤー（Android、個人利用）。音声を発話単位の「チャンク」に分け、チャンク単位のリピート・自動ポーズ・言語別の再生・オンデバイス文字起こしと翻訳を行う。
+- **端末内文字起こしと文字起こし形式の永続化**: チャンクごとの 2 言語判定（Whisper Tiny 量子化モデル + ONNX Runtime）とオンデバイス音声認識（ML Kit GenAI Speech Recognition / Android `SpeechRecognizer` / `sherpa-onnx` SenseVoice）を端末内で実行し、`docs/format/` の `chunkflow-transcript` v1 形式（`.chunkflow.json`）で永続化・入出力する（SRT / WebVTT / LRC / TSV にも対応）。
 - applicationId / ルートパッケージ: `com.miuraken.chunkflow`
-- 主要技術: Kotlin、Jetpack Compose + Material 3、Media3（ExoPlayer / Session）、Room、DataStore、WorkManager、Hilt、Navigation 3
+- 主要技術: Kotlin、Jetpack Compose + Material 3、Media3（ExoPlayer / Session）、Room、DataStore、WorkManager、Hilt、Navigation 3、ONNX Runtime、ML Kit（GenAI Speech / Translation）、sherpa-onnx
 
 ## 3. 担当範囲（書き込んでよい場所）
 
@@ -27,7 +27,7 @@
 | `lead` | `build-logic/`、`gradle/`、すべての `*.gradle.kts`、リポジトリ直下の設定ファイル（`settings.gradle.kts`、`gradle.properties`、`.github/`、`.editorconfig`、`.gitignore` など）、`app/`、`core/model/`、`core/database/`、`core/datastore/`、`core/testing/`、`core/data/` の共通部分、`docs/`（下の例外を除く）、`AGENTS.md`、`_agents/`、`design_doc.md` |
 | `playback` | `core/playback/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` |
 | `audio-analysis` | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md` |
-| `transcriber` | `tools/transcriber/`、`core/transcript/`、`core/data/` の `transcript` パッケージ、`docs/spikes/S1-*.md`、`spikes/textai/`、`docs/spikes/S4-*.md` |
+| `transcriber` | `core/transcript/`、`core/data/` の `transcript` パッケージ、`spikes/textai/`、`docs/spikes/S4-*.md` |
 | `ui` | `feature/`、`core/designsystem/`（スクリーンショットテストの基準画像を含む） |
 | `qa` | 各モジュールのテストディレクトリへの**新しいテストファイルの追加**、`docs/manual-test.md`、`docs/qa/` |
 
@@ -62,7 +62,6 @@
 | 担当モジュールのビルドとテスト | `./gradlew :core:playback:testDebugUnitTest`、`./gradlew :core:audio:test` | 全員（自分の担当モジュール） |
 | 全体のビルドとチェック | `./gradlew build`、`./gradlew spotlessCheck lint` | lead、qa |
 | 依存やビルド設定を変えるタスク | `./gradlew wrapper`、Version Catalog の更新 | lead のみ |
-| PC ツール | `uv run --directory tools/transcriber pytest`、`uv run --directory tools/transcriber ruff check` | transcriber、lead、qa |
 | Android CLI（UI の確認） | `android studio render-compose-preview`、`android screen capture`、`android layout`、`android run` | ui、qa（§9） |
 | 端末の操作 | `adb`、`android emulator` | qa、ui（確認のため）、playback（S2 のため） |
 | git | `git status/diff/log/add/commit/switch`、`git worktree` | 全員（自分のブランチ）。統合は lead |
@@ -97,9 +96,9 @@
 
 ## 8. 依存の追加
 
-- 新しいライブラリ（Gradle / Python）が必要になったら、**名前・バージョン・用途・ライセンス・サイズ・代替案**を添えて lead に依頼します。
+- 新しいライブラリが必要になったら、**名前・バージョン・用途・ライセンス・サイズ・代替案**を添えて lead に依頼します。
 - lead は追加の前に、ライセンス・保守状況・既知の脆弱性を確認します（依存の安全性を確認するツールが使える場合は必ず使う）。
-- バージョンはアプリは `gradle/libs.versions.toml`、PC ツールは `tools/transcriber/uv.lock` で固定します。
+- バージョンは `gradle/libs.versions.toml` で固定します。
 
 ## 9. UI の確認
 
@@ -122,8 +121,8 @@ UI を変えたときの確認方法は設計書 §10.5 に従います。要点
 
 ## 11. 完了の定義（DoD）
 
-- 担当モジュールのビルド・単体テスト・Lint（Kotlin は `spotlessCheck` と `lint`、Python は `ruff check`）が通る。
-- 新しく公開する API に KDoc（Python は docstring）があり、主要なロジックにテストがある。
+- 担当モジュールのビルド・単体テスト・Lint（`spotlessCheck` と `lint`）が通る。
+- 新しく公開する API に KDoc があり、主要なロジックにテストがある。
 - 新しい依存は lead の承認済み。
 - UI を変えた場合は §9 を満たしている。
 - 秘密情報や実際の教材をコミットしていない。

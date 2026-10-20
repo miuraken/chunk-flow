@@ -90,26 +90,3 @@ jobs:
       - name: サンプルの検証
         run: uv run --no-project --python 3.12 --with jsonschema python .github/scripts/validate_transcript_examples.py
 
-  transcriber:
-    name: PC ツール（ruff / pytest）
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: tools/transcriber があるか
-        id: exists
-        run: |
-          if [ -f tools/transcriber/pyproject.toml ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        if: steps.exists.outputs.found == 'true'
-      # ローカル: uv run --directory tools/transcriber ruff check && uv run --directory tools/transcriber pytest
-      - name: ruff check
-        if: steps.exists.outputs.found == 'true'
-        run: uv run --directory tools/transcriber ruff check
-      - name: pytest（GPU なし。エンジンはモック）
-        if: steps.exists.outputs.found == 'true'
-        run: uv run --directory tools/transcriber pytest
