@@ -805,15 +805,15 @@ class ChunkSchedulerTest {
         assertEquals(1, seekCount)
         assertTrue(exoPlayer.currentPosition in c4.startMs..(c4.startMs + 300L))
 
-        // c4 (7000..8500, en) 直後の空白 [8500, 8950) (末尾50msカット) を再生し、8950ms (= c5.startMs - 50ms) で以降に該当チャンクがないため一時停止する
-        runUntil { exoPlayer.currentPosition in 8_600L..8_900L }
+        // c4 (7000..8500, en) 直後の空白 [8500, 8750) (末尾250msカット) を再生し、8750ms (= c5.startMs - 250ms) で以降に該当チャンクがないため一時停止する
+        runUntil { exoPlayer.currentPosition in 8_550L..8_730L }
         pumpLoopers()
         assertTrue(exoPlayer.playWhenReady)
 
         runUntil { !exoPlayer.playWhenReady }
         pumpLoopers()
         assertFalse(exoPlayer.playWhenReady)
-        assertTrue(exoPlayer.currentPosition in 8_950L..9_250L)
+        assertTrue(exoPlayer.currentPosition in 8_750L until c5.startMs)
     }
 
     @Test
@@ -847,11 +847,11 @@ class ChunkSchedulerTest {
         assertEquals(c2.id, scheduler.currentChunkId.value)
         assertTrue(exoPlayer.currentPosition in c2.startMs..(c2.startMs + 200L))
 
-        // c2 とその後の空白 [4500, 4950) (末尾50msカット) を再生し終えると 4950ms (c3.startMs - 50ms) で一時停止する
+        // c2 とその後の空白 [4500, 4750) (末尾250msカット) を再生し終えると 4750ms (c3.startMs - 250ms) で一時停止する
         runUntil { !exoPlayer.playWhenReady }
         pumpLoopers()
         assertFalse(exoPlayer.playWhenReady)
-        assertTrue(exoPlayer.currentPosition in 4_950L..5_250L)
+        assertTrue(exoPlayer.currentPosition in 4_750L until c3.startMs)
 
         // 末尾停止後に再度 play() すると、先頭の母語チャンク c2 (2500ms) へ戻って再生する
         exoPlayer.play()
@@ -1308,7 +1308,7 @@ class ChunkSchedulerTest {
     }
 
     @Test
-    fun `RepeatChunkIds_無音スキップOFF時は選択チャンク直後の無音を末尾50msカットで再生し無音スキップON時は即座に次チャンクへシークする`() {
+    fun `RepeatChunkIds_無音スキップOFF時は選択チャンク直後の無音を末尾250msカットで再生し無音スキップON時は即座に次チャンクへシークする`() {
         val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO)
         val c2 = Chunk(ChunkId(2L), startMs = 2_800L, endMs = 4_200L, origin = ChunkOrigin.AUTO)
         val c3 = Chunk(ChunkId(3L), startMs = 5_000L, endMs = 6_500L, origin = ChunkOrigin.AUTO)
@@ -1327,6 +1327,7 @@ class ChunkSchedulerTest {
         pumpLoopers()
 
         var seekCount = 0
+        var seekOldPositionMs = -1L
         exoPlayer.addListener(
             object : Player.Listener {
                 override fun onPositionDiscontinuity(
@@ -1336,21 +1337,23 @@ class ChunkSchedulerTest {
                 ) {
                     if (reason == Player.DISCONTINUITY_REASON_SEEK) {
                         seekCount++
+                        seekOldPositionMs = oldPosition.positionMs
                     }
                 }
             },
         )
 
-        // c1 (0..2000) 直後の無音 [2000, 2750) はシークせずそのまま再生される
-        runUntil { exoPlayer.currentPosition in 2_150L..2_650L }
+        // c1 (0..2000) 直後の無音 [2000, 2550) はシークせずそのまま再生される
+        runUntil { exoPlayer.currentPosition in 2_150L..2_500L }
         pumpLoopers()
         assertEquals(0, seekCount)
         assertEquals(c1.id, scheduler.currentChunkId.value)
 
-        // 2750ms (= c2.startMs - 50ms) で非選択の c2 を飛ばして c3 (5000ms) へシークする
+        // 2550ms (= c2.startMs - 250ms) で非選択の c2 を飛ばして c3 (5000ms) へシークし、c2.startMs (2800ms) に食い込まない
         runUntil { scheduler.currentChunkId.value == c3.id }
         pumpLoopers()
         assertEquals(1, seekCount)
+        assertTrue(seekOldPositionMs < c2.startMs)
         assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
     }
 
@@ -1470,6 +1473,166 @@ class ChunkSchedulerTest {
         assertEquals(c1.id, scheduler.currentChunkId.value)
         assertTrue(exoPlayer.currentPosition in c1.endMs..(c1.endMs + 300L))
         assertEquals(50_500L, scheduler.autoPauseEndsAtMs.value)
+    }
+
+    @Test
+    fun `チャンク間の隙間が0msのときLanguageFilterおよびCHECKED_ONLYで非選択チャンクの先頭に1msも食い込まずにシークする`() {
+        // sampleChunks: chunk1 = 0..2000, chunk2 = 2000..4500 (隙間0ms), chunk3 = 4500..7000 (隙間0ms)
+        scheduler.setChunks(sampleChunks)
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                chunk1.id to sampleTranscript(chunk1.id, "First", "en"),
+                chunk2.id to sampleTranscript(chunk2.id, "二番目", "ja"),
+                chunk3.id to sampleTranscript(chunk3.id, "Third", "en"),
+            ),
+        )
+
+        val seekFromPositions = mutableListOf<Long>()
+        exoPlayer.addListener(
+            object : Player.Listener {
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs == chunk3.startMs) {
+                        seekFromPositions.add(oldPosition.positionMs)
+                    }
+                }
+            },
+        )
+
+        // 1. TARGET_ONLY: chunk1 (en) -> chunk3 (en) のシーク時に非選択 chunk2.startMs (2000ms) 未満でシークすること
+        practiceController.update {
+            it.copy(languageFilter = LanguageFilter.TARGET_ONLY)
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+
+        assertEquals(1, seekFromPositions.size)
+        assertTrue(
+            seekFromPositions.last() < chunk2.startMs,
+            "Expected seek before chunk2.startMs (${chunk2.startMs}), but was ${seekFromPositions.last()}",
+        )
+
+        // 2. BASE_ONLY: chunk2 (ja) 再生後に非選択 chunk3.startMs (4500ms) 未満で一時停止すること
+        exoPlayer.pause()
+        exoPlayer.seekTo(chunk2.startMs)
+        pumpLoopers()
+        practiceController.update {
+            it.copy(languageFilter = LanguageFilter.BASE_ONLY)
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        runUntil { !exoPlayer.playWhenReady }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertTrue(
+            exoPlayer.currentPosition < chunk3.startMs,
+            "Expected pause before chunk3.startMs (${chunk3.startMs}), but was ${exoPlayer.currentPosition}",
+        )
+
+        // 3. CHECKED_ONLY: chunk1 と chunk3 を選択したとき、chunk1 -> chunk3 シーク時の位置が chunk2.startMs (2000ms) 未満であること
+        seekFromPositions.clear()
+        exoPlayer.seekTo(0L)
+        pumpLoopers()
+        practiceController.update {
+            it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
+                repeatChunkIds = setOf(chunk1.id, chunk3.id),
+                repeatCheckedOnly = false,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+
+        assertEquals(1, seekFromPositions.size)
+        assertTrue(
+            seekFromPositions.last() < chunk2.startMs,
+            "Expected seek before chunk2.startMs (${chunk2.startMs}), but was ${seekFromPositions.last()}",
+        )
+    }
+
+    @Test
+    fun `チャンク間の隙間が短い場合や倍速再生でも非選択チャンクのstartMsに到達する前にシークまたは停止しLearningPlayer再生開始時も先行シークする`() {
+        // c1 (0..2000) と c2 (2100..4000) の隙間は 100ms、c2 と c3 (4100..6000) の隙間も 100ms
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO)
+        val c2 = Chunk(ChunkId(2L), startMs = 2_100L, endMs = 4_000L, origin = ChunkOrigin.AUTO)
+        val c3 = Chunk(ChunkId(3L), startMs = 4_100L, endMs = 6_000L, origin = ChunkOrigin.AUTO)
+        val c4 = Chunk(ChunkId(4L), startMs = 6_150L, endMs = 8_000L, origin = ChunkOrigin.AUTO)
+        scheduler.setChunks(listOf(c1, c2, c3, c4))
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                c1.id to sampleTranscript(c1.id, "One", "en"),
+                c2.id to sampleTranscript(c2.id, "二", "ja"),
+                c3.id to sampleTranscript(c3.id, "Three", "en"),
+                c4.id to sampleTranscript(c4.id, "四", "ja"),
+            ),
+        )
+
+        // 倍速 (2.0f) + TARGET_ONLY
+        exoPlayer.playbackParameters = PlaybackParameters(2.0f)
+        practiceController.update {
+            it.copy(languageFilter = LanguageFilter.TARGET_ONLY)
+        }
+        pumpLoopers()
+
+        var seekFromC1Ms = -1L
+        exoPlayer.addListener(
+            object : Player.Listener {
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK && newPosition.positionMs == c3.startMs) {
+                        seekFromC1Ms = oldPosition.positionMs
+                    }
+                }
+            },
+        )
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == c3.id }
+        pumpLoopers()
+        assertTrue(
+            seekFromC1Ms in 1_500L until c2.startMs,
+            "Expected seek before c2.startMs (${c2.startMs}) at 2.0x speed, but was $seekFromC1Ms",
+        )
+
+        // c3 (4100..6000) の直後に非選択 c4 (6150..8000) があるため、c4.startMs 未満で一時停止する
+        runUntil { !exoPlayer.playWhenReady }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertTrue(
+            exoPlayer.currentPosition < c4.startMs,
+            "Expected pause before c4.startMs (${c4.startMs}) at 2.0x speed, but was ${exoPlayer.currentPosition}",
+        )
+
+        // 停止中に非選択チャンク c2 (2500ms) 上へ移動し、LearningPlayer.play() を呼んだとき setPlayWhenReady(true) の前に先行シークされること
+        val learningPlayer = LearningPlayer(exoPlayer).apply {
+            chunks = listOf(c1, c2, c3, c4)
+            onUserPlayWhenReadyCommand = { playWhenReady ->
+                scheduler.onUserPlayPauseCommand(playWhenReady)
+            }
+        }
+        exoPlayer.seekTo(2_500L)
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+
+        learningPlayer.play()
+        // Looper を進める前（setPlayWhenReady の直後）の時点で既に c3.startMs へのシークと currentChunkId 更新が完了していること
+        assertEquals(c3.id, scheduler.currentChunkId.value)
+        assertEquals(c3.startMs, exoPlayer.currentPosition)
     }
 
     private fun sampleTranscript(
