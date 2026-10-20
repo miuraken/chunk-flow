@@ -211,11 +211,24 @@ data class SettingsUiState(
         /** チャンク長比例の自動ポーズ倍率の刻み幅（0.5 倍）。 */
         const val AUTO_PAUSE_PROPORTIONAL_STEP: Float = 0.5f
 
+        /** 元の無音部分に比例する自動ポーズ倍率の既定値（1.0 倍）。 */
+        const val DEFAULT_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR: Float = 1.0f
+
+        /** 元の無音部分に比例する自動ポーズ倍率の最小値（0.25 倍）。 */
+        const val MIN_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR: Float = 0.25f
+
+        /** 元の無音部分に比例する自動ポーズ倍率の最大値（2.0 倍）。 */
+        const val MAX_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR: Float = 2.0f
+
+        /** 元の無音部分に比例する自動ポーズ倍率の刻み幅（0.25 倍）。 */
+        const val AUTO_PAUSE_ORIGINAL_SILENCE_STEP: Float = 0.25f
+
         /** 既定の自動ポーズの選択肢。 */
         val AUTO_PAUSE_OPTIONS: List<AutoPause> = listOf(
             AutoPause.Off,
             AutoPause.Fixed(DEFAULT_AUTO_PAUSE_FIXED_MS),
             AutoPause.Proportional(factor = DEFAULT_AUTO_PAUSE_PROPORTIONAL_FACTOR),
+            AutoPause.OriginalSilence(factor = DEFAULT_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR),
         )
 
         /** 既定の自動ポーズ対象言語範囲の選択肢。 */
@@ -469,6 +482,20 @@ class SettingsViewModel @Inject constructor(
                         AutoPause.Proportional(
                             factor = steps * SettingsUiState.AUTO_PAUSE_PROPORTIONAL_STEP,
                             minMs = ap.minMs,
+                        )
+                    }
+
+                    is AutoPause.OriginalSilence -> {
+                        val clamped = ap.factor.coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                            SettingsUiState.MAX_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                        )
+                        val steps = (clamped / SettingsUiState.AUTO_PAUSE_ORIGINAL_SILENCE_STEP).roundToInt()
+                        AutoPause.OriginalSilence(
+                            factor = (steps * SettingsUiState.AUTO_PAUSE_ORIGINAL_SILENCE_STEP).coerceIn(
+                                SettingsUiState.MIN_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                                SettingsUiState.MAX_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                            ),
                         )
                     }
                 }
