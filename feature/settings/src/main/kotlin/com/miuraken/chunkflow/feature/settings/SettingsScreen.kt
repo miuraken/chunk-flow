@@ -5,8 +5,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,8 +24,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,9 +34,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderState
 import androidx.compose.material3.Surface
@@ -73,6 +66,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsListContent
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonGroup
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonItem
 import com.miuraken.chunkflow.core.designsystem.component.languageSettingDisplayName
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
@@ -265,7 +260,6 @@ fun SettingsScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaybackSettingsSection(
     seekBackMs: Long,
@@ -310,84 +304,52 @@ private fun PlaybackSettingsSection(
     }
 
     SettingsSection(title = stringResource(R.string.settings_section_playback)) {
-        Text(
-            text = stringResource(R.string.settings_seek_back_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_seek_back_label),
+            value = stringResource(R.string.settings_seconds_format, (seekBackMs / 1_000L).toInt()),
         )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.SEEK_BACK_OPTIONS_MS.forEach { optionMs ->
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.SEEK_BACK_OPTIONS_MS.map { optionMs ->
                 val sec = (optionMs / 1_000L).toInt()
-                FilterChip(
-                    selected = seekBackMs == optionMs,
-                    onClick = { onEvent(SettingsEvent.SetSeekBackMs(optionMs)) },
-                    label = { Text(text = stringResource(R.string.settings_seconds_format, sec)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
+                ChunkFlowToggleButtonItem(
+                    label = stringResource(R.string.settings_seconds_format, sec),
+                    checked = seekBackMs == optionMs,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetSeekBackMs(optionMs))
+                    },
                 )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = stringResource(R.string.settings_seek_forward_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.SEEK_FORWARD_OPTIONS_MS.forEach { optionMs ->
-                val sec = (optionMs / 1_000L).toInt()
-                FilterChip(
-                    selected = seekForwardMs == optionMs,
-                    onClick = { onEvent(SettingsEvent.SetSeekForwardMs(optionMs)) },
-                    label = { Text(text = stringResource(R.string.settings_seconds_format, sec)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Row(
+            },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = stringResource(R.string.settings_default_speed_label),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 8.dp),
-            )
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = MaterialTheme.shapes.small,
-            ) {
-                Text(
-                    text = formatSpeed(defaultSpeed),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            compact = true,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_seek_forward_label),
+            value = stringResource(R.string.settings_seconds_format, (seekForwardMs / 1_000L).toInt()),
+        )
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.SEEK_FORWARD_OPTIONS_MS.map { optionMs ->
+                val sec = (optionMs / 1_000L).toInt()
+                ChunkFlowToggleButtonItem(
+                    label = stringResource(R.string.settings_seconds_format, sec),
+                    checked = seekForwardMs == optionMs,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetSeekForwardMs(optionMs))
+                    },
                 )
-            }
-        }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            compact = true,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_default_speed_label),
+            value = formatSpeed(defaultSpeed),
+        )
 
         SettingsSlider(
             value = defaultSpeed,
@@ -397,23 +359,19 @@ private fun PlaybackSettingsSection(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.SPEED_PRESETS.forEach { preset ->
-                val isSelected = abs(defaultSpeed - preset) < 0.01f
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onEvent(SettingsEvent.SetDefaultSpeed(preset)) },
-                    label = { Text(text = formatSpeed(preset)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.SPEED_PRESETS.map { preset ->
+                ChunkFlowToggleButtonItem(
+                    label = formatSpeed(preset),
+                    checked = abs(defaultSpeed - preset) < 0.01f,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetDefaultSpeed(preset))
+                    },
                 )
-            }
-        }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            compact = true,
+        )
     }
 
     SettingsSectionDivider()
@@ -448,32 +406,28 @@ private fun PlaybackSettingsSection(
         title = stringResource(R.string.settings_default_auto_pause_label),
         contentPadding = PaddingValues(0.dp),
     ) {
-        SingleChoiceSegmentedButtonRow(
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_auto_pause_scope_label),
+            value = autoPauseScopeLabel(defaultAutoPauseScope),
+            modifier = Modifier.padding(horizontal = SettingsSectionPadding),
+        )
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.map { scopeOption ->
+                ChunkFlowToggleButtonItem(
+                    label = autoPauseScopeLabel(scopeOption),
+                    checked = defaultAutoPauseScope == scopeOption,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetDefaultAutoPauseScope(scopeOption))
+                    },
+                )
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = SettingsSectionPadding),
-        ) {
-            SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.forEachIndexed { index, scopeOption ->
-                val isSelected = defaultAutoPauseScope == scopeOption
-                SegmentedButton(
-                    selected = isSelected,
-                    onClick = { onEvent(SettingsEvent.SetDefaultAutoPauseScope(scopeOption)) },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.size,
-                    ),
-                    icon = {},
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
-                    label = {
-                        Text(
-                            text = autoPauseScopeLabel(scopeOption),
-                            style = MaterialTheme.typography.labelMedium,
-                            textAlign = TextAlign.Center,
-                        )
-                    },
-                )
-            }
-        }
+            compact = true,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
 
         Column(
             modifier = Modifier
@@ -880,6 +834,52 @@ private fun SettingsRadioItem(
 
 /** [SettingsRadioItem] の本文の開始位置（16dp 余白 + 48dp の RadioButton + 16dp 間隔）。スライダーの左端を揃えるのに使う。 */
 private val SettingsRadioContentStart = 80.dp
+
+/**
+ * 設定項目の見出し行（左に項目名、右に現在の値）。
+ *
+ * 選択肢が [ChunkFlowToggleButtonGroup] の `⋯` メニューに畳まれても、現在の値が常に見えるようにする。
+ *
+ * @param label 項目名。
+ * @param modifier 一番外側の `Row` に適用する Modifier。
+ * @param value 現在の値の表示（省略可）。
+ */
+@Composable
+private fun SettingsItemHeader(
+    label: String,
+    modifier: Modifier = Modifier,
+    value: String? = null,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 8.dp),
+        )
+        if (value != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = MaterialTheme.shapes.small,
+            ) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+        }
+    }
+}
 
 /** 節と節の間の区切り線。 */
 @Composable
