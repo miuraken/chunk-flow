@@ -177,4 +177,7 @@
     <string name="transcript_export_done_single">文字起こしを書き出しました（%1$s）</string>
     <string name="transcript_export_done_multiple">%1$d 件の文字起こしファイルをフォルダに書き出しました（%2$s）</string>
     <string name="transcript_export_failed">文字起こしの書き出しに失敗しました</string>
+    <string name="library_item_more_actions_cd">その他の操作</string>
+    <string name="library_mini_player_expand_cd">再生コントローラーを展開</string>
+    <string name="library_mini_player_collapse_cd">ミニプレイヤーに折りたたむ</string>
 </resources>

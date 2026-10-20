@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -37,6 +38,7 @@ internal fun LibraryBookmarkPlaybackController(
     state: LibraryUiState,
     onEvent: (LibraryEvent) -> Unit,
     modifier: Modifier = Modifier,
+    onCollapse: (() -> Unit)? = null,
 ) {
     val activeMediaId = state.activePlaybackMediaId ?: state.miniPlayer?.mediaId
     val activeFile = state.bookmarkedFiles.firstOrNull { it.mediaId == activeMediaId }
@@ -74,6 +76,7 @@ internal fun LibraryBookmarkPlaybackController(
         null
     }
     val openMediaId = activeFile?.mediaId ?: miniPlayer?.mediaId
+    val collapseCd = stringResource(R.string.library_mini_player_collapse_cd)
     var showSpeedSheet by remember { mutableStateOf(false) }
 
     Surface(
@@ -122,6 +125,19 @@ internal fun LibraryBookmarkPlaybackController(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                if (onCollapse != null) {
+                    IconButton(
+                        onClick = onCollapse,
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.ExpandMore,
+                            contentDescription = collapseCd,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                 }

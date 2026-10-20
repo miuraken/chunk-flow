@@ -26,11 +26,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,6 +52,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -231,76 +235,51 @@ internal fun LibraryItemRow(
         if (isFavorite) R.string.library_favorite_remove_cd else R.string.library_favorite_add_cd,
     )
     val removeFromPlaylistCd = stringResource(R.string.library_playlist_remove_item_cd)
+    val moreActionsCd = stringResource(R.string.library_item_more_actions_cd)
     val langPalette = chunkFlowLanguagePalette()
     val maxPercent = itemModel.maxProgressPercent
     // 既習（95% 超）の教材は、進捗バーを緑系にして一目でわかるようにする。
     val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
+    var overflowExpanded by remember { mutableStateOf(false) }
 
-    Row(
+    ListItem(
         modifier = modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
-            )
-            .padding(
-                start = if (dragHandle != null && !isSelectionMode) 8.dp else 16.dp,
-                end = 16.dp,
-                top = 8.dp,
-                bottom = 8.dp,
             ),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        if (isSelectionMode) {
-            Checkbox(
-                checked = isSelected,
-                onCheckedChange = { onClick() },
-                modifier = Modifier.padding(top = 2.dp),
-            )
-        } else if (dragHandle != null) {
-            Box(modifier = Modifier.padding(top = 4.dp)) {
-                dragHandle()
-            }
-        }
-
-        AudioItemThumbnail(
-            mediaId = item.id,
-            localFilePath = item.localFilePath,
-            sourceUri = item.sourceUri,
-            modifier = Modifier
-                .padding(top = 2.dp)
-                .size(40.dp),
-        )
-
-        Column(
-            modifier = Modifier.weight(1f),
-        ) {
-            // 1 行目: ファイル名（タイトル）を横幅いっぱいに表示
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        leadingContent = {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
+                if (isSelectionMode) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onClick() },
+                    )
+                } else if (dragHandle != null) {
+                    dragHandle()
+                }
+                AudioItemThumbnail(
+                    mediaId = item.id,
+                    localFilePath = item.localFilePath,
+                    sourceUri = item.sourceUri,
+                    modifier = Modifier.size(40.dp),
                 )
             }
-            Spacer(modifier = Modifier.height(2.dp))
-
-            // 2 行目: 言語ペアバッジ + SpeechToText 文字起こし状態 + 右端に ☆ と ✏️
-            Row(
+        },
+        supportingContent = {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 28.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(top = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Row(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -334,140 +313,181 @@ internal fun LibraryItemRow(
                         }
                     }
                 }
-                if (!isSelectionMode) {
-                    if (onToggleFavoriteClick != null) {
-                        IconButton(
-                            onClick = onToggleFavoriteClick,
-                            modifier = Modifier.size(28.dp),
-                        ) {
-                            Icon(
-                                imageVector = if (isFavorite) {
-                                    ChunkFlowIcons.Favorite
-                                } else {
-                                    ChunkFlowIcons.FavoriteBorder
-                                },
-                                contentDescription = favoriteCd,
-                                tint = if (isFavorite) {
-                                    chunkFlowExtendedColors().favorite
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
-                                },
-                                modifier = Modifier.size(17.dp),
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = onEditMetadataClick,
-                        modifier = Modifier.size(28.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Edit,
-                            contentDescription = editCd,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(17.dp),
-                        )
-                    }
-                    if (onRemoveFromPlaylistClick != null) {
-                        IconButton(
-                            onClick = onRemoveFromPlaylistClick,
-                            modifier = Modifier.size(28.dp),
-                        ) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.Close,
-                                contentDescription = removeFromPlaylistCd,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(17.dp),
-                            )
-                        }
-                    }
-                }
-            }
 
-            Spacer(modifier = Modifier.height(3.dp))
-            LinearProgressIndicator(
-                progress = { itemModel.maxProgressFraction },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp),
-                color = if (isCompleted) {
-                    langPalette.completedProgressIndicator
+                LinearProgressIndicator(
+                    progress = { itemModel.maxProgressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp),
+                    color = if (isCompleted) {
+                        langPalette.completedProgressIndicator
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    strokeCap = StrokeCap.Round,
+                    gapSize = 0.dp,
+                    drawStopIndicator = {},
+                )
+
+                val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
+                val durationProgressText = if (hasProgress) {
+                    val baseResume = stringResource(
+                        R.string.library_item_resume_position,
+                        formatDurationMs(itemModel.positionMs),
+                        formattedDuration,
+                        maxPercent,
+                    )
+                    val speedSuffix = if (itemModel.speed != 1.0f) {
+                        " · ${formatSpeed(itemModel.speed)}"
+                    } else {
+                        ""
+                    }
+                    baseResume + speedSuffix
                 } else {
-                    ProgressIndicatorDefaults.linearColor
-                },
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-
-            // 3 行目: 再生時間・進捗 と 最終アクセス日時（History アイコン + 日時）
-            val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
-            val durationProgressText = if (hasProgress) {
-                val baseResume = stringResource(
-                    R.string.library_item_resume_position,
-                    formatDurationMs(itemModel.positionMs),
-                    formattedDuration,
-                    maxPercent,
-                )
-                val speedSuffix = if (itemModel.speed != 1.0f) {
-                    " · ${formatSpeed(itemModel.speed)}"
-                } else {
-                    ""
+                    stringResource(
+                        R.string.library_item_duration_progress,
+                        formatDurationMs(0L),
+                        formattedDuration,
+                    )
                 }
-                baseResume + speedSuffix
-            } else {
-                stringResource(
-                    R.string.library_item_duration_progress,
-                    formatDurationMs(0L),
-                    formattedDuration,
-                )
-            }
-            val formattedLastAccessed = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
-                formatEpochMsLocal(epochMs).takeIf { it.isNotEmpty() }
-            }
-            val progressStatusColor = when {
-                isCompleted -> langPalette.completedProgressText
-                hasProgress || itemModel.lastAccessedAtEpochMs != null -> MaterialTheme.colorScheme.onSurfaceVariant
-                else -> MaterialTheme.colorScheme.onSurfaceVariant
-            }
-            val lastAccessedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                val formattedLastAccessed = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
+                    formatEpochMsLocal(epochMs).takeIf { it.isNotEmpty() }
+                }
+                val progressStatusColor = if (isCompleted) {
+                    langPalette.completedProgressText
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                val lastAccessedColor = MaterialTheme.colorScheme.onSurfaceVariant
 
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text(
-                    text = durationProgressText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = progressStatusColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.CenterVertically),
-                )
-                if (!isSelectionMode && formattedLastAccessed != null) {
-                    Row(
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = durationProgressText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = progressStatusColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.align(Alignment.CenterVertically),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(
-                            text = "•",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = lastAccessedColor,
-                        )
-                        Icon(
-                            imageVector = ChunkFlowIcons.History,
-                            contentDescription = null,
-                            tint = lastAccessedColor,
-                            modifier = Modifier.size(13.dp),
-                        )
-                        Text(
-                            text = formattedLastAccessed,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = lastAccessedColor,
-                            maxLines = 1,
-                        )
+                    )
+                    if (!isSelectionMode && formattedLastAccessed != null) {
+                        Row(
+                            modifier = Modifier.align(Alignment.CenterVertically),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = "•",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = lastAccessedColor,
+                            )
+                            Icon(
+                                imageVector = ChunkFlowIcons.History,
+                                contentDescription = null,
+                                tint = lastAccessedColor,
+                                modifier = Modifier.size(13.dp),
+                            )
+                            Text(
+                                text = formattedLastAccessed,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = lastAccessedColor,
+                                maxLines = 1,
+                            )
+                        }
                     }
                 }
             }
-        }
+        },
+        trailingContent = if (!isSelectionMode) {
+            {
+                Box {
+                    IconButton(onClick = { overflowExpanded = true }) {
+                        Icon(
+                            imageVector = if (isFavorite) {
+                                ChunkFlowIcons.Favorite
+                            } else {
+                                ChunkFlowIcons.MoreVert
+                            },
+                            contentDescription = moreActionsCd,
+                            tint = if (isFavorite) {
+                                chunkFlowExtendedColors().favorite
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = overflowExpanded,
+                        onDismissRequest = { overflowExpanded = false },
+                    ) {
+                        if (onToggleFavoriteClick != null) {
+                            DropdownMenuItem(
+                                text = { Text(text = favoriteCd) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (isFavorite) {
+                                            ChunkFlowIcons.Favorite
+                                        } else {
+                                            ChunkFlowIcons.FavoriteBorder
+                                        },
+                                        contentDescription = null,
+                                        tint = if (isFavorite) {
+                                            chunkFlowExtendedColors().favorite
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    overflowExpanded = false
+                                    onToggleFavoriteClick()
+                                },
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text(text = editCd) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.Edit,
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                overflowExpanded = false
+                                onEditMetadataClick()
+                            },
+                        )
+                        if (onRemoveFromPlaylistClick != null) {
+                            DropdownMenuItem(
+                                text = { Text(text = removeFromPlaylistCd) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = ChunkFlowIcons.Close,
+                                        contentDescription = null,
+                                    )
+                                },
+                                onClick = {
+                                    overflowExpanded = false
+                                    onRemoveFromPlaylistClick()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            null
+        },
+    ) {
+        Text(
+            text = item.title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

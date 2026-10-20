@@ -239,13 +239,19 @@ internal fun LibraryFilesTabContent(
 
                         else -> RectangleShape
                     }
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = if (isSelected) {
+                    val containerColor by androidx.compose.animation.animateColorAsState(
+                        targetValue = if (isSelected) {
                             MaterialTheme.colorScheme.secondaryContainer
                         } else {
                             MaterialTheme.colorScheme.surfaceContainerLow
                         },
+                        label = "filesTabSelectionColor",
+                    )
+                    Surface(
+                        modifier = Modifier
+                            .animateItem()
+                            .fillMaxWidth(),
+                        color = containerColor,
                         shape = shape,
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {

@@ -58,8 +58,6 @@ internal fun LibraryFoldersTabContent(
 ) {
     val currentDirs = state.currentDirectories
     val currentFiles = state.currentFiles
-    val hasRecentItems = state.recentItems.isNotEmpty()
-    var isRecentFilesExpanded by rememberSaveable { mutableStateOf(false) }
     val currentFolderPath = state.currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -125,10 +123,12 @@ internal fun LibraryFoldersTabContent(
                     } else {
                         null
                     },
-                    modifier = Modifier.padding(
-                        start = if (showRootDragHandle) 0.dp else 24.dp,
-                        bottom = 8.dp,
-                    ),
+                    modifier = Modifier
+                        .animateItem()
+                        .padding(
+                            start = if (showRootDragHandle) 0.dp else 24.dp,
+                            bottom = 8.dp,
+                        ),
                 )
             }
             itemsIndexed(
@@ -153,13 +153,19 @@ internal fun LibraryFoldersTabContent(
 
                     else -> RectangleShape
                 }
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = if (isSelected) {
+                val containerColor by androidx.compose.animation.animateColorAsState(
+                    targetValue = if (isSelected) {
                         MaterialTheme.colorScheme.secondaryContainer
                     } else {
                         MaterialTheme.colorScheme.surfaceContainerLow
                     },
+                    label = "folderFileSelectionColor",
+                )
+                Surface(
+                    modifier = Modifier
+                        .animateItem()
+                        .fillMaxWidth(),
+                    color = containerColor,
                     shape = shape,
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -191,15 +197,6 @@ internal fun LibraryFoldersTabContent(
                     }
                 }
             }
-        }
-
-        if (hasRecentItems) {
-            RecentFilesSection(
-                recentItems = state.recentItems,
-                isExpanded = isRecentFilesExpanded,
-                onToggleExpanded = { isRecentFilesExpanded = !isRecentFilesExpanded },
-                onOpenItem = { id -> onEvent(LibraryEvent.OpenItem(id)) },
-            )
         }
     }
 }
@@ -328,10 +325,13 @@ private fun LibraryDirectoryRow(
     dragHandle: (@Composable () -> Unit)? = null,
 ) {
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
-    val containerColor = when {
-        isSelected -> MaterialTheme.colorScheme.secondaryContainer
-        else -> MaterialTheme.colorScheme.surfaceContainer
-    }
+    val containerColor by androidx.compose.animation.animateColorAsState(
+        targetValue = when {
+            isSelected -> MaterialTheme.colorScheme.secondaryContainer
+            else -> MaterialTheme.colorScheme.surfaceContainer
+        },
+        label = "directorySelectionColor",
+    )
     val folderIconTint = if (directory.isRealFolder) {
         MaterialTheme.colorScheme.primary
     } else {
@@ -434,171 +434,6 @@ private fun FolderKindBadge(
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-        )
-    }
-}
-
-@Composable
-private fun RecentFilesSection(
-    recentItems: List<LibraryItemUiModel>,
-    isExpanded: Boolean,
-    onToggleExpanded: () -> Unit,
-    onOpenItem: (MediaId) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            HorizontalDivider()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onToggleExpanded)
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(R.string.library_recent_files_title),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                Icon(
-                    imageVector = if (isExpanded) {
-                        ChunkFlowIcons.ExpandMore
-                    } else {
-                        ChunkFlowIcons.ExpandLess
-                    },
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            if (isExpanded) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 136.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                ) {
-                    itemsIndexed(
-                        items = recentItems,
-                        key = { _, itemModel -> "recent_${itemModel.item.id.value}" },
-                    ) { index, itemModel ->
-                        val isFirst = index == 0
-                        val isLast = index == recentItems.lastIndex
-                        val shape = when {
-                            isFirst && isLast -> MaterialTheme.shapes.medium
-
-                            isFirst -> MaterialTheme.shapes.medium.copy(
-                                bottomStart = CornerSize(0.dp),
-                                bottomEnd = CornerSize(0.dp),
-                            )
-
-                            isLast -> MaterialTheme.shapes.medium.copy(
-                                topStart = CornerSize(0.dp),
-                                topEnd = CornerSize(0.dp),
-                            )
-
-                            else -> RectangleShape
-                        }
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            shape = shape,
-                        ) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                RecentFileCompactRow(
-                                    itemModel = itemModel,
-                                    onClick = { onOpenItem(itemModel.item.id) },
-                                )
-                                if (!isLast) {
-                                    HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RecentFileCompactRow(
-    itemModel: LibraryItemUiModel,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val item = itemModel.item
-    val langPalette = chunkFlowLanguagePalette()
-    val maxPercent = itemModel.maxProgressPercent
-    val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
-    val targetCode = item.languagePair.target.value.lowercase(Locale.ROOT)
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = ChunkFlowIcons.AudioFile,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(16.dp),
-            )
-            Surface(
-                color = langPalette.targetBadgeContainer,
-                contentColor = langPalette.onTargetBadgeContainer,
-                shape = MaterialTheme.shapes.extraSmall,
-            ) {
-                Text(
-                    text = targetCode,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                )
-            }
-            Text(
-                text = item.title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (!item.course.isNullOrBlank()) {
-                Text(
-                    text = item.course.orEmpty().substringAfterLast('/'),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        LinearProgressIndicator(
-            progress = { itemModel.maxProgressFraction },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp),
-            color = if (isCompleted) {
-                langPalette.completedProgressIndicator
-            } else {
-                ProgressIndicatorDefaults.linearColor
-            },
         )
     }
 }

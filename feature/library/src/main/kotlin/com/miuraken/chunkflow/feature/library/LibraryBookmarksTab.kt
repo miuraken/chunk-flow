@@ -123,6 +123,7 @@ internal fun LibraryBookmarksTabContent(
                 onRequestClearFileBookmarks = {
                     pendingClearFile = fileModel
                 },
+                modifier = Modifier.animateItem(),
             )
         }
     }
@@ -286,11 +287,11 @@ private fun LibraryBookmarkedFileAccordionCard(
                 )
             }
 
-            if (fileModel.isExpanded) {
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                )
+            androidx.compose.animation.AnimatedVisibility(visible = fileModel.isExpanded) {
                 Column(modifier = Modifier.fillMaxWidth()) {
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    )
                     fileModel.bookmarkedChunks.forEachIndexed { index, chunkModel ->
                         val isActiveChunk = isActiveFile &&
                             activePlaybackChunkId == chunkModel.chunk.id
@@ -329,11 +330,14 @@ private fun LibraryBookmarkedChunkRow(
     val transcript = chunkModel.transcript
     val languageTag = transcript?.language
     val langPalette = chunkFlowLanguagePalette()
-    val containerColor = if (isActive) {
-        MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-    } else {
-        Color.Transparent
-    }
+    val containerColor by androidx.compose.animation.animateColorAsState(
+        targetValue = if (isActive) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
+        } else {
+            Color.Transparent
+        },
+        label = "bookmarkChunkActiveColor",
+    )
     val textColor = if (isActive) {
         MaterialTheme.colorScheme.onSecondaryContainer
     } else {

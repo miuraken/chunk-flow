@@ -8,15 +8,18 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -28,13 +31,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MediumTopAppBar
-import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -43,11 +45,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
@@ -232,245 +234,281 @@ fun LibraryScreen(
         onDismiss = { onEvent(LibraryEvent.DismissImportStatus) },
     )
 
-    Scaffold(
-        modifier = modifier.nestedScroll(topAppBarScrollBehavior.nestedScrollConnection),
-        snackbarHost = { ChunkFlowSnackbarHost(hostState = snackbarHostState) },
-        topBar = {
-            MediumTopAppBar(
-                scrollBehavior = topAppBarScrollBehavior,
-                navigationIcon = {
-                    if (state.isSelectionMode) {
-                        IconButton(onClick = { onEvent(LibraryEvent.ClearSelection) }) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.Close,
-                                contentDescription = stringResource(R.string.library_selection_clear),
-                            )
-                        }
-                    }
-                },
-                title = {
-                    val titleText = if (state.isSelectionMode) {
-                        stringResource(
-                            R.string.library_selection_count,
-                            state.selectedCount,
-                        )
-                    } else {
-                        stringResource(R.string.library_title)
-                    }
-                    Text(
-                        text = titleText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                actions = {
-                    if (state.isSelectionMode) {
-                        val showFileOnlySelectionBadges =
-                            state.selectedItemIds.isNotEmpty() && state.selectedDirectoryPaths.isEmpty()
-                        val hasSelectedFiles = state.selectedItemIds.isNotEmpty() ||
-                            state.selectedTargetItemIds.isNotEmpty()
-                        if (showFileOnlySelectionBadges) {
-                            FilledTonalButton(
-                                onClick = { showAddToPlaylistDialog = true },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            ) {
-                                Icon(
-                                    imageVector = ChunkFlowIcons.PlaylistAdd,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = stringResource(R.string.library_selection_playlist_badge),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(4.dp))
-                            val allFavorite = state.areAllSelectedFavorite
-                            FilledTonalButton(
-                                onClick = { onEvent(LibraryEvent.ToggleFavoriteSelected) },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            ) {
-                                Icon(
-                                    imageVector = if (allFavorite) {
-                                        ChunkFlowIcons.Favorite
-                                    } else {
-                                        ChunkFlowIcons.FavoriteBorder
-                                    },
-                                    contentDescription = null,
-                                    tint = if (allFavorite) {
-                                        chunkFlowExtendedColors().favorite
-                                    } else {
-                                        MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
-                                    },
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = stringResource(R.string.library_selection_favorite_badge),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(4.dp))
-                        }
-                        if (hasSelectedFiles) {
-                            FilledTonalButton(
-                                onClick = {
-                                    val targetIds = state.selectedTargetItemIds
-                                    onEvent(LibraryEvent.ClearSelection)
-                                    if (targetIds.isNotEmpty()) {
-                                        onOpenTranscriptExport(targetIds)
-                                    }
-                                },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            ) {
-                                Icon(
-                                    imageVector = ChunkFlowIcons.Download,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = stringResource(R.string.library_selection_export_badge),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(4.dp))
-                        }
-                        FilledTonalButton(
-                            onClick = { onEvent(LibraryEvent.RequestDeleteSelected) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                            ),
-                        ) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.Delete,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = stringResource(R.string.library_selection_delete_badge),
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                    } else {
-                        IconButton(onClick = { onEvent(LibraryEvent.RequestImportDirectory) }) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.CreateNewFolder,
-                                contentDescription = stringResource(R.string.library_add_folder_cd),
-                            )
-                        }
-                        IconButton(onClick = { onEvent(LibraryEvent.RequestImport) }) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.NoteAdd,
-                                contentDescription = stringResource(R.string.library_add_file_cd),
-                            )
-                        }
-                        IconButton(onClick = { onEvent(LibraryEvent.OpenSettings) }) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.Settings,
-                                contentDescription = stringResource(R.string.library_open_settings),
-                            )
-                        }
-                    }
-                },
-            )
-        },
-        floatingActionButton = {
-            if (state.selectedTab == LibraryViewTab.PLAYLISTS &&
-                state.activePlaylist == null &&
-                !state.isSelectionMode
-            ) {
-                FloatingActionButton(
-                    onClick = { showCreatePlaylistDialog = true },
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Add,
-                        contentDescription = stringResource(R.string.library_playlist_create_fab_cd),
-                    )
+    NavigationSuiteScaffold(
+        modifier = modifier,
+        navigationSuiteItems = {
+            LibraryViewTab.entries.forEach { tab ->
+                val labelRes = when (tab) {
+                    LibraryViewTab.FOLDERS -> R.string.library_tab_folders
+                    LibraryViewTab.FILES -> R.string.library_tab_files
+                    LibraryViewTab.PLAYLISTS -> R.string.library_tab_playlists
+                    LibraryViewTab.BOOKMARKS -> R.string.library_tab_bookmarks
                 }
+                val iconVector = when (tab) {
+                    LibraryViewTab.FOLDERS -> ChunkFlowIcons.Folder
+                    LibraryViewTab.FILES -> ChunkFlowIcons.AudioFile
+                    LibraryViewTab.PLAYLISTS -> ChunkFlowIcons.QueueMusic
+                    LibraryViewTab.BOOKMARKS -> ChunkFlowIcons.Bookmark
+                }
+                item(
+                    selected = state.selectedTab == tab,
+                    onClick = { onEvent(LibraryEvent.SelectTab(tab)) },
+                    icon = {
+                        Icon(
+                            imageVector = iconVector,
+                            contentDescription = null,
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = stringResource(labelRes),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                )
             }
         },
-        bottomBar = {
-            if (state.selectedTab == LibraryViewTab.BOOKMARKS) {
-                LibraryBookmarkPlaybackController(
+    ) {
+        Scaffold(
+            modifier = Modifier.nestedScroll(topAppBarScrollBehavior.nestedScrollConnection),
+            snackbarHost = { ChunkFlowSnackbarHost(hostState = snackbarHostState) },
+            topBar = {
+                MediumTopAppBar(
+                    scrollBehavior = topAppBarScrollBehavior,
+                    navigationIcon = {
+                        if (state.isSelectionMode) {
+                            IconButton(onClick = { onEvent(LibraryEvent.ClearSelection) }) {
+                                Icon(
+                                    imageVector = ChunkFlowIcons.Close,
+                                    contentDescription = stringResource(R.string.library_selection_clear),
+                                )
+                            }
+                        }
+                    },
+                    title = {
+                        AnimatedContent(
+                            targetState = state.isSelectionMode to state.selectedCount,
+                            transitionSpec = { fadeIn() togetherWith fadeOut() },
+                            label = "topAppBarTitle",
+                        ) { (isSelection, selectedCount) ->
+                            val titleText = if (isSelection) {
+                                stringResource(
+                                    R.string.library_selection_count,
+                                    selectedCount,
+                                )
+                            } else {
+                                stringResource(R.string.library_title)
+                            }
+                            Text(
+                                text = titleText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    },
+                    actions = {
+                        AnimatedContent(
+                            targetState = state.isSelectionMode,
+                            transitionSpec = { fadeIn() togetherWith fadeOut() },
+                            label = "topAppBarActions",
+                        ) { isSelection ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isSelection) {
+                                    val showFileOnlySelectionBadges =
+                                        state.selectedItemIds.isNotEmpty() && state.selectedDirectoryPaths.isEmpty()
+                                    val hasSelectedFiles = state.selectedItemIds.isNotEmpty() ||
+                                        state.selectedTargetItemIds.isNotEmpty()
+                                    if (showFileOnlySelectionBadges) {
+                                        FilledTonalButton(
+                                            onClick = { showAddToPlaylistDialog = true },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = ChunkFlowIcons.PlaylistAdd,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = stringResource(R.string.library_selection_playlist_badge),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        val allFavorite = state.areAllSelectedFavorite
+                                        FilledTonalButton(
+                                            onClick = { onEvent(LibraryEvent.ToggleFavoriteSelected) },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = if (allFavorite) {
+                                                    ChunkFlowIcons.Favorite
+                                                } else {
+                                                    ChunkFlowIcons.FavoriteBorder
+                                                },
+                                                contentDescription = null,
+                                                tint = if (allFavorite) {
+                                                    chunkFlowExtendedColors().favorite
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
+                                                },
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = stringResource(R.string.library_selection_favorite_badge),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    if (hasSelectedFiles) {
+                                        FilledTonalButton(
+                                            onClick = {
+                                                val targetIds = state.selectedTargetItemIds
+                                                onEvent(LibraryEvent.ClearSelection)
+                                                if (targetIds.isNotEmpty()) {
+                                                    onOpenTranscriptExport(targetIds)
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = ChunkFlowIcons.Download,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = stringResource(R.string.library_selection_export_badge),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    FilledTonalButton(
+                                        onClick = { onEvent(LibraryEvent.RequestDeleteSelected) },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                        ),
+                                    ) {
+                                        Icon(
+                                            imageVector = ChunkFlowIcons.Delete,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = stringResource(R.string.library_selection_delete_badge),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                } else {
+                                    IconButton(onClick = { onEvent(LibraryEvent.RequestImportDirectory) }) {
+                                        Icon(
+                                            imageVector = ChunkFlowIcons.CreateNewFolder,
+                                            contentDescription = stringResource(R.string.library_add_folder_cd),
+                                        )
+                                    }
+                                    IconButton(onClick = { onEvent(LibraryEvent.RequestImport) }) {
+                                        Icon(
+                                            imageVector = ChunkFlowIcons.NoteAdd,
+                                            contentDescription = stringResource(R.string.library_add_file_cd),
+                                        )
+                                    }
+                                    IconButton(onClick = { onEvent(LibraryEvent.OpenSettings) }) {
+                                        Icon(
+                                            imageVector = ChunkFlowIcons.Settings,
+                                            contentDescription = stringResource(R.string.library_open_settings),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                )
+            },
+            floatingActionButton = {
+                if (state.selectedTab == LibraryViewTab.PLAYLISTS &&
+                    state.activePlaylist == null &&
+                    !state.isSelectionMode
+                ) {
+                    FloatingActionButton(
+                        onClick = { showCreatePlaylistDialog = true },
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Add,
+                            contentDescription = stringResource(R.string.library_playlist_create_fab_cd),
+                        )
+                    }
+                }
+            },
+            bottomBar = {
+                ExpandableBottomPlayerBar(
                     state = state,
                     onEvent = onEvent,
                 )
-            } else {
-                state.miniPlayer?.let { miniPlayer ->
-                    MiniPlayerBar(
-                        miniPlayer = miniPlayer,
-                        onOpenPlayer = { onEvent(LibraryEvent.OpenItem(miniPlayer.mediaId)) },
-                        onTogglePlayPause = { onEvent(LibraryEvent.ToggleMiniPlayerPlayPause) },
-                    )
-                }
-            }
-        },
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-        ) {
-            ImportStatusBanner(importState = state.importState)
-
-            LibraryViewTabRow(
-                selectedTab = state.selectedTab,
-                onSelectTab = { tab -> onEvent(LibraryEvent.SelectTab(tab)) },
-            )
-
-            if (state.items.isEmpty() &&
-                state.courseFolders.isEmpty() &&
-                state.selectedTab != LibraryViewTab.PLAYLISTS &&
-                state.selectedTab != LibraryViewTab.BOOKMARKS
+            },
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
             ) {
-                LibraryEmptyContent(
-                    onImportDirectoryClick = { onEvent(LibraryEvent.RequestImportDirectory) },
-                    onImportFilesClick = { onEvent(LibraryEvent.RequestImport) },
-                    modifier = Modifier.weight(1f),
-                )
-            } else {
-                when (state.selectedTab) {
-                    LibraryViewTab.FOLDERS -> {
-                        LibraryFoldersTabContent(
-                            state = state,
-                            listState = listState,
-                            onEvent = onEvent,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+                ImportStatusBanner(importState = state.importState)
 
-                    LibraryViewTab.FILES -> {
-                        LibraryFilesTabContent(
-                            state = state,
-                            onEvent = onEvent,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+                if (state.items.isEmpty() &&
+                    state.courseFolders.isEmpty() &&
+                    state.selectedTab != LibraryViewTab.PLAYLISTS &&
+                    state.selectedTab != LibraryViewTab.BOOKMARKS
+                ) {
+                    LibraryEmptyContent(
+                        onImportDirectoryClick = { onEvent(LibraryEvent.RequestImportDirectory) },
+                        onImportFilesClick = { onEvent(LibraryEvent.RequestImport) },
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    when (state.selectedTab) {
+                        LibraryViewTab.FOLDERS -> {
+                            LibraryFoldersTabContent(
+                                state = state,
+                                listState = listState,
+                                onEvent = onEvent,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
 
-                    LibraryViewTab.PLAYLISTS -> {
-                        LibraryPlaylistsTabContent(
-                            state = state,
-                            onEvent = onEvent,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+                        LibraryViewTab.FILES -> {
+                            LibraryFilesTabContent(
+                                state = state,
+                                onEvent = onEvent,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
 
-                    LibraryViewTab.BOOKMARKS -> {
-                        LibraryBookmarksTabContent(
-                            state = state,
-                            onEvent = onEvent,
-                            modifier = Modifier.weight(1f),
-                        )
+                        LibraryViewTab.PLAYLISTS -> {
+                            LibraryPlaylistsTabContent(
+                                state = state,
+                                onEvent = onEvent,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        LibraryViewTab.BOOKMARKS -> {
+                            LibraryBookmarksTabContent(
+                                state = state,
+                                onEvent = onEvent,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
                     }
                 }
             }
@@ -682,39 +720,5 @@ fun LibraryScreen(
                 }
             },
         )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LibraryViewTabRow(
-    selectedTab: LibraryViewTab,
-    onSelectTab: (LibraryViewTab) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    PrimaryTabRow(
-        selectedTabIndex = selectedTab.ordinal,
-        modifier = modifier.fillMaxWidth(),
-    ) {
-        LibraryViewTab.entries.forEach { tab ->
-            val labelRes = when (tab) {
-                LibraryViewTab.FOLDERS -> R.string.library_tab_folders
-                LibraryViewTab.FILES -> R.string.library_tab_files
-                LibraryViewTab.PLAYLISTS -> R.string.library_tab_playlists
-                LibraryViewTab.BOOKMARKS -> R.string.library_tab_bookmarks
-            }
-            Tab(
-                selected = selectedTab == tab,
-                onClick = { onSelectTab(tab) },
-            ) {
-                Text(
-                    text = stringResource(labelRes),
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 14.dp),
-                )
-            }
-        }
     }
 }

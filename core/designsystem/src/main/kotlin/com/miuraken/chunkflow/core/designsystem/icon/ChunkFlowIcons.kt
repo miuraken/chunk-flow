@@ -861,6 +861,30 @@ object ChunkFlowIcons {
         }
     }
 
+    /** 三点リーダー（縦）アイコン。 */
+    val MoreVert: ImageVector by lazy {
+        materialIcon(name = "MoreVert") {
+            moveTo(12f, 8f)
+            curveToRelative(1.1f, 0f, 2f, -0.9f, 2f, -2f)
+            reflectiveCurveToRelative(-0.9f, -2f, -2f, -2f)
+            reflectiveCurveToRelative(-2f, 0.9f, -2f, 2f)
+            reflectiveCurveToRelative(0.9f, 2f, 2f, 2f)
+            close()
+            moveTo(12f, 10f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            reflectiveCurveToRelative(0.9f, 2f, 2f, 2f)
+            reflectiveCurveToRelative(2f, -0.9f, 2f, -2f)
+            reflectiveCurveToRelative(-0.9f, -2f, -2f, -2f)
+            close()
+            moveTo(12f, 16f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            reflectiveCurveToRelative(0.9f, 2f, 2f, 2f)
+            reflectiveCurveToRelative(2f, -0.9f, 2f, -2f)
+            reflectiveCurveToRelative(-0.9f, -2f, -2f, -2f)
+            close()
+        }
+    }
+
     /** ドラッグ並び替え用のハンドルアイコン（2 本の横線）。 */
     val DragHandle: ImageVector by lazy {
         materialIcon(name = "DragHandle") {
