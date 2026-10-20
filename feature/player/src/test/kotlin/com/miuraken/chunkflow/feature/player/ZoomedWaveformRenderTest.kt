@@ -96,4 +96,119 @@ class ZoomedWaveformRenderTest {
         assertEquals(10_000L, computeProgressiveRevealCutoffMs(startMs = -5_000L, endMs = 25_000L, revealFraction = 0.5f))
         assertEquals(25_000L, computeProgressiveRevealCutoffMs(startMs = -5_000L, endMs = 25_000L, revealFraction = 1f))
     }
+
+    @Test
+    fun `computeWaveformTileReusePlan_末尾に波形ビンが追加されたとき末尾のタイルのみ再描画し前半のタイルは再利用する`() {
+        val initialPeak = ByteArray(500) { (-80).toByte() }
+        val initialRms = ByteArray(500) { (-110).toByte() }
+        val waveformPart1 = com.miuraken.chunkflow.core.model.Waveform(
+            binMs = 10,
+            peak = initialPeak,
+            rms = initialRms,
+        )
+        // 500 ビン -> 750 ビンに伸長（0..5_000ms のデータは不変）
+        val extendedPeak = ByteArray(750) { idx -> if (idx < 500) initialPeak[idx] else (-60).toByte() }
+        val extendedRms = ByteArray(750) { idx -> if (idx < 500) initialRms[idx] else (-90).toByte() }
+        val waveformPart2 = com.miuraken.chunkflow.core.model.Waveform(
+            binMs = 10,
+            peak = extendedPeak,
+            rms = extendedRms,
+        )
+
+        val chunks = listOf(
+            ChunkColorKey(startMs = 0L, endMs = 2_000L, language = com.miuraken.chunkflow.core.model.LanguageTag("ja")),
+            ChunkColorKey(startMs = 2_000L, endMs = 4_500L, language = com.miuraken.chunkflow.core.model.LanguageTag("ko")),
+        )
+
+        // 全体幅 1024px (256px タイル x 4 = [0..2500ms, 2500..5000ms, 5000..7500ms, 7500..10000ms])
+        val specs1 = computeWaveformTileSpecs(
+            waveform = waveformPart1,
+            startMs = 0L,
+            endMs = 10_000L,
+            totalWidthPx = 1024,
+            chunkColorKeys = chunks,
+            tileWidthPx = 256,
+        )
+        val specs2 = computeWaveformTileSpecs(
+            waveform = waveformPart2,
+            startMs = 0L,
+            endMs = 10_000L,
+            totalWidthPx = 1024,
+            chunkColorKeys = chunks,
+            tileWidthPx = 256,
+        )
+
+        val reusePlan = computeWaveformTileReusePlan(specs1, specs2)
+        assertEquals(4, reusePlan.size)
+        // 0..2500ms と 2500..5000ms のタイルは再利用、5000..7500ms は再描画、7500..10000ms（どちらも未到達）は再利用
+        assertEquals(listOf(true, true, false, true), reusePlan)
+    }
+
+    @Test
+    fun `computeWaveformTileReusePlan_特定のチャンクの言語または文字起こし状態が変わったとき重なるタイルのみ再描画する`() {
+        val peak = ByteArray(1_000) { (-70).toByte() }
+        val rms = ByteArray(1_000) { (-100).toByte() }
+        val waveform = com.miuraken.chunkflow.core.model.Waveform(
+            binMs = 10,
+            peak = peak,
+            rms = rms,
+        )
+        val chunksBefore = listOf(
+            ChunkColorKey(startMs = 500L, endMs = 2_000L, language = com.miuraken.chunkflow.core.model.LanguageTag("ja"), isTranscribed = true),
+            ChunkColorKey(startMs = 3_000L, endMs = 4_500L, language = null, isTranscribed = false),
+            ChunkColorKey(startMs = 8_000L, endMs = 9_500L, language = com.miuraken.chunkflow.core.model.LanguageTag("ko"), isTranscribed = true),
+        )
+        // 2 番目のチャンク（3_000..4_500ms、タイル index=1: 2_500..5_000ms にのみ重なる）の言語・文字起こし完了を更新
+        val chunksAfter = listOf(
+            chunksBefore[0],
+            chunksBefore[1].copy(language = com.miuraken.chunkflow.core.model.LanguageTag("ko"), isTranscribed = true),
+            chunksBefore[2],
+        )
+
+        val specsBefore = computeWaveformTileSpecs(
+            waveform = waveform,
+            startMs = 0L,
+            endMs = 10_000L,
+            totalWidthPx = 1024,
+            chunkColorKeys = chunksBefore,
+            tileWidthPx = 256,
+        )
+        val specsAfter = computeWaveformTileSpecs(
+            waveform = waveform,
+            startMs = 0L,
+            endMs = 10_000L,
+            totalWidthPx = 1024,
+            chunkColorKeys = chunksAfter,
+            tileWidthPx = 256,
+        )
+
+        val reusePlan = computeWaveformTileReusePlan(specsBefore, specsAfter)
+        assertEquals(listOf(true, false, true, true), reusePlan)
+    }
+
+    @Test
+    fun `chunkColorKeysSliceContentHash_範囲外のチャンク更新ではハッシュが変わらない`() {
+        val baseKeys = listOf(
+            ChunkColorKey(startMs = 0L, endMs = 5_000L, language = com.miuraken.chunkflow.core.model.LanguageTag("ja"), isTranscribed = true),
+            ChunkColorKey(startMs = 40_000L, endMs = 45_000L, language = null, isTranscribed = false),
+        )
+        val updatedOutsideKeys = listOf(
+            baseKeys[0],
+            baseKeys[1].copy(language = com.miuraken.chunkflow.core.model.LanguageTag("ko"), isTranscribed = true),
+        )
+        val updatedInsideKeys = listOf(
+            baseKeys[0].copy(isSkipped = true),
+            baseKeys[1],
+        )
+
+        val localRange = 0L..30_000L
+        assertEquals(
+            chunkColorKeysSliceContentHash(baseKeys, localRange),
+            chunkColorKeysSliceContentHash(updatedOutsideKeys, localRange),
+        )
+        assertTrue(
+            chunkColorKeysSliceContentHash(baseKeys, localRange) !=
+                chunkColorKeysSliceContentHash(updatedInsideKeys, localRange),
+        )
+    }
 }

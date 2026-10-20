@@ -1104,13 +1104,13 @@ internal fun ChunkTranscriptionSpinner(
 
     Canvas(
         modifier = modifier
-            .size(16.dp)
+            .size(12.8.dp)
             .semantics { contentDescription = cdText },
     ) {
         val strokePx = if (stage == ChunkTranscriptionStage.TRANSCRIBING) {
-            2.2.dp.toPx()
+            1.76.dp.toPx()
         } else {
-            1.6.dp.toPx()
+            1.28.dp.toPx()
         }
         when (stage) {
             ChunkTranscriptionStage.WAITING -> {

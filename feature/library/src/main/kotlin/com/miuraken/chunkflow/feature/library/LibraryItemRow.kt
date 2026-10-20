@@ -30,8 +30,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -76,7 +74,12 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+
+@OptIn(ExperimentalCoroutinesApi::class)
+private val artworkLoadDispatcher = Dispatchers.IO.limitedParallelism(2)
 
 private val LAST_ACCESSED_FORMATTER: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm", Locale.ROOT)
@@ -237,36 +240,47 @@ internal fun LibraryItemRow(
     // 既習（95% 超）の教材は、進捗バーを緑系にして一目でわかるようにする。
     val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
 
-    ListItem(
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
-            ),
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        leadingContent = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (isSelectionMode) {
-                    Checkbox(
-                        checked = isSelected,
-                        onCheckedChange = { onClick() },
-                    )
-                } else if (dragHandle != null) {
-                    dragHandle()
-                }
-                AudioItemThumbnail(
-                    mediaId = item.id,
-                    localFilePath = item.localFilePath,
-                    sourceUri = item.sourceUri,
-                    modifier = Modifier.size(40.dp),
+            )
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (isSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onClick() },
                 )
+            } else if (dragHandle != null) {
+                dragHandle()
             }
-        },
-        supportingContent = {
+            AudioItemThumbnail(
+                mediaId = item.id,
+                localFilePath = item.localFilePath,
+                sourceUri = item.sourceUri,
+                modifier = Modifier.size(40.dp),
+            )
+        }
+
+        Column(
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -379,53 +393,43 @@ internal fun LibraryItemRow(
                     }
                 }
             }
-        },
-        trailingContent = if (!isSelectionMode && (onToggleFavoriteClick != null || onRemoveFromPlaylistClick != null)) {
-            {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (onToggleFavoriteClick != null) {
-                        IconToggleButton(
-                            checked = isFavorite,
-                            onCheckedChange = { onToggleFavoriteClick() },
-                        ) {
-                            Icon(
-                                imageVector = if (isFavorite) {
-                                    ChunkFlowIcons.Favorite
-                                } else {
-                                    ChunkFlowIcons.FavoriteBorder
-                                },
-                                contentDescription = favoriteCd,
-                                tint = if (isFavorite) {
-                                    chunkFlowExtendedColors().favorite
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                            )
-                        }
+        }
+
+        if (!isSelectionMode && (onToggleFavoriteClick != null || onRemoveFromPlaylistClick != null)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (onToggleFavoriteClick != null) {
+                    IconToggleButton(
+                        checked = isFavorite,
+                        onCheckedChange = { onToggleFavoriteClick() },
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) {
+                                ChunkFlowIcons.Favorite
+                            } else {
+                                ChunkFlowIcons.FavoriteBorder
+                            },
+                            contentDescription = favoriteCd,
+                            tint = if (isFavorite) {
+                                chunkFlowExtendedColors().favorite
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
                     }
-                    if (onRemoveFromPlaylistClick != null) {
-                        IconButton(onClick = onRemoveFromPlaylistClick) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.Close,
-                                contentDescription = removeFromPlaylistCd,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                }
+                if (onRemoveFromPlaylistClick != null) {
+                    IconButton(onClick = onRemoveFromPlaylistClick) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Close,
+                            contentDescription = removeFromPlaylistCd,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
-        } else {
-            null
-        },
-    ) {
-        Text(
-            text = item.title,
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        }
     }
 }
 
@@ -532,7 +536,8 @@ internal fun AudioItemThumbnail(
 
     LaunchedEffect(cacheKey, isInspectionMode) {
         if (!isInspectionMode && bitmap == null && !noEmbeddedArtworkKeys.contains(cacheKey)) {
-            val loaded = withContext(Dispatchers.IO) {
+            delay(40L)
+            val loaded = withContext(artworkLoadDispatcher) {
                 loadEmbeddedArtworkBitmap(
                     context = context,
                     mediaId = mediaId,
@@ -561,30 +566,31 @@ internal fun AudioItemThumbnail(
     }
 
     val currentBitmap = bitmap
-    when {
-        currentBitmap != null -> {
-            Image(
-                bitmap = currentBitmap,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = modifier.clip(shape),
-            )
-        }
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            currentBitmap != null -> {
+                Image(
+                    bitmap = currentBitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize(),
+                )
+            }
 
-        previewStyle == 1 -> {
-            PreviewPimsleurArtwork(modifier = modifier.clip(shape))
-        }
+            previewStyle == 1 -> {
+                PreviewPimsleurArtwork(modifier = Modifier.matchParentSize())
+            }
 
-        previewStyle == 2 -> {
-            PreviewBookArtwork(modifier = modifier.clip(shape))
-        }
+            previewStyle == 2 -> {
+                PreviewBookArtwork(modifier = Modifier.matchParentSize())
+            }
 
-        else -> {
-            Box(
-                modifier = modifier
-                    .background(color = MaterialTheme.colorScheme.surfaceContainerHighest, shape = shape),
-                contentAlignment = Alignment.Center,
-            ) {
+            else -> {
                 Icon(
                     imageVector = ChunkFlowIcons.MusicNote,
                     contentDescription = null,
