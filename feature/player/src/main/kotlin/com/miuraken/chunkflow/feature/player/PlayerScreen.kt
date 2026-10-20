@@ -366,14 +366,18 @@ fun PlayerScreen(
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        state.error?.let { error ->
-                            PlayerErrorBanner(error = error)
+                        androidx.compose.animation.AnimatedVisibility(visible = state.error != null) {
+                            state.error?.let { error ->
+                                PlayerErrorBanner(error = error)
+                            }
                         }
-                        state.autoPauseEndsAtMs?.let { endsAtMs ->
-                            AutoPauseCountdownBanner(
-                                autoPauseEndsAtMs = endsAtMs,
-                                onResumeNow = { onEvent(PlayerEvent.TogglePlayPause) },
-                            )
+                        androidx.compose.animation.AnimatedVisibility(visible = state.autoPauseEndsAtMs != null) {
+                            state.autoPauseEndsAtMs?.let { endsAtMs ->
+                                AutoPauseCountdownBanner(
+                                    autoPauseEndsAtMs = endsAtMs,
+                                    onResumeNow = { onEvent(PlayerEvent.TogglePlayPause) },
+                                )
+                            }
                         }
 
                         PlayerWaveform(
@@ -453,11 +457,13 @@ fun PlayerScreen(
                 }
             } else {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    state.error?.let { error ->
-                        PlayerErrorBanner(
-                            error = error,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                        )
+                    androidx.compose.animation.AnimatedVisibility(visible = state.error != null) {
+                        state.error?.let { error ->
+                            PlayerErrorBanner(
+                                error = error,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            )
+                        }
                     }
 
                     // 1. チャンクの表示に関する設定（チャンクリストの上）
@@ -487,11 +493,13 @@ fun PlayerScreen(
                             .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        state.autoPauseEndsAtMs?.let { endsAtMs ->
-                            AutoPauseCountdownBanner(
-                                autoPauseEndsAtMs = endsAtMs,
-                                onResumeNow = { onEvent(PlayerEvent.TogglePlayPause) },
-                            )
+                        androidx.compose.animation.AnimatedVisibility(visible = state.autoPauseEndsAtMs != null) {
+                            state.autoPauseEndsAtMs?.let { endsAtMs ->
+                                AutoPauseCountdownBanner(
+                                    autoPauseEndsAtMs = endsAtMs,
+                                    onResumeNow = { onEvent(PlayerEvent.TogglePlayPause) },
+                                )
+                            }
                         }
 
                         PlayerWaveform(

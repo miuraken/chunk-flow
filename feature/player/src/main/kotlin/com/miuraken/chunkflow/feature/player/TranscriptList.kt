@@ -546,15 +546,21 @@ fun TranscriptList(
                 )
             }
 
-            if (hasSameTargetAndBaseLanguage && languagePair != null) {
-                SameTargetAndBaseLanguageBanner(
-                    language = languagePair.target,
-                    onOpenFileSettings = onOpenFileSettings,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
+            androidx.compose.animation.AnimatedVisibility(
+                visible = hasSameTargetAndBaseLanguage && languagePair != null,
+            ) {
+                if (languagePair != null) {
+                    SameTargetAndBaseLanguageBanner(
+                        language = languagePair.target,
+                        onOpenFileSettings = onOpenFileSettings,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
             }
 
-            if (isAllTranscriptionEmptyAfterCompletion) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = isAllTranscriptionEmptyAfterCompletion,
+            ) {
                 AllTranscriptionEmptyWarningBanner(
                     languagePair = languagePair,
                     onOpenFileSettings = onOpenFileSettings,
@@ -562,15 +568,21 @@ fun TranscriptList(
                 )
             }
 
-            if (hasUnknownLanguageChunks && languagePair != null) {
-                UnknownLanguageBanner(
-                    languagePair = languagePair,
-                    onBulkSetUnknownLanguage = onBulkSetUnknownLanguage,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
-                )
+            androidx.compose.animation.AnimatedVisibility(
+                visible = hasUnknownLanguageChunks && languagePair != null,
+            ) {
+                if (languagePair != null) {
+                    UnknownLanguageBanner(
+                        languagePair = languagePair,
+                        onBulkSetUnknownLanguage = onBulkSetUnknownLanguage,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    )
+                }
             }
 
-            if (rangeSelectionStartChunkId != null) {
+            androidx.compose.animation.AnimatedVisibility(
+                visible = rangeSelectionStartChunkId != null,
+            ) {
                 RangeSelectionBanner(
                     onCancel = { rangeSelectionStartChunkId = null },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -605,95 +617,97 @@ fun TranscriptList(
                     )
                     val isThisChunkInFlight = chunk.id == lookaheadStatus.inFlightChunkId
 
-                    TranscriptChunkRow(
-                        index = index,
-                        chunk = chunk,
-                        isActive = isActive,
-                        isInLoopRange = isInLoopRange,
-                        isMasked = isMasked,
-                        transcriptionStage = transcriptionStage,
-                        isForcedInFlight = isThisChunkInFlight && lookaheadStatus.isForcedChunkInFlight,
-                        inFlightStep = if (isThisChunkInFlight) lookaheadStatus.inFlightStep else null,
-                        inFlightDetail = if (isThisChunkInFlight) lookaheadStatus.inFlightDetail else null,
-                        inFlightStartedAtEpochMs = if (isThisChunkInFlight) {
-                            lookaheadStatus.inFlightStartedAtEpochMs
-                        } else {
-                            null
-                        },
-                        languagePair = languagePair,
-                        chineseScript = chineseScript,
-                        cantoneseScript = cantoneseScript,
-                        showTargetRomanization = showTargetRomanization,
-                        showTargetTranslation = showTargetTranslation,
-                        selectedChunks = selectedChunks,
-                        onSetChunksSkipped = onSetChunksSkipped,
-                        positionProvider = positionProvider,
-                        onUserInteract = {
-                            isAutoFollowPaused = true
-                        },
-                        onRowClick = {
-                            val startId = rangeSelectionStartChunkId
-                            if (startId != null) {
-                                isAutoFollowPaused = true
-                                rangeSelectionStartChunkId = null
-                                val ordered = orderChunkRange(chunks, startId, chunk.id)
-                                if (ordered != null) {
-                                    onSetLoopMode(
-                                        LoopMode.ChunkRange(
-                                            firstChunkId = ordered.first,
-                                            lastChunkId = ordered.second,
-                                            times = null,
-                                        ),
-                                    )
-                                }
-                            } else if (isMasked) {
-                                isAutoFollowPaused = true
-                                onToggleRevealChunk(chunk.id)
+                    Column(modifier = Modifier.animateItem()) {
+                        TranscriptChunkRow(
+                            index = index,
+                            chunk = chunk,
+                            isActive = isActive,
+                            isInLoopRange = isInLoopRange,
+                            isMasked = isMasked,
+                            transcriptionStage = transcriptionStage,
+                            isForcedInFlight = isThisChunkInFlight && lookaheadStatus.isForcedChunkInFlight,
+                            inFlightStep = if (isThisChunkInFlight) lookaheadStatus.inFlightStep else null,
+                            inFlightDetail = if (isThisChunkInFlight) lookaheadStatus.inFlightDetail else null,
+                            inFlightStartedAtEpochMs = if (isThisChunkInFlight) {
+                                lookaheadStatus.inFlightStartedAtEpochMs
                             } else {
+                                null
+                            },
+                            languagePair = languagePair,
+                            chineseScript = chineseScript,
+                            cantoneseScript = cantoneseScript,
+                            showTargetRomanization = showTargetRomanization,
+                            showTargetTranslation = showTargetTranslation,
+                            selectedChunks = selectedChunks,
+                            onSetChunksSkipped = onSetChunksSkipped,
+                            positionProvider = positionProvider,
+                            onUserInteract = {
+                                isAutoFollowPaused = true
+                            },
+                            onRowClick = {
+                                val startId = rangeSelectionStartChunkId
+                                if (startId != null) {
+                                    isAutoFollowPaused = true
+                                    rangeSelectionStartChunkId = null
+                                    val ordered = orderChunkRange(chunks, startId, chunk.id)
+                                    if (ordered != null) {
+                                        onSetLoopMode(
+                                            LoopMode.ChunkRange(
+                                                firstChunkId = ordered.first,
+                                                lastChunkId = ordered.second,
+                                                times = null,
+                                            ),
+                                        )
+                                    }
+                                } else if (isMasked) {
+                                    isAutoFollowPaused = true
+                                    onToggleRevealChunk(chunk.id)
+                                } else {
+                                    onSeekToChunk(chunk.id)
+                                }
+                            },
+                            onTimestampClick = {
                                 onSeekToChunk(chunk.id)
-                            }
-                        },
-                        onTimestampClick = {
-                            onSeekToChunk(chunk.id)
-                        },
-                        onToggleBookmark = {
-                            isAutoFollowPaused = true
-                            onToggleBookmark(chunk.id)
-                        },
-                        onToggleRepeatChunk = {
-                            isAutoFollowPaused = true
-                            onToggleRepeatChunk(chunk.id)
-                        },
-                        onStartRangeSelection = {
-                            isAutoFollowPaused = true
-                            rangeSelectionStartChunkId = chunk.id
-                        },
-                        onUpdateLanguage = { newLang ->
-                            isAutoFollowPaused = true
-                            onUpdateChunkLanguage(chunk.id, newLang)
-                        },
-                        onRequestEditText = {
-                            isAutoFollowPaused = true
-                            editingTextChunk = index to chunk
-                        },
-                        onRetranscribeChunk = {
-                            isAutoFollowPaused = true
-                            onRetranscribeChunk(chunk.id)
-                        },
-                        onOpenDetailedTranscription = {
-                            isAutoFollowPaused = true
-                            onOpenDetailedTranscription(chunk.id)
-                        },
-                        onMoveChunkBoundary = { newStartMs, newEndMs ->
-                            isAutoFollowPaused = true
-                            onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
-                        },
-                        onDeleteChunk = {
-                            isAutoFollowPaused = true
-                            onDeleteChunk(chunk.id)
-                        },
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                            },
+                            onToggleBookmark = {
+                                isAutoFollowPaused = true
+                                onToggleBookmark(chunk.id)
+                            },
+                            onToggleRepeatChunk = {
+                                isAutoFollowPaused = true
+                                onToggleRepeatChunk(chunk.id)
+                            },
+                            onStartRangeSelection = {
+                                isAutoFollowPaused = true
+                                rangeSelectionStartChunkId = chunk.id
+                            },
+                            onUpdateLanguage = { newLang ->
+                                isAutoFollowPaused = true
+                                onUpdateChunkLanguage(chunk.id, newLang)
+                            },
+                            onRequestEditText = {
+                                isAutoFollowPaused = true
+                                editingTextChunk = index to chunk
+                            },
+                            onRetranscribeChunk = {
+                                isAutoFollowPaused = true
+                                onRetranscribeChunk(chunk.id)
+                            },
+                            onOpenDetailedTranscription = {
+                                isAutoFollowPaused = true
+                                onOpenDetailedTranscription(chunk.id)
+                            },
+                            onMoveChunkBoundary = { newStartMs, newEndMs ->
+                                isAutoFollowPaused = true
+                                onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
+                            },
+                            onDeleteChunk = {
+                                isAutoFollowPaused = true
+                                onDeleteChunk(chunk.id)
+                            },
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    }
                 }
             }
         }
@@ -1137,33 +1151,39 @@ private fun TranscriptChunkRow(
     val isTargetLang = matchesLanguageRole(chunk.language, languagePair?.target)
     val isBaseLang = matchesLanguageRole(chunk.language, languagePair?.base)
 
-    val rowBackground = when {
-        isForcedInFlight -> colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+    val rowBackground by androidx.compose.animation.animateColorAsState(
+        targetValue = when {
+            isForcedInFlight -> colorScheme.tertiaryContainer.copy(alpha = 0.45f)
 
-        isActive -> when {
-            isTargetLang -> langPalette.targetActiveRowBackground
-            isBaseLang -> langPalette.baseActiveRowBackground
-            else -> colorScheme.primaryContainer.copy(alpha = 0.36f)
-        }
+            isActive -> when {
+                isTargetLang -> langPalette.targetActiveRowBackground
+                isBaseLang -> langPalette.baseActiveRowBackground
+                else -> colorScheme.primaryContainer.copy(alpha = 0.36f)
+            }
 
-        isInLoopRange -> when {
-            isTargetLang -> langPalette.targetLoopRowBackground
-            isBaseLang -> langPalette.baseLoopRowBackground
-            else -> colorScheme.tertiaryContainer.copy(alpha = 0.28f)
-        }
+            isInLoopRange -> when {
+                isTargetLang -> langPalette.targetLoopRowBackground
+                isBaseLang -> langPalette.baseLoopRowBackground
+                else -> colorScheme.tertiaryContainer.copy(alpha = 0.28f)
+            }
 
-        isTargetLang -> langPalette.targetRowBackground
+            isTargetLang -> langPalette.targetRowBackground
 
-        isBaseLang -> langPalette.baseRowBackground
+            isBaseLang -> langPalette.baseRowBackground
 
-        else -> colorScheme.surface
-    }
-    val indicatorColor = when {
-        isForcedInFlight -> colorScheme.tertiary
-        isActive -> colorScheme.primary
-        isInLoopRange -> colorScheme.tertiary
-        else -> Color.Transparent
-    }
+            else -> colorScheme.surface
+        },
+        label = "chunkRowBackground",
+    )
+    val indicatorColor by androidx.compose.animation.animateColorAsState(
+        targetValue = when {
+            isForcedInFlight -> colorScheme.tertiary
+            isActive -> colorScheme.primary
+            isInLoopRange -> colorScheme.tertiary
+            else -> Color.Transparent
+        },
+        label = "chunkIndicatorColor",
+    )
 
     val displayText = chunk.resolveDisplayText(
         chineseScript = chineseScript,
