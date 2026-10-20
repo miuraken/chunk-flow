@@ -23,6 +23,7 @@ import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.Transcript
 import kotlin.math.max
+import kotlin.math.roundToLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -1452,6 +1453,21 @@ class ChunkScheduler(
                     autoPause.minMs,
                     ((chunk.durationMs / currentSpeed) * autoPause.factor).toLong(),
                 ).coerceAtLeast(0L)
+            }
+
+            is AutoPause.OriginalSilence -> {
+                val currentIndex = chunks.indexOfFirst { it.id == chunk.id }
+                val nextChunk = if (currentIndex >= 0) {
+                    chunks.getOrNull(currentIndex + 1)
+                } else {
+                    chunks.firstOrNull { it.startMs >= chunk.endMs }
+                }
+                val originalSilenceMs = if (nextChunk != null) {
+                    (nextChunk.startMs - chunk.endMs).coerceAtLeast(0L)
+                } else {
+                    0L
+                }
+                (originalSilenceMs * autoPause.factor).roundToLong().coerceAtLeast(0L)
             }
         }
     }
