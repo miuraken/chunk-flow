@@ -862,14 +862,27 @@ internal fun TranscriptionProgressOverlay(
                 trackColor = contentColor.copy(alpha = 0.18f),
             )
 
-            Text(
-                text = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix$stallSuffix",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = if (isStalled) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+            Row(
                 modifier = Modifier.padding(horizontal = 6.dp),
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (isStalled) {
+                    // 遅延の警告は絵文字ではなくアイコンで示す（文言は stall_short のまま）
+                    Icon(
+                        imageVector = ChunkFlowIcons.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+                Text(
+                    text = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix$stallSuffix",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (isStalled) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
 
             val unpreparedLanguages = remember(lookaheadStatus.recognitionModelIssues) {
                 extractUnpreparedModelIssueLanguages(lookaheadStatus.recognitionModelIssues)
