@@ -86,6 +86,7 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -644,7 +645,7 @@ fun TranscriptList(
                     )
                     val isThisChunkInFlight = chunk.id == lookaheadStatus.inFlightChunkId
 
-                    Column(modifier = Modifier.animateItem()) {
+                    Column {
                         TranscriptChunkRow(
                             index = index,
                             chunk = chunk,
@@ -1308,16 +1309,29 @@ private fun TranscriptChunkRow(
 
             Spacer(modifier = Modifier.width(4.dp))
 
-            // タイムスタンプ（ブラインド中もタップで頭出し可能）
-            Text(
-                text = formatDurationMs(chunk.startMs),
-                style = MaterialTheme.typography.labelMedium,
-                color = if (isActive) colorScheme.primary else colorScheme.onSurfaceVariant,
-                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+            // タイムスタンプ（ブラインド中もタップで頭出し可能。normal ⇔ bold で幅が変わって右の言語バッジが動かないよう Bold 幅で領域を固定）
+            val timestampText = formatDurationMs(chunk.startMs)
+            val timestampStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
+            Box(
                 modifier = Modifier
                     .clickable(onClick = onTimestampClick)
                     .padding(vertical = 10.dp, horizontal = 4.dp),
-            )
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                Text(
+                    text = timestampText,
+                    style = timestampStyle,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Transparent,
+                    modifier = Modifier.clearAndSetSemantics {},
+                )
+                Text(
+                    text = timestampText,
+                    style = timestampStyle,
+                    color = if (isActive) colorScheme.primary else colorScheme.onSurfaceVariant,
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                )
+            }
 
             Spacer(modifier = Modifier.width(6.dp))
 
@@ -1381,12 +1395,21 @@ private fun TranscriptChunkRow(
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             if (phoneticReading != null) {
-                                Text(
-                                    text = phoneticReading,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = primaryTextColor,
-                                )
+                                Box {
+                                    Text(
+                                        text = phoneticReading,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.Transparent,
+                                        modifier = Modifier.clearAndSetSemantics {},
+                                    )
+                                    Text(
+                                        text = phoneticReading,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = primaryTextColor,
+                                    )
+                                }
                             }
                             if (translatedReading != null) {
                                 Text(
@@ -1430,36 +1453,45 @@ private fun TranscriptChunkRow(
                             .padding(vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
-                        if (currentActiveWord != null &&
-                            currentActiveWord.startCharIndex in 0 until displayText.length &&
-                            currentActiveWord.endCharIndex in (currentActiveWord.startCharIndex + 1)..displayText.length
-                        ) {
-                            val highlightedText: AnnotatedString = buildAnnotatedString {
-                                append(displayText)
-                                addStyle(
-                                    style = SpanStyle(
-                                        background = colorScheme.primaryContainer,
-                                        color = colorScheme.onPrimaryContainer,
-                                        fontWeight = FontWeight.Bold,
-                                        textDecoration = TextDecoration.Underline,
-                                    ),
-                                    start = currentActiveWord.startCharIndex,
-                                    end = currentActiveWord.endCharIndex,
-                                )
-                            }
-                            Text(
-                                text = highlightedText,
-                                style = localizedTextStyle,
-                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = primaryTextColor,
-                            )
-                        } else {
+                        Box {
                             Text(
                                 text = displayText,
                                 style = localizedTextStyle,
-                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = primaryTextColor,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.Transparent,
+                                modifier = Modifier.clearAndSetSemantics {},
                             )
+                            if (currentActiveWord != null &&
+                                currentActiveWord.startCharIndex in 0 until displayText.length &&
+                                currentActiveWord.endCharIndex in (currentActiveWord.startCharIndex + 1)..displayText.length
+                            ) {
+                                val highlightedText: AnnotatedString = buildAnnotatedString {
+                                    append(displayText)
+                                    addStyle(
+                                        style = SpanStyle(
+                                            background = colorScheme.primaryContainer,
+                                            color = colorScheme.onPrimaryContainer,
+                                            fontWeight = FontWeight.Bold,
+                                            textDecoration = TextDecoration.Underline,
+                                        ),
+                                        start = currentActiveWord.startCharIndex,
+                                        end = currentActiveWord.endCharIndex,
+                                    )
+                                }
+                                Text(
+                                    text = highlightedText,
+                                    style = localizedTextStyle,
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = primaryTextColor,
+                                )
+                            } else {
+                                Text(
+                                    text = displayText,
+                                    style = localizedTextStyle,
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = primaryTextColor,
+                                )
+                            }
                         }
                         if (phoneticReading != null) {
                             Text(
@@ -1523,12 +1555,22 @@ private fun TranscriptChunkRow(
                                 color = stageColor,
                             )
                         } else {
-                            Text(
-                                text = stringResource(R.string.player_chunk_number_format, index + 1),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                                color = primaryTextColor,
-                            )
+                            val chunkNumText = stringResource(R.string.player_chunk_number_format, index + 1)
+                            Box {
+                                Text(
+                                    text = chunkNumText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.Transparent,
+                                    modifier = Modifier.clearAndSetSemantics {},
+                                )
+                                Text(
+                                    text = chunkNumText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = primaryTextColor,
+                                )
+                            }
                         }
                         // 時刻の範囲は左の開始時刻と重なる補足情報のため、幅が足りないときは省略して状態の表示を優先する
                         Text(
