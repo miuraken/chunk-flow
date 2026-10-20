@@ -2413,8 +2413,10 @@ private fun ZoomedWaveformCanvas(
                         var minMediaMs = Long.MAX_VALUE
                         var maxMediaMs = Long.MIN_VALUE
                         for (seg in timeline.segments) {
+                            if (seg.virtualEndMs <= seg.virtualStartMs) continue
                             if (seg.virtualEndMs <= windowVirtualStartMs || seg.virtualStartMs >= windowVirtualEndMs) continue
                             if (seg is ZoomedTimelineSegment.ChunkSegment || seg is ZoomedTimelineSegment.SilenceGap) {
+                                if (seg.mediaEndMs <= seg.mediaStartMs) continue
                                 val visVStart = max(seg.virtualStartMs, windowVirtualStartMs)
                                 val visVEnd = min(seg.virtualEndMs, windowVirtualEndMs)
                                 val mStart = seg.mediaStartMs + (visVStart - seg.virtualStartMs)
@@ -2435,11 +2437,13 @@ private fun ZoomedWaveformCanvas(
                         val baseStripToDraw = if (useNearStrip) baseLocalStrip ?: baseFullStrip else baseFullStrip
 
                         for (seg in timeline.segments) {
+                            if (seg.virtualEndMs <= seg.virtualStartMs) continue
                             if (seg.virtualEndMs <= windowVirtualStartMs || seg.virtualStartMs >= windowVirtualEndMs) continue
                             when (seg) {
                                 is ZoomedTimelineSegment.ChunkSegment,
                                 is ZoomedTimelineSegment.SilenceGap,
                                 -> {
+                                    if (seg.mediaEndMs <= seg.mediaStartMs) continue
                                     val virtualOffsetMs = seg.virtualStartMs - seg.mediaStartMs
                                     val shiftedWindowStartMs = windowVirtualStartMs - virtualOffsetMs
                                     val shiftedWindowEndMs = windowVirtualEndMs - virtualOffsetMs
@@ -3082,6 +3086,63 @@ private fun renderWaveformBitmapStrip(
 }
 
 /**
+ * [drawWaveformBitmapStrip] におけるビットマップ切り出し範囲（ソースピクセル）と描画先水平範囲（キャンバスピクセル）。
+ */
+internal data class WaveformStripDrawBounds(
+    val srcStartPx: Int,
+    val srcEndPx: Int,
+    val dstStartX: Int,
+    val dstEndX: Int,
+)
+
+/**
+ * [WaveformBitmapStrip] の `[stripStartMs, stripEndMs]` から表示窓 `[windowStartMs, windowEndMs]`（さらに `[clipStartMs, clipEndMs]` でクリップ）
+ * に対応するソースピクセル範囲と描画先 X 座標範囲を計算する。
+ *
+ * 描画不要（表示範囲外、または幅が 0 以下）の場合は `null` を返す。
+ */
+internal fun computeWaveformStripDrawBounds(
+    stripStartMs: Long,
+    stripEndMs: Long,
+    stripTotalWidthPx: Int,
+    windowStartMs: Long,
+    windowEndMs: Long,
+    clipStartMs: Long = windowStartMs,
+    clipEndMs: Long = windowEndMs,
+    canvasWidthPx: Int,
+): WaveformStripDrawBounds? {
+    if (canvasWidthPx <= 0 || stripTotalWidthPx <= 0) return null
+    val stripSpanMs = (stripEndMs - stripStartMs).coerceAtLeast(1L)
+    val windowSpanMs = (windowEndMs - windowStartMs).coerceAtLeast(1L)
+    val clampedStartMs = max(windowStartMs, clipStartMs)
+    val clampedEndMs = min(windowEndMs, clipEndMs)
+    val visibleStartMs = max(clampedStartMs, stripStartMs)
+    val visibleEndMs = min(clampedEndMs, stripEndMs)
+    if (visibleEndMs <= visibleStartMs) return null
+
+    val srcStartPx = (((visibleStartMs - stripStartMs).toDouble() / stripSpanMs.toDouble()) * stripTotalWidthPx.toDouble())
+        .roundToInt()
+        .coerceIn(0, stripTotalWidthPx - 1)
+    val srcEndPx = (((visibleEndMs - stripStartMs).toDouble() / stripSpanMs.toDouble()) * stripTotalWidthPx.toDouble())
+        .roundToInt()
+        .coerceIn(srcStartPx + 1, stripTotalWidthPx)
+
+    val dstStartX = (((visibleStartMs - windowStartMs).toDouble() / windowSpanMs.toDouble()) * canvasWidthPx.toDouble())
+        .roundToInt()
+        .coerceIn(0, canvasWidthPx - 1)
+    val dstEndX = (((visibleEndMs - windowStartMs).toDouble() / windowSpanMs.toDouble()) * canvasWidthPx.toDouble())
+        .roundToInt()
+        .coerceIn(dstStartX + 1, canvasWidthPx)
+
+    return WaveformStripDrawBounds(
+        srcStartPx = srcStartPx,
+        srcEndPx = srcEndPx,
+        dstStartX = dstStartX,
+        dstEndX = dstEndX,
+    )
+}
+
+/**
  * キャッシュ済みの [WaveformBitmapStrip] から `[windowStartMs, windowEndMs]` の範囲（さらに `[clipStartMs, clipEndMs]` でクリップ）を切り出し、
  * 水平方向に拡大縮小して現在の [DrawScope] に描画する。
  */
@@ -3092,30 +3153,28 @@ private fun DrawScope.drawWaveformBitmapStrip(
     clipStartMs: Long = windowStartMs,
     clipEndMs: Long = windowEndMs,
 ) {
-    val stripSpanMs = (strip.endMs - strip.startMs).coerceAtLeast(1L)
-    val windowSpanMs = (windowEndMs - windowStartMs).coerceAtLeast(1L)
-    val clampedStartMs = max(windowStartMs, clipStartMs)
-    val clampedEndMs = min(windowEndMs, clipEndMs)
-    val visibleStartMs = max(clampedStartMs, strip.startMs)
-    val visibleEndMs = min(clampedEndMs, strip.endMs)
-    if (visibleEndMs <= visibleStartMs) return
+    val canvasWidthPx = size.width.roundToInt()
+    val dstHeightPx = size.height.roundToInt()
+    if (canvasWidthPx <= 0 || dstHeightPx <= 0 || strip.totalWidthPx <= 0 || strip.heightPx <= 0) return
 
-    val srcStartPx = (((visibleStartMs - strip.startMs).toDouble() / stripSpanMs.toDouble()) * strip.totalWidthPx.toDouble())
-        .roundToInt()
-        .coerceIn(0, strip.totalWidthPx - 1)
-    val srcEndPx = (((visibleEndMs - strip.startMs).toDouble() / stripSpanMs.toDouble()) * strip.totalWidthPx.toDouble())
-        .roundToInt()
-        .coerceIn(srcStartPx + 1, strip.totalWidthPx)
+    val bounds = computeWaveformStripDrawBounds(
+        stripStartMs = strip.startMs,
+        stripEndMs = strip.endMs,
+        stripTotalWidthPx = strip.totalWidthPx,
+        windowStartMs = windowStartMs,
+        windowEndMs = windowEndMs,
+        clipStartMs = clipStartMs,
+        clipEndMs = clipEndMs,
+        canvasWidthPx = canvasWidthPx,
+    ) ?: return
+
+    val srcStartPx = bounds.srcStartPx
+    val srcEndPx = bounds.srcEndPx
     val totalSrcSpanPx = (srcEndPx - srcStartPx).coerceAtLeast(1)
 
-    val dstStartX = (((visibleStartMs - windowStartMs).toDouble() / windowSpanMs.toDouble()) * size.width.toDouble())
-        .roundToInt()
-        .coerceIn(0, size.width.roundToInt())
-    val dstEndX = (((visibleEndMs - windowStartMs).toDouble() / windowSpanMs.toDouble()) * size.width.toDouble())
-        .roundToInt()
-        .coerceIn(dstStartX + 1, size.width.roundToInt().coerceAtLeast(1))
+    val dstStartX = bounds.dstStartX
+    val dstEndX = bounds.dstEndX
     val totalDstSpanPx = (dstEndX - dstStartX).coerceAtLeast(1)
-    val dstHeightPx = size.height.roundToInt().coerceAtLeast(1)
 
     for (tile in strip.tiles) {
         val tileStartPx = tile.startPx
