@@ -1033,6 +1033,16 @@ data class LibraryUiState(
         }
 
     /**
+     * 削除確認ダイアログで対象になっているディレクトリパスの一覧。
+     */
+    val pendingDeleteDirectoryPaths: List<String>
+        get() = when {
+            pendingDeleteDirectoryPath != null -> listOf(pendingDeleteDirectoryPath)
+            isPendingBatchDelete -> selectedDirectoryPaths.sorted()
+            else -> emptyList()
+        }
+
+    /**
      * 現在開いている階層（[currentDirectoryPath]）の直下にあるサブディレクトリ一覧（ルート階層では手動並び順優先、それ以外はディレクトリ名の自然昇順）。
      */
     val currentDirectories: List<LibraryDirectoryUiModel>
@@ -2924,13 +2934,35 @@ class LibraryViewModel @Inject constructor(
     private fun confirmDelete() {
         val currentState = uiState.value
         val targets = currentState.pendingDeleteTargetItems
+        val targetDirs = currentState.pendingDeleteDirectoryPaths
         pendingDeleteItem.value = null
         pendingDeleteDirectoryPath.value = null
         isPendingBatchDelete.value = false
         clearSelectionInternal()
-        if (targets.isEmpty()) return
+        if (targets.isEmpty() && targetDirs.isEmpty()) return
+
+        val currentSelDir = selectedDirectoryName.value?.trim('/')
+        if (currentSelDir != null &&
+            targetDirs.any { dir -> currentSelDir == dir || currentSelDir.startsWith("$dir/") }
+        ) {
+            selectedDirectoryName.value = null
+        }
+        val currentDir = currentDirectoryPath.value?.trim('/')
+        if (currentDir != null) {
+            val matchedDir = targetDirs.firstOrNull { dir ->
+                currentDir == dir || currentDir.startsWith("$dir/")
+            }
+            if (matchedDir != null) {
+                currentDirectoryPath.value = matchedDir
+                    .substringBeforeLast('/', "")
+                    .takeIf { it.isNotBlank() }
+            }
+        }
 
         viewModelScope.launch {
+            for (dirPath in targetDirs) {
+                libraryRepository.deleteCourseFolder(dirPath)
+            }
             for (target in targets) {
                 libraryRepository.delete(target.id)
                 if (playbackController is FakePlaybackController &&

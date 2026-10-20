@@ -1741,4 +1741,60 @@ class LibraryViewModelTest {
         assertEquals(10, TranscriptExportViewModel.maxPreviewLinesFor(com.miuraken.chunkflow.core.model.TranscriptExportFormat.LRC))
         assertEquals(10, TranscriptExportViewModel.maxPreviewLinesFor(com.miuraken.chunkflow.core.model.TranscriptExportFormat.TSV))
     }
+
+    @Test
+    fun `フォルダタブでのフォルダ削除_選択削除および個別削除でフォルダ自体と中のファイルがすべて削除される`() = runTest {
+        val itemA = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("del-dir-a"),
+            course = "Folder A",
+        )
+        val itemB = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("del-dir-b"),
+            course = "Folder B",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(itemA, itemB))
+        repo.createVirtualFolder(
+            coursePath = "Folder A",
+            languages = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        repo.createVirtualFolder(
+            coursePath = "Folder B",
+            languages = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        repo.createVirtualFolder(
+            coursePath = "Empty Folder",
+            languages = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        assertEquals(
+            setOf("Folder A", "Folder B", "Empty Folder"),
+            viewModel.uiState.value.currentDirectories.mapNotNull { it.name }.toSet(),
+        )
+
+        // 1. フォルダタブで Folder A を選択して削除 -> 確認ダイアログに Folder A と中のファイルが含まれ、OK でフォルダ自体も削除される
+        viewModel.onEvent(LibraryEvent.ToggleDirectorySelection("Folder A"))
+        viewModel.onEvent(LibraryEvent.RequestDeleteSelected)
+        assertTrue(viewModel.uiState.value.hasPendingDeleteConfirmation)
+        assertEquals(listOf("Folder A"), viewModel.uiState.value.pendingDeleteDirectoryPaths)
+        assertEquals(listOf(itemA.id), viewModel.uiState.value.pendingDeleteTargetItems.map { it.id })
+
+        viewModel.onEvent(LibraryEvent.ConfirmDelete)
+        assertEquals(
+            setOf("Folder B", "Empty Folder"),
+            viewModel.uiState.value.currentDirectories.mapNotNull { it.name }.toSet(),
+        )
+        assertEquals(listOf(itemB.id), viewModel.uiState.value.items.map { it.item.id })
+
+        // 2. 空フォルダ Empty Folder を選択して削除してもフォルダ自体が削除される
+        viewModel.onEvent(LibraryEvent.RequestDeleteDirectory("Empty Folder"))
+        assertTrue(viewModel.uiState.value.hasPendingDeleteConfirmation)
+        assertEquals(listOf("Empty Folder"), viewModel.uiState.value.pendingDeleteDirectoryPaths)
+        viewModel.onEvent(LibraryEvent.ConfirmDelete)
+        assertEquals(
+            listOf("Folder B"),
+            viewModel.uiState.value.currentDirectories.mapNotNull { it.name },
+        )
+    }
 }

@@ -1349,6 +1349,42 @@ class DefaultLibraryRepository(
         }
     }
 
+    override suspend fun deleteCourseFolder(coursePath: String) {
+        withContext(ioDispatcher) {
+            val normalizedPath = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() } ?: return@withContext
+            val prefix = "$normalizedPath/"
+            val matchingItems = mediaItemDao.observeAll().first().filter { item ->
+                val itemCourse = sanitizeCoursePath(item.course)
+                itemCourse == normalizedPath || itemCourse.startsWith(prefix)
+            }
+            for (item in matchingItems) {
+                val mediaId = MediaId(item.id)
+                scheduledAnalysisMediaIds.remove(mediaId)
+                mediaItemDao.deleteById(item.id)
+                mediaFileLocator.deleteMediaFiles(mediaId)
+            }
+            val matchingFolders = courseFolderDao.getAll().filter { folder ->
+                val folderPath = sanitizeCoursePath(folder.coursePath)
+                folderPath == normalizedPath || folderPath.startsWith(prefix)
+            }
+            for (folder in matchingFolders) {
+                courseFolderDao.deleteByPath(folder.coursePath)
+            }
+            if (!normalizedPath.contains('/')) {
+                val currentOrders = rootFolderSortOrders.value
+                if (normalizedPath in currentOrders) {
+                    val updatedOrders = LinkedHashMap(currentOrders)
+                    updatedOrders.remove(normalizedPath)
+                    rootFolderSortOrders.value = updatedOrders
+                    writeRootFolderOrderToDisk(updatedOrders)
+                }
+            }
+            if (matchingItems.isNotEmpty()) {
+                audioFileStateVersion.update { it + 1L }
+            }
+        }
+    }
+
     @Suppress("UnusedParameter")
     private suspend fun handleReattachedAudioAnalysis(mediaId: MediaId, course: String?) {
         scheduledAnalysisMediaIds.remove(mediaId)

@@ -274,6 +274,13 @@ interface LibraryRepository {
 
     /** 教材を削除する（音声・解析結果・文字起こし・状態を含む）。 */
     suspend fun delete(id: MediaId)
+
+    /**
+     * 指定したフォルダパス [coursePath]（およびその配下のサブフォルダ・教材）をアプリからすべて削除する。
+     *
+     * 端末内の元の音声ファイルや文字起こしファイルそのものは削除しない。
+     */
+    suspend fun deleteCourseFolder(coursePath: String) = Unit
 }
 
 /** 取り込みの進捗。 */

@@ -781,6 +781,8 @@ fun LibraryScreen(
     }
 
     if (state.hasPendingDeleteConfirmation) {
+        val pendingDirs = state.pendingDeleteDirectoryPaths
+        val isFolderDeletion = pendingDirs.isNotEmpty()
         val deleteDialogTitle: String
         val deleteDialogMessage: String
         when {
@@ -792,13 +794,23 @@ fun LibraryScreen(
                 )
             }
 
-            state.pendingDeleteDirectoryPath != null -> {
-                val dirDisplayName = state.pendingDeleteDirectoryPath.substringAfterLast('/')
+            pendingDirs.size == 1 && state.selectedItemIds.isEmpty() -> {
+                val dirDisplayName = pendingDirs.first().substringAfterLast('/')
                 val targetCount = state.pendingDeleteTargetItems.size
                 deleteDialogTitle = stringResource(R.string.library_delete_directory_dialog_title)
                 deleteDialogMessage = stringResource(
                     R.string.library_delete_directory_dialog_message,
                     dirDisplayName,
+                    targetCount,
+                )
+            }
+
+            isFolderDeletion -> {
+                val targetCount = state.pendingDeleteTargetItems.size
+                deleteDialogTitle = stringResource(R.string.library_delete_directory_dialog_title)
+                deleteDialogMessage = stringResource(
+                    R.string.library_delete_selected_directories_dialog_message,
+                    pendingDirs.size,
                     targetCount,
                 )
             }
@@ -821,7 +833,13 @@ fun LibraryScreen(
             confirmButton = {
                 TextButton(onClick = { onEvent(LibraryEvent.ConfirmDelete) }) {
                     Text(
-                        text = stringResource(R.string.library_delete_confirm),
+                        text = stringResource(
+                            if (isFolderDeletion) {
+                                R.string.library_delete_directory_confirm_ok
+                            } else {
+                                R.string.library_delete_confirm
+                            },
+                        ),
                         color = MaterialTheme.colorScheme.error,
                     )
                 }

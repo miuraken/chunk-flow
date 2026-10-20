@@ -651,4 +651,24 @@ class FakeLibraryRepository(
             }
         }
     }
+
+    override suspend fun deleteCourseFolder(coursePath: String) {
+        val cleanPath = coursePath.trim().trim('/').takeIf { it.isNotEmpty() } ?: return
+        val prefix = "$cleanPath/"
+        courseFolders.update { current ->
+            current.filterNot { folder ->
+                val p = folder.coursePath.trim().trim('/')
+                p == cleanPath || p.startsWith(prefix)
+            }
+        }
+        val targetItemIds = items.value
+            .filter { item ->
+                val c = item.course?.trim()?.trim('/').orEmpty()
+                c == cleanPath || c.startsWith(prefix)
+            }
+            .map { it.id }
+        for (id in targetItemIds) {
+            delete(id)
+        }
+    }
 }
