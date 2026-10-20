@@ -59,15 +59,15 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import com.miuraken.chunkflow.core.designsystem.component.language.LanguagePairBadge
+import com.miuraken.chunkflow.core.designsystem.component.playback.CompletedTranscriptBadgeColor
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
-import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.MediaId
 import java.io.File
 import java.time.Instant
@@ -85,9 +85,6 @@ internal val FavoriteStarColor = Color(0xFFFFB300)
 
 /** デフォルトの音符サムネイル背景色（落ち着いたグレー）。 */
 private val DefaultThumbnailBackgroundColor = Color(0xFF8A8A8E)
-
-/** 文字起こし完了（緑丸アイコン）の落ち着いたグリーン背景色（#19532b）。 */
-private val CompletedTranscriptBadgeColor = Color(0xFF19532B)
 
 /** この割合（%）を超えて聴いた教材を既習として、進捗バーと再生状況を緑系で表示する。 */
 internal const val COMPLETED_PROGRESS_PERCENT_THRESHOLD = 95
@@ -694,62 +691,5 @@ private fun PreviewBookArtwork(modifier: Modifier = Modifier) {
             topLeft = Offset(w * 0.18f, h * 0.48f),
             size = Size(w * 0.64f, h * 0.34f),
         )
-    }
-}
-
-@Composable
-private fun LanguagePairBadge(
-    pair: LanguagePair,
-    modifier: Modifier = Modifier,
-) {
-    val langPalette = chunkFlowLanguagePalette()
-    val targetUpper = pair.target.value.lowercase(Locale.ROOT)
-    val baseUpper = pair.base?.value?.lowercase(Locale.ROOT)
-
-    if (baseUpper != null) {
-        Row(
-            modifier = modifier,
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Surface(
-                color = langPalette.baseBadgeContainer,
-                contentColor = langPalette.onBaseBadgeContainer,
-                shape = MaterialTheme.shapes.extraSmall,
-            ) {
-                Text(
-                    text = baseUpper,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                )
-            }
-            Surface(
-                color = langPalette.targetBadgeContainer,
-                contentColor = langPalette.onTargetBadgeContainer,
-                shape = MaterialTheme.shapes.extraSmall,
-            ) {
-                Text(
-                    text = targetUpper,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                )
-            }
-        }
-    } else {
-        Surface(
-            modifier = modifier,
-            color = langPalette.targetBadgeContainer,
-            contentColor = langPalette.onTargetBadgeContainer,
-            shape = MaterialTheme.shapes.extraSmall,
-        ) {
-            Text(
-                text = targetUpper,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-            )
-        }
     }
 }

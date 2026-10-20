@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.miuraken.chunkflow.core.designsystem.component.playback.CompletedTranscriptBadgeColor
 import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackControlStrip
 import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContent
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -711,8 +712,6 @@ fun PlayerScreen(
         )
     }
 }
-
-private val CompletedTranscriptBadgeColor = Color(0xFF19532B)
 
 /**
  * 再生画面 TopAppBar の設定アイコン左に表示する文字起こし進捗バッジ。
