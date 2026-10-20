@@ -57,6 +57,7 @@ class AnalysisBinaryFormatTest {
         assertNotNull(decoded)
         assertEquals(10, decoded.binMs)
         assertContentEquals(original.logEnergyDb, decoded.logEnergyDb)
+        assertNull(decoded.speechProbability)
 
         val tempDir = Files.createTempDirectory("cf_feat_test").toFile()
         try {
@@ -66,6 +67,40 @@ class AnalysisBinaryFormatTest {
             assertNotNull(fromFile)
             assertEquals(10, fromFile.binMs)
             assertContentEquals(original.logEnergyDb, fromFile.logEnergyDb)
+            assertNull(fromFile.speechProbability)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `features_v2_speechProbability付きのエンコードとデコードおよびファイル読み書きが往復一致する`() {
+        val original = StoredFeatures(
+            binMs = 10,
+            logEnergyDb = floatArrayOf(-80f, -25.5f, -14.0f, -42.0f),
+            speechProbability = floatArrayOf(0.01f, 0.85f, 0.96f, 0.12f),
+        )
+
+        val encoded = AnalysisBinaryFormat.encodeFeatures(original)
+        assertEquals(AnalysisBinaryFormat.HEADER_SIZE_BYTES + 32, encoded.size)
+
+        val decoded = AnalysisBinaryFormat.decodeFeatures(encoded)
+        assertNotNull(decoded)
+        assertEquals(10, decoded.binMs)
+        assertContentEquals(original.logEnergyDb, decoded.logEnergyDb)
+        assertNotNull(decoded.speechProbability)
+        assertContentEquals(original.speechProbability, decoded.speechProbability)
+
+        val tempDir = Files.createTempDirectory("cf_feat_v2_test").toFile()
+        try {
+            val file = File(tempDir, "features.bin")
+            assertTrue(AnalysisBinaryFormat.writeFeaturesAtomic(file, original))
+            val fromFile = AnalysisBinaryFormat.readFeatures(file)
+            assertNotNull(fromFile)
+            assertEquals(10, fromFile.binMs)
+            assertContentEquals(original.logEnergyDb, fromFile.logEnergyDb)
+            assertNotNull(fromFile.speechProbability)
+            assertContentEquals(original.speechProbability, fromFile.speechProbability)
         } finally {
             tempDir.deleteRecursively()
         }
@@ -105,5 +140,21 @@ class AnalysisBinaryFormatTest {
             this[19] = 0x00
         }
         assertNull(AnalysisBinaryFormat.decodeFeatures(nanBytes))
+
+        // 6. features.bin v2 の speechProbability 側に NaN が混入している場合
+        val validV2Bytes = AnalysisBinaryFormat.encodeFeatures(
+            logEnergyDb = floatArrayOf(-50f, -20f),
+            binMs = 10,
+            speechProbability = floatArrayOf(0.1f, 0.9f),
+        )
+        assertNull(AnalysisBinaryFormat.decodeFeatures(validV2Bytes.copyOf(validV2Bytes.size - 4)))
+        val nanV2Bytes = validV2Bytes.copyOf().apply {
+            // speechProbability 側の最初の Float (offset 16 + 8 = 24) を NaN に書き換える
+            this[24] = 0x7F.toByte()
+            this[25] = 0xC0.toByte()
+            this[26] = 0x00
+            this[27] = 0x00
+        }
+        assertNull(AnalysisBinaryFormat.decodeFeatures(nanV2Bytes))
     }
 }

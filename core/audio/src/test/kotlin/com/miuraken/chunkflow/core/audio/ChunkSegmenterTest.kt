@@ -388,4 +388,161 @@ class ChunkSegmenterTest {
             ),
         )
     }
+
+    @Test
+    fun `detectBgmPresence_開始30秒以降の非発話フレームに有意な音量がある場合はBGMありと判定しイントロのみの音楽はBGMなしと判定する`() {
+        // 60秒 = 6000フレーム (10ms/frame)
+        val totalFrames = 6_000
+        val speechProb = FloatArray(totalFrames) { frame ->
+            // 1秒ごとに 500ms 発話、500ms 非発話
+            if ((frame % 100) in 20 until 70) 0.90f else 0.02f
+        }
+
+        // ケース1: 開始 0〜25秒だけイントロ音楽 (-22dB) が鳴り、30秒以降の非発話フレームは無音 (-65dB)
+        val introOnlyEnergy = FloatArray(totalFrames) { frame ->
+            val isSpeech = (frame % 100) in 20 until 70
+            when {
+                isSpeech -> -14f
+                frame < 2_500 -> -22f
+                else -> -65f
+            }
+        }
+        assertTrue(
+            !ChunkSegmenter.detectBgmPresence(
+                logEnergyDb = introOnlyEnergy,
+                speechProbability = speechProb,
+                binMs = 10,
+            ),
+            "イントロ音楽のみ（30秒以降は静寂）なら hasBgm = false になるべき",
+        )
+
+        // ケース2: 30秒以降の非発話フレームにも常時 BGM (-25dB > -45dB) が鳴っている
+        val constantBgmEnergy = FloatArray(totalFrames) { frame ->
+            val isSpeech = (frame % 100) in 20 until 70
+            if (isSpeech) -12f else -25f
+        }
+        assertTrue(
+            ChunkSegmenter.detectBgmPresence(
+                logEnergyDb = constantBgmEnergy,
+                speechProbability = speechProb,
+                binMs = 10,
+            ),
+            "30秒以降の非発話区間に BGM があるなら hasBgm = true になるべき",
+        )
+    }
+
+    @Test
+    fun `segment_SileroVADとBGM自動適応により常時BGM下でも220msポーズの短語が巨大チャンク化せず個別に分割される`() {
+        // 50秒 = 5000フレーム。常時 -22dBFS の BGM が鳴っているためエネルギー差では無音が検出できない状況を模擬
+        val totalFrames = 5_000
+        val energy = FloatArray(totalFrames) { -22f }
+        val probs = FloatArray(totalFrames) { 0.02f }
+
+        // 35秒付近に 3 つの単語（内 1 つは 180ms の1音節語「好」想定）を 220ms ギャップで配置
+        // 単語1: 35000..35600ms (600ms)
+        // ポーズ1: 35600..35820ms (220ms < 300ms だが BGM 適応の effectiveMinSilenceMs=219ms 以上)
+        // 単語2 (1音節短語): 35820..36000ms (180ms < minSpeechMs 250ms だが >= 150ms なので mergeGapMs=1000ms で強制結合しない)
+        // ポーズ2: 36000..36230ms (230ms)
+        // 単語3: 36230..36900ms (670ms)
+        val wordRangesFrames = listOf(
+            3_500 until 3_560,
+            3_582 until 3_600,
+            3_623 until 3_690,
+        )
+        for (range in wordRangesFrames) {
+            for (f in range) {
+                energy[f] = -12f
+                probs[f] = 0.92f
+            }
+        }
+
+        val segmenter = ChunkSegmenter()
+        val chunks = segmenter.segment(
+            logEnergyDb = energy,
+            params = SegmentationParams(
+                minSilenceMs = 300,
+                minSpeechMs = 250,
+                mergeGapMs = 1_000,
+                prePaddingMs = 150,
+                postPaddingMs = 200,
+            ),
+            binMs = 10,
+            durationMs = 50_000L,
+            speechProbability = probs,
+        )
+
+        assertEquals(3, chunks.size, "BGM下でも3単語が結合されず3チャンクに分割されるべき: chunks=$chunks")
+        // BGMありのときはパディングが pre<=80ms, post<=100ms に抑制される
+        assertEquals(35_000L - 80L, chunks[0].startMs)
+        assertEquals(36_900L + 100L, chunks[2].endMs)
+    }
+
+    @Test
+    fun `trimSilenceInRangeとsplitAndTrimSilence_SileroVADにより両端にマイナス20dBFSのBGMが鳴っていても発話区間だけにトリミングされる`() {
+        val segmenter = ChunkSegmenter()
+        // 0..5000ms (500 frames): 全区間で -20dBFS の大音量 BGM が鳴っており、エネルギーだけでは無音端を全く見分けられない
+        val energy = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 1_400 until 2_400) -14f else -20f
+        }
+        val probs = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 1_400 until 2_400) 0.94f else 0.03f
+        }
+
+        // 1. 拡大波形の「チャンク生成」（trimSilenceInRange）: [800..3200ms] を選択しても [1400..2400ms] 前後（±30ms以内）にトリミングされる
+        val (trimmedStart, trimmedEnd) = segmenter.trimSilenceInRange(
+            logEnergyDb = energy,
+            rangeStartMs = 800L,
+            rangeEndMs = 3_200L,
+            binMs = 10,
+            speechProbability = probs,
+        )
+        assertTrue(trimmedStart in 1_370L..1_400L, "trimmedStart=$trimmedStart")
+        assertTrue(trimmedEnd in 2_400L..2_430L, "trimmedEnd=$trimmedEnd")
+
+        // 2. BGM のみの区間 [3300..4500ms] は isSilenceOnlyInRange が true になる
+        assertTrue(
+            segmenter.isSilenceOnlyInRange(
+                logEnergyDb = energy,
+                rangeStartMs = 3_300L,
+                rangeEndMs = 4_500L,
+                binMs = 10,
+                speechProbability = probs,
+            ),
+        )
+
+        // 3. チャンク分割（splitAndTrimSilencePieces）でも BGM 端がトリミングされる
+        val probsTwoWords = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 1_000 until 1_700 || ms in 2_500 until 3_400) 0.92f else 0.02f
+        }
+        val pieces = segmenter.splitAndTrimSilencePieces(
+            logEnergyDb = energy,
+            chunkStartMs = 600L,
+            chunkEndMs = 4_000L,
+            splitPositionMs = 2_100L,
+            binMs = 10,
+            speechProbability = probsTwoWords,
+        )
+        assertEquals(2, pieces.size)
+        assertTrue(pieces[0].first in 970L..1_000L, "first.start=${pieces[0].first}")
+        assertTrue(pieces[0].second in 1_700L..1_730L, "first.end=${pieces[0].second}")
+        assertTrue(pieces[1].first in 2_470L..2_500L, "second.start=${pieces[1].first}")
+        assertTrue(pieces[1].second in 3_400L..3_430L, "second.end=${pieces[1].second}")
+    }
+
+    @Test
+    fun `SpeechProbabilityInterpolator_32ms窓の確率列を10msビンへ線形補間して0から1にクランプする`() {
+        val probs32 = floatArrayOf(0.0f, 1.0f, 0.5f)
+        val interpolated = SpeechProbabilityInterpolator.interpolate32msToBins(
+            probs32ms = probs32,
+            targetFrameCount = 10,
+            binMs = 10,
+        )
+        assertEquals(10, interpolated.size)
+        assertTrue(interpolated.all { it in 0.0f..1.0f })
+        assertTrue(interpolated[0] < 0.2f)
+        assertTrue(interpolated[4] > 0.8f)
+    }
 }

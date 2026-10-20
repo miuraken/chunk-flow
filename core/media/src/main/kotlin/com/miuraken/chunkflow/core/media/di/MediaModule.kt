@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.core.media.di
 
+import com.miuraken.chunkflow.core.audio.SpeechProbabilityStreamFactory
 import com.miuraken.chunkflow.core.media.AndroidSpeechRecognizerChunkTranscriber
 import com.miuraken.chunkflow.core.media.AudioStreamDecoder
 import com.miuraken.chunkflow.core.media.HttpUrlConnectionModelArtifactDownloader
@@ -8,6 +9,7 @@ import com.miuraken.chunkflow.core.media.MlKitOnDeviceTextTranslator
 import com.miuraken.chunkflow.core.media.ModelArtifactDownloader
 import com.miuraken.chunkflow.core.media.OnDeviceChunkTranscriber
 import com.miuraken.chunkflow.core.media.OnDeviceTextTranslator
+import com.miuraken.chunkflow.core.media.SileroVadEngine
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -16,7 +18,7 @@ import javax.inject.Singleton
 
 /**
  * `core:media` の [AudioStreamDecoder]、[OnDeviceChunkTranscriber]、[OnDeviceTextTranslator]、
- * および [ModelArtifactDownloader] を Hilt に束縛するモジュール（§7.3.1、F6.2）。
+ * [ModelArtifactDownloader]、および [SpeechProbabilityStreamFactory] を Hilt に束縛するモジュール（§7.3.1、F6.2）。
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -49,4 +51,11 @@ abstract class MediaModule {
     abstract fun bindsModelArtifactDownloader(
         impl: HttpUrlConnectionModelArtifactDownloader,
     ): ModelArtifactDownloader
+
+    /** [SileroVadEngine] を [SpeechProbabilityStreamFactory] として束縛する。 */
+    @Binds
+    @Singleton
+    abstract fun bindsSpeechProbabilityStreamFactory(
+        impl: SileroVadEngine,
+    ): SpeechProbabilityStreamFactory
 }

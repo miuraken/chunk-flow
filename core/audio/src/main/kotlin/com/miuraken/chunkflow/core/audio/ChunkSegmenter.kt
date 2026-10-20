@@ -13,7 +13,7 @@ const val CURRENT_ALGORITHM_VERSION: Int = 1
 /**
  * チャンクの前後にパディング（余白）を付与するユーティリティ（§7.3.3 手順 7、§7.4.6）。
  *
- * 前後のパディング（`prePaddingMs` / `postPaddingMs`）を付与際、`[0, durationMs]` の範囲に収め、
+ * 前後のパディング（`prePaddingMs` / `postPaddingMs`）を付与する際、`[0, durationMs]` の範囲に収め、
  * かつ隣接するチャンクとの間にある無音区間の中点を越えないようにクランプする。
  */
 object ChunkPadding {
@@ -103,18 +103,14 @@ object ChunkPadding {
 }
 
 /**
- * 端末内の無音検出によるチャンク分割器（§7.3.3 手順 1〜7）。
+ * 端末内の発話区間検出（Silero VAD + エネルギー適応）によるチャンク分割器（§7.3.3 手順 1〜7）。
  *
- * 1. フレームエネルギー `E[n]`（dBFS、10ms ホップ）を 5 フレームのメディアンフィルタで平滑化する。
- * 2. 適応閾値: `N = P10`、`S = P90`、`T = (N + thresholdRatio * (S - N)).coerceIn(-60f, -25f)`。
- * 3. ヒステリシス: `E > T + 3dB` で発話開始、`E < T` で発話終了。
- * 4. `minSilenceMs` 以上続く無音を区切りとして発話区間を抽出する。
- * 5. `minSpeechMs` 未満の短い発話は、前後の隣との間隔が `mergeGapMs` 未満なら近い方に統合する。
- *    統合先がなく、かつピークエネルギーが `T + 6dB` 未満の場合だけノイズとして捨てる（「Yes」「はい」は残す）。
- * 6. `maxChunkMs` を超える区間は、内部で最もエネルギーの低い谷（150ms 以上の低エネルギー区間を優先）で再帰的に分割する。
- * 7. 前後にパディング（`prePaddingMs` / `postPaddingMs`）を付け、隣のチャンクとの無音の中点を越えないようにする。
+ * - `speechProbability`（Silero VAD の 10ms ごとの発話確率 `0.0f..1.0f`）が与えられた場合は、
+ *   ニューラル VAD の確率ヒステリシスを主判定として発話区間を抽出し、さらにファイル中程（開始 30 秒以降）の
+ *   非発話フレームのエネルギー分布から BGM の有無を自動判定（[detectBgmPresence]）してポーズ閾値やパディングを最適化する。
+ * - `speechProbability` が `null` の場合は、従来のエネルギー VAD（[EnergyVoiceActivityDetector]）による処理を実行する。
  *
- * @param vad 発話フレームの検出器（既定は [EnergyVoiceActivityDetector]）。
+ * @param vad エネルギーベースの発話フレーム検出器（既定は [EnergyVoiceActivityDetector]）。
  * @param defaultBinMs 1 フレーム（ビン）の時間長（ミリ秒、既定 10ms）。
  */
 class ChunkSegmenter(
@@ -130,30 +126,51 @@ class ChunkSegmenter(
     }
 
     /**
-     * フレームごとの対数エネルギー [logEnergyDb] から自動分割チャンクを生成する。
+     * フレームごとの対数エネルギー [logEnergyDb]（および任意の Silero VAD 発話確率 [speechProbability]）から
+     * 自動分割チャンクを生成する。
      *
      * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
      * @param params 分割パラメータ。
      * @param binMs 1 フレームの長さ（ミリ秒）。
      * @param durationMs 音声全体の長さ（ミリ秒）。省略時は `logEnergyDb.size * binMs`。
+     * @param speechProbability フレームごとの発話確率（`0.0f..1.0f`、Silero VAD 出力。省略時はエネルギー VAD）。
      */
     fun segment(
         logEnergyDb: FloatArray,
         params: SegmentationParams = SegmentationParams(),
         binMs: Int = defaultBinMs,
         durationMs: Long = logEnergyDb.size.toLong() * binMs,
+        speechProbability: FloatArray? = null,
     ): List<Chunk> {
         require(binMs > 0) { "binMs must be > 0: $binMs" }
         if (logEnergyDb.isEmpty() || durationMs <= 0L) return emptyList()
 
+        val validProbs = speechProbability?.takeIf { it.size == logEnergyDb.size }
         val rawIntervals = extractSpeechIntervalsWithoutPadding(
             logEnergyDb = logEnergyDb,
             params = params,
             binMs = binMs,
+            speechProbability = validProbs,
         )
+        val hasBgm = validProbs != null && detectBgmPresence(
+            logEnergyDb = logEnergyDb,
+            speechProbability = validProbs,
+            binMs = binMs,
+        )
+        val effectivePrePaddingMs = if (hasBgm) {
+            min(params.prePaddingMs, BGM_MAX_PRE_PADDING_MS)
+        } else {
+            params.prePaddingMs
+        }
+        val effectivePostPaddingMs = if (hasBgm) {
+            min(params.postPaddingMs, BGM_MAX_POST_PADDING_MS)
+        } else {
+            params.postPaddingMs
+        }
         return ChunkPadding.applyPadding(
             rawIntervals = rawIntervals,
-            params = params,
+            prePaddingMs = effectivePrePaddingMs,
+            postPaddingMs = effectivePostPaddingMs,
             durationMs = durationMs,
             origin = ChunkOrigin.AUTO,
         )
@@ -166,9 +183,20 @@ class ChunkSegmenter(
         logEnergyDb: FloatArray,
         params: SegmentationParams = SegmentationParams(),
         binMs: Int = defaultBinMs,
+        speechProbability: FloatArray? = null,
     ): List<Pair<Long, Long>> {
         require(binMs > 0) { "binMs must be > 0: $binMs" }
         if (logEnergyDb.isEmpty()) return emptyList()
+
+        val validProbs = speechProbability?.takeIf { it.size == logEnergyDb.size }
+        if (validProbs != null) {
+            return extractSpeechIntervalsWithSilero(
+                logEnergyDb = logEnergyDb,
+                speechProbability = validProbs,
+                params = params,
+                binMs = binMs,
+            )
+        }
 
         // 手順 1〜3: メディアンフィルタ + 適応閾値 + ヒステリシス
         val vadResult = vad.detect(logEnergyDb, params)
@@ -212,9 +240,165 @@ class ChunkSegmenter(
         }
     }
 
+    private fun extractSpeechIntervalsWithSilero(
+        logEnergyDb: FloatArray,
+        speechProbability: FloatArray,
+        params: SegmentationParams,
+        binMs: Int,
+    ): List<Pair<Long, Long>> {
+        val n = logEnergyDb.size
+        val smoothedEnergyDb = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
+        val smoothedProb = medianFilter3(speechProbability)
+        val (onsetProb, offsetProb) = computeSileroThresholds(params.thresholdRatio)
+
+        val speechFrames = BooleanArray(n)
+        var inSpeech = false
+        for (i in 0 until n) {
+            val p = smoothedProb[i]
+            if (!inSpeech && p >= onsetProb) {
+                inSpeech = true
+            } else if (inSpeech && p < offsetProb) {
+                inSpeech = false
+            }
+            speechFrames[i] = inSpeech
+        }
+
+        val hasBgm = detectBgmPresence(
+            logEnergyDb = logEnergyDb,
+            speechProbability = speechProbability,
+            binMs = binMs,
+        )
+        val effectiveMinSilenceMs = if (hasBgm) {
+            val baseSilenceMs = if (params.minSilenceMs == DEFAULT_PARAMS_MIN_SILENCE_MS) {
+                BGM_REFERENCE_MIN_SILENCE_MS
+            } else {
+                params.minSilenceMs
+            }
+            (baseSilenceMs * BGM_MIN_SILENCE_SCALE).toInt().coerceAtLeast(MIN_BGM_SILENCE_MS)
+        } else {
+            params.minSilenceMs
+        }
+
+        val bridged = extractAndBridgeIntervals(
+            speechFrames = speechFrames,
+            minSilenceMs = effectiveMinSilenceMs,
+            binMs = binMs,
+        )
+        if (bridged.isEmpty()) return emptyList()
+
+        val afterShortSpeech = resolveShortSpeechIntervalsSilero(
+            intervals = bridged,
+            speechProbability = speechProbability,
+            smoothedProb = smoothedProb,
+            onsetProb = onsetProb,
+            effectiveMinSilenceMs = effectiveMinSilenceMs,
+            params = params,
+            binMs = binMs,
+        )
+        if (afterShortSpeech.isEmpty()) return emptyList()
+
+        // 複合スコア（発話確率の重み + 平滑化エネルギー dB）を用いて、非発話かつ低エネルギーの谷で長尺区間を分割する
+        val compositeValleyScore = FloatArray(n) { i ->
+            smoothedProb[i] * SILERO_VALLEY_PROB_WEIGHT_DB + smoothedEnergyDb[i]
+        }
+        val lowScoreCeiling = offsetProb * SILERO_VALLEY_PROB_WEIGHT_DB - 20f
+
+        val splitIntervals = ArrayList<FrameInterval>(afterShortSpeech.size)
+        for (interval in afterShortSpeech) {
+            splitLongIntervalRecursive(
+                interval = interval,
+                smoothedEnergyDb = compositeValleyScore,
+                thresholdDb = lowScoreCeiling - EnergyVoiceActivityDetector.HYSTERESIS_ONSET_OFFSET_DB,
+                params = params,
+                binMs = binMs,
+                out = splitIntervals,
+            )
+        }
+
+        return splitIntervals.map { interval ->
+            (interval.startFrame.toLong() * binMs) to (interval.endFrame.toLong() * binMs)
+        }
+    }
+
+    private fun resolveShortSpeechIntervalsSilero(
+        intervals: List<FrameInterval>,
+        speechProbability: FloatArray,
+        smoothedProb: FloatArray,
+        onsetProb: Float,
+        effectiveMinSilenceMs: Int,
+        params: SegmentationParams,
+        binMs: Int,
+    ): List<FrameInterval> {
+        val list = intervals.toMutableList()
+        val standaloneWordMinMs = min(params.minSpeechMs, SILERO_STANDALONE_WORD_MIN_MS)
+        val microFragmentMaxGapMs = min(params.mergeGapMs, max(effectiveMinSilenceMs + 120, 350))
+
+        var index = 0
+        while (index < list.size) {
+            val current = list[index]
+            val durationMs = current.durationMs(binMs)
+            if (durationMs >= params.minSpeechMs) {
+                index++
+                continue
+            }
+
+            val peakProb = maxPeakProbability(current, speechProbability, smoothedProb)
+
+            // Silero VAD で十分な発話確率（>= onsetProb）かつ 150ms 以上の区間は、
+            // 1 音節の単語（「好」「一」「Yes」など）として隣のチャンクへ強制結合せずに独立保持する
+            if (durationMs >= standaloneWordMinMs && peakProb >= onsetProb) {
+                index++
+                continue
+            }
+
+            val prevGapMs = if (index > 0) {
+                (current.startFrame - list[index - 1].endFrame) * binMs
+            } else {
+                Int.MAX_VALUE
+            }
+            val nextGapMs = if (index + 1 < list.size) {
+                (list[index + 1].startFrame - current.endFrame) * binMs
+            } else {
+                Int.MAX_VALUE
+            }
+            val nearestGapMs = min(prevGapMs, nextGapMs)
+
+            if (nearestGapMs < microFragmentMaxGapMs) {
+                if (prevGapMs <= nextGapMs) {
+                    val prev = list[index - 1]
+                    list[index - 1] = FrameInterval(prev.startFrame, current.endFrame)
+                    list.removeAt(index)
+                    index = (index - 1).coerceAtLeast(0)
+                } else {
+                    val next = list[index + 1]
+                    list[index + 1] = FrameInterval(current.startFrame, next.endFrame)
+                    list.removeAt(index)
+                }
+            } else if (peakProb < min(0.65f, onsetProb + 0.15f) || durationMs < 100) {
+                list.removeAt(index)
+            } else {
+                index++
+            }
+        }
+        return list
+    }
+
+    private fun maxPeakProbability(
+        interval: FrameInterval,
+        rawProb: FloatArray,
+        smoothedProb: FloatArray,
+    ): Float {
+        var maxP = 0f
+        for (f in interval.startFrame until interval.endFrame) {
+            val v = max(rawProb[f], smoothedProb[f])
+            if (v > maxP) maxP = v
+        }
+        return maxP
+    }
+
     /**
      * チャンク区間 `[chunkStartMs, chunkEndMs]` を [splitPositionMs] で前後に分割し、
-     * それぞれの半区間から前後の無音部分をトリミングした区間リスト（最大 2 件、片側が無音のみなら 1 件）を返す。
+     * それぞれの半区間から前後の無音（または BGM のみの部分）をトリミングした区間リスト（最大 2 件、片側が無音のみなら 1 件）を返す。
      *
      * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
      * @param chunkStartMs 分割対象チャンクの開始時刻（ミリ秒）。
@@ -222,6 +406,7 @@ class ChunkSegmenter(
      * @param splitPositionMs 分割位置の時刻（ミリ秒、`chunkStartMs < splitPositionMs < chunkEndMs`）。
      * @param params 分割・パディングのパラメータ。
      * @param binMs 1 フレームの長さ（ミリ秒）。
+     * @param speechProbability フレームごとの発話確率（`0.0f..1.0f`、Silero VAD 出力。省略時はエネルギーベース）。
      * @return トリミング後のチャンク区間（`startMs to endMs`）のリスト（1 件または 2 件）。
      */
     fun splitAndTrimSilencePieces(
@@ -231,6 +416,7 @@ class ChunkSegmenter(
         splitPositionMs: Long,
         params: SegmentationParams = SegmentationParams(),
         binMs: Int = defaultBinMs,
+        speechProbability: FloatArray? = null,
     ): List<Pair<Long, Long>> {
         require(binMs > 0) { "binMs must be > 0: $binMs" }
         require(chunkStartMs < splitPositionMs && splitPositionMs < chunkEndMs) {
@@ -240,6 +426,36 @@ class ChunkSegmenter(
         val secondRaw = splitPositionMs to chunkEndMs
         if (logEnergyDb.isEmpty()) {
             return listOf(firstRaw, secondRaw)
+        }
+
+        val validProbs = speechProbability?.takeIf { it.size == logEnergyDb.size }
+        if (validProbs != null) {
+            val smoothedProb = medianFilter3(validProbs)
+            val (_, offsetProb) = computeSileroThresholds(params.thresholdRatio)
+            val firstTrimmed = trimPieceSilenceWithSileroOrNull(
+                rawProb = validProbs,
+                smoothedProb = smoothedProb,
+                offsetProb = offsetProb,
+                pieceStartMs = chunkStartMs,
+                pieceEndMs = splitPositionMs,
+                isFirstHalf = true,
+                binMs = binMs,
+            )
+            val secondTrimmed = trimPieceSilenceWithSileroOrNull(
+                rawProb = validProbs,
+                smoothedProb = smoothedProb,
+                offsetProb = offsetProb,
+                pieceStartMs = splitPositionMs,
+                pieceEndMs = chunkEndMs,
+                isFirstHalf = false,
+                binMs = binMs,
+            )
+            return when {
+                firstTrimmed != null && secondTrimmed != null -> listOf(firstTrimmed, secondTrimmed)
+                firstTrimmed != null -> listOf(firstTrimmed)
+                secondTrimmed != null -> listOf(secondTrimmed)
+                else -> listOf(firstRaw, secondRaw)
+            }
         }
 
         val smoothed = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
@@ -284,14 +500,6 @@ class ChunkSegmenter(
      * それぞれの半区間から前後の無音部分をトリミングした 2 つの区間（前半と後半の `startMs to endMs`）を返す。
      *
      * 半区間内に発話フレームが 1 つも見つからない場合は、元の半区間をそのまま返す。
-     *
-     * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
-     * @param chunkStartMs 分割対象チャンクの開始時刻（ミリ秒）。
-     * @param chunkEndMs 分割対象チャンクの終了時刻（ミリ秒）。
-     * @param splitPositionMs 分割位置の時刻（ミリ秒、`chunkStartMs < splitPositionMs < chunkEndMs`）。
-     * @param params 分割・パディングのパラメータ。
-     * @param binMs 1 フレームの長さ（ミリ秒）。
-     * @return 前半チャンク区間と後半チャンク区間のペア。
      */
     fun splitAndTrimSilence(
         logEnergyDb: FloatArray,
@@ -300,6 +508,7 @@ class ChunkSegmenter(
         splitPositionMs: Long,
         params: SegmentationParams = SegmentationParams(),
         binMs: Int = defaultBinMs,
+        speechProbability: FloatArray? = null,
     ): Pair<Pair<Long, Long>, Pair<Long, Long>> {
         require(binMs > 0) { "binMs must be > 0: $binMs" }
         require(chunkStartMs < splitPositionMs && splitPositionMs < chunkEndMs) {
@@ -309,6 +518,31 @@ class ChunkSegmenter(
         val secondRaw = splitPositionMs to chunkEndMs
         if (logEnergyDb.isEmpty()) {
             return firstRaw to secondRaw
+        }
+
+        val validProbs = speechProbability?.takeIf { it.size == logEnergyDb.size }
+        if (validProbs != null) {
+            val smoothedProb = medianFilter3(validProbs)
+            val (_, offsetProb) = computeSileroThresholds(params.thresholdRatio)
+            val firstTrimmed = trimPieceSilenceWithSileroOrNull(
+                rawProb = validProbs,
+                smoothedProb = smoothedProb,
+                offsetProb = offsetProb,
+                pieceStartMs = chunkStartMs,
+                pieceEndMs = splitPositionMs,
+                isFirstHalf = true,
+                binMs = binMs,
+            )
+            val secondTrimmed = trimPieceSilenceWithSileroOrNull(
+                rawProb = validProbs,
+                smoothedProb = smoothedProb,
+                offsetProb = offsetProb,
+                pieceStartMs = splitPositionMs,
+                pieceEndMs = chunkEndMs,
+                isFirstHalf = false,
+                binMs = binMs,
+            )
+            return (firstTrimmed ?: firstRaw) to (secondTrimmed ?: secondRaw)
         }
 
         val smoothed = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
@@ -345,16 +579,9 @@ class ChunkSegmenter(
 
     /**
      * 指定した範囲 `[rangeStartMs, rangeEndMs)` が「無音判定の感度（[SegmentationParams.thresholdRatio]）」に照らして
-     * 無音のみであるかを判定する。
+     * 無音（または BGM のみで発話なし）であるかを判定する。
      *
      * 特徴量が空の場合は、無音とは判定できないため `false` を返す。
-     *
-     * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
-     * @param rangeStartMs 判定範囲の開始時刻（ミリ秒）。
-     * @param rangeEndMs 判定範囲の終了時刻（ミリ秒、`rangeStartMs < rangeEndMs`）。
-     * @param params 無音判定の感度（`thresholdRatio`）を含む分割パラメータ。
-     * @param binMs 1 フレームの長さ（ミリ秒）。
-     * @return 範囲内がすべて無音と判定される場合は `true`、有音フレームを含む場合は `false`。
      */
     fun isSilenceOnlyInRange(
         logEnergyDb: FloatArray,
@@ -362,6 +589,7 @@ class ChunkSegmenter(
         rangeEndMs: Long,
         params: SegmentationParams = SegmentationParams(),
         binMs: Int = defaultBinMs,
+        speechProbability: FloatArray? = null,
     ): Boolean {
         require(binMs > 0) { "binMs must be > 0: $binMs" }
         require(rangeStartMs < rangeEndMs) {
@@ -369,6 +597,25 @@ class ChunkSegmenter(
         }
         if (logEnergyDb.isEmpty()) {
             return false
+        }
+
+        val validProbs = speechProbability?.takeIf { it.size == logEnergyDb.size }
+        if (validProbs != null) {
+            val smoothedProb = medianFilter3(validProbs)
+            val totalFrames = smoothedProb.size
+            val startFrame = (rangeStartMs / binMs).toInt().coerceIn(0, totalFrames)
+            val endFrame = ((rangeEndMs + binMs - 1L) / binMs).toInt().coerceIn(startFrame, totalFrames)
+            if (startFrame >= endFrame) {
+                return false
+            }
+            val (_, offsetProb) = computeSileroThresholds(params.thresholdRatio)
+            var localMaxProb = 0f
+            for (f in startFrame until endFrame) {
+                if (smoothedProb[f] > localMaxProb) {
+                    localMaxProb = smoothedProb[f]
+                }
+            }
+            return localMaxProb < offsetProb
         }
 
         val smoothed = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
@@ -404,15 +651,8 @@ class ChunkSegmenter(
     }
 
     /**
-     * 指定した範囲 `[rangeStartMs, rangeEndMs]` 内に有音領域がある場合は左右の無音領域をトリミングした区間を返し、
-     * 無音領域しかない場合（または特徴量が空の場合）は選択範囲 `[rangeStartMs, rangeEndMs]` をそのまま返す。
-     *
-     * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
-     * @param rangeStartMs 選択範囲の開始時刻（ミリ秒）。
-     * @param rangeEndMs 選択範囲の終了時刻（ミリ秒、`rangeStartMs < rangeEndMs`）。
-     * @param params 分割・パディングのパラメータ。
-     * @param binMs 1 フレームの長さ（ミリ秒）。
-     * @return トリミング後の `startMs to endMs`。
+     * 指定した範囲 `[rangeStartMs, rangeEndMs]` 内に発話領域がある場合は左右の非発話領域（無音・BGM のみ）をトリミングした区間を返し、
+     * 発話領域がない場合（または特徴量が空の場合）は選択範囲 `[rangeStartMs, rangeEndMs]` をそのまま返す。
      */
     fun trimSilenceInRange(
         logEnergyDb: FloatArray,
@@ -420,6 +660,7 @@ class ChunkSegmenter(
         rangeEndMs: Long,
         params: SegmentationParams = SegmentationParams(),
         binMs: Int = defaultBinMs,
+        speechProbability: FloatArray? = null,
     ): Pair<Long, Long> {
         require(binMs > 0) { "binMs must be > 0: $binMs" }
         require(rangeStartMs < rangeEndMs) {
@@ -428,6 +669,20 @@ class ChunkSegmenter(
         val rawRange = rangeStartMs to rangeEndMs
         if (logEnergyDb.isEmpty()) {
             return rawRange
+        }
+
+        val validProbs = speechProbability?.takeIf { it.size == logEnergyDb.size }
+        if (validProbs != null) {
+            val smoothedProb = medianFilter3(validProbs)
+            val (_, offsetProb) = computeSileroThresholds(params.thresholdRatio)
+            return trimRangeSilenceWithSilero(
+                rawProb = validProbs,
+                smoothedProb = smoothedProb,
+                offsetProb = offsetProb,
+                rangeStartMs = rangeStartMs,
+                rangeEndMs = rangeEndMs,
+                binMs = binMs,
+            ) ?: rawRange
         }
 
         val smoothed = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
@@ -502,6 +757,187 @@ class ChunkSegmenter(
         val postMs = min(30L, trailingSilenceMs / 4L)
         val trimmedStartMs = (rawSpeechStartMs - preMs).coerceIn(rangeStartMs, rawSpeechStartMs)
         val trimmedEndMs = (rawSpeechEndMs + postMs).coerceIn(max(rawSpeechEndMs, trimmedStartMs + 1L), rangeEndMs)
+        return trimmedStartMs to trimmedEndMs
+    }
+
+    private fun trimRangeSilenceWithSilero(
+        rawProb: FloatArray,
+        smoothedProb: FloatArray,
+        offsetProb: Float,
+        rangeStartMs: Long,
+        rangeEndMs: Long,
+        binMs: Int,
+    ): Pair<Long, Long>? {
+        val totalFrames = smoothedProb.size
+        if (totalFrames == 0) return null
+        val startFrame = (rangeStartMs / binMs).toInt().coerceIn(0, totalFrames)
+        val endFrame = ((rangeEndMs + binMs - 1L) / binMs).toInt().coerceIn(startFrame, totalFrames)
+        if (startFrame >= endFrame) return null
+
+        var localMaxProb = 0f
+        for (f in startFrame until endFrame) {
+            val p = max(rawProb[f], smoothedProb[f])
+            if (p > localMaxProb) localMaxProb = p
+        }
+        if (localMaxProb < SILERO_NON_SPEECH_PROB_CEILING) {
+            return null
+        }
+
+        val effectiveProb = min(offsetProb, localMaxProb * 0.55f).coerceIn(SILERO_NON_SPEECH_PROB_CEILING, 0.50f)
+        val count = endFrame - startFrame
+        val speechFlags = BooleanArray(count) { i ->
+            max(rawProb[startFrame + i], smoothedProb[startFrame + i]) >= effectiveProb
+        }
+        val bridged = extractAndBridgeIntervals(
+            speechFrames = speechFlags,
+            minSilenceMs = 40,
+            binMs = binMs,
+        )
+        if (bridged.isEmpty()) return null
+
+        val runs = bridged.map { localRun ->
+            FrameInterval(
+                startFrame = startFrame + localRun.startFrame,
+                endFrame = startFrame + localRun.endFrame,
+            )
+        }.toMutableList()
+
+        if (runs.size >= 2) {
+            val maxRunPeak = runs.maxOf { maxPeakProbability(it, rawProb, smoothedProb) }
+            while (runs.size >= 2) {
+                val first = runs.first()
+                if (first.durationMs(binMs) < 60 && maxPeakProbability(first, rawProb, smoothedProb) < maxRunPeak * 0.65f) {
+                    runs.removeAt(0)
+                } else {
+                    break
+                }
+            }
+            while (runs.size >= 2) {
+                val last = runs.last()
+                if (last.durationMs(binMs) < 60 && maxPeakProbability(last, rawProb, smoothedProb) < maxRunPeak * 0.65f) {
+                    runs.removeAt(runs.lastIndex)
+                } else {
+                    break
+                }
+            }
+        }
+        if (runs.isEmpty()) return null
+
+        val firstSpeechFrame = runs.first().startFrame
+        val lastSpeechFrame = runs.last().endFrame - 1
+        if (lastSpeechFrame < firstSpeechFrame) return null
+
+        val rawSpeechStartMs = (firstSpeechFrame.toLong() * binMs).coerceIn(rangeStartMs, rangeEndMs)
+        val rawSpeechEndMs = ((lastSpeechFrame + 1).toLong() * binMs).coerceIn(rawSpeechStartMs, rangeEndMs)
+        if (rawSpeechEndMs <= rawSpeechStartMs) return null
+
+        val leadingSilenceMs = (rawSpeechStartMs - rangeStartMs).coerceAtLeast(0L)
+        val trailingSilenceMs = (rangeEndMs - rawSpeechEndMs).coerceAtLeast(0L)
+        val preMs = min(30L, leadingSilenceMs / 4L)
+        val postMs = min(30L, trailingSilenceMs / 4L)
+        val trimmedStartMs = (rawSpeechStartMs - preMs).coerceIn(rangeStartMs, rawSpeechStartMs)
+        val trimmedEndMs = (rawSpeechEndMs + postMs).coerceIn(max(rawSpeechEndMs, trimmedStartMs + 1L), rangeEndMs)
+        return trimmedStartMs to trimmedEndMs
+    }
+
+    private fun trimPieceSilenceWithSileroOrNull(
+        rawProb: FloatArray,
+        smoothedProb: FloatArray,
+        offsetProb: Float,
+        pieceStartMs: Long,
+        pieceEndMs: Long,
+        isFirstHalf: Boolean,
+        binMs: Int,
+    ): Pair<Long, Long>? {
+        if (pieceEndMs <= pieceStartMs) return null
+        val totalFrames = smoothedProb.size
+        if (totalFrames == 0) return null
+
+        val startFrame = (pieceStartMs / binMs).toInt().coerceIn(0, totalFrames)
+        val endFrame = ((pieceEndMs + binMs - 1L) / binMs).toInt().coerceIn(startFrame, totalFrames)
+        if (startFrame >= endFrame) return null
+
+        var maxProb = 0f
+        for (f in startFrame until endFrame) {
+            val p = max(rawProb[f], smoothedProb[f])
+            if (p > maxProb) maxProb = p
+        }
+        if (maxProb < offsetProb) {
+            return null
+        }
+
+        val effectiveProb = min(offsetProb, maxProb * 0.55f).coerceIn(SILERO_NON_SPEECH_PROB_CEILING, 0.50f)
+        val pieceFrameCount = endFrame - startFrame
+        val pieceSpeech = BooleanArray(pieceFrameCount) { i ->
+            max(rawProb[startFrame + i], smoothedProb[startFrame + i]) >= effectiveProb
+        }
+
+        val bridgedLocal = extractAndBridgeIntervals(
+            speechFrames = pieceSpeech,
+            minSilenceMs = 40,
+            binMs = binMs,
+        )
+        if (bridgedLocal.isEmpty()) return null
+
+        val runs = bridgedLocal.mapNotNull { localRun ->
+            val globalRun = FrameInterval(
+                startFrame = startFrame + localRun.startFrame,
+                endFrame = startFrame + localRun.endFrame,
+            )
+            val durationMs = globalRun.durationMs(binMs)
+            val peakP = maxPeakProbability(globalRun, rawProb, smoothedProb)
+            if (durationMs < 60 && peakP < offsetProb + 0.15f) {
+                null
+            } else {
+                globalRun
+            }
+        }.toMutableList()
+
+        if (runs.isEmpty()) return null
+
+        if (runs.size >= 2) {
+            val maxRunDurationMs = runs.maxOf { it.durationMs(binMs) }
+            if (isFirstHalf) {
+                val boundaryRun = runs.last()
+                val prevRun = runs[runs.size - 2]
+                val boundaryDurationMs = boundaryRun.durationMs(binMs)
+                val gapMs = (boundaryRun.startFrame - prevRun.endFrame) * binMs
+                if (boundaryDurationMs < 180 &&
+                    boundaryDurationMs < maxRunDurationMs * 0.30f &&
+                    gapMs >= 80
+                ) {
+                    runs.removeAt(runs.lastIndex)
+                }
+            } else {
+                val boundaryRun = runs.first()
+                val nextRun = runs[1]
+                val boundaryDurationMs = boundaryRun.durationMs(binMs)
+                val gapMs = (nextRun.startFrame - boundaryRun.endFrame) * binMs
+                if (boundaryDurationMs < 180 &&
+                    boundaryDurationMs < maxRunDurationMs * 0.30f &&
+                    gapMs >= 80
+                ) {
+                    runs.removeAt(0)
+                }
+            }
+        }
+
+        if (runs.isEmpty()) return null
+
+        val firstSpeechFrame = runs.first().startFrame
+        val lastSpeechFrame = runs.last().endFrame - 1
+        if (lastSpeechFrame < firstSpeechFrame) return null
+
+        val rawSpeechStartMs = (firstSpeechFrame.toLong() * binMs).coerceIn(pieceStartMs, pieceEndMs)
+        val rawSpeechEndMs = ((lastSpeechFrame + 1).toLong() * binMs).coerceIn(rawSpeechStartMs, pieceEndMs)
+        if (rawSpeechEndMs <= rawSpeechStartMs) return null
+
+        val leadingSilenceMs = (rawSpeechStartMs - pieceStartMs).coerceAtLeast(0L)
+        val trailingSilenceMs = (pieceEndMs - rawSpeechEndMs).coerceAtLeast(0L)
+        val preMs = min(30L, leadingSilenceMs / 4L)
+        val postMs = min(30L, trailingSilenceMs / 4L)
+        val trimmedStartMs = (rawSpeechStartMs - preMs).coerceIn(pieceStartMs, rawSpeechStartMs)
+        val trimmedEndMs = (rawSpeechEndMs + postMs).coerceIn(max(rawSpeechEndMs, trimmedStartMs + 1L), pieceEndMs)
         return trimmedStartMs to trimmedEndMs
     }
 
@@ -964,5 +1400,102 @@ class ChunkSegmenter(
 
         /** 長いチャンクを谷分割するときに優先する低エネルギー谷の最小長（150ms、§7.3.3 手順 6）。 */
         const val PREFERRED_VALLEY_MS: Int = 150
+
+        private const val SILERO_NON_SPEECH_PROB_CEILING: Float = 0.20f
+        private const val BGM_ENERGY_THRESHOLD_DB: Float = -45.0f
+        private const val BGM_ACTIVE_RATIO_THRESHOLD: Float = 0.10f
+        private const val BGM_MIN_NON_SPEECH_FRAMES: Int = 20
+        private const val DEFAULT_PARAMS_MIN_SILENCE_MS: Int = 500
+        private const val BGM_REFERENCE_MIN_SILENCE_MS: Int = 300
+        private const val BGM_MIN_SILENCE_SCALE: Float = 0.73f
+        private const val MIN_BGM_SILENCE_MS: Int = 150
+        private const val BGM_MAX_PRE_PADDING_MS: Int = 80
+        private const val BGM_MAX_POST_PADDING_MS: Int = 100
+        private const val SILERO_STANDALONE_WORD_MIN_MS: Int = 150
+        private const val SILERO_VALLEY_PROB_WEIGHT_DB: Float = 40.0f
+
+        /**
+         * `thresholdRatio`（既定 `0.35f`）から Silero VAD 用の発話開始確率 `onsetProb` と発話終了確率 `offsetProb` を算出する。
+         */
+        internal fun computeSileroThresholds(thresholdRatio: Float): Pair<Float, Float> {
+            val ratio = thresholdRatio.coerceIn(0.05f, 0.95f)
+            val onsetProb = (0.50f + (ratio - 0.35f) * 0.60f).coerceIn(0.20f, 0.85f)
+            val offsetProb = (onsetProb - 0.15f).coerceIn(0.10f, onsetProb - 0.05f)
+            return onsetProb to offsetProb
+        }
+
+        /**
+         * イントロ音楽の影響を避けるため、ファイルの中程（45 秒以上なら開始 30 秒以降の `[30s, min(total, 60s))`）をサンプリングし、
+         * Silero VAD が非発話（`< 0.20`）と判定したフレームに有意な音量（`> -45 dBFS`）が存在するかで BGM の有無を自動判定する。
+         */
+        fun detectBgmPresence(
+            logEnergyDb: FloatArray,
+            speechProbability: FloatArray,
+            binMs: Int = DEFAULT_BIN_MS,
+        ): Boolean {
+            val n = min(logEnergyDb.size, speechProbability.size)
+            if (n <= 0 || binMs <= 0) return false
+            val totalMs = n.toLong() * binMs
+            val (sampleStartMs, sampleEndMs) = when {
+                totalMs >= 45_000L -> 30_000L to min(totalMs, 60_000L)
+                totalMs >= 15_000L -> (totalMs * 30L / 100L) to (totalMs * 85L / 100L)
+                else -> 0L to totalMs
+            }
+            val startFrame = (sampleStartMs / binMs).toInt().coerceIn(0, n)
+            val endFrame = (sampleEndMs / binMs).toInt().coerceIn(startFrame, n)
+
+            evaluateBgmInFrameRange(logEnergyDb, speechProbability, startFrame, endFrame)?.let { return it }
+            if (startFrame > 0 || endFrame < n) {
+                evaluateBgmInFrameRange(logEnergyDb, speechProbability, 0, n)?.let { return it }
+            }
+            return false
+        }
+
+        private fun evaluateBgmInFrameRange(
+            logEnergyDb: FloatArray,
+            speechProbability: FloatArray,
+            startFrame: Int,
+            endFrame: Int,
+        ): Boolean? {
+            if (endFrame - startFrame < BGM_MIN_NON_SPEECH_FRAMES) return null
+            var nonSpeechCount = 0
+            var loudNonSpeechCount = 0
+            for (f in startFrame until endFrame) {
+                if (speechProbability[f] < SILERO_NON_SPEECH_PROB_CEILING) {
+                    nonSpeechCount++
+                    if (logEnergyDb[f] > BGM_ENERGY_THRESHOLD_DB) {
+                        loudNonSpeechCount++
+                    }
+                }
+            }
+            if (nonSpeechCount < BGM_MIN_NON_SPEECH_FRAMES) return null
+            val activeRatio = loudNonSpeechCount.toFloat() / nonSpeechCount.toFloat()
+            if (activeRatio >= BGM_ACTIVE_RATIO_THRESHOLD) return true
+
+            val nonSpeechEnergies = FloatArray(nonSpeechCount)
+            var idx = 0
+            for (f in startFrame until endFrame) {
+                if (speechProbability[f] < SILERO_NON_SPEECH_PROB_CEILING) {
+                    nonSpeechEnergies[idx++] = logEnergyDb[f]
+                }
+            }
+            nonSpeechEnergies.sort()
+            val p75 = EnergyVoiceActivityDetector.percentileSorted(nonSpeechEnergies, 0.75f)
+            return p75 > BGM_ENERGY_THRESHOLD_DB
+        }
+
+        internal fun medianFilter3(input: FloatArray): FloatArray {
+            val n = input.size
+            if (n == 0) return FloatArray(0)
+            if (n == 1) return floatArrayOf(input[0])
+            val out = FloatArray(n)
+            for (i in 0 until n) {
+                val a = input[(i - 1).coerceAtLeast(0)]
+                val b = input[i]
+                val c = input[(i + 1).coerceAtMost(n - 1)]
+                out[i] = max(min(a, b), min(max(a, b), c))
+            }
+            return out
+        }
     }
 }

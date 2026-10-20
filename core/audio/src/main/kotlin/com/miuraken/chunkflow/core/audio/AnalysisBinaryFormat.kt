@@ -12,13 +12,18 @@ import java.nio.ByteOrder
  *
  * @property binMs 1 フレーム（ビン）の長さ（ミリ秒、既定 10ms）。
  * @property logEnergyDb フレームごとの対数エネルギー（dBFS）。
+ * @property speechProbability フレームごとの発話確率（`0.0f..1.0f`、Silero VAD 出力。未保存の旧フォーマット版 1 では `null`）。
  */
 class StoredFeatures(
     val binMs: Int,
     val logEnergyDb: FloatArray,
+    val speechProbability: FloatArray? = null,
 ) {
     init {
         require(binMs > 0) { "binMs must be > 0: $binMs" }
+        require(speechProbability == null || speechProbability.size == logEnergyDb.size) {
+            "speechProbability.size (${speechProbability?.size}) != logEnergyDb.size (${logEnergyDb.size})"
+        }
     }
 
     /** フレーム数。 */
@@ -33,18 +38,22 @@ class StoredFeatures(
  *
  * - ヘッダ（16 バイト、ビッグエンディアン）:
  *   1. マジック（4 バイト）: 波形は `"CFWF"`、特徴量は `"CFFE"`
- *   2. フォーマット版（4 バイト `Int`）: [CURRENT_FORMAT_VERSION]
+ *   2. フォーマット版（4 バイト `Int`）: [CURRENT_FORMAT_VERSION]（波形・特徴量 v1）または [CURRENT_FORMAT_VERSION_V2]（発話確率付き特徴量 v2）
  *   3. `binMs`（4 バイト `Int`）: 1 ビン/フレームのミリ秒（1..1000）
  *   4. 件数 `count`（4 バイト `Int`）: ビン数またはフレーム数（0..[MAX_BIN_COUNT]）
  * - ペイロード:
  *   - `waveform.bin`: `peak`（`count` バイト）+ `rms`（`count` バイト）= `count * 2` バイト
- *   - `features.bin`: `logEnergyDb`（`count` 個の IEEE 754 `Float`、ビッグエンディアン）= `count * 4` バイト
+ *   - `features.bin` (v1): `logEnergyDb`（`count` 個の IEEE 754 `Float`、ビッグエンディアン）= `count * 4` バイト
+ *   - `features.bin` (v2): `logEnergyDb`（`count` 個の `Float`）+ `speechProbability`（`count` 個の `Float`）= `count * 8` バイト
  * - 破損・切り詰め・非対応バージョンのバイト列やファイルに対しては例外を投げずに `null` を返す（§6.4）。
  */
 object AnalysisBinaryFormat {
 
-    /** バイナリ形式の現在のバージョン。 */
+    /** バイナリ形式のバージョン 1（波形、および対数エネルギーのみの特徴量）。 */
     const val CURRENT_FORMAT_VERSION: Int = 1
+
+    /** バイナリ形式のバージョン 2（対数エネルギー + Silero VAD 発話確率を含む特徴量）。 */
+    const val CURRENT_FORMAT_VERSION_V2: Int = 2
 
     /** ヘッダのバイト数（マジック 4 + バージョン 4 + binMs 4 + 件数 4 = 16 バイト）。 */
     const val HEADER_SIZE_BYTES: Int = 16
@@ -114,28 +123,44 @@ object AnalysisBinaryFormat {
     fun encodeFeatures(features: StoredFeatures): ByteArray = encodeFeatures(
         logEnergyDb = features.logEnergyDb,
         binMs = features.binMs,
+        speechProbability = features.speechProbability,
     )
 
     /**
-     * フレーム特徴量 [logEnergyDb] と [binMs] を `features.bin` 形式のバイト列にエンコードする。
+     * フレーム特徴量 [logEnergyDb]、[binMs]、および任意の [speechProbability] を `features.bin` 形式のバイト列にエンコードする。
      */
     fun encodeFeatures(
         logEnergyDb: FloatArray,
         binMs: Int = ChunkSegmenter.DEFAULT_BIN_MS,
+        speechProbability: FloatArray? = null,
     ): ByteArray {
         val count = logEnergyDb.size
         require(binMs in 1..MAX_BIN_MS) { "Invalid binMs: $binMs" }
         require(count in 0..MAX_BIN_COUNT) { "Invalid frame count: $count" }
-        val totalBytes = HEADER_SIZE_BYTES + count * 4
+        if (speechProbability != null) {
+            require(speechProbability.size == count) {
+                "speechProbability.size (${speechProbability.size}) != logEnergyDb.size ($count)"
+            }
+        }
+        val version = if (speechProbability != null) CURRENT_FORMAT_VERSION_V2 else CURRENT_FORMAT_VERSION
+        val bytesPerFrame = if (speechProbability != null) 8 else 4
+        val totalBytes = HEADER_SIZE_BYTES + count * bytesPerFrame
         val buffer = ByteBuffer.allocate(totalBytes).order(ByteOrder.BIG_ENDIAN)
         buffer.putInt(FEATURES_MAGIC)
-        buffer.putInt(CURRENT_FORMAT_VERSION)
+        buffer.putInt(version)
         buffer.putInt(binMs)
         buffer.putInt(count)
         for (i in 0 until count) {
             val v = logEnergyDb[i]
             require(v.isFinite()) { "Non-finite feature value at index $i: $v" }
             buffer.putFloat(v)
+        }
+        if (speechProbability != null) {
+            for (i in 0 until count) {
+                val p = speechProbability[i]
+                require(p.isFinite()) { "Non-finite speechProbability value at index $i: $p" }
+                buffer.putFloat(p.coerceIn(0f, 1f))
+            }
         }
         return buffer.array()
     }
@@ -153,11 +178,12 @@ object AnalysisBinaryFormat {
             val binMs = buffer.int
             val count = buffer.int
             if (magic != FEATURES_MAGIC) return null
-            if (version != CURRENT_FORMAT_VERSION) return null
+            if (version != CURRENT_FORMAT_VERSION && version != CURRENT_FORMAT_VERSION_V2) return null
             if (binMs !in 1..MAX_BIN_MS) return null
             if (count !in 0..MAX_BIN_COUNT) return null
 
-            val expectedSize = HEADER_SIZE_BYTES.toLong() + count.toLong() * 4L
+            val bytesPerFrame = if (version == CURRENT_FORMAT_VERSION_V2) 8L else 4L
+            val expectedSize = HEADER_SIZE_BYTES.toLong() + count.toLong() * bytesPerFrame
             if (bytes.size.toLong() != expectedSize) return null
 
             val energy = FloatArray(count)
@@ -166,7 +192,22 @@ object AnalysisBinaryFormat {
                 if (!value.isFinite()) return null
                 energy[i] = value
             }
-            StoredFeatures(binMs = binMs, logEnergyDb = energy)
+            val speechProb = if (version == CURRENT_FORMAT_VERSION_V2) {
+                val probs = FloatArray(count)
+                for (i in 0 until count) {
+                    val value = buffer.float
+                    if (!value.isFinite()) return null
+                    probs[i] = value.coerceIn(0f, 1f)
+                }
+                probs
+            } else {
+                null
+            }
+            StoredFeatures(
+                binMs = binMs,
+                logEnergyDb = energy,
+                speechProbability = speechProb,
+            )
         } catch (_: Exception) {
             null
         }
@@ -205,7 +246,7 @@ object AnalysisBinaryFormat {
      * [file] から [StoredFeatures] を読み込む。存在しない場合や検証失敗時は `null` を返す。
      */
     fun readFeatures(file: File): StoredFeatures? {
-        val bytes = readBytesSafely(file, maxBytes = HEADER_SIZE_BYTES.toLong() + MAX_BIN_COUNT.toLong() * 4L)
+        val bytes = readBytesSafely(file, maxBytes = HEADER_SIZE_BYTES.toLong() + MAX_BIN_COUNT.toLong() * 8L)
             ?: return null
         return decodeFeatures(bytes)
     }

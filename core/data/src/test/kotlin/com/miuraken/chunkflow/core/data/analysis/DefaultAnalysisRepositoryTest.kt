@@ -4675,4 +4675,65 @@ class DefaultAnalysisRepositoryTest {
         val lookaheadAfterDelete = repository.observeLookaheadStatus(mediaId).first()
         assertTrue(afterDelete[2].id in lookaheadAfterDelete.skippedEmptyChunkIds)
     }
+
+    @Test
+    fun `addChunkとsplitChunkとresegment_featuresBinV2のspeechProbabilityを用いてBGM下でも発話区間に合わせてトリミングと分割を行う`() = runTest {
+        val repository = createRepository(testScheduler)
+        val mediaId = MediaId("media_silero_vad_bgm")
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "BGM Lesson",
+                durationMs = 5_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 100L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "zh-CN",
+                baseLang = "ja-JP",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+
+        // 全区間で -20dBFS の大音量 BGM が鳴っているが、speechProbability では [1000..1600ms] と [2400..3200ms] のみ発話
+        val energy = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 1_000 until 1_600 || ms in 2_400 until 3_200) -14f else -20f
+        }
+        val speechProb = FloatArray(500) { frame ->
+            val ms = frame * 10
+            if (ms in 1_000 until 1_600 || ms in 2_400 until 3_200) 0.94f else 0.02f
+        }
+        val featuresFile = File(File(File(context.filesDir, "analysis"), mediaId.value), "features.bin")
+        assertTrue(
+            AnalysisBinaryFormat.writeFeaturesAtomic(
+                featuresFile,
+                StoredFeatures(binMs = 10, logEnergyDb = energy, speechProbability = speechProb),
+            ),
+        )
+
+        // 1. resegment で 2 つの発話チャンクに分割される
+        repository.resegment(mediaId, SegmentationParams())
+        val autoChunks = repository.observeChunks(mediaId).first()
+        assertEquals(2, autoChunks.size)
+
+        // 2. 拡大波形の「チャンク生成」（addChunk）: [3400..4800ms] に新しい発話 [3800..4400ms] があるとき、前後の BGM (-20dBFS) がトリミングされる
+        for (f in 380 until 440) {
+            energy[f] = -14f
+            speechProb[f] = 0.93f
+        }
+        assertTrue(
+            AnalysisBinaryFormat.writeFeaturesAtomic(
+                featuresFile,
+                StoredFeatures(binMs = 10, logEnergyDb = energy, speechProbability = speechProb),
+            ),
+        )
+        assertTrue(repository.addChunk(mediaId, startMs = 3_400L, endMs = 4_800L))
+        val manualChunks = repository.observeChunks(mediaId).first()
+        assertEquals(3, manualChunks.size)
+        val added = manualChunks.last()
+        assertTrue(added.startMs in 3_770L..3_800L, "added.startMs=${added.startMs}")
+        assertTrue(added.endMs in 4_400L..4_430L, "added.endMs=${added.endMs}")
+    }
 }

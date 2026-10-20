@@ -9,6 +9,7 @@ import com.miuraken.chunkflow.core.audio.ChunkSegmenter
 import com.miuraken.chunkflow.core.audio.FeatureAccumulator
 import com.miuraken.chunkflow.core.audio.FrameFeatureExtractor
 import com.miuraken.chunkflow.core.audio.SampleSink
+import com.miuraken.chunkflow.core.audio.SpeechProbabilityStreamFactory
 import com.miuraken.chunkflow.core.audio.StoredFeatures
 import com.miuraken.chunkflow.core.data.library.LibraryMediaFileResolver
 import com.miuraken.chunkflow.core.data.library.MediaFileLocator
@@ -157,6 +158,7 @@ class AnalysisWorker(
     private val mediaFileResolver: LibraryMediaFileResolver,
     private val userSettingsRepository: UserSettingsRepository,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val speechProbabilityStreamFactory: SpeechProbabilityStreamFactory? = null,
 ) : CoroutineWorker(appContext, workerParams) {
 
     private val chunkSegmenter: ChunkSegmenter = ChunkSegmenter()
@@ -221,12 +223,15 @@ class AnalysisWorker(
                     stage to entity.status
                 }
                 .toMap()
-            if (requestedStages.all { existingByStage[it] == "DONE" }) {
+            val needsVadUpgrade = speechProbabilityStreamFactory != null &&
+                AnalysisBinaryFormat.readFeatures(featuresFile)?.speechProbability == null
+            if (!needsVadUpgrade && requestedStages.all { existingByStage[it] == "DONE" }) {
                 return Result.success()
             }
         }
 
-        val needDecode = AnalysisStage.FEATURES in requestedStages || !featuresFile.isFile
+        val needDecode = AnalysisStage.FEATURES in requestedStages || !featuresFile.isFile ||
+            (speechProbabilityStreamFactory != null && AnalysisBinaryFormat.readFeatures(featuresFile)?.speechProbability == null)
 
         return try {
             var decodedDurationMs: Long? = null
@@ -273,6 +278,7 @@ class AnalysisWorker(
                     sampleRate = TARGET_SAMPLE_RATE_HZ,
                     sink = accumulator,
                 )
+                val vadStream = runCatching { speechProbabilityStreamFactory?.createStream() }.getOrNull()
 
                 var lastCheckpointMs = now
                 var lastProgressUpdateMs = now
@@ -287,6 +293,7 @@ class AnalysisWorker(
                         throw AnalysisPreemptedException()
                     }
                     extractor.process(samples, count)
+                    vadStream?.onSamples(samples, count)
                 }
                 val onProgressCallback: suspend (com.miuraken.chunkflow.core.media.DecodeProgress) -> Unit = { progress ->
                     if (!pipelineGate.isMediaOpen(mediaId) && pipelineGate.hasHighPriorityWaiters()) {
@@ -327,11 +334,17 @@ class AnalysisWorker(
                                     ),
                                 )
                             }
+                            val currentEnergy = accumulator.logEnergyDb()
+                            val currentSpeechProb = vadStream?.currentProbabilities(
+                                targetFrameCount = currentEnergy.size,
+                                binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                            )
                             val provisionalChunks = chunkSegmenter.segment(
-                                logEnergyDb = accumulator.logEnergyDb(),
+                                logEnergyDb = currentEnergy,
                                 params = segmentationParams,
                                 binMs = ChunkSegmenter.DEFAULT_BIN_MS,
-                                durationMs = accumulator.size.toLong() * ChunkSegmenter.DEFAULT_BIN_MS,
+                                durationMs = currentEnergy.size.toLong() * ChunkSegmenter.DEFAULT_BIN_MS,
+                                speechProbability = currentSpeechProb,
                             )
                             val confirmedChunks = if (provisionalChunks.size > 1) {
                                 provisionalChunks.dropLast(1)
@@ -404,6 +417,11 @@ class AnalysisWorker(
                     is AudioDecodeResult.Success -> {
                         extractor.finish()
                         decodedDurationMs = decodeResult.durationMs
+                        val finalEnergy = accumulator.logEnergyDb()
+                        val finalSpeechProb = vadStream?.finish(
+                            targetFrameCount = finalEnergy.size,
+                            binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                        )
 
                         val waveformSaved = AnalysisBinaryFormat.writeWaveformAtomic(
                             file = waveformFile,
@@ -413,7 +431,8 @@ class AnalysisWorker(
                             file = featuresFile,
                             features = StoredFeatures(
                                 binMs = ChunkSegmenter.DEFAULT_BIN_MS,
-                                logEnergyDb = accumulator.logEnergyDb(),
+                                logEnergyDb = finalEnergy,
+                                speechProbability = finalSpeechProb,
                             ),
                         )
                         if (!waveformSaved || !featuresSaved) {
@@ -477,6 +496,7 @@ class AnalysisWorker(
                     params = params,
                     binMs = storedFeatures.binMs,
                     durationMs = durationMs,
+                    speechProbability = storedFeatures.speechProbability,
                 )
                 val chunkEntities = autoChunks.map {
                     it.toEntity(
