@@ -131,3 +131,4 @@ flowchart LR
 | 日付 | 内容 |
 | --- | --- |
 | 2026-10-20 | 調査（m3-compliance-review.md）、ADR 0012、この計画、`designsystem` エージェント新設。Step 0（R1 / R2）を ui に依頼。 |
+| 2026-10-20 | **Step 0 完了**（`main`）: R1 `LibraryScreen.kt` → 10 ファイル（`023f32f`）、R2 `PlayerScreen.kt` → 8 ファイル（`765dd4d`）、陳腐化した基準画像 102 枚の更新と `SdCardPath` lint 抑止（`253e993`、人間の承認済み）、R3 再生操作ストリップ・速度シート・言語バッジ・共通色を `core:designsystem/component/{playback,language}/` へ共通化（`80c040d`）。いずれもレンダリング画像のバイト同一を確認。R4 設計書 §7.5.1 修正済み。`core:designsystem` にスクリーンショットテストを有効化。未統合: `TransportTonalButton`（player）と `BookmarkSeekStepButton`（library）は見た目が異なるため Phase B で統合。`m3-refresh` を作成。 |
