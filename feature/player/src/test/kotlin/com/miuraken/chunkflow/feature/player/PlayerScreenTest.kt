@@ -364,4 +364,84 @@ class PlayerScreenTest {
         assertEquals(2, resolveChunkIndexAtPosition(chunks, 4_000L))
         assertEquals(2, resolveChunkIndexAtPosition(chunks, 6_000L))
     }
+
+    @Test
+    fun `computeTranscriptListScrollbarMetrics_スクロール不可時はnullを返しスクロール位置に応じたつまみ比率とオフセット比率を算出する`() {
+        // 全アイテムが画面内に収まっていて前後どちらにもスクロールできない場合は null（非表示）
+        assertNull(
+            computeTranscriptListScrollbarMetrics(
+                totalItemsCount = 5,
+                visibleItemsCount = 5,
+                firstVisibleItemIndex = 0,
+                firstVisibleItemScrollOffset = 0,
+                totalVisibleItemsSizePx = 500,
+                viewportHeightPx = 600,
+                canScrollForward = false,
+                canScrollBackward = false,
+            ),
+        )
+
+        // 先頭位置（全 20 件、可視 5 件、各 100px = 合計 500px、ビューポート 500px、推定全長 2000px）
+        val atTop = computeTranscriptListScrollbarMetrics(
+            totalItemsCount = 20,
+            visibleItemsCount = 5,
+            firstVisibleItemIndex = 0,
+            firstVisibleItemScrollOffset = 0,
+            totalVisibleItemsSizePx = 500,
+            viewportHeightPx = 500,
+            canScrollForward = true,
+            canScrollBackward = false,
+            minThumbFraction = 0.06f,
+        )
+        assertNotNull(atTop)
+        assertEquals(0.25f, atTop.thumbFraction, 0.001f)
+        assertEquals(0f, atTop.thumbOffsetFraction, 0.001f)
+
+        // 中間位置（インデックス 7、オフセット 50px -> 推定スクロール量 750px / 最大スクロール量 1500px = 50%）
+        val atMiddle = computeTranscriptListScrollbarMetrics(
+            totalItemsCount = 20,
+            visibleItemsCount = 5,
+            firstVisibleItemIndex = 7,
+            firstVisibleItemScrollOffset = 50,
+            totalVisibleItemsSizePx = 500,
+            viewportHeightPx = 500,
+            canScrollForward = true,
+            canScrollBackward = true,
+            minThumbFraction = 0.06f,
+        )
+        assertNotNull(atMiddle)
+        assertEquals(0.25f, atMiddle.thumbFraction, 0.001f)
+        assertEquals(0.375f, atMiddle.thumbOffsetFraction, 0.001f)
+
+        // 最下部到達時（canScrollForward = false）はオフセットが下端（1f - thumbFraction）に揃う
+        val atBottom = computeTranscriptListScrollbarMetrics(
+            totalItemsCount = 20,
+            visibleItemsCount = 5,
+            firstVisibleItemIndex = 15,
+            firstVisibleItemScrollOffset = 0,
+            totalVisibleItemsSizePx = 500,
+            viewportHeightPx = 500,
+            canScrollForward = false,
+            canScrollBackward = true,
+            minThumbFraction = 0.06f,
+        )
+        assertNotNull(atBottom)
+        assertEquals(0.25f, atBottom.thumbFraction, 0.001f)
+        assertEquals(0.75f, atBottom.thumbOffsetFraction, 0.001f)
+
+        // アイテム数が非常に多い場合でも minThumbFraction 以上のつまみ高さ比率が維持される
+        val manyItems = computeTranscriptListScrollbarMetrics(
+            totalItemsCount = 500,
+            visibleItemsCount = 5,
+            firstVisibleItemIndex = 0,
+            firstVisibleItemScrollOffset = 0,
+            totalVisibleItemsSizePx = 500,
+            viewportHeightPx = 500,
+            canScrollForward = true,
+            canScrollBackward = false,
+            minThumbFraction = 0.08f,
+        )
+        assertNotNull(manyItems)
+        assertEquals(0.08f, manyItems.thumbFraction, 0.001f)
+    }
 }

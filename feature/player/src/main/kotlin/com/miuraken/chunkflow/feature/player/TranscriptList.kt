@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -53,6 +54,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -72,7 +74,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -98,7 +102,6 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowWavyLinearProgress
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeRole
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadge
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -617,126 +620,138 @@ fun TranscriptList(
                 )
             }
 
-            LazyColumn(
-                state = listState,
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .nestedScroll(userScrollConnection),
-                contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp),
+                    .weight(1f),
             ) {
-                items(
-                    items = displayedChunks,
-                    key = { (_, chunk) -> chunk.id.value },
-                ) { (index, chunk) ->
-                    val isActive = index == effectiveActiveChunkIndex
-                    val isInLoopRange = chunk.id in loopHighlightedIds ||
-                        chunk.isRepeatChecked ||
-                        chunk.id == rangeSelectionStartChunkId
-                    val isMasked = isChunkMasked(
-                        chunk = chunk,
-                        blindMode = blindMode,
-                        languagePair = languagePair,
-                        revealedChunkIds = revealedChunkIds,
-                    )
-                    val transcriptionStage = resolveChunkTranscriptionStage(
-                        chunk = chunk,
-                        lookaheadStatus = lookaheadStatus,
-                    )
-                    val isThisChunkInFlight = chunk.id == lookaheadStatus.inFlightChunkId
-
-                    Column {
-                        TranscriptChunkRow(
-                            index = index,
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .nestedScroll(userScrollConnection),
+                    contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp),
+                ) {
+                    items(
+                        items = displayedChunks,
+                        key = { (_, chunk) -> chunk.id.value },
+                    ) { (index, chunk) ->
+                        val isActive = index == effectiveActiveChunkIndex
+                        val isInLoopRange = chunk.id in loopHighlightedIds ||
+                            chunk.isRepeatChecked ||
+                            chunk.id == rangeSelectionStartChunkId
+                        val isMasked = isChunkMasked(
                             chunk = chunk,
-                            isActive = isActive,
-                            isInLoopRange = isInLoopRange,
-                            isMasked = isMasked,
-                            transcriptionStage = transcriptionStage,
-                            isForcedInFlight = isThisChunkInFlight && lookaheadStatus.isForcedChunkInFlight,
-                            inFlightStep = if (isThisChunkInFlight) lookaheadStatus.inFlightStep else null,
-                            inFlightDetail = if (isThisChunkInFlight) lookaheadStatus.inFlightDetail else null,
-                            inFlightStartedAtEpochMs = if (isThisChunkInFlight) {
-                                lookaheadStatus.inFlightStartedAtEpochMs
-                            } else {
-                                null
-                            },
+                            blindMode = blindMode,
                             languagePair = languagePair,
-                            chineseScript = chineseScript,
-                            cantoneseScript = cantoneseScript,
-                            showTargetRomanization = showTargetRomanization,
-                            showTargetTranslation = showTargetTranslation,
-                            selectedChunks = selectedChunks,
-                            onSetChunksSkipped = onSetChunksSkipped,
-                            positionProvider = positionProvider,
-                            onUserInteract = {
-                                isAutoFollowPaused = true
-                            },
-                            onRowClick = {
-                                val startId = rangeSelectionStartChunkId
-                                if (startId != null) {
-                                    isAutoFollowPaused = true
-                                    rangeSelectionStartChunkId = null
-                                    val ordered = orderChunkRange(chunks, startId, chunk.id)
-                                    if (ordered != null) {
-                                        onSetLoopMode(
-                                            LoopMode.ChunkRange(
-                                                firstChunkId = ordered.first,
-                                                lastChunkId = ordered.second,
-                                                times = null,
-                                            ),
-                                        )
-                                    }
-                                } else if (isMasked) {
-                                    isAutoFollowPaused = true
-                                    onToggleRevealChunk(chunk.id)
-                                } else {
-                                    onSeekToChunk(chunk.id)
-                                }
-                            },
-                            onTimestampClick = {
-                                onSeekToChunk(chunk.id)
-                            },
-                            onToggleBookmark = {
-                                isAutoFollowPaused = true
-                                onToggleBookmark(chunk.id)
-                            },
-                            onToggleRepeatChunk = {
-                                isAutoFollowPaused = true
-                                onToggleRepeatChunk(chunk.id)
-                            },
-                            onStartRangeSelection = {
-                                isAutoFollowPaused = true
-                                rangeSelectionStartChunkId = chunk.id
-                            },
-                            onUpdateLanguage = { newLang ->
-                                isAutoFollowPaused = true
-                                onUpdateChunkLanguage(chunk.id, newLang)
-                            },
-                            onRequestEditText = {
-                                isAutoFollowPaused = true
-                                editingTextChunk = index to chunk
-                            },
-                            onRetranscribeChunk = {
-                                isAutoFollowPaused = true
-                                onRetranscribeChunk(chunk.id)
-                            },
-                            onOpenDetailedTranscription = {
-                                isAutoFollowPaused = true
-                                onOpenDetailedTranscription(chunk.id)
-                            },
-                            onMoveChunkBoundary = { newStartMs, newEndMs ->
-                                isAutoFollowPaused = true
-                                onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
-                            },
-                            onDeleteChunk = {
-                                isAutoFollowPaused = true
-                                onDeleteChunk(chunk.id)
-                            },
+                            revealedChunkIds = revealedChunkIds,
                         )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        val transcriptionStage = resolveChunkTranscriptionStage(
+                            chunk = chunk,
+                            lookaheadStatus = lookaheadStatus,
+                        )
+                        val isThisChunkInFlight = chunk.id == lookaheadStatus.inFlightChunkId
+
+                        Column {
+                            TranscriptChunkRow(
+                                index = index,
+                                chunk = chunk,
+                                isActive = isActive,
+                                isInLoopRange = isInLoopRange,
+                                isMasked = isMasked,
+                                transcriptionStage = transcriptionStage,
+                                isForcedInFlight = isThisChunkInFlight && lookaheadStatus.isForcedChunkInFlight,
+                                inFlightStep = if (isThisChunkInFlight) lookaheadStatus.inFlightStep else null,
+                                inFlightDetail = if (isThisChunkInFlight) lookaheadStatus.inFlightDetail else null,
+                                inFlightStartedAtEpochMs = if (isThisChunkInFlight) {
+                                    lookaheadStatus.inFlightStartedAtEpochMs
+                                } else {
+                                    null
+                                },
+                                languagePair = languagePair,
+                                chineseScript = chineseScript,
+                                cantoneseScript = cantoneseScript,
+                                showTargetRomanization = showTargetRomanization,
+                                showTargetTranslation = showTargetTranslation,
+                                selectedChunks = selectedChunks,
+                                onSetChunksSkipped = onSetChunksSkipped,
+                                positionProvider = positionProvider,
+                                onUserInteract = {
+                                    isAutoFollowPaused = true
+                                },
+                                onRowClick = {
+                                    val startId = rangeSelectionStartChunkId
+                                    if (startId != null) {
+                                        isAutoFollowPaused = true
+                                        rangeSelectionStartChunkId = null
+                                        val ordered = orderChunkRange(chunks, startId, chunk.id)
+                                        if (ordered != null) {
+                                            onSetLoopMode(
+                                                LoopMode.ChunkRange(
+                                                    firstChunkId = ordered.first,
+                                                    lastChunkId = ordered.second,
+                                                    times = null,
+                                                ),
+                                            )
+                                        }
+                                    } else if (isMasked) {
+                                        isAutoFollowPaused = true
+                                        onToggleRevealChunk(chunk.id)
+                                    } else {
+                                        onSeekToChunk(chunk.id)
+                                    }
+                                },
+                                onTimestampClick = {
+                                    onSeekToChunk(chunk.id)
+                                },
+                                onToggleBookmark = {
+                                    isAutoFollowPaused = true
+                                    onToggleBookmark(chunk.id)
+                                },
+                                onToggleRepeatChunk = {
+                                    isAutoFollowPaused = true
+                                    onToggleRepeatChunk(chunk.id)
+                                },
+                                onStartRangeSelection = {
+                                    isAutoFollowPaused = true
+                                    rangeSelectionStartChunkId = chunk.id
+                                },
+                                onUpdateLanguage = { newLang ->
+                                    isAutoFollowPaused = true
+                                    onUpdateChunkLanguage(chunk.id, newLang)
+                                },
+                                onRequestEditText = {
+                                    isAutoFollowPaused = true
+                                    editingTextChunk = index to chunk
+                                },
+                                onRetranscribeChunk = {
+                                    isAutoFollowPaused = true
+                                    onRetranscribeChunk(chunk.id)
+                                },
+                                onOpenDetailedTranscription = {
+                                    isAutoFollowPaused = true
+                                    onOpenDetailedTranscription(chunk.id)
+                                },
+                                onMoveChunkBoundary = { newStartMs, newEndMs ->
+                                    isAutoFollowPaused = true
+                                    onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
+                                },
+                                onDeleteChunk = {
+                                    isAutoFollowPaused = true
+                                    onDeleteChunk(chunk.id)
+                                },
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        }
                     }
                 }
+                TranscriptListScrollbar(
+                    listState = listState,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .padding(top = 4.dp, bottom = 4.dp, end = 2.dp),
+                )
             }
         }
 
@@ -1572,22 +1587,15 @@ private fun TranscriptChunkRow(
                                 )
                             }
                         }
-                        // 時刻の範囲は左の開始時刻と重なる補足情報のため、幅が足りないときは省略して状態の表示を優先する
-                        Text(
-                            text = "${formatDurationMs(chunk.startMs)} - ${formatDurationMs(chunk.endMs)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = secondaryTextColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
                     }
 
                     if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
                         val stepProgress = inFlightStep?.progressFraction ?: 0.35f
-                        ChunkFlowWavyLinearProgress(
-                            progress = { stepProgress },
-                            modifier = Modifier.fillMaxWidth(),
+                        LinearProgressIndicator(
+                            progress = { stepProgress.coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp),
                         )
                         val detailParts = buildList {
                             if (isForcedInFlight && inFlightStep != null) {
@@ -2119,4 +2127,128 @@ internal fun resolveChunkIndexAtPosition(chunks: List<ChunkUi>, positionMs: Long
         }
     }
     return bestIndex ?: 0
+}
+
+/**
+ * チャンクリストの縦スクロールバーのつまみ（thumb）の高さ比率と上端オフセット比率。
+ *
+ * @property thumbFraction トラック全体の高さに対するつまみの高さ比率（0f〜1f）。
+ * @property thumbOffsetFraction トラック全体の高さに対するつまみ上端のオフセット比率（0f〜`1f - thumbFraction`）。
+ */
+internal data class TranscriptListScrollbarMetrics(
+    val thumbFraction: Float,
+    val thumbOffsetFraction: Float,
+)
+
+/**
+ * チャンクリストのスクロール状態から縦スクロールバーのつまみ位置・高さ比率を算出する。
+ *
+ * 全アイテムが画面内に収まっておりスクロール不要な場合（[canScrollForward] と [canScrollBackward] がともに `false`）や、
+ * アイテム情報から有効なサイズが算出できない場合は `null` を返す。
+ *
+ * @param totalItemsCount リスト全体のアイテム数。
+ * @param visibleItemsCount 現在画面内に見えているアイテム数。
+ * @param firstVisibleItemIndex 先頭の可視アイテムのインデックス。
+ * @param firstVisibleItemScrollOffset 先頭の可視アイテムのスクロールオフセット（px、0 以上）。
+ * @param totalVisibleItemsSizePx 可視アイテム群の合計高さ（px）。
+ * @param viewportHeightPx リスト表示領域の高さ（px）。
+ * @param canScrollForward 下方向へスクロール可能か。
+ * @param canScrollBackward 上方向へスクロール可能か。
+ * @param minThumbFraction つまみの最小高さ比率（トラック高さに対する比率、0f〜1f）。
+ */
+internal fun computeTranscriptListScrollbarMetrics(
+    totalItemsCount: Int,
+    visibleItemsCount: Int,
+    firstVisibleItemIndex: Int,
+    firstVisibleItemScrollOffset: Int,
+    totalVisibleItemsSizePx: Int,
+    viewportHeightPx: Int,
+    canScrollForward: Boolean,
+    canScrollBackward: Boolean,
+    minThumbFraction: Float = 0.06f,
+): TranscriptListScrollbarMetrics? {
+    if (!canScrollForward && !canScrollBackward) return null
+    if (totalItemsCount <= 0 || visibleItemsCount <= 0 || viewportHeightPx <= 0 || totalVisibleItemsSizePx <= 0) {
+        return null
+    }
+    val avgItemSizePx = totalVisibleItemsSizePx.toFloat() / visibleItemsCount.toFloat()
+    if (avgItemSizePx <= 0f) return null
+
+    val estimatedTotalContentPx = avgItemSizePx * totalItemsCount.toFloat()
+    val estimatedScrollOffsetPx = (firstVisibleItemIndex.toFloat() * avgItemSizePx) +
+        firstVisibleItemScrollOffset.coerceAtLeast(0).toFloat()
+    val effectiveTotalPx = max(
+        estimatedTotalContentPx,
+        estimatedScrollOffsetPx + viewportHeightPx.toFloat(),
+    )
+    if (effectiveTotalPx <= viewportHeightPx.toFloat()) return null
+
+    val clampedMinFraction = minThumbFraction.coerceIn(0.02f, 0.9f)
+    val rawThumbFraction = (viewportHeightPx.toFloat() / effectiveTotalPx).coerceIn(clampedMinFraction, 1f)
+    val maxScrollPx = (effectiveTotalPx - viewportHeightPx.toFloat()).coerceAtLeast(1f)
+    val scrollProgress = when {
+        !canScrollBackward -> 0f
+        !canScrollForward -> 1f
+        else -> (estimatedScrollOffsetPx / maxScrollPx).coerceIn(0f, 1f)
+    }
+    val thumbOffsetFraction = (scrollProgress * (1f - rawThumbFraction)).coerceIn(0f, 1f - rawThumbFraction)
+    return TranscriptListScrollbarMetrics(
+        thumbFraction = rawThumbFraction,
+        thumbOffsetFraction = thumbOffsetFraction,
+    )
+}
+
+/**
+ * チャンクリスト最右端に表示する幅の狭い縦スクロールバー。
+ *
+ * スクロール可能なときのみピル形状のつまみを描画し、全アイテムが画面内に収まっているときは非表示にする。
+ */
+@Composable
+private fun TranscriptListScrollbar(
+    listState: LazyListState,
+    modifier: Modifier = Modifier,
+) {
+    val canScroll = listState.canScrollForward || listState.canScrollBackward
+    if (!canScroll) return
+
+    val thumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+        alpha = if (listState.isScrollInProgress) 0.6f else 0.35f,
+    )
+
+    Canvas(
+        modifier = modifier
+            .width(3.dp)
+            .clearAndSetSemantics {},
+    ) {
+        val layoutInfo = listState.layoutInfo
+        val visibleItems = layoutInfo.visibleItemsInfo
+        val viewportHeightPx = size.height.toInt()
+        if (visibleItems.isEmpty() || viewportHeightPx <= 0) return@Canvas
+
+        val minThumbHeightPx = min(24.dp.toPx(), size.height * 0.5f)
+        val minThumbFraction = (minThumbHeightPx / size.height).coerceIn(0.02f, 0.9f)
+        val metrics = computeTranscriptListScrollbarMetrics(
+            totalItemsCount = layoutInfo.totalItemsCount,
+            visibleItemsCount = visibleItems.size,
+            firstVisibleItemIndex = listState.firstVisibleItemIndex,
+            firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+            totalVisibleItemsSizePx = visibleItems.sumOf { it.size },
+            viewportHeightPx = viewportHeightPx,
+            canScrollForward = listState.canScrollForward,
+            canScrollBackward = listState.canScrollBackward,
+            minThumbFraction = minThumbFraction,
+        ) ?: return@Canvas
+
+        val thumbHeightPx = (size.height * metrics.thumbFraction).coerceIn(minThumbHeightPx, size.height)
+        val thumbTopPx = (size.height * metrics.thumbOffsetFraction)
+            .coerceIn(0f, (size.height - thumbHeightPx).coerceAtLeast(0f))
+        val cornerRadiusPx = size.width / 2f
+
+        drawRoundRect(
+            color = thumbColor,
+            topLeft = Offset(x = 0f, y = thumbTopPx),
+            size = Size(width = size.width, height = thumbHeightPx),
+            cornerRadius = CornerRadius(cornerRadiusPx, cornerRadiusPx),
+        )
+    }
 }
