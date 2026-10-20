@@ -14,6 +14,7 @@
     <string name="settings_auto_pause_off">OFF</string>
     <string name="settings_auto_pause_fixed">固定 %1$.1f 秒 追加</string>
     <string name="settings_auto_pause_proportional">チャンク長 x %1$.1f</string>
+    <string name="settings_auto_pause_original_silence">元の無音部分 x %1$s</string>
     <string name="settings_auto_pause_scope_label">ポーズを入れる言語</string>
     <string name="settings_auto_pause_scope_all">両言語</string>
     <string name="settings_auto_pause_scope_target">学習対象言語のみ</string>

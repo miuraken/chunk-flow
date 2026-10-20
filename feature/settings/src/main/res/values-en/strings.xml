@@ -14,6 +14,7 @@
     <string name="settings_auto_pause_off">OFF</string>
     <string name="settings_auto_pause_fixed">Add fixed %1$.1f s</string>
     <string name="settings_auto_pause_proportional">Chunk length x %1$.1f</string>
+    <string name="settings_auto_pause_original_silence">Original silence x %1$s</string>
     <string name="settings_auto_pause_scope_label">Pause after</string>
     <string name="settings_auto_pause_scope_all">Both</string>
     <string name="settings_auto_pause_scope_target">Target only</string>

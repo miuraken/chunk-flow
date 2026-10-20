@@ -74,6 +74,12 @@ class SettingsViewModelTest {
 
         assertEquals(1_000L, SettingsUiState.DEFAULT_AUTO_PAUSE_FIXED_MS)
         assertEquals(1.0f, SettingsUiState.DEFAULT_AUTO_PAUSE_PROPORTIONAL_FACTOR)
+        assertEquals(1.0f, SettingsUiState.DEFAULT_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR)
+        assertTrue(
+            SettingsUiState.AUTO_PAUSE_OPTIONS.contains(
+                AutoPause.OriginalSilence(factor = SettingsUiState.DEFAULT_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR),
+            ),
+        )
 
         viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(0)))
         assertEquals(AutoPause.Fixed(0), viewModel.uiState.value.defaultAutoPause)
@@ -89,6 +95,25 @@ class SettingsViewModelTest {
 
         viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Proportional(factor = 3.5f)))
         assertEquals(AutoPause.Proportional(factor = 3.0f), viewModel.uiState.value.defaultAutoPause)
+
+        // OriginalSilence の設定・0.25 刻みの丸め・上下限クランプ (0.25〜2.0)
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.OriginalSilence(factor = 0.25f)))
+        assertEquals(AutoPause.OriginalSilence(factor = 0.25f), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.OriginalSilence(factor = 1.25f)))
+        assertEquals(AutoPause.OriginalSilence(factor = 1.25f), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.OriginalSilence(factor = 1.36f)))
+        assertEquals(AutoPause.OriginalSilence(factor = 1.25f), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.OriginalSilence(factor = 1.38f)))
+        assertEquals(AutoPause.OriginalSilence(factor = 1.5f), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.OriginalSilence(factor = 0.1f)))
+        assertEquals(AutoPause.OriginalSilence(factor = 0.25f), viewModel.uiState.value.defaultAutoPause)
+
+        viewModel.onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.OriginalSilence(factor = 2.5f)))
+        assertEquals(AutoPause.OriginalSilence(factor = 2.0f), viewModel.uiState.value.defaultAutoPause)
 
         viewModel.onEvent(
             SettingsEvent.SetDefaultAutoPauseScope(

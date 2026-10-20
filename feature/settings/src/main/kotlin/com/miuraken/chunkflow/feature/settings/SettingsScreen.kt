@@ -286,6 +286,14 @@ private fun PlaybackSettingsSection(
             ) ?: SettingsUiState.DEFAULT_AUTO_PAUSE_PROPORTIONAL_FACTOR,
         )
     }
+    var originalSilenceFactor by rememberSaveable {
+        mutableFloatStateOf(
+            (defaultAutoPause as? AutoPause.OriginalSilence)?.factor?.coerceIn(
+                SettingsUiState.MIN_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                SettingsUiState.MAX_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+            ) ?: SettingsUiState.DEFAULT_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+        )
+    }
 
     LaunchedEffect(defaultAutoPause) {
         when (defaultAutoPause) {
@@ -297,6 +305,13 @@ private fun PlaybackSettingsSection(
                 proportionalFactor = defaultAutoPause.factor.coerceIn(
                     SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
                     SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                )
+            }
+
+            is AutoPause.OriginalSilence -> {
+                originalSilenceFactor = defaultAutoPause.factor.coerceIn(
+                    SettingsUiState.MIN_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                    SettingsUiState.MAX_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
                 )
             }
 
@@ -386,6 +401,7 @@ private fun PlaybackSettingsSection(
     val isOffSelected = defaultAutoPause is AutoPause.Off
     val isFixedSelected = defaultAutoPause is AutoPause.Fixed
     val isProportionalSelected = defaultAutoPause is AutoPause.Proportional
+    val isOriginalSilenceSelected = defaultAutoPause is AutoPause.OriginalSilence
     val displayFixedSeconds = if (defaultAutoPause is AutoPause.Fixed) {
         (defaultAutoPause.pauseMs / 1_000f).coerceIn(0f, 4.0f)
     } else {
@@ -398,6 +414,14 @@ private fun PlaybackSettingsSection(
         )
     } else {
         proportionalFactor
+    }
+    val displayOriginalSilenceFactor = if (defaultAutoPause is AutoPause.OriginalSilence) {
+        defaultAutoPause.factor.coerceIn(
+            SettingsUiState.MIN_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+            SettingsUiState.MAX_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+        )
+    } else {
+        originalSilenceFactor
     }
 
     SettingsSection(
@@ -508,7 +532,55 @@ private fun PlaybackSettingsSection(
                     .height(36.dp)
                     .padding(start = SettingsRadioContentStart, end = SettingsSectionPadding),
             )
+
+            SettingsRadioItem(
+                headline = stringResource(
+                    R.string.settings_auto_pause_original_silence,
+                    formatOriginalSilenceFactor(displayOriginalSilenceFactor),
+                ),
+                selected = isOriginalSilenceSelected,
+                onClick = {
+                    val snappedFactor = ((displayOriginalSilenceFactor * 4f).roundToInt().coerceIn(1, 8) * 0.25f)
+                        .coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                            SettingsUiState.MAX_AUTO_PAUSE_ORIGINAL_SILENCE_FACTOR,
+                        )
+                    onEvent(
+                        SettingsEvent.SetDefaultAutoPause(
+                            AutoPause.OriginalSilence(factor = snappedFactor),
+                        ),
+                    )
+                },
+            )
+
+            SettingsSlider(
+                value = displayOriginalSilenceFactor,
+                onValueChange = { rawValue ->
+                    val snappedFactor = (rawValue * 4f).roundToInt().coerceIn(1, 8) * 0.25f
+                    originalSilenceFactor = snappedFactor
+                    onEvent(
+                        SettingsEvent.SetDefaultAutoPause(
+                            AutoPause.OriginalSilence(factor = snappedFactor),
+                        ),
+                    )
+                },
+                valueRange = 0.25f..2.0f,
+                steps = 6,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .padding(start = SettingsRadioContentStart, end = SettingsSectionPadding),
+            )
         }
+    }
+}
+
+private fun formatOriginalSilenceFactor(factor: Float): String {
+    val hundredths = (factor * 100f).roundToInt()
+    return if (hundredths % 10 == 0) {
+        String.format(Locale.ROOT, "%.1f", factor)
+    } else {
+        String.format(Locale.ROOT, "%.2f", factor)
     }
 }
 
