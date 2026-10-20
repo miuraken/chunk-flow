@@ -50,6 +50,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.MediaId
 
@@ -278,7 +279,7 @@ fun LibraryScreen(
                                     },
                                     contentDescription = null,
                                     tint = if (allFavorite) {
-                                        FavoriteStarColor
+                                        chunkFlowExtendedColors().favorite
                                     } else {
                                         MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
                                     },

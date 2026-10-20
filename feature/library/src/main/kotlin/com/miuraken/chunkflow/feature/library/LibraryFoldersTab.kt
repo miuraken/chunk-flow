@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -139,9 +139,18 @@ internal fun LibraryFoldersTabContent(
                 val isLastFile = index == currentFiles.lastIndex
                 val isSelected = itemModel.item.id in state.selectedItemIds
                 val shape = when {
-                    isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
-                    isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
-                    isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                    isFirstFile && isLastFile -> MaterialTheme.shapes.medium
+
+                    isFirstFile -> MaterialTheme.shapes.medium.copy(
+                        bottomStart = CornerSize(0.dp),
+                        bottomEnd = CornerSize(0.dp),
+                    )
+
+                    isLastFile -> MaterialTheme.shapes.medium.copy(
+                        topStart = CornerSize(0.dp),
+                        topEnd = CornerSize(0.dp),
+                    )
+
                     else -> RectangleShape
                 }
                 Surface(
@@ -241,7 +250,7 @@ private fun LibraryCurrentFolderHeader(
         } else {
             Color.Transparent
         },
-        shape = RoundedCornerShape(8.dp),
+        shape = MaterialTheme.shapes.small,
     ) {
         Row(
             modifier = Modifier
@@ -341,7 +350,7 @@ private fun LibraryDirectoryRow(
         Surface(
             modifier = Modifier.weight(1f),
             color = containerColor,
-            shape = RoundedCornerShape(12.dp),
+            shape = MaterialTheme.shapes.medium,
         ) {
             Row(
                 modifier = Modifier
@@ -418,7 +427,7 @@ private fun FolderKindBadge(
         modifier = modifier,
         color = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        shape = RoundedCornerShape(6.dp),
+        shape = MaterialTheme.shapes.small,
     ) {
         Text(
             text = label,
@@ -485,9 +494,18 @@ private fun RecentFilesSection(
                         val isFirst = index == 0
                         val isLast = index == recentItems.lastIndex
                         val shape = when {
-                            isFirst && isLast -> RoundedCornerShape(10.dp)
-                            isFirst -> RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp)
-                            isLast -> RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp)
+                            isFirst && isLast -> MaterialTheme.shapes.medium
+
+                            isFirst -> MaterialTheme.shapes.medium.copy(
+                                bottomStart = CornerSize(0.dp),
+                                bottomEnd = CornerSize(0.dp),
+                            )
+
+                            isLast -> MaterialTheme.shapes.medium.copy(
+                                topStart = CornerSize(0.dp),
+                                topEnd = CornerSize(0.dp),
+                            )
+
                             else -> RectangleShape
                         }
                         Surface(
