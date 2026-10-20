@@ -36,6 +36,9 @@ private val Amber90 = Color(0xFFFFDEA0)
  * チャンク一覧の控えめな行背景色と、チャンク行・ライブラリ画面の言語タグバッジ色を共通化する。
  * あわせて、ライブラリ画面で 95% を超えて聴いた教材（既習）を示す緑系の色（再生状況の文字
  * [completedProgressText] と進捗バー [completedProgressIndicator]）も持つ。
+ *
+ * 値は固定ではなく、`primary`（ダイナミックカラーまたは代替配色）の色相に調和させて
+ * [languagePaletteFor] で実行時に生成する（計画書 §3.2）。画面からは [chunkFlowLanguagePalette] で取得する。
  */
 @Immutable
 data class ChunkFlowLanguagePalette(
@@ -58,59 +61,6 @@ data class ChunkFlowLanguagePalette(
     val completedProgressText: Color,
     val completedProgressIndicator: Color,
 )
-
-/** ライトテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク/レッド系）。 */
-val LightChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
-    baseRowBackground = Color(0xFFEDF5FF),
-    baseActiveRowBackground = Color(0xFFD6EAFF),
-    baseLoopRowBackground = Color(0xFFE0EFFF),
-    baseBadgeContainer = Color(0xFFD4E8FF),
-    onBaseBadgeContainer = Color(0xFF0A3966),
-    baseChunkBackground = Color(0xFFB3D7FF),
-    baseWaveformPeak = Color(0xFF42A5F5).copy(alpha = 0.65f),
-    baseWaveformRms = Color(0xFF1565C0),
-    targetRowBackground = Color(0xFFFFEFF5),
-    targetActiveRowBackground = Color(0xFFFFDCE9),
-    targetLoopRowBackground = Color(0xFFFFE5EF),
-    targetBadgeContainer = Color(0xFFFFD6E5),
-    onTargetBadgeContainer = Color(0xFF6B0F36),
-    targetChunkBackground = Color(0xFFFFB5D0),
-    targetWaveformPeak = Color(0xFFEF5350).copy(alpha = 0.65f),
-    targetWaveformRms = Color(0xFFD32F2F),
-    completedProgressText = Color(0xFF2E7D32),
-    completedProgressIndicator = Color(0xFF2E7D32),
-)
-
-/** ダークテーマ用の言語役割別カラーパレット（ベース言語: ブルー系、対象言語: ピンク/レッド系）。 */
-val DarkChunkFlowLanguagePalette = ChunkFlowLanguagePalette(
-    baseRowBackground = Color(0xFF64B5F6).copy(alpha = 0.14f),
-    baseActiveRowBackground = Color(0xFF64B5F6).copy(alpha = 0.28f),
-    baseLoopRowBackground = Color(0xFF64B5F6).copy(alpha = 0.22f),
-    baseBadgeContainer = Color(0xFF144272),
-    onBaseBadgeContainer = Color(0xFFD4E8FF),
-    baseChunkBackground = Color(0xFF1E5696),
-    baseWaveformPeak = Color(0xFF90CAF9).copy(alpha = 0.65f),
-    baseWaveformRms = Color(0xFF42A5F5),
-    targetRowBackground = Color(0xFFF48FB1).copy(alpha = 0.14f),
-    targetActiveRowBackground = Color(0xFFF48FB1).copy(alpha = 0.28f),
-    targetLoopRowBackground = Color(0xFFF48FB1).copy(alpha = 0.22f),
-    targetBadgeContainer = Color(0xFF6A1B3D),
-    onTargetBadgeContainer = Color(0xFFFFD6E5),
-    targetChunkBackground = Color(0xFF84244E),
-    targetWaveformPeak = Color(0xFFE57373).copy(alpha = 0.65f),
-    targetWaveformRms = Color(0xFFEF5350),
-    completedProgressText = Color(0xFF81C784),
-    completedProgressIndicator = Color(0xFF81C784),
-)
-
-internal val LocalChunkFlowLanguagePalette = staticCompositionLocalOf {
-    LightChunkFlowLanguagePalette
-}
-
-/** 現在のテーマ（ライト / ダーク）に応じた [ChunkFlowLanguagePalette] を取得する。 */
-@Composable
-@ReadOnlyComposable
-fun chunkFlowLanguagePalette(): ChunkFlowLanguagePalette = LocalChunkFlowLanguagePalette.current
 
 /** ライトテーマの代替の配色。 */
 internal val FallbackLightColorScheme = lightColorScheme(
@@ -143,3 +93,32 @@ internal val FallbackDarkColorScheme = darkColorScheme(
     tertiaryContainer = Amber30,
     onTertiaryContainer = Amber90,
 )
+
+/**
+ * ライトテーマ用の言語役割別カラーパレット（代替配色の `primary` に調和させた値）。
+ *
+ * 互換のために残している。画面からは [chunkFlowLanguagePalette] を使う（ダイナミックカラーに追従する）。
+ */
+@Deprecated("chunkFlowLanguagePalette() を使う（ダイナミックカラーの primary に調和した値になる）")
+val LightChunkFlowLanguagePalette: ChunkFlowLanguagePalette by lazy {
+    languagePaletteFor(FallbackLightColorScheme.primary, darkTheme = false)
+}
+
+/**
+ * ダークテーマ用の言語役割別カラーパレット（代替配色の `primary` に調和させた値）。
+ *
+ * 互換のために残している。画面からは [chunkFlowLanguagePalette] を使う（ダイナミックカラーに追従する）。
+ */
+@Deprecated("chunkFlowLanguagePalette() を使う（ダイナミックカラーの primary に調和した値になる）")
+val DarkChunkFlowLanguagePalette: ChunkFlowLanguagePalette by lazy {
+    languagePaletteFor(FallbackDarkColorScheme.primary, darkTheme = true)
+}
+
+internal val LocalChunkFlowLanguagePalette = staticCompositionLocalOf {
+    languagePaletteFor(FallbackLightColorScheme.primary, darkTheme = false)
+}
+
+/** 現在のテーマ（ライト / ダーク、`primary` の色相）に応じた [ChunkFlowLanguagePalette] を取得する。 */
+@Composable
+@ReadOnlyComposable
+fun chunkFlowLanguagePalette(): ChunkFlowLanguagePalette = LocalChunkFlowLanguagePalette.current
