@@ -1,13 +1,14 @@
 package com.miuraken.chunkflow.core.designsystem.component.playback
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -27,7 +28,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.R
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowSplitButton
@@ -54,6 +58,13 @@ import kotlin.math.abs
  *
  * 長押しの操作には `TooltipBox` で説明を添える。引数は旧 Chip 版と互換（feature 側の呼び出しは変えない）。
  * 状態を受け取って描くだけで、ViewModel や feature の UiState は受け取らない。
+ *
+ * **幅への適応**（横スクロールはしない）: [StripLayoutTier] の順に実際に計測し、利用できる幅に 1 行で収まる
+ * 最初の段を使う（`SubcomposeLayout`。ロケールや文字サイズに依存しない）。
+ * 1. ラベル付き（広い幅）
+ * 2. 「無音スキップ」をアイコンだけに（`contentDescription` + Tooltip でラベルを補う）、余白（`compact`）と間隔を詰める
+ * 3. さらに「リピート」もアイコンだけに
+ * 文字サイズ 2.0 倍などで 3 でも入りきらないときは `FlowRow` で次の行に折り返す（見切れさせない）。
  *
  * @param speed 現在の再生速度。
  * @param customSpeed 「指定速度」ボタンが表す速度。
@@ -87,85 +98,44 @@ fun PlaybackControlStrip(
     val isSkipSilenceOn = practice.skipOriginalSilence
     var showWholeFileRepeatDialog by remember { mutableStateOf(false) }
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // 1. 速度（排他）: [1x] + [{指定速度} ▼]
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ChunkFlowToggleButtonGroup(
-                compact = true,
-                items = listOf(
-                    ChunkFlowToggleButtonItem(
-                        label = "1x",
-                        checked = isNormalSpeed,
-                        onCheckedChange = { if (it) onSetSpeed(1.0f) },
-                    ),
-                ),
-            )
-            LongPressTooltip(text = stringResource(R.string.designsystem_playback_speed_tooltip)) {
-                ChunkFlowSplitButton(
-                    label = formatCompactSpeed(customSpeed),
-                    onClick = { onSetSpeed(customSpeed) },
-                    checked = isCustomSpeedSelected,
-                    onLongClick = onOpenSpeedSheet,
-                    onMenuClick = onOpenSpeedSheet,
-                    menuContentDescription = stringResource(R.string.designsystem_playback_speed_menu_cd),
-                    compact = true,
+    SubcomposeLayout(modifier = modifier.fillMaxWidth()) { constraints ->
+        val tiers = StripLayoutTier.entries
+        var chosen: Placeable? = null
+        for (tier in tiers) {
+            val isLast = tier == tiers.last()
+            val measurable = subcompose(tier) {
+                StripContent(
+                    tier = tier,
+                    isNormalSpeed = isNormalSpeed,
+                    isCustomSpeedSelected = isCustomSpeedSelected,
+                    customSpeed = customSpeed,
+                    isRepeatOn = isRepeatOn,
+                    isWholeFileRepeat = isWholeFileRepeat,
+                    isSkipSilenceOn = isSkipSilenceOn,
+                    onSetSpeed = onSetSpeed,
+                    onOpenSpeedSheet = onOpenSpeedSheet,
+                    onToggleRepeat = onToggleRepeat,
+                    onRequestWholeFileRepeat = { showWholeFileRepeatDialog = true },
+                    onToggleSkipSilence = onToggleSkipSilence,
+                    onOpenPlaybackSettings = onOpenPlaybackSettings,
                 )
+            }.first()
+            val placeable = if (isLast) {
+                // 最後の段は実際の幅で計測し、入りきらなければ FlowRow が折り返す
+                measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+            } else {
+                // 幅を無制限にして 1 行の自然な幅を測り、収まるかどうかを判定する
+                measurable.measure(Constraints(maxHeight = constraints.maxHeight))
+            }
+            if (isLast || placeable.width <= constraints.maxWidth) {
+                chosen = placeable
+                break
             }
         }
-
-        // 2. リピート: [リピート ▼]（▼ と長押しで「全体リピート」）
-        LongPressTooltip(text = stringResource(R.string.designsystem_playback_repeat_tooltip)) {
-            ChunkFlowSplitButton(
-                label = if (isWholeFileRepeat) {
-                    stringResource(R.string.designsystem_playback_chip_repeat_whole_file)
-                } else {
-                    stringResource(R.string.designsystem_playback_chip_repeat)
-                },
-                onClick = onToggleRepeat,
-                checked = isRepeatOn,
-                icon = if (isWholeFileRepeat) ChunkFlowIcons.Repeat else null,
-                onLongClick = { showWholeFileRepeatDialog = true },
-                menuItems = listOf(
-                    ChunkFlowSplitButtonMenuItem(
-                        label = stringResource(R.string.designsystem_playback_chip_repeat_whole_file),
-                        icon = ChunkFlowIcons.Repeat,
-                        checked = isWholeFileRepeat,
-                        onClick = { showWholeFileRepeatDialog = true },
-                    ),
-                ),
-                menuContentDescription = stringResource(R.string.designsystem_playback_repeat_menu_cd),
-                compact = true,
-            )
-        }
-
-        // 3. 無音スキップ（トグル）
-        ChunkFlowToggleButtonGroup(
-            compact = true,
-            items = listOf(
-                ChunkFlowToggleButtonItem(
-                    label = stringResource(R.string.designsystem_playback_chip_skip_silence),
-                    checked = isSkipSilenceOn,
-                    onCheckedChange = { onToggleSkipSilence() },
-                ),
-            ),
-        )
-
-        // 4. 再生設定
-        IconButton(onClick = onOpenPlaybackSettings) {
-            Icon(
-                imageVector = ChunkFlowIcons.Settings,
-                contentDescription = stringResource(R.string.designsystem_playback_chip_playback_settings),
-                modifier = Modifier.size(24.dp),
-            )
+        val placeable = checkNotNull(chosen) { "StripLayoutTier must not be empty" }
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth else placeable.width
+        layout(width, placeable.height) {
+            placeable.placeRelative(x = (width - placeable.width) / 2, y = 0)
         }
     }
 
@@ -193,6 +163,134 @@ fun PlaybackControlStrip(
                 }
             },
         )
+    }
+}
+
+/** [PlaybackControlStrip] のレイアウトの段。先頭から順に試し、1 行に収まる最初の段を使う。 */
+private enum class StripLayoutTier(
+    val compact: Boolean,
+    val skipSilenceLabel: Boolean,
+    val repeatLabel: Boolean,
+) {
+    /** ラベル付き・通常の余白（広い幅）。 */
+    FULL(compact = false, skipSilenceLabel = true, repeatLabel = true),
+
+    /** 無音スキップをアイコンだけにし、余白と間隔を詰める。 */
+    SKIP_SILENCE_ICON(compact = true, skipSilenceLabel = false, repeatLabel = true),
+
+    /** リピートもアイコンだけにする（最小。入りきらなければ折り返す）。 */
+    ALL_ICONS(compact = true, skipSilenceLabel = false, repeatLabel = false),
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StripContent(
+    tier: StripLayoutTier,
+    isNormalSpeed: Boolean,
+    isCustomSpeedSelected: Boolean,
+    customSpeed: Float,
+    isRepeatOn: Boolean,
+    isWholeFileRepeat: Boolean,
+    isSkipSilenceOn: Boolean,
+    onSetSpeed: (Float) -> Unit,
+    onOpenSpeedSheet: () -> Unit,
+    onToggleRepeat: () -> Unit,
+    onRequestWholeFileRepeat: () -> Unit,
+    onToggleSkipSilence: () -> Unit,
+    onOpenPlaybackSettings: () -> Unit,
+) {
+    val gap = if (tier.compact) 2.dp else 8.dp
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(gap, Alignment.CenterHorizontally),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 1. 速度（排他）: [1x] + [{指定速度} ▼]
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ChunkFlowToggleButtonGroup(
+                compact = tier.compact,
+                items = listOf(
+                    ChunkFlowToggleButtonItem(
+                        label = "1x",
+                        checked = isNormalSpeed,
+                        onCheckedChange = { if (it) onSetSpeed(1.0f) },
+                    ),
+                ),
+            )
+            LongPressTooltip(text = stringResource(R.string.designsystem_playback_speed_tooltip)) {
+                ChunkFlowSplitButton(
+                    label = formatCompactSpeed(customSpeed),
+                    onClick = { onSetSpeed(customSpeed) },
+                    checked = isCustomSpeedSelected,
+                    onLongClick = onOpenSpeedSheet,
+                    onMenuClick = onOpenSpeedSheet,
+                    menuContentDescription = stringResource(R.string.designsystem_playback_speed_menu_cd),
+                    compact = tier.compact,
+                )
+            }
+        }
+
+        // 2. リピート: [リピート ▼]（▼ と長押しで「全体リピート」）。狭い幅ではアイコンだけ
+        val repeatLabel = if (isWholeFileRepeat) {
+            stringResource(R.string.designsystem_playback_chip_repeat_whole_file)
+        } else {
+            stringResource(R.string.designsystem_playback_chip_repeat)
+        }
+        LongPressTooltip(
+            text = if (tier.repeatLabel) {
+                stringResource(R.string.designsystem_playback_repeat_tooltip)
+            } else {
+                repeatLabel
+            },
+        ) {
+            ChunkFlowSplitButton(
+                label = repeatLabel,
+                onClick = onToggleRepeat,
+                checked = isRepeatOn,
+                icon = if (isWholeFileRepeat || !tier.repeatLabel) ChunkFlowIcons.Repeat else null,
+                showLabel = tier.repeatLabel,
+                onLongClick = onRequestWholeFileRepeat,
+                menuItems = listOf(
+                    ChunkFlowSplitButtonMenuItem(
+                        label = stringResource(R.string.designsystem_playback_chip_repeat_whole_file),
+                        icon = ChunkFlowIcons.Repeat,
+                        checked = isWholeFileRepeat,
+                        onClick = onRequestWholeFileRepeat,
+                    ),
+                ),
+                menuContentDescription = stringResource(R.string.designsystem_playback_repeat_menu_cd),
+                compact = tier.compact,
+            )
+        }
+
+        // 3. 無音スキップ（トグル）。狭い幅ではアイコンだけにし、ラベルは contentDescription と Tooltip で補う
+        val skipSilenceLabel = stringResource(R.string.designsystem_playback_chip_skip_silence)
+        LongPressTooltip(text = skipSilenceLabel) {
+            ChunkFlowToggleButtonGroup(
+                compact = tier.compact,
+                items = listOf(
+                    ChunkFlowToggleButtonItem(
+                        label = skipSilenceLabel,
+                        checked = isSkipSilenceOn,
+                        onCheckedChange = { onToggleSkipSilence() },
+                        icon = ChunkFlowIcons.SkipSilence,
+                        showLabel = tier.skipSilenceLabel,
+                    ),
+                ),
+            )
+        }
+
+        // 4. 再生設定
+        IconButton(onClick = onOpenPlaybackSettings) {
+            Icon(
+                imageVector = ChunkFlowIcons.Settings,
+                contentDescription = stringResource(R.string.designsystem_playback_chip_playback_settings),
+                modifier = Modifier.size(24.dp),
+            )
+        }
     }
 }
 
@@ -258,6 +356,19 @@ internal fun PlaybackControlStripPreview() {
                     onEnableWholeFileRepeat = {},
                     onToggleSkipSilence = {},
                     onOpenPlaybackSettings = {},
+                )
+                // 360dp 端末の本文幅（360 - 16 × 2 = 328dp）での全体リピート ON
+                PlaybackControlStrip(
+                    speed = 0.75f,
+                    customSpeed = 0.75f,
+                    practice = PracticeSettings(repeatWholeFile = true),
+                    onSetSpeed = {},
+                    onOpenSpeedSheet = {},
+                    onToggleRepeat = {},
+                    onEnableWholeFileRepeat = {},
+                    onToggleSkipSilence = {},
+                    onOpenPlaybackSettings = {},
+                    modifier = Modifier.width(328.dp),
                 )
             }
         }
