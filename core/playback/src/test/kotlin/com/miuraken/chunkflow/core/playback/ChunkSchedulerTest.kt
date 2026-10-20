@@ -1354,6 +1354,124 @@ class ChunkSchedulerTest {
         assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
     }
 
+    @Test
+    fun `AutoPause_OriginalSilenceでチャンク間の無音に対する倍率分の自動ポーズが入り隙間0msや最終チャンクでは入らない`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO)
+        val c2 = Chunk(ChunkId(2L), startMs = 3_000L, endMs = 4_500L, origin = ChunkOrigin.AUTO) // c1-c2 間 1000ms
+        val c3 = Chunk(ChunkId(3L), startMs = 5_500L, endMs = 7_000L, origin = ChunkOrigin.AUTO) // c2-c3 間 1000ms
+        val c4 = Chunk(ChunkId(4L), startMs = 8_000L, endMs = 9_500L, origin = ChunkOrigin.AUTO) // c3-c4 間 1000ms
+        val c5 = Chunk(ChunkId(5L), startMs = 9_500L, endMs = 11_000L, origin = ChunkOrigin.AUTO) // c4-c5 間 0ms（最終チャンク）
+        scheduler.setChunks(listOf(c1, c2, c3, c4, c5))
+
+        // 1. factor = 0.25f -> 1000ms * 0.25 = 250ms の自動ポーズ
+        practiceController.update {
+            it.copy(
+                autoPause = AutoPause.OriginalSilence(factor = 0.25f),
+                autoPauseScope = AutoPauseScope.ALL_CHUNKS,
+            )
+        }
+        fakeElapsedRealtimeMs = 10_000L
+        exoPlayer.play()
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertEquals(c1.id, scheduler.currentChunkId.value)
+        assertEquals(10_250L, scheduler.autoPauseEndsAtMs.value)
+
+        shadowOf(Looper.getMainLooper()).idleFor(250L, TimeUnit.MILLISECONDS)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertNull(scheduler.autoPauseEndsAtMs.value)
+
+        // 2. factor = 1.0f -> 1000ms * 1.0 = 1000ms の自動ポーズ
+        practiceController.update {
+            it.copy(autoPause = AutoPause.OriginalSilence(factor = 1.0f))
+        }
+        fakeElapsedRealtimeMs = 20_000L
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertEquals(c2.id, scheduler.currentChunkId.value)
+        assertEquals(21_000L, scheduler.autoPauseEndsAtMs.value)
+
+        shadowOf(Looper.getMainLooper()).idleFor(1_000L, TimeUnit.MILLISECONDS)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertNull(scheduler.autoPauseEndsAtMs.value)
+
+        // 3. factor = 2.0f -> 1000ms * 2.0 = 2000ms の自動ポーズ
+        practiceController.update {
+            it.copy(autoPause = AutoPause.OriginalSilence(factor = 2.0f))
+        }
+        fakeElapsedRealtimeMs = 30_000L
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+        assertFalse(exoPlayer.playWhenReady)
+        assertEquals(c3.id, scheduler.currentChunkId.value)
+        assertEquals(32_000L, scheduler.autoPauseEndsAtMs.value)
+
+        shadowOf(Looper.getMainLooper()).idleFor(2_000L, TimeUnit.MILLISECONDS)
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertNull(scheduler.autoPauseEndsAtMs.value)
+
+        // 4. c4 (8000..9500) と c5 (9500..11000) の隙間は 0ms のため自動ポーズなしで c5 に入り、最終チャンク c5 の終端でも自動ポーズは入らない
+        runUntil { exoPlayer.currentPosition >= 11_200L }
+        pumpLoopers()
+        assertTrue(exoPlayer.playWhenReady)
+        assertNull(scheduler.autoPauseEndsAtMs.value)
+    }
+
+    @Test
+    fun `AutoPause_OriginalSilenceでもAutoPauseScopeの言語フィルタが正しく効く`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO)
+        val c2 = Chunk(ChunkId(2L), startMs = 3_000L, endMs = 4_500L, origin = ChunkOrigin.AUTO)
+        val c3 = Chunk(ChunkId(3L), startMs = 5_500L, endMs = 7_000L, origin = ChunkOrigin.AUTO)
+        scheduler.setChunks(listOf(c1, c2, c3))
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                c1.id to sampleTranscript(c1.id, "こんにちは", "ja"),
+                c2.id to sampleTranscript(c2.id, "Hello", "en"),
+                c3.id to sampleTranscript(c3.id, "さようなら", "ja"),
+            ),
+        )
+
+        // AFTER_TARGET_LANGUAGE のとき、c1 (ja) 終端では止まらず、c2 (en) 終端で元の無音 1000ms * 1.5 = 1500ms のポーズが入る
+        practiceController.update {
+            it.copy(
+                autoPause = AutoPause.OriginalSilence(factor = 1.5f),
+                autoPauseScope = AutoPauseScope.AFTER_TARGET_LANGUAGE,
+            )
+        }
+        fakeElapsedRealtimeMs = 40_000L
+        exoPlayer.play()
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+
+        assertEquals(c2.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition >= c2.endMs)
+        assertEquals(41_500L, scheduler.autoPauseEndsAtMs.value)
+
+        // AFTER_BASE_LANGUAGE に切り替えて先頭から再生すると、c1 (ja) 終端で 1000ms * 0.5 = 500ms のポーズが入る
+        exoPlayer.seekTo(0L)
+        pumpLoopers()
+        practiceController.update {
+            it.copy(
+                autoPause = AutoPause.OriginalSilence(factor = 0.5f),
+                autoPauseScope = AutoPauseScope.AFTER_BASE_LANGUAGE,
+            )
+        }
+        fakeElapsedRealtimeMs = 50_000L
+        exoPlayer.play()
+        runUntil { scheduler.autoPauseEndsAtMs.value != null }
+        pumpLoopers()
+
+        assertEquals(c1.id, scheduler.currentChunkId.value)
+        assertTrue(exoPlayer.currentPosition in c1.endMs..(c1.endMs + 300L))
+        assertEquals(50_500L, scheduler.autoPauseEndsAtMs.value)
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,
