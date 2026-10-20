@@ -9,6 +9,10 @@
     <string name="designsystem_playback_whole_file_repeat_no">No</string>
     <string name="designsystem_playback_chip_skip_silence">無音スキップ</string>
     <string name="designsystem_playback_chip_playback_settings">再生設定</string>
+    <string name="designsystem_playback_speed_tooltip">長押しまたは ▼ で速度を設定</string>
+    <string name="designsystem_playback_speed_menu_cd">再生速度の設定を開く</string>
+    <string name="designsystem_playback_repeat_tooltip">長押しまたは ▼ でファイル全体をリピート</string>
+    <string name="designsystem_playback_repeat_menu_cd">リピートのメニュー</string>
 
     <!-- 再生速度シート（SpeedSheetContent） -->
     <string name="designsystem_playback_speed_section_title">再生速度</string>

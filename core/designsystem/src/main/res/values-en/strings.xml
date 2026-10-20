@@ -8,6 +8,10 @@
     <string name="designsystem_playback_whole_file_repeat_no">No</string>
     <string name="designsystem_playback_chip_skip_silence">Skip silence</string>
     <string name="designsystem_playback_chip_playback_settings">Playback settings</string>
+    <string name="designsystem_playback_speed_tooltip">Long-press or ▼ to set the speed</string>
+    <string name="designsystem_playback_speed_menu_cd">Open playback speed settings</string>
+    <string name="designsystem_playback_repeat_tooltip">Long-press or ▼ to repeat the entire file</string>
+    <string name="designsystem_playback_repeat_menu_cd">Repeat menu</string>
 
     <!-- 再生速度シート（SpeedSheetContent） -->
     <string name="designsystem_playback_speed_section_title">Playback speed</string>

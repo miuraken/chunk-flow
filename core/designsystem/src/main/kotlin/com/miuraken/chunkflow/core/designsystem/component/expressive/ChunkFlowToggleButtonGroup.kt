@@ -4,9 +4,11 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroup
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -70,12 +72,14 @@ data class ChunkFlowToggleButtonItem(
  *
  * @param items 左から順に並べるボタン。1 つ以上。
  * @param modifier 一番外側の `ButtonGroup` に適用する Modifier。
+ * @param compact `true` で左右の余白を詰める（狭い横幅に多くの操作を並べるとき。高さと最小タップ領域は変えない）。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun ChunkFlowToggleButtonGroup(
     items: List<ChunkFlowToggleButtonItem>,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     require(items.isNotEmpty()) { "items must not be empty" }
     ButtonGroup(
@@ -91,6 +95,7 @@ fun ChunkFlowToggleButtonGroup(
                         item = item,
                         shapes = connectedShapesFor(index = index, count = items.size),
                         interactionSource = interactionSource,
+                        compact = compact,
                         modifier = Modifier.animateWidth(interactionSource),
                     )
                 },
@@ -136,6 +141,7 @@ private fun ConnectedToggleButton(
     item: ChunkFlowToggleButtonItem,
     shapes: ToggleButtonShapes,
     interactionSource: MutableInteractionSource,
+    compact: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -167,6 +173,7 @@ private fun ConnectedToggleButton(
             .then(semanticsModifier),
         enabled = item.enabled,
         shapes = shapes,
+        contentPadding = if (compact) CompactContentPadding else ButtonDefaults.ContentPadding,
         interactionSource = interactionSource,
     ) {
         val icon = item.icon
@@ -185,6 +192,12 @@ private fun ConnectedToggleButton(
         }
     }
 }
+
+/** [ChunkFlowToggleButtonGroup] と [ChunkFlowSplitButton] の `compact` 時の余白（既定 24dp → 12dp）。 */
+internal val CompactContentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+
+/** [ChunkFlowSplitButton] の `compact` 時の ▼ の余白。 */
+internal val CompactTrailingContentPadding: PaddingValues = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
 
 @ChunkFlowPreviews
 @Composable
@@ -223,6 +236,15 @@ internal fun ChunkFlowToggleButtonGroupPreview() {
                             onCheckedChange = {},
                             enabled = false,
                         ),
+                    ),
+                )
+                // compact（余白を詰める）
+                ChunkFlowToggleButtonGroup(
+                    compact = true,
+                    items = listOf(
+                        ChunkFlowToggleButtonItem(label = "1x", checked = true, onCheckedChange = {}),
+                        ChunkFlowToggleButtonItem(label = "1.5x", checked = false, onCheckedChange = {}),
+                        ChunkFlowToggleButtonItem(label = "2x", checked = false, onCheckedChange = {}),
                     ),
                 )
                 // アイコンだけ

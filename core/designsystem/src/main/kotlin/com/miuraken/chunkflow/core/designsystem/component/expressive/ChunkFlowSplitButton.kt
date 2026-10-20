@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -76,6 +77,7 @@ data class ChunkFlowSplitButtonMenuItem(
  * @param menuItems ▼ で開くメニューの項目。
  * @param onMenuClick ▼ が押されたときの通知（[menuItems] が空のときの開き先。省略時は何もしない）。
  * @param menuContentDescription ▼ ボタンの読み上げ文言。既定は「{label} のメニュー」。
+ * @param compact `true` で左右の余白を詰める（[ChunkFlowToggleButtonGroup] の `compact` と揃える）。
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -90,6 +92,7 @@ fun ChunkFlowSplitButton(
     menuItems: List<ChunkFlowSplitButtonMenuItem> = emptyList(),
     onMenuClick: (() -> Unit)? = null,
     menuContentDescription: String = stringResourceMenuCd(label),
+    compact: Boolean = false,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
@@ -119,6 +122,7 @@ fun ChunkFlowSplitButton(
                     onClick = onClick,
                     enabled = enabled,
                     colors = colors,
+                    contentPadding = if (compact) CompactContentPadding else SplitButtonDefaults.SmallLeadingButtonContentPadding,
                     modifier = longClickModifier.semantics { stateDescription = stateText },
                 ) {
                     if (icon != null) {
@@ -149,7 +153,14 @@ fun ChunkFlowSplitButton(
                     },
                     enabled = enabled,
                     colors = colors,
-                    modifier = Modifier.semantics { contentDescription = menuContentDescription },
+                    contentPadding = if (compact) {
+                        CompactTrailingContentPadding
+                    } else {
+                        SplitButtonDefaults.SmallTrailingButtonContentPadding
+                    },
+                    modifier = Modifier
+                        .then(if (compact) Modifier.width(CompactTrailingButtonWidth) else Modifier)
+                        .semantics { contentDescription = menuContentDescription },
                 ) {
                     Icon(
                         imageVector = ChunkFlowIcons.ExpandMore,
@@ -192,6 +203,9 @@ fun ChunkFlowSplitButton(
 @Composable
 private fun stringResourceMenuCd(label: String): String = androidx.compose.ui.res.stringResource(R.string.designsystem_split_button_menu_cd, label)
 
+/** `compact` 時の ▼ ボタンの幅（既定の最小幅より狭くする。タップ領域は 48dp に自動で広がる）。 */
+private val CompactTrailingButtonWidth = 36.dp
+
 /** [ChunkFlowToggleButtonGroup]（`ToggleButtonDefaults.colors()`）と揃えた配色。未選択は `surfaceContainer`、選択は `primary`。 */
 @Composable
 private fun splitButtonColors(checked: Boolean): ButtonColors = if (checked) {
@@ -227,6 +241,14 @@ internal fun ChunkFlowSplitButtonPreview() {
                     menuItems = listOf(
                         ChunkFlowSplitButtonMenuItem(label = "全体リピート", onClick = {}),
                     ),
+                )
+                // compact
+                ChunkFlowSplitButton(
+                    label = "0.75x",
+                    onClick = {},
+                    checked = true,
+                    compact = true,
+                    onMenuClick = {},
                 )
                 // 無効
                 ChunkFlowSplitButton(

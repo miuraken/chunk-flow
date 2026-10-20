@@ -4,7 +4,6 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.SelectableChipColors
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 
 /**
  * ON / OFF のトグルに使う [androidx.compose.material3.FilterChip] のカラー設定。
@@ -36,11 +35,3 @@ fun brightnessToggleChipColors(): SelectableChipColors = FilterChipDefaults.filt
     ),
 )
 val CompletedTranscriptBadgeColor: Color = Color(0xFF19532B)
-
-/** 「ファイル全体をリピート」が ON のときのリピートチップの背景色（テーマの拡張色から取る）。 */
-@Composable
-internal fun wholeFileRepeatContainerColor(): Color = chunkFlowExtendedColors().wholeFileRepeat
-
-/** 「ファイル全体をリピート」が ON のときのリピートチップの文字色（テーマの拡張色から取る）。 */
-@Composable
-internal fun onWholeFileRepeatContainerColor(): Color = chunkFlowExtendedColors().onWholeFileRepeat
