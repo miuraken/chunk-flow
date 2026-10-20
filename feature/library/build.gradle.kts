@@ -11,6 +11,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
     screenshotTestImplementation(libs.screenshot.validation.api)
     screenshotTestImplementation(libs.androidx.compose.ui.tooling)
 }
