@@ -19,7 +19,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -45,12 +44,14 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -372,7 +373,7 @@ private fun PlaybackSettingsSection(
             )
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = RoundedCornerShape(8.dp),
+                shape = MaterialTheme.shapes.small,
             ) {
                 Text(
                     text = formatSpeed(defaultSpeed),
@@ -386,7 +387,7 @@ private fun PlaybackSettingsSection(
             }
         }
 
-        Slider(
+        SettingsSlider(
             value = defaultSpeed,
             onValueChange = { onEvent(SettingsEvent.SetDefaultSpeed(it)) },
             valueRange = 0.5f..2.0f,
@@ -547,7 +548,7 @@ private fun PlaybackSettingsSection(
                 )
             }
 
-            Slider(
+            SettingsSlider(
                 value = displayFixedSeconds,
                 onValueChange = { rawValue ->
                     val snappedSteps = (rawValue * 2f).roundToInt().coerceIn(0, 8)
@@ -603,7 +604,7 @@ private fun PlaybackSettingsSection(
                 )
             }
 
-            Slider(
+            SettingsSlider(
                 value = displayProportionalFactor,
                 onValueChange = { rawValue ->
                     val snappedSteps = (rawValue * 2f).roundToInt().coerceIn(1, 6)
@@ -636,7 +637,7 @@ private fun SegmentationDefaultsSection(
             text = stringResource(R.string.settings_segmentation_min_silence, params.minSilenceMs),
             style = MaterialTheme.typography.bodyMedium,
         )
-        Slider(
+        SettingsSlider(
             value = params.minSilenceMs.toFloat().coerceIn(150f, 1_000f),
             onValueChange = { value ->
                 val rounded = ((value / 50f).roundToInt() * 50).coerceIn(150, 1_000)
@@ -655,7 +656,7 @@ private fun SegmentationDefaultsSection(
             text = stringResource(R.string.settings_segmentation_pre_padding, params.prePaddingMs),
             style = MaterialTheme.typography.bodyMedium,
         )
-        Slider(
+        SettingsSlider(
             value = params.prePaddingMs.toFloat().coerceIn(0f, 400f),
             onValueChange = { value ->
                 val rounded = ((value / 25f).roundToInt() * 25).coerceIn(0, 400)
@@ -674,7 +675,7 @@ private fun SegmentationDefaultsSection(
             text = stringResource(R.string.settings_segmentation_post_padding, params.postPaddingMs),
             style = MaterialTheme.typography.bodyMedium,
         )
-        Slider(
+        SettingsSlider(
             value = params.postPaddingMs.toFloat().coerceIn(0f, 400f),
             onValueChange = { value ->
                 val rounded = ((value / 25f).roundToInt() * 25).coerceIn(0, 400)
@@ -832,6 +833,47 @@ private fun speechModelLanguageDisplayName(language: LanguageTag): String {
     }
 }
 
+/**
+ * 設定画面用のスライダー。
+ *
+ * material3 1.5 で `Slider(value, onValueChange, …)` が非推奨になったため、
+ * [rememberSliderState] + `Slider(state = …)` の新しいオーバーロードで描く。
+ * 値はこの Composable の外（UiState）が持つので、外から [value] が変わったとき
+ * （プリセットのチップ、リセットなど）に `state.value` を追従させる。
+ *
+ * @param value 現在の値。
+ * @param onValueChange ドラッグ・タップで値が変わるたびに呼ぶ。
+ * @param valueRange 値の範囲。
+ * @param steps 範囲の内側に置く目盛りの数（`Slider` と同じ意味）。
+ */
+@Composable
+private fun SettingsSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    modifier: Modifier = Modifier,
+) {
+    val state: SliderState = rememberSliderState(
+        value = value,
+        steps = steps,
+        trackRange = valueRange,
+    )
+    LaunchedEffect(state, value) {
+        if (state.value != value) {
+            state.value = value
+        }
+    }
+    Slider(
+        state = state,
+        onValueChange = { newValue ->
+            state.value = newValue
+            onValueChange(newValue)
+        },
+        modifier = modifier,
+    )
+}
+
 @Composable
 private fun SettingsCard(
     title: String,
@@ -839,7 +881,7 @@ private fun SettingsCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ),
