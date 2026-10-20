@@ -737,6 +737,7 @@ data class PlayerUiState(
     val nextMediaId: MediaId? = null,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLanguageFilterFallbackHighlighted: Boolean = false,
+    val isTranscriptionBadgeTooltipVisible: Boolean = false,
     val autoFollowResetToken: Long = 0L,
     val isOverviewWaveformRenderComplete: Boolean = false,
     val isZoomedWaveformRenderComplete: Boolean = false,
@@ -1091,6 +1092,9 @@ sealed interface PlayerEvent {
     /** 文字起こし実行中に進捗ペーン（カード）の表示・非表示を切り替える。 */
     data object ToggleTranscriptionProgress : PlayerEvent
 
+    /** 言語判定完了時に表示される「文字起こし」バッジの案内ツールチップを閉じる。 */
+    data object DismissTranscriptionBadgeTooltip : PlayerEvent
+
     /** 実行中・待機中のすべての文字起こし処理とロックを強制中断・リセットする。 */
     data object ResetTranscription : PlayerEvent
 
@@ -1204,6 +1208,9 @@ internal const val LANGUAGE_TOGGLE_COMMIT_DELAY_MS: Long = 1_000L
 /** 「☑ のみ」からすべてのチェックが外れて「両方」へ自動復帰したときに言語フィルタバッジを強調表示する時間（ミリ秒）。 */
 internal const val LANGUAGE_FILTER_FALLBACK_HIGHLIGHT_MS: Long = 3_000L
 
+/** 自動文字起こしがオフのとき、言語判定完了後に「文字起こし」バッジへ表示するツールチップの表示時間（ミリ秒）。 */
+internal const val TRANSCRIPTION_BADGE_TOOLTIP_DURATION_MS: Long = 5_000L
+
 internal data class ChunkVisualKey(
     val id: ChunkId,
     val startMs: Long,
@@ -1252,6 +1259,7 @@ private data class LocalUiSnapshot(
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLookaheadEnabled: Boolean = false,
     val isLanguageFilterFallbackHighlighted: Boolean = false,
+    val isTranscriptionBadgeTooltipVisible: Boolean = false,
     val autoFollowResetToken: Long = 0L,
     val completedOverviewSignature: WaveformRenderSignature? = null,
     val completedZoomedSignature: WaveformRenderSignature? = null,
@@ -1309,6 +1317,12 @@ class PlayerViewModel @Inject constructor(
     private var retranscribeJob: Job? = null
     private var chunkSeekPrioritizeJob: Job? = null
     private var languageFilterHighlightJob: Job? = null
+    private var transcriptionBadgeTooltipJob: Job? = null
+    private val languageDetectionObservedRunningMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
+    private val shownTranscriptionBadgeTooltipMediaIds = mutableSetOf<MediaId>()
+
+    private fun isLookaheadActivelyRunningInRepo(status: LookaheadTranscriptionStatus): Boolean = status.enabled &&
+        (status.backgroundEnabled || status.inFlightChunkId != null || status.queuedChunkIds.isNotEmpty())
 
     /** 高頻度で変わる再生位置のプロバイダ（§6.2）。 */
     val positionProvider: PositionProvider
@@ -1434,12 +1448,12 @@ class PlayerViewModel @Inject constructor(
                 currentMediaId,
                 perMediaLookaheadEnabled,
                 currentAnalysisSnapshot
-                    .map { (it.chunks.firstOrNull()?.id) to it.lookaheadStatus.enabled }
+                    .map { (it.chunks.firstOrNull()?.id) to isLookaheadActivelyRunningInRepo(it.lookaheadStatus) }
                     .distinctUntilChanged(),
-            ) { mediaId, enabledMap, (firstChunkId, repoEnabled) ->
+            ) { mediaId, enabledMap, (firstChunkId, repoActivelyRunning) ->
                 val explicit = if (mediaId != null) enabledMap[mediaId] else null
-                val enabled = explicit ?: repoEnabled
-                val shouldSync = explicit != null || repoEnabled
+                val enabled = explicit ?: repoActivelyRunning
+                val shouldSync = explicit != null || repoActivelyRunning
                 Quad(mediaId, shouldSync, enabled, if (enabled) firstChunkId else null)
             }.distinctUntilChanged().collect { (mediaId, shouldSync, enabled, _) ->
                 if (mediaId != null && shouldSync) {
@@ -1450,6 +1464,56 @@ class PlayerViewModel @Inject constructor(
                         }
                     }
                     syncLookaheadState(mediaId, enabled)
+                }
+            }
+        }
+
+        // 言語判定が実行中になった教材を記録する
+        viewModelScope.launch {
+            combine(
+                currentMediaId,
+                currentAnalysisSnapshot.map { it.lookaheadStatus.isLanguageDetectionRunning }.distinctUntilChanged(),
+            ) { mediaId, isLidRunning ->
+                mediaId to isLidRunning
+            }.collect { (mediaId, isLidRunning) ->
+                if (mediaId != null && isLidRunning) {
+                    languageDetectionObservedRunningMediaIds.update { it + mediaId }
+                }
+            }
+        }
+
+        // 自動文字起こしがオフのとき、言語判定が完了したら「文字起こし」バッジに 5 秒間ツールチップを表示する
+        viewModelScope.launch {
+            combine(
+                currentMediaId,
+                perMediaLookaheadEnabled,
+                languageDetectionObservedRunningMediaIds,
+                userSettingsRepository.settings.map { it.autoStartTranscriptionOnOpen }.distinctUntilChanged(),
+                currentAnalysisSnapshot,
+            ) { mediaId, perMediaMap, observedRunningSet, autoStartOnOpen, snapshot ->
+                val isAnalysisIdle = snapshot.chunks.isNotEmpty() &&
+                    snapshot.status[AnalysisStage.FEATURES] !is StageStatus.Running &&
+                    snapshot.status[AnalysisStage.SEGMENTATION] !is StageStatus.Running &&
+                    !snapshot.lookaheadStatus.isLanguageDetectionRunning
+                val isLookaheadActive = (mediaId != null && perMediaMap[mediaId] == true) ||
+                    isLookaheadActivelyRunningInRepo(snapshot.lookaheadStatus)
+                val shouldTrigger = mediaId != null &&
+                    lastOpenedMediaId == mediaId &&
+                    !autoStartOnOpen &&
+                    mediaId in observedRunningSet &&
+                    mediaId !in shownTranscriptionBadgeTooltipMediaIds &&
+                    isAnalysisIdle &&
+                    !isLookaheadActive
+                mediaId to shouldTrigger
+            }.collect { (mediaId, shouldTrigger) ->
+                if (mediaId != null && shouldTrigger && mediaId !in shownTranscriptionBadgeTooltipMediaIds) {
+                    shownTranscriptionBadgeTooltipMediaIds.add(mediaId)
+                    localUiState.update { it.copy(isTranscriptionBadgeTooltipVisible = true) }
+                    transcriptionBadgeTooltipJob?.cancel()
+                    transcriptionBadgeTooltipJob = viewModelScope.launch {
+                        delay(TRANSCRIPTION_BADGE_TOOLTIP_DURATION_MS)
+                        localUiState.update { it.copy(isTranscriptionBadgeTooltipVisible = false) }
+                    }
                 }
             }
         }
@@ -1683,7 +1747,8 @@ class PlayerViewModel @Inject constructor(
             }
             if (lookaheadLoopJob?.isActive != true) {
                 val explicit = perMediaLookaheadEnabled.value[mediaId]
-                val enabled = explicit ?: currentState.lookaheadStatus.enabled
+                val repoActivelyRunning = isLookaheadActivelyRunningInRepo(currentState.lookaheadStatus)
+                val enabled = explicit ?: repoActivelyRunning
                 if (explicit != null || enabled) {
                     if (enabled && explicit != true) {
                         perMediaLookaheadEnabled.update { it + (mediaId to true) }
@@ -1716,6 +1781,8 @@ class PlayerViewModel @Inject constructor(
         chunkSeekPrioritizeJob = null
         languageFilterHighlightJob?.cancel()
         languageFilterHighlightJob = null
+        transcriptionBadgeTooltipJob?.cancel()
+        transcriptionBadgeTooltipJob = null
         prioritizedMediaIds.update { it - mediaId }
         val explicitEnabled = perMediaLookaheadEnabled.value[mediaId]
         val nextGen = nextWaveformRenderGeneration++
@@ -1728,6 +1795,16 @@ class PlayerViewModel @Inject constructor(
         )
         if (explicitEnabled != null) {
             syncLookaheadState(mediaId, explicitEnabled)
+        } else {
+            viewModelScope.launch {
+                val currentLookahead = analysisRepository.observeLookaheadStatus(mediaId).firstOrNull()
+                if (currentLookahead != null && !isLookaheadActivelyRunningInRepo(currentLookahead)) {
+                    val autoStart = userSettingsRepository.settings.firstOrNull()?.autoStartTranscriptionOnOpen ?: true
+                    if (!autoStart && perMediaLookaheadEnabled.value[mediaId] == null) {
+                        analysisRepository.setLookaheadEnabled(mediaId, false)
+                    }
+                }
+            }
         }
         viewModelScope.launch {
             val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
@@ -2697,14 +2774,23 @@ class PlayerViewModel @Inject constructor(
                 if (!event.enabled) {
                     abortActiveViewModelTranscriptionJobs()
                 }
+                transcriptionBadgeTooltipJob?.cancel()
+                transcriptionBadgeTooltipJob = null
                 localUiState.update {
                     it.copy(
                         isLookaheadEnabled = event.enabled,
                         isTranscriptionProgressDismissed = false,
+                        isTranscriptionBadgeTooltipVisible = false,
                     )
                 }
                 perMediaLookaheadEnabled.update { it + (id to event.enabled) }
                 syncLookaheadState(id, event.enabled)
+            }
+
+            PlayerEvent.DismissTranscriptionBadgeTooltip -> {
+                transcriptionBadgeTooltipJob?.cancel()
+                transcriptionBadgeTooltipJob = null
+                localUiState.update { it.copy(isTranscriptionBadgeTooltipVisible = false) }
             }
 
             is PlayerEvent.SetBackgroundTranscriptionEnabled -> {
@@ -4016,7 +4102,7 @@ class PlayerViewModel @Inject constructor(
         val effectiveLookaheadEnabled = if (mediaId != null && perMediaLookaheadEnabled.value.containsKey(mediaId)) {
             local.isLookaheadEnabled && analysis.lookaheadStatus.enabled
         } else {
-            analysis.lookaheadStatus.enabled
+            isLookaheadActivelyRunningInRepo(analysis.lookaheadStatus)
         }
         val effectiveLookaheadStatus = analysis.lookaheadStatus.copy(
             enabled = effectiveLookaheadEnabled,
@@ -4114,6 +4200,7 @@ class PlayerViewModel @Inject constructor(
             nextMediaId = nextMediaId,
             backgroundSpeechRecognizerWarning = local.backgroundSpeechRecognizerWarning,
             isLanguageFilterFallbackHighlighted = local.isLanguageFilterFallbackHighlighted,
+            isTranscriptionBadgeTooltipVisible = local.isTranscriptionBadgeTooltipVisible,
             autoFollowResetToken = local.autoFollowResetToken,
             isOverviewWaveformRenderComplete = isOverviewWaveformRenderComplete,
             isZoomedWaveformRenderComplete = isZoomedWaveformRenderComplete,

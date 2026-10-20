@@ -172,11 +172,6 @@ fun LibraryRoute(
 
                 LibraryEvent.OpenSettings -> onOpenSettings()
 
-                LibraryEvent.OpenLanguageSettings -> {
-                    viewModel.onEvent(event)
-                    onOpenLanguageSettings()
-                }
-
                 else -> viewModel.onEvent(event)
             }
         },
@@ -609,7 +604,6 @@ fun LibraryScreen(
             onDismiss = { showCreateFolderDialog = false },
             sttEngineByLanguage = state.sttEngineByLanguage,
             onOpenLanguageSettings = {
-                showCreateFolderDialog = false
                 onEvent(LibraryEvent.OpenLanguageSettings)
             },
         )
@@ -655,6 +649,17 @@ fun LibraryScreen(
             onDismiss = { onEvent(LibraryEvent.CancelEditDirectoryMetadata) },
             sttEngineByLanguage = state.sttEngineByLanguage,
             onOpenLanguageSettings = { onEvent(LibraryEvent.OpenLanguageSettings) },
+        )
+    }
+
+    if (state.showLanguageSettingsModal) {
+        LanguageSettingsModalDialog(
+            enabledLanguages = state.enabledLanguages.toSet(),
+            onToggleLanguage = { language ->
+                onEvent(LibraryEvent.ToggleEnabledLanguage(language))
+            },
+            onDismiss = { onEvent(LibraryEvent.DismissLanguageSettingsModal) },
+            isFirstLaunchOnboarding = false,
         )
     }
 

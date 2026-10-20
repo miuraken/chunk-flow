@@ -4736,4 +4736,122 @@ class DefaultAnalysisRepositoryTest {
         assertTrue(added.startMs in 3_770L..3_800L, "added.startMs=${added.startMs}")
         assertTrue(added.endMs in 4_400L..4_430L, "added.endMs=${added.endMs}")
     }
+
+    @Test
+    fun `autoStartTranscriptionOnOpenがfalseのとき_言語判定完了後も自動文字起こしが開始されず明示的ONで開始される`() = runTest {
+        val mediaId = MediaId("media_auto_start_off_01")
+        mediaFileLocator.audioFileFor(mediaId, "mp3").writeBytes(byteArrayOf(1, 2, 3, 4))
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = mediaId.value,
+                title = "AutoStart Off Lesson",
+                durationMs = 2_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 4L,
+                sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                course = null,
+                targetLang = "en",
+                baseLang = "ja",
+                transcriptOffsetMs = 0,
+                importedAt = currentEpochMs,
+            ),
+        )
+        chunkDao.insertAll(
+            listOf(
+                ChunkEntity(id = 1L, mediaId = mediaId.value, startMs = 0L, endMs = 800L, origin = ChunkOrigin.AUTO.name),
+                ChunkEntity(id = 2L, mediaId = mediaId.value, startMs = 1_000L, endMs = 1_800L, origin = ChunkOrigin.AUTO.name),
+            ),
+        )
+
+        var lidCallCount = 0
+        var transcribeCallCount = 0
+        val fakeTranscriber = object : OnDeviceChunkTranscriber {
+            override fun isAvailable(): Boolean = true
+
+            override suspend fun detectChunkLanguages(
+                audioFile: File,
+                chunks: List<ChunkTimeRange>,
+                languagePair: LanguagePair,
+                parallelism: Int,
+                computeDispatcher: CoroutineDispatcher,
+                onResult: suspend (index: Int, result: OnDeviceChunkTranscriptionResult?) -> Unit,
+            ) {
+                lidCallCount += 1
+                for ((idx, _) in chunks.withIndex()) {
+                    onResult(
+                        idx,
+                        OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = LanguageTag("en"),
+                            confidence = 0.9f,
+                            engineId = OnDeviceChunkTranscriptionResult.LANGUAGE_ID_ONLY_ENGINE_ID,
+                        ),
+                    )
+                }
+            }
+
+            override suspend fun transcribeChunk(
+                audioFile: File,
+                startMs: Long,
+                endMs: Long,
+                languagePair: LanguagePair?,
+                itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+                engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+            ): OnDeviceChunkTranscriptionResult {
+                transcribeCallCount += 1
+                return OnDeviceChunkTranscriptionResult(
+                    text = "Transcribed($startMs)",
+                    language = LanguageTag("en"),
+                    confidence = 0.95f,
+                    engineId = EngineId("test-stt"),
+                )
+            }
+        }
+
+        val settingsRepo = FakeUserSettingsRepository(
+            com.miuraken.chunkflow.core.model.UserSettings(
+                lookaheadTranscriptionEnabled = true,
+                autoStartTranscriptionOnOpen = false,
+            ),
+        )
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
+        val repository = DefaultAnalysisRepository(
+            context = context,
+            analysisStateDao = analysisStateDao,
+            chunkDao = chunkDao,
+            transcriptDao = transcriptDao,
+            itemStateDao = itemStateDao,
+            mediaItemDao = mediaItemDao,
+            mediaFileResolver = mediaFileLocator,
+            ioDispatcher = dispatcher,
+            onDeviceChunkTranscriber = fakeTranscriber,
+            userSettingsRepository = settingsRepo,
+            bookmarkDao = bookmarkDao,
+            clock = { currentEpochMs },
+            computeDispatcher = dispatcher,
+        )
+
+        // 1. 初期状態の lookaheadStatus.enabled は false になっている
+        repository.setMediaTranscriptionSessionOpen(mediaId, true)
+        testScheduler.advanceUntilIdle()
+        assertFalse(repository.observeLookaheadStatus(mediaId).first().enabled)
+
+        // 2. 言語判定のみを実行しても、完了後に文字起こし（transcribeChunk）へ自動移行しない
+        repository.startLanguageDetectionOnly(mediaId)
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, lidCallCount)
+        assertEquals(0, transcribeCallCount)
+
+        // 3. 暗黙の triggerLookaheadAt が呼ばれても、enabled == false のため文字起こしされない
+        repository.triggerLookaheadAt(mediaId, ChunkId(1L))
+        testScheduler.advanceUntilIdle()
+        assertEquals(0, transcribeCallCount)
+
+        // 4. ユーザーが明示的に setLookaheadEnabled(mediaId, true) を呼んでから triggerLookaheadAt すると文字起こしが実行される
+        repository.setLookaheadEnabled(mediaId, true)
+        repository.triggerLookaheadAt(mediaId, ChunkId(1L))
+        testScheduler.advanceUntilIdle()
+        assertTrue(repository.observeLookaheadStatus(mediaId).first().enabled)
+        assertEquals(2, transcribeCallCount)
+    }
 }

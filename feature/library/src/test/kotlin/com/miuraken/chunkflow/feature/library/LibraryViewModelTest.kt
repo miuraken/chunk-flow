@@ -1922,4 +1922,27 @@ class LibraryViewModelTest {
         )
         assertEquals("韓国語講座", viewModel.uiState.value.pendingImportConfig?.initialCourse)
     }
+
+    @Test
+    fun `OpenLanguageSettings_インポートや編集ダイアログを閉じずに言語設定モーダルを開閉できる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val repo = FakeLibraryRepository(initialItems = listOf(sample.item))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. 教材メタデータ編集ダイアログを開いた状態で OpenLanguageSettings を送る
+        viewModel.onEvent(LibraryEvent.RequestEditMetadata(sample.item))
+        assertEquals(sample.item, viewModel.uiState.value.pendingEditItem)
+        assertFalse(viewModel.uiState.value.showLanguageSettingsModal)
+
+        viewModel.onEvent(LibraryEvent.OpenLanguageSettings)
+        // 編集ダイアログの状態（pendingEditItem）を保持したまま、言語設定モーダルが開く
+        assertEquals(sample.item, viewModel.uiState.value.pendingEditItem)
+        assertTrue(viewModel.uiState.value.showLanguageSettingsModal)
+
+        // 2. 言語設定モーダルを閉じても、元の編集ダイアログは開いたまま残る
+        viewModel.onEvent(LibraryEvent.DismissLanguageSettingsModal)
+        assertFalse(viewModel.uiState.value.showLanguageSettingsModal)
+        assertEquals(sample.item, viewModel.uiState.value.pendingEditItem)
+    }
 }
