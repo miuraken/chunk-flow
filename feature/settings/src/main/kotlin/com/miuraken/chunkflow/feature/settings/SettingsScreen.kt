@@ -320,7 +320,6 @@ private fun PlaybackSettingsSection(
                     },
                 )
             },
-            modifier = Modifier.fillMaxWidth(),
             compact = true,
         )
 
@@ -341,7 +340,6 @@ private fun PlaybackSettingsSection(
                     },
                 )
             },
-            modifier = Modifier.fillMaxWidth(),
             compact = true,
         )
 
@@ -370,7 +368,6 @@ private fun PlaybackSettingsSection(
                     },
                 )
             },
-            modifier = Modifier.fillMaxWidth(),
             compact = true,
         )
     }
@@ -422,9 +419,7 @@ private fun PlaybackSettingsSection(
                     },
                 )
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = SettingsSectionPadding),
+            modifier = Modifier.padding(horizontal = SettingsSectionPadding),
             compact = true,
         )
 
