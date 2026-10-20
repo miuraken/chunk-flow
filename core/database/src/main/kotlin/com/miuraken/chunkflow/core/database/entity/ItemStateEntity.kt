@@ -63,12 +63,14 @@ data class ItemStateEntity(
         internal const val AUTO_PAUSE_OFF = "OFF"
         private const val PREFIX_FIXED = "FIXED:"
         private const val PREFIX_PROPORTIONAL = "PROPORTIONAL:"
+        private const val PREFIX_ORIGINAL_SILENCE = "ORIGINAL_SILENCE:"
 
         /** [AutoPause] を DB 保存用の文字列表現に変換する。 */
         fun encodeAutoPause(autoPause: AutoPause): String = when (autoPause) {
             AutoPause.Off -> AUTO_PAUSE_OFF
             is AutoPause.Fixed -> "$PREFIX_FIXED${autoPause.pauseMs}"
             is AutoPause.Proportional -> "$PREFIX_PROPORTIONAL${autoPause.factor}:${autoPause.minMs}"
+            is AutoPause.OriginalSilence -> "$PREFIX_ORIGINAL_SILENCE${autoPause.factor}"
         }
 
         /** DB 保存用の文字列表現から [AutoPause] を復元する。不正な文字列は [AutoPause.Off] にフォールバックする。 */
@@ -86,6 +88,15 @@ data class ItemStateEntity(
                 val minMs = parts.getOrNull(1)?.toLongOrNull()
                 if (factor != null && minMs != null) {
                     AutoPause.Proportional(factor = factor, minMs = minMs)
+                } else {
+                    AutoPause.Off
+                }
+            }
+
+            raw.startsWith(PREFIX_ORIGINAL_SILENCE) -> {
+                val factor = raw.removePrefix(PREFIX_ORIGINAL_SILENCE).toFloatOrNull()
+                if (factor != null && factor > 0f && factor.isFinite()) {
+                    AutoPause.OriginalSilence(factor = factor)
                 } else {
                     AutoPause.Off
                 }

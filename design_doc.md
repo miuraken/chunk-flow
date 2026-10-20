@@ -264,6 +264,7 @@ flowchart TB
   - `Off`: 自動ポーズなし
   - `Fixed(durationMs: Int)`: 固定時間ポーズ（`0〜4000ms`）
   - `Proportional(multiplier: Float, minMs: Int = 500, maxMs: Int = 15_000)`: チャンク長 × 倍率（`0.5x〜3.0x`）
+  - `OriginalSilence(factor: Float = 1.0f)`: 元の無音区間 × 倍率（`0.25x〜2.0x`、0.25 刻み）
 - `AutoPauseScope`:
   - `ALL_CHUNKS`（すべてのチャンクの後）
   - `TARGET_ONLY`（学習言語のチャンクの後のみ：シャドーイング・リピーティング用）
@@ -730,7 +731,7 @@ TopAppBar 右上の `Tune` アイコンから開く `ModalBottomSheet` で、以
    - **元音声の無音区間をスキップ**: `ChunkFlowSwitchRow`（`skipOriginalSilence`）。
    - **自動ポーズ設定**:
      - **ポーズを入れる対象（`AutoPauseScope`）**: `すべてのチャンク` / `学習言語の後のみ` / `母語の後のみ`（`SingleChoiceSegmentedButtonRow`）。
-     - **ポーズの長さ（`AutoPauseMode`）**: `オフ` / `固定秒数（0.0〜4.0 秒スライダー）` / `チャンク長に比例（0.5〜3.0 倍スライダー）`（`SingleChoiceSegmentedButtonRow`）。
+     - **ポーズの長さ（`AutoPauseMode`）**: `オフ` / `固定秒数（0.0〜4.0 秒スライダー）` / `チャンク長に比例（0.5〜3.0 倍スライダー）` / `元の無音部分を x 倍する（0.25〜2.0 倍スライダー、0.25 刻み）`。
 
 2. **タブ 2: `分割`（`SettingsTab.SEGMENTATION`）**
    - グローバル既定のチャンク分割パラメータ（`SegmentationParams`）を調整：

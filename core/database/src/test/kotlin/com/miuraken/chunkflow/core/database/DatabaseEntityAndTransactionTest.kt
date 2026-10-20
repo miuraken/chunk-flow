@@ -62,6 +62,7 @@ class DatabaseEntityAndTransactionTest {
             AutoPause.Off,
             AutoPause.Fixed(pauseMs = 1_500L),
             AutoPause.Proportional(factor = 1.25f, minMs = 800L),
+            AutoPause.OriginalSilence(factor = 0.75f),
         )
         for (autoPause in autoPauses) {
             val state = ItemState(

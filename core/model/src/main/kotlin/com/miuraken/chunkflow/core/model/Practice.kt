@@ -54,6 +54,13 @@ sealed interface AutoPause {
      * @property minMs ポーズ長の下限（ミリ秒）。
      */
     data class Proportional(val factor: Float = 1.0f, val minMs: Long = 1_000) : AutoPause
+
+    /**
+     * ポーズ長 = チャンク直後の元の無音区間（`[chunk.endMs, nextChunk.startMs)`）× [factor]。
+     *
+     * @property factor 元の無音区間の長さに掛ける係数（0.25〜2.0、0.25 刻み）。
+     */
+    data class OriginalSilence(val factor: Float = 1.0f) : AutoPause
 }
 
 /** 自動ポーズを入れるチャンクの範囲。 */
