@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -426,7 +425,7 @@ internal fun DetailedChunkTranscriptionDialog(
                     Surface(
                         color = MaterialTheme.colorScheme.errorContainer,
                         contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        shape = RoundedCornerShape(8.dp),
+                        shape = MaterialTheme.shapes.small,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
@@ -590,7 +589,7 @@ private fun DetailedChunkWaveformPreviewRow(
     ) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-            shape = RoundedCornerShape(8.dp),
+            shape = MaterialTheme.shapes.small,
             modifier = Modifier
                 .weight(1f)
                 .height(48.dp),
@@ -815,7 +814,7 @@ internal fun TranscriptionProgressOverlay(
     Surface(
         color = containerColor,
         contentColor = contentColor,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         shadowElevation = 6.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
@@ -857,19 +856,32 @@ internal fun TranscriptionProgressOverlay(
                     .fillMaxWidth()
                     .padding(horizontal = 6.dp)
                     .height(5.dp)
-                    .clip(RoundedCornerShape(3.dp)),
+                    .clip(MaterialTheme.shapes.extraSmall),
                 // 既定のトラックの色はカードの色（secondaryContainer）と同じで見えないため、文字色を薄くして使う
                 trackColor = contentColor.copy(alpha = 0.18f),
             )
 
-            Text(
-                text = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix$stallSuffix",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = if (isStalled) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+            Row(
                 modifier = Modifier.padding(horizontal = 6.dp),
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (isStalled) {
+                    // 遅延の警告は絵文字ではなくアイコンで示す（文言は stall_short のまま）
+                    Icon(
+                        imageVector = ChunkFlowIcons.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+                Text(
+                    text = "$chunkPrefix$stepLabel$detailSuffix$elapsedSuffix$stallSuffix",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (isStalled) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
 
             val unpreparedLanguages = remember(lookaheadStatus.recognitionModelIssues) {
                 extractUnpreparedModelIssueLanguages(lookaheadStatus.recognitionModelIssues)
@@ -881,7 +893,7 @@ internal fun TranscriptionProgressOverlay(
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = MaterialTheme.shapes.small,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(start = 6.dp, end = 6.dp, top = 2.dp),
@@ -929,7 +941,7 @@ internal fun TranscriptionProgressOverlay(
                 Row(
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(MaterialTheme.shapes.small)
                         .toggleable(
                             value = lookaheadStatus.backgroundEnabled,
                             role = Role.Checkbox,
@@ -1008,7 +1020,7 @@ internal fun TranscriptionDiagnosticsDialog(
             ) {
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = MaterialTheme.shapes.small,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
@@ -1083,7 +1095,7 @@ private fun DiagnosticEntryCard(
         } else {
             MaterialTheme.colorScheme.surfaceContainerLow
         },
-        shape = RoundedCornerShape(6.dp),
+        shape = MaterialTheme.shapes.small,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(

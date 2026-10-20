@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -191,7 +190,7 @@ internal fun ItemLanguageSettingsSection(
         }
         Surface(
             color = langPalette.targetRowBackground,
-            shape = RoundedCornerShape(10.dp),
+            shape = MaterialTheme.shapes.medium,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(
@@ -212,7 +211,7 @@ internal fun ItemLanguageSettingsSection(
         }
         Surface(
             color = langPalette.baseRowBackground,
-            shape = RoundedCornerShape(10.dp),
+            shape = MaterialTheme.shapes.medium,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(

@@ -169,7 +169,7 @@
     <string name="player_transcription_step_saving">認識結果を保存中…</string>
     <string name="player_transcription_progress_summary">文字起こし進捗: %1$d%% (%2$d/%3$d)</string>
     <string name="player_transcription_progress_forced_summary">⚡ 強制文字起こし割り込み実行中（全体 %1$d / %2$d）</string>
-    <string name="player_transcription_stall_short">⚠️ 遅れています</string>
+    <string name="player_transcription_stall_short">遅れています</string>
     <string name="player_transcription_abort_button">中断</string>
     <string name="player_transcription_diagnostics_button">診断ログ</string>
     <string name="player_transcription_diagnostics_title">文字起こし診断・デバッグ</string>

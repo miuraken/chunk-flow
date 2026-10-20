@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeCompactPadding
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeRole
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadge
-import com.miuraken.chunkflow.core.designsystem.component.playback.brightnessToggleChipColors
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import java.util.Locale
@@ -77,7 +76,6 @@ internal fun ChunkDisplaySettingsStrip(
     val isHideTargetLangOn = state.blindMode != BlindMode.OFF
     val isReadingOn = state.showTargetRomanization
     val isBookmarksOnlyOn = state.practice.bookmarksOnly
-    val toggleColors = brightnessToggleChipColors()
 
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -329,7 +327,6 @@ internal fun ChunkDisplaySettingsStrip(
                         maxLines = 1,
                     )
                 },
-                colors = toggleColors,
                 modifier = transcriptChipModifier,
             )
 
@@ -347,7 +344,6 @@ internal fun ChunkDisplaySettingsStrip(
                         maxLines = 1,
                     )
                 },
-                colors = toggleColors,
                 modifier = transcriptChipModifier,
             )
 
@@ -366,7 +362,6 @@ internal fun ChunkDisplaySettingsStrip(
                             maxLines = 1,
                         )
                     },
-                    colors = toggleColors,
                     modifier = transcriptChipModifier,
                 )
             }
@@ -383,7 +378,6 @@ internal fun ChunkDisplaySettingsStrip(
                             modifier = Modifier.size(18.dp),
                         )
                     },
-                    colors = toggleColors,
                 )
             }
         }

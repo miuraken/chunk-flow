@@ -38,7 +38,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -836,7 +835,7 @@ internal fun RecognitionModelIssueBanner(
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
@@ -898,7 +897,7 @@ internal fun SameTargetAndBaseLanguageBanner(
     Surface(
         color = MaterialTheme.colorScheme.tertiaryContainer,
         contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
@@ -941,7 +940,7 @@ internal fun AllTranscriptionEmptyWarningBanner(
     Surface(
         color = MaterialTheme.colorScheme.errorContainer,
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(
@@ -1374,7 +1373,7 @@ private fun TranscriptChunkRow(
                         Surface(
                             color = colorScheme.surfaceContainerHighest,
                             contentColor = secondaryTextColor,
-                            shape = RoundedCornerShape(6.dp),
+                            shape = MaterialTheme.shapes.small,
                             modifier = Modifier
                                 .weight(1f)
                                 .padding(vertical = 8.dp),
@@ -1522,7 +1521,7 @@ private fun TranscriptChunkRow(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp)),
+                                .clip(MaterialTheme.shapes.extraSmall),
                         )
                         val detailParts = buildList {
                             if (isForcedInFlight && inFlightStep != null) {
@@ -1809,8 +1808,7 @@ internal fun ChunkLanguageBadge(
     LanguageRoleBadge(
         code = badgeText,
         role = role,
-        // 既存の見た目（角の描画）を変えないため、Surface の clip に加えてここでも clip する。
-        modifier = modifier.clip(RoundedCornerShape(4.dp)),
+        modifier = modifier,
     )
 }
 
@@ -1841,9 +1839,9 @@ private fun RepeatChunkCheckbox(
     Surface(
         color = containerColor,
         contentColor = contentColor,
-        shape = RoundedCornerShape(6.dp),
+        shape = MaterialTheme.shapes.small,
         modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
+            .clip(MaterialTheme.shapes.small)
             .toggleable(
                 value = checked,
                 role = Role.Checkbox,
@@ -1857,9 +1855,9 @@ private fun RepeatChunkCheckbox(
             modifier = Modifier
                 .padding(horizontal = 5.dp, vertical = 5.dp)
                 .size(16.dp)
-                .clip(RoundedCornerShape(3.dp))
+                .clip(MaterialTheme.shapes.extraSmall)
                 .background(if (checked) colorScheme.tertiary else colorScheme.surface)
-                .border(1.dp, boxBorderColor, RoundedCornerShape(3.dp)),
+                .border(1.dp, boxBorderColor, MaterialTheme.shapes.extraSmall),
             contentAlignment = Alignment.Center,
         ) {
             if (checked) {

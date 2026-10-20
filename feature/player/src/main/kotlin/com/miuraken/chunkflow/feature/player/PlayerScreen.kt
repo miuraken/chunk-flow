@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,10 +70,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.miuraken.chunkflow.core.designsystem.component.playback.CompletedTranscriptBadgeColor
 import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackControlStrip
 import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContent
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.LoopMode
@@ -535,7 +534,7 @@ fun PlayerScreen(
                 val clampedY = floatingOffsetY.coerceIn(0f, maxOffsetY)
 
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
+                    shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     tonalElevation = 6.dp,
                     shadowElevation = 8.dp,
@@ -728,8 +727,9 @@ private fun PlayerTranscriptionStatusBadge(
     if (state.chunks.isEmpty() && !state.isTranscriptionRunning) return
 
     if (state.isAllTranscriptionCompleted) {
+        val extendedColors = chunkFlowExtendedColors()
         Surface(
-            color = CompletedTranscriptBadgeColor,
+            color = extendedColors.transcriptCompleted,
             shape = CircleShape,
             modifier = modifier
                 .size(22.dp)
@@ -739,7 +739,7 @@ private fun PlayerTranscriptionStatusBadge(
                 Icon(
                     imageVector = ChunkFlowIcons.SpeechToText,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = extendedColors.onTranscriptCompleted,
                     modifier = Modifier.size(14.dp),
                 )
             }
