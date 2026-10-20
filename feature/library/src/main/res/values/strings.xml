@@ -27,7 +27,6 @@
     <string name="library_transcript_no_matching_audio_unknown">対応する音声がまだ取り込まれていません。先に音声ファイルを取り込んでください。</string>
     <string name="library_transcript_invalid">文字起こしファイルの形式が正しくありません。</string>
     <string name="library_dismiss_banner">閉じる</string>
-    <string name="library_item_resume_position">%1$s / %2$s (%3$d%%)</string>
     <string name="library_item_duration_progress">%1$s / %2$s</string>
     <string name="library_item_last_accessed">最終アクセス: %1$s</string>
     <string name="library_item_listened_badge">Listened (済)</string>

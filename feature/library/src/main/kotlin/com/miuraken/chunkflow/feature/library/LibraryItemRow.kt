@@ -70,7 +70,6 @@ import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
-import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.MediaId
 import java.io.File
 import java.time.Instant
@@ -330,27 +329,11 @@ internal fun LibraryItemRow(
                     drawStopIndicator = {},
                 )
 
-                val hasProgress = itemModel.maxPositionMs > 0L || itemModel.positionMs > 0L
-                val durationProgressText = if (hasProgress) {
-                    val baseResume = stringResource(
-                        R.string.library_item_resume_position,
-                        formatDurationMs(itemModel.positionMs),
-                        formattedDuration,
-                        maxPercent,
-                    )
-                    val speedSuffix = if (itemModel.speed != 1.0f) {
-                        " · ${formatSpeed(itemModel.speed)}"
-                    } else {
-                        ""
-                    }
-                    baseResume + speedSuffix
-                } else {
-                    stringResource(
-                        R.string.library_item_duration_progress,
-                        formatDurationMs(0L),
-                        formattedDuration,
-                    )
-                }
+                val durationProgressText = stringResource(
+                    R.string.library_item_duration_progress,
+                    formatDurationMs(itemModel.positionMs),
+                    formattedDuration,
+                )
                 val formattedLastAccessed = itemModel.lastAccessedAtEpochMs?.let { epochMs ->
                     formatEpochMsLocal(epochMs).takeIf { it.isNotEmpty() }
                 }

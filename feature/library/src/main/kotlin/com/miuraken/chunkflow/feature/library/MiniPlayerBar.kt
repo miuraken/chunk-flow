@@ -21,7 +21,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,9 +39,9 @@ import com.miuraken.chunkflow.core.model.LoopMode
 /**
  * 画面下部（下部ナビバーのすぐ上）に常駐するミニプレイヤー・拡張ブックマーク再生バー（計画書 §3.3、Phase C）。
  *
- * - 通常のタブ（フォルダ・ファイル・プレイリスト）ではコンパクトな [MiniPlayerBar] を表示し、
+ * - すべてのタブ（ブックマークタブを含む）でデフォルトはコンパクトな [MiniPlayerBar] を表示し、
  *   ブックマークが存在する場合は右端の展開ボタンからチャンク単位の再生コントローラーへ展開できる。
- * - ブックマークタブに切り替えたときは自動的に展開状態になり、折りたたみボタンでコンパクト表示へ戻せる。
+ * - 展開状態では折りたたみボタンでコンパクト表示へ戻せる。
  */
 @Composable
 internal fun ExpandableBottomPlayerBar(
@@ -53,12 +52,8 @@ internal fun ExpandableBottomPlayerBar(
     val miniPlayer = state.miniPlayer
     val isBookmarksTab = state.selectedTab == LibraryViewTab.BOOKMARKS
     val hasBookmarks = state.bookmarkedFiles.any { it.bookmarkedChunks.isNotEmpty() }
-    val showBar = miniPlayer != null || isBookmarksTab
-
-    var isExpanded by rememberSaveable { mutableStateOf(isBookmarksTab) }
-    LaunchedEffect(isBookmarksTab) {
-        isExpanded = isBookmarksTab
-    }
+    var isExpanded by rememberSaveable { mutableStateOf(false) }
+    val showBar = miniPlayer != null || isExpanded
 
     AnimatedVisibility(
         visible = showBar,
@@ -78,11 +73,7 @@ internal fun ExpandableBottomPlayerBar(
                 LibraryBookmarkPlaybackController(
                     state = state,
                     onEvent = onEvent,
-                    onCollapse = if (miniPlayer != null) {
-                        { isExpanded = false }
-                    } else {
-                        null
-                    },
+                    onCollapse = { isExpanded = false },
                 )
             } else if (miniPlayer != null) {
                 MiniPlayerBar(

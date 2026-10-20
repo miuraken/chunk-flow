@@ -27,7 +27,6 @@
     <string name="library_transcript_no_matching_audio_unknown">Matching audio is not imported yet. Import the audio file first.</string>
     <string name="library_transcript_invalid">The transcript file format is invalid.</string>
     <string name="library_dismiss_banner">Dismiss</string>
-    <string name="library_item_resume_position">%1$s / %2$s (%3$d%%)</string>
     <string name="library_item_duration_progress">%1$s / %2$s</string>
     <string name="library_item_last_accessed">Last accessed: %1$s</string>
     <string name="library_item_listened_badge">Listened (済)</string>
