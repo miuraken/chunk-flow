@@ -193,11 +193,11 @@ private fun ConnectedToggleButton(
     }
 }
 
-/** [ChunkFlowToggleButtonGroup] と [ChunkFlowSplitButton] の `compact` 時の余白（既定 24dp → 12dp）。 */
-internal val CompactContentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+/** [ChunkFlowToggleButtonGroup] と [ChunkFlowSplitButton] の `compact` 時の余白（既定 24dp → 10dp）。 */
+internal val CompactContentPadding: PaddingValues = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
 
 /** [ChunkFlowSplitButton] の `compact` 時の ▼ の余白。 */
-internal val CompactTrailingContentPadding: PaddingValues = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+internal val CompactTrailingContentPadding: PaddingValues = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
 
 @ChunkFlowPreviews
 @Composable
