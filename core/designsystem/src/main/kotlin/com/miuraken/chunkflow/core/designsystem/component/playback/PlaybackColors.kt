@@ -1,38 +1,46 @@
 package com.miuraken.chunkflow.core.designsystem.component.playback
 
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SelectableChipColors
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 
 /**
- * ON / OFF のトグルをボタンの明度で表現する [androidx.compose.material3.FilterChip] カラー設定。
+ * ON / OFF のトグルに使う [androidx.compose.material3.FilterChip] のカラー設定。
  *
- * ON（`selected = true`）は明るく強調し、OFF（`selected = false`）は暗め（低明度・低不透明度）にする。
- * 再生操作ストリップ（[PlaybackControlStrip]）とプレイヤーのチャンク表示設定行で共有する。
+ * かつては未選択を透過で薄く描く独自配色だったが（調査 §3.2 C4）、M3 の State layer の規則に合わせて
+ * **M3 既定の [FilterChipDefaults.filterChipColors]**（未選択: 透明 + 枠線、選択: `secondaryContainer`）を返す。
+ *
+ * 呼び出し側は `colors` 引数を省略すれば同じ結果になるため、この関数は不要。Phase B の `ButtonGroup` 化で削除する。
  */
-@Composable
-fun brightnessToggleChipColors(): SelectableChipColors = FilterChipDefaults.filterChipColors(
-    containerColor = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f),
-    labelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
-    iconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
-    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+@Deprecated(
+    message = "M3 既定の配色になった。FilterChip の colors 引数を省略する（FilterChipDefaults.filterChipColors() と同じ）",
+    replaceWith = ReplaceWith("FilterChipDefaults.filterChipColors()", "androidx.compose.material3.FilterChipDefaults"),
 )
+@Composable
+fun brightnessToggleChipColors(): SelectableChipColors = FilterChipDefaults.filterChipColors()
 
 /**
  * 全チャンクの文字起こしが完了したことを示すバッジ（緑丸 + 白抜きアイコン）の背景色。
  *
- * ライブラリの行とプレイヤーの TopAppBar で同じ値を使う。
- * TODO(Phase A): `ChunkFlowExtendedColors` に移してテーマ化する（docs/ux/m3-migration-plan.md §3.1）。
+ * テーマに追従しない固定値。ダイナミックカラーに調和させた
+ * [com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowExtendedColors.transcriptCompleted]
+ * （アイコンは `onTranscriptCompleted`）を使う。
  */
+@Deprecated(
+    message = "chunkFlowExtendedColors().transcriptCompleted を使う（アイコンは onTranscriptCompleted）",
+    replaceWith = ReplaceWith(
+        "chunkFlowExtendedColors().transcriptCompleted",
+        "com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors",
+    ),
+)
 val CompletedTranscriptBadgeColor: Color = Color(0xFF19532B)
 
-/**
- * 「ファイル全体をリピート」が ON のときのリピートチップの背景色（文字色は白）。
- *
- * TODO(Phase A): `ChunkFlowExtendedColors.wholeFileRepeat` に移してテーマ化する。
- */
-internal val WholeFileRepeatContainerColor: Color = Color(0xFF1976D2)
+/** 「ファイル全体をリピート」が ON のときのリピートチップの背景色（テーマの拡張色から取る）。 */
+@Composable
+internal fun wholeFileRepeatContainerColor(): Color = chunkFlowExtendedColors().wholeFileRepeat
+
+/** 「ファイル全体をリピート」が ON のときのリピートチップの文字色（テーマの拡張色から取る）。 */
+@Composable
+internal fun onWholeFileRepeatContainerColor(): Color = chunkFlowExtendedColors().onWholeFileRepeat
