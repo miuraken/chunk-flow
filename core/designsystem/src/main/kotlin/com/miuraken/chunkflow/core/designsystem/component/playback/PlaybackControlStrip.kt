@@ -220,17 +220,15 @@ private fun StripContent(
                     ),
                 ),
             )
-            LongPressTooltip(text = stringResource(R.string.designsystem_playback_speed_tooltip)) {
-                ChunkFlowSplitButton(
-                    label = formatCompactSpeed(customSpeed),
-                    onClick = { onSetSpeed(customSpeed) },
-                    checked = isCustomSpeedSelected,
-                    onLongClick = onOpenSpeedSheet,
-                    onMenuClick = onOpenSpeedSheet,
-                    menuContentDescription = stringResource(R.string.designsystem_playback_speed_menu_cd),
-                    compact = tier.compact,
-                )
-            }
+            ChunkFlowSplitButton(
+                label = formatCompactSpeed(customSpeed),
+                onClick = { onSetSpeed(customSpeed) },
+                checked = isCustomSpeedSelected,
+                onLongClick = onOpenSpeedSheet,
+                onMenuClick = onOpenSpeedSheet,
+                menuContentDescription = stringResource(R.string.designsystem_playback_speed_menu_cd),
+                compact = tier.compact,
+            )
         }
 
         // 2. リピート: [リピート ▼]（▼ と長押しで「全体リピート」）。狭い幅ではアイコンだけ
@@ -239,49 +237,39 @@ private fun StripContent(
         } else {
             stringResource(R.string.designsystem_playback_chip_repeat)
         }
-        LongPressTooltip(
-            text = if (tier.repeatLabel) {
-                stringResource(R.string.designsystem_playback_repeat_tooltip)
-            } else {
-                repeatLabel
-            },
-        ) {
-            ChunkFlowSplitButton(
-                label = repeatLabel,
-                onClick = onToggleRepeat,
-                checked = isRepeatOn,
-                icon = if (isWholeFileRepeat || !tier.repeatLabel) ChunkFlowIcons.Repeat else null,
-                showLabel = tier.repeatLabel,
-                onLongClick = onRequestWholeFileRepeat,
-                menuItems = listOf(
-                    ChunkFlowSplitButtonMenuItem(
-                        label = stringResource(R.string.designsystem_playback_chip_repeat_whole_file),
-                        icon = ChunkFlowIcons.Repeat,
-                        checked = isWholeFileRepeat,
-                        onClick = onRequestWholeFileRepeat,
-                    ),
+        ChunkFlowSplitButton(
+            label = repeatLabel,
+            onClick = onToggleRepeat,
+            checked = isRepeatOn,
+            icon = if (isWholeFileRepeat || !tier.repeatLabel) ChunkFlowIcons.Repeat else null,
+            showLabel = tier.repeatLabel,
+            onLongClick = onRequestWholeFileRepeat,
+            menuItems = listOf(
+                ChunkFlowSplitButtonMenuItem(
+                    label = stringResource(R.string.designsystem_playback_chip_repeat_whole_file),
+                    icon = ChunkFlowIcons.Repeat,
+                    checked = isWholeFileRepeat,
+                    onClick = onRequestWholeFileRepeat,
                 ),
-                menuContentDescription = stringResource(R.string.designsystem_playback_repeat_menu_cd),
-                compact = tier.compact,
-            )
-        }
+            ),
+            menuContentDescription = stringResource(R.string.designsystem_playback_repeat_menu_cd),
+            compact = tier.compact,
+        )
 
-        // 3. 無音スキップ（トグル）。狭い幅ではアイコンだけにし、ラベルは contentDescription と Tooltip で補う
+        // 3. 無音スキップ（トグル）。狭い幅ではアイコンだけにし、ラベルは contentDescription で補う
         val skipSilenceLabel = stringResource(R.string.designsystem_playback_chip_skip_silence)
-        LongPressTooltip(text = skipSilenceLabel) {
-            ChunkFlowToggleButtonGroup(
-                compact = tier.compact,
-                items = listOf(
-                    ChunkFlowToggleButtonItem(
-                        label = skipSilenceLabel,
-                        checked = isSkipSilenceOn,
-                        onCheckedChange = { onToggleSkipSilence() },
-                        icon = ChunkFlowIcons.SkipSilence,
-                        showLabel = tier.skipSilenceLabel,
-                    ),
+        ChunkFlowToggleButtonGroup(
+            compact = tier.compact,
+            items = listOf(
+                ChunkFlowToggleButtonItem(
+                    label = skipSilenceLabel,
+                    checked = isSkipSilenceOn,
+                    onCheckedChange = { onToggleSkipSilence() },
+                    icon = ChunkFlowIcons.SkipSilence,
+                    showLabel = tier.skipSilenceLabel,
                 ),
-            )
-        }
+            ),
+        )
 
         // 4. 再生設定
         IconButton(onClick = onOpenPlaybackSettings) {
@@ -292,21 +280,6 @@ private fun StripContent(
             )
         }
     }
-}
-
-/** 長押しの説明を `PlainTooltip` で添える（長押し / ホバー / フォーカスで表示）。 */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LongPressTooltip(
-    text: String,
-    content: @Composable () -> Unit,
-) {
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text(text) } },
-        state = rememberTooltipState(),
-        content = content,
-    )
 }
 
 @ChunkFlowPreviews

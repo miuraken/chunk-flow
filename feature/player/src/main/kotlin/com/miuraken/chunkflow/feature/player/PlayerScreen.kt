@@ -620,6 +620,7 @@ fun PlayerScreen(
                     FloatingTransportContent(
                         state = state,
                         onEvent = onEvent,
+                        onCloseFloatingControls = { showFloatingControls = false },
                     )
                 }
             }
@@ -725,54 +726,35 @@ fun PlayerScreen(
 }
 
 /**
- * フローティング操作バーの中身（`IconButton` 5 つ）。ツールバーの高さ（64dp）に収めるため、ラベル付きの
- * [PlayerTransportControls] ではなくアイコンのみにする。長押しメニューは画面下部の操作部から使う。
+ * フローティング操作バーの中身（[PlayerTransportControls] と同じ長押しメニュー機能を持つ）。
  */
 @Composable
 private fun FloatingTransportContent(
     state: PlayerUiState,
     onEvent: (PlayerEvent) -> Unit,
+    onCloseFloatingControls: () -> Unit = {},
 ) {
-    val hasChunks = state.chunks.isNotEmpty()
-    val seekBackSeconds = (state.seekBackMs / 1_000L).coerceAtLeast(1L)
-    val seekForwardSeconds = (state.seekForwardMs / 1_000L).coerceAtLeast(1L)
-    IconButton(onClick = { onEvent(PlayerEvent.SeekBack) }) {
-        Icon(
-            imageVector = ChunkFlowIcons.SeekBack,
-            contentDescription = stringResource(R.string.player_seek_back_cd, seekBackSeconds),
-        )
-    }
-    IconButton(onClick = { onEvent(PlayerEvent.PreviousChunk) }, enabled = hasChunks) {
-        Icon(
-            imageVector = ChunkFlowIcons.SkipPrevious,
-            contentDescription = stringResource(R.string.player_prev_chunk_cd),
-        )
-    }
-    FilledIconButton(onClick = { onEvent(PlayerEvent.TogglePlayPause) }) {
-        Icon(
-            imageVector = if (state.isPlaying) ChunkFlowIcons.Pause else ChunkFlowIcons.Play,
-            contentDescription = if (state.isPlaying) {
-                stringResource(R.string.player_pause)
-            } else {
-                stringResource(R.string.player_play)
-            },
-        )
-    }
-    IconButton(
-        onClick = { if (hasChunks) onEvent(PlayerEvent.NextChunk) },
-        enabled = hasChunks || state.nextMediaId != null,
-    ) {
-        Icon(
-            imageVector = ChunkFlowIcons.SkipNext,
-            contentDescription = stringResource(R.string.player_next_chunk_cd),
-        )
-    }
-    IconButton(onClick = { onEvent(PlayerEvent.SeekForward) }) {
-        Icon(
-            imageVector = ChunkFlowIcons.SeekForward,
-            contentDescription = stringResource(R.string.player_seek_forward_cd, seekForwardSeconds),
-        )
-    }
+    PlayerTransportControls(
+        isPlaying = state.isPlaying,
+        seekBackMs = state.seekBackMs,
+        seekForwardMs = state.seekForwardMs,
+        hasChunks = state.chunks.isNotEmpty(),
+        hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
+        hasNextCheckedChunk = state.hasNextCheckedChunk,
+        hasNextMediaItem = state.nextMediaId != null,
+        onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
+        onSeekBack = { onEvent(PlayerEvent.SeekBack) },
+        onSeekForward = { onEvent(PlayerEvent.SeekForward) },
+        onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
+        onNextChunk = { onEvent(PlayerEvent.NextChunk) },
+        onSetSeekBackMs = { ms -> onEvent(PlayerEvent.SetSeekBackMs(ms)) },
+        onSetSeekForwardMs = { ms -> onEvent(PlayerEvent.SetSeekForwardMs(ms)) },
+        onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
+        onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
+        onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
+        onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
+        onToggleFloatingControls = onCloseFloatingControls,
+    )
 }
 
 /**

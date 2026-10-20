@@ -86,15 +86,13 @@ internal fun PlayerTransportControls(
     ) {
         // 1. 巻き戻し（長押し: 秒数プリセット）
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            LongPressTooltip(text = stringResource(R.string.player_seek_back_long_press_tooltip)) {
-                ChunkFlowTransportButton(
-                    icon = ChunkFlowIcons.SeekBack,
-                    contentDescription = seekBackCd,
-                    onClick = onSeekBack,
-                    onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_BACK },
-                    label = stringResource(R.string.player_seek_back_label, seekBackSeconds),
-                )
-            }
+            ChunkFlowTransportButton(
+                icon = ChunkFlowIcons.SeekBack,
+                contentDescription = seekBackCd,
+                onClick = onSeekBack,
+                onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_BACK },
+                label = stringResource(R.string.player_seek_back_label, seekBackSeconds),
+            )
             DropdownMenu(
                 expanded = activeOverlay == TransportOverlayMenu.SEEK_BACK,
                 onDismissRequest = { activeOverlay = null },
@@ -112,16 +110,14 @@ internal fun PlayerTransportControls(
 
         // 2. 前のチャンク（長押し: ファイルの先頭 / 前のチェック済みチャンク）
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            LongPressTooltip(text = stringResource(R.string.player_prev_chunk_long_press_tooltip)) {
-                ChunkFlowTransportButton(
-                    icon = ChunkFlowIcons.SkipPrevious,
-                    contentDescription = prevChunkCd,
-                    onClick = onPreviousChunk,
-                    onLongClick = { activeOverlay = TransportOverlayMenu.PREVIOUS },
-                    label = stringResource(R.string.player_prev_chunk_label),
-                    enabled = hasChunks,
-                )
-            }
+            ChunkFlowTransportButton(
+                icon = ChunkFlowIcons.SkipPrevious,
+                contentDescription = prevChunkCd,
+                onClick = onPreviousChunk,
+                onLongClick = { activeOverlay = TransportOverlayMenu.PREVIOUS },
+                label = stringResource(R.string.player_prev_chunk_label),
+                enabled = hasChunks,
+            )
             DropdownMenu(
                 expanded = activeOverlay == TransportOverlayMenu.PREVIOUS,
                 onDismissRequest = { activeOverlay = null },
@@ -160,27 +156,23 @@ internal fun PlayerTransportControls(
         }
 
         // 3. 再生 / 一時停止（長押し: フローティング操作バーの表示切替）
-        LongPressTooltip(text = stringResource(R.string.player_play_pause_long_press_tooltip)) {
-            ChunkFlowPlayPauseButton(
-                isPlaying = isPlaying,
-                onClick = onTogglePlayPause,
-                onLongClick = onToggleFloatingControls,
-                size = PlayPauseButtonSize,
-            )
-        }
+        ChunkFlowPlayPauseButton(
+            isPlaying = isPlaying,
+            onClick = onTogglePlayPause,
+            onLongClick = onToggleFloatingControls,
+            size = PlayPauseButtonSize,
+        )
 
         // 4. 次のチャンク（長押し: 次のチェック済みチャンク / 次のファイル）
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            LongPressTooltip(text = stringResource(R.string.player_next_chunk_long_press_tooltip)) {
-                ChunkFlowTransportButton(
-                    icon = ChunkFlowIcons.SkipNext,
-                    contentDescription = nextChunkCd,
-                    onClick = { if (hasChunks) onNextChunk() },
-                    onLongClick = { activeOverlay = TransportOverlayMenu.NEXT },
-                    label = stringResource(R.string.player_next_chunk_label),
-                    enabled = hasChunks || hasNextMediaItem,
-                )
-            }
+            ChunkFlowTransportButton(
+                icon = ChunkFlowIcons.SkipNext,
+                contentDescription = nextChunkCd,
+                onClick = { if (hasChunks) onNextChunk() },
+                onLongClick = { activeOverlay = TransportOverlayMenu.NEXT },
+                label = stringResource(R.string.player_next_chunk_label),
+                enabled = hasChunks || hasNextMediaItem,
+            )
             DropdownMenu(
                 expanded = activeOverlay == TransportOverlayMenu.NEXT,
                 onDismissRequest = { activeOverlay = null },
@@ -221,15 +213,13 @@ internal fun PlayerTransportControls(
 
         // 5. 早送り（長押し: 秒数プリセット）
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            LongPressTooltip(text = stringResource(R.string.player_seek_forward_long_press_tooltip)) {
-                ChunkFlowTransportButton(
-                    icon = ChunkFlowIcons.SeekForward,
-                    contentDescription = seekForwardCd,
-                    onClick = onSeekForward,
-                    onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_FORWARD },
-                    label = stringResource(R.string.player_seek_forward_label, seekForwardSeconds),
-                )
-            }
+            ChunkFlowTransportButton(
+                icon = ChunkFlowIcons.SeekForward,
+                contentDescription = seekForwardCd,
+                onClick = onSeekForward,
+                onLongClick = { activeOverlay = TransportOverlayMenu.SEEK_FORWARD },
+                label = stringResource(R.string.player_seek_forward_label, seekForwardSeconds),
+            )
             DropdownMenu(
                 expanded = activeOverlay == TransportOverlayMenu.SEEK_FORWARD,
                 onDismissRequest = { activeOverlay = null },
@@ -273,22 +263,4 @@ private fun SeekPresetRow(
             )
         }
     }
-}
-
-/**
- * 長押しでできることを説明する `PlainTooltip`（ホバー / TalkBack の長押しで表示。調査 §3.2 C2）。
- * `core:designsystem` の `PlaybackControlStrip` 内の同名の部品と同じ書き方。
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LongPressTooltip(
-    text: String,
-    content: @Composable () -> Unit,
-) {
-    TooltipBox(
-        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-        tooltip = { PlainTooltip { Text(text) } },
-        state = rememberTooltipState(),
-        content = content,
-    )
 }
