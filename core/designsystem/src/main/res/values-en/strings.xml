@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 再生操作ストリップ（PlaybackControlStrip） -->
+    <string name="designsystem_playback_chip_repeat">Repeat</string>
+    <string name="designsystem_playback_chip_repeat_whole_file">🔁Repeat</string>
+    <string name="designsystem_playback_whole_file_repeat_confirm_message">Repeat the entire file?</string>
+    <string name="designsystem_playback_whole_file_repeat_yes">Yes</string>
+    <string name="designsystem_playback_whole_file_repeat_no">No</string>
+    <string name="designsystem_playback_chip_skip_silence">Skip silence</string>
+    <string name="designsystem_playback_chip_playback_settings">Playback settings</string>
+
+    <!-- 再生速度シート（SpeedSheetContent） -->
+    <string name="designsystem_playback_speed_section_title">Playback speed</string>
+    <string name="designsystem_playback_speed_decrease_cd">Decrease speed by 0.05x</string>
+    <string name="designsystem_playback_speed_increase_cd">Increase speed by 0.05x</string>
+    <string name="designsystem_playback_speed_slider_cd">Playback speed slider</string>
+</resources>
