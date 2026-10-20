@@ -1005,22 +1005,45 @@ private fun SttEngineAccordion(
     val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
     val enrichedInfo = info.enrichedWithCatalog()
 
+    val anyEngineSupported = SttEngineSelection.isAnyEngineSupported(enrichedInfo)
     val autoResolvedEngine = SttEngineSelection.resolveAutoEngine(enrichedInfo)
-    val autoLabel = stringResource(
-        R.string.settings_stt_engine_auto_with_resolved,
-        sttEngineDisplayName(autoResolvedEngine),
-    )
+    val autoLabel = if (anyEngineSupported) {
+        stringResource(
+            R.string.settings_stt_engine_auto_with_resolved,
+            sttEngineDisplayName(autoResolvedEngine),
+        )
+    } else {
+        "${stringResource(R.string.settings_stt_engine_auto)} (${stringResource(R.string.settings_stt_engine_unsupported)})"
+    }
     val effectivePreferred = preferredEngine?.takeIf { isSttEngineSelectableInSettings(enrichedInfo, it) }
-    val currentEngineLabel = when (effectivePreferred) {
-        null -> autoLabel
+    val currentEngineLabel = when {
+        !anyEngineSupported -> stringResource(R.string.settings_stt_engine_unsupported)
+        effectivePreferred == null -> autoLabel
         else -> sttEngineDisplayName(effectivePreferred)
     }
     val sizeMb = SherpaDownloadDialogState.resolveSizeMb(enrichedInfo.sherpaModelSizeBytes)
     val isSherpaInstalled = enrichedInfo.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
-    val sherpaLabel = if (isSherpaInstalled) {
-        stringResource(R.string.settings_stt_engine_sherpa_downloaded, sizeMb)
-    } else {
-        stringResource(R.string.settings_stt_engine_sherpa_not_downloaded, sizeMb)
+
+    val mlKitLabel = formatEngineOptionWithStatus(
+        baseName = stringResource(R.string.settings_stt_engine_mlkit_radio),
+        status = enrichedInfo.mlKitStatus,
+    )
+    val speechRecognizerLabel = formatEngineOptionWithStatus(
+        baseName = stringResource(R.string.settings_stt_engine_speech_recognizer),
+        status = enrichedInfo.status,
+    )
+    val sherpaLabel = when (enrichedInfo.sherpaModelStatus) {
+        OnDeviceLanguageModelStatus.INSTALLED ->
+            stringResource(R.string.settings_stt_engine_sherpa_downloaded, sizeMb)
+
+        OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+            stringResource(R.string.settings_stt_engine_sherpa_not_downloaded, sizeMb)
+
+        else ->
+            formatEngineOptionWithStatus(
+                baseName = stringResource(R.string.settings_stt_engine_sherpa_onnx),
+                status = enrichedInfo.sherpaModelStatus,
+            )
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1070,14 +1093,14 @@ private fun SttEngineAccordion(
 
                 val options: List<Pair<SttEngine?, String>> = listOf(
                     null to autoLabel,
-                    SttEngine.ML_KIT to stringResource(R.string.settings_stt_engine_mlkit_radio),
-                    SttEngine.SPEECH_RECOGNIZER to stringResource(R.string.settings_stt_engine_speech_recognizer),
+                    SttEngine.ML_KIT to mlKitLabel,
+                    SttEngine.SPEECH_RECOGNIZER to speechRecognizerLabel,
                     SttEngine.SHERPA_ONNX to sherpaLabel,
                 )
 
                 options.forEach { (engine, label) ->
                     val isOptionEnabled = isSttEngineSelectableInSettings(enrichedInfo, engine)
-                    val isSelected = effectivePreferred == engine
+                    val isSelected = anyEngineSupported && effectivePreferred == engine
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1131,6 +1154,29 @@ private fun SttEngineAccordion(
             }
         }
     }
+}
+
+@Composable
+private fun formatEngineOptionWithStatus(
+    baseName: String,
+    status: OnDeviceLanguageModelStatus,
+): String = when (status) {
+    OnDeviceLanguageModelStatus.INSTALLED -> baseName
+
+    OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+        "$baseName (${stringResource(R.string.settings_speech_model_status_not_installed)})"
+
+    OnDeviceLanguageModelStatus.DOWNLOADING ->
+        "$baseName (${stringResource(R.string.settings_speech_model_status_downloading)})"
+
+    OnDeviceLanguageModelStatus.DOWNLOAD_FAILED ->
+        "$baseName (${stringResource(R.string.settings_speech_model_status_download_failed)})"
+
+    OnDeviceLanguageModelStatus.CHECKING ->
+        "$baseName (${stringResource(R.string.settings_speech_model_status_checking)})"
+
+    OnDeviceLanguageModelStatus.UNSUPPORTED ->
+        "$baseName (${stringResource(R.string.settings_stt_engine_unsupported)})"
 }
 
 @Composable

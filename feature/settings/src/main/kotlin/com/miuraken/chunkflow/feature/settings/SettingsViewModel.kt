@@ -16,6 +16,7 @@ import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.UserSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Locale
@@ -430,7 +431,20 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            refreshLanguageModelsInternal()
+            refreshActiveLanguageModelsFirst()
+            userSettingsRepository.settings.collect { settings ->
+                val activeTags = buildActiveModelManagementLanguages(settings)
+                val currentByLang = languageModelsState.value.associateBy { it.language }
+                val unqueried = activeTags.filter { tag ->
+                    val info = currentByLang[tag]?.enrichedWithCatalog(tag)
+                    info == null ||
+                        info.status == OnDeviceLanguageModelStatus.CHECKING ||
+                        info.mlKitStatus == OnDeviceLanguageModelStatus.CHECKING
+                }
+                if (unqueried.isNotEmpty()) {
+                    queryAndMergeLanguageModels(unqueried)
+                }
+            }
         }
     }
 
@@ -634,8 +648,23 @@ class SettingsViewModel @Inject constructor(
                         return
                     }
                 }
+                val targetEngine = event.engine
+                val needsOsOrMlKitDownload = when (targetEngine) {
+                    SttEngine.ML_KIT ->
+                        modelInfo.mlKitStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                            modelInfo.mlKitStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+
+                    SttEngine.SPEECH_RECOGNIZER ->
+                        modelInfo.status == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                            modelInfo.status == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+
+                    else -> false
+                }
                 viewModelScope.launch {
                     userSettingsRepository.setSttEngineForLanguage(event.language, event.engine)
+                    if (needsOsOrMlKitDownload && targetEngine != null) {
+                        onEvent(SettingsEvent.RequestSttModelDownload(event.language, targetEngine))
+                    }
                 }
             }
 
@@ -661,7 +690,7 @@ class SettingsViewModel @Inject constructor(
                         SttEngine.SHERPA_ONNX,
                     )
                     if (ok) {
-                        refreshLanguageModelsInternal()
+                        queryAndMergeLanguageModels(listOf(dialog.language))
                         userSettingsRepository.setSttEngineForLanguage(
                             dialog.language,
                             SttEngine.SHERPA_ONNX,
@@ -691,9 +720,16 @@ class SettingsViewModel @Inject constructor(
             }
 
             is SettingsEvent.RequestSttModelDownload -> {
+                val mgmtCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                    event.language.value,
+                )
                 languageModelsState.update { current ->
                     current.map { info ->
-                        if (info.language == event.language) {
+                        if (info.language == event.language ||
+                            com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                                info.language.value,
+                            ) == mgmtCode
+                        ) {
                             when (event.engine) {
                                 SttEngine.ML_KIT -> info.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
                                 SttEngine.SPEECH_RECOGNIZER -> info.copy(status = OnDeviceLanguageModelStatus.DOWNLOADING)
@@ -709,7 +745,11 @@ class SettingsViewModel @Inject constructor(
                     if (!ok) {
                         languageModelsState.update { current ->
                             current.map { info ->
-                                if (info.language == event.language) {
+                                if (info.language == event.language ||
+                                    com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                                        info.language.value,
+                                    ) == mgmtCode
+                                ) {
                                     when (event.engine) {
                                         SttEngine.ML_KIT -> info.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
                                         SttEngine.SPEECH_RECOGNIZER -> info.copy(status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
@@ -721,7 +761,7 @@ class SettingsViewModel @Inject constructor(
                             }
                         }
                     } else {
-                        refreshLanguageModelsInternal()
+                        queryAndMergeLanguageModels(listOf(LanguageTag(mgmtCode)))
                     }
                 }
             }
@@ -741,7 +781,7 @@ class SettingsViewModel @Inject constructor(
                             }
                         }
                     }
-                    refreshLanguageModelsInternal()
+                    queryAndMergeLanguageModels(listOf(event.language))
                     userSettingsRepository.setSttEngineForLanguage(event.language, null)
                     val currentEngines = userSettingsRepository.settings.first().sttEngineByLanguage
                     for ((lang, engine) in currentEngines) {
@@ -761,7 +801,7 @@ class SettingsViewModel @Inject constructor(
             SettingsEvent.RefreshRecognitionModels -> {
                 viewModelScope.launch {
                     analysisRepository.refreshRecognitionModelIssues()
-                    refreshLanguageModelsInternal()
+                    refreshActiveLanguageModelsFirst()
                 }
             }
 
@@ -769,10 +809,48 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private suspend fun refreshLanguageModelsInternal() {
-        val queried = analysisRepository.queryLanguageModelInfos(SettingsUiState.SUPPORTED_LANGUAGES)
-        if (queried.isNotEmpty()) {
-            languageModelsState.value = queried
+    private fun buildActiveModelManagementLanguages(settings: UserSettings): List<LanguageTag> {
+        val codes = LinkedHashSet<String>()
+        settings.defaultLanguagePair.target.value.takeIf { it.isNotBlank() }?.let {
+            codes.add(com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(it))
+        }
+        settings.defaultLanguagePair.base?.value?.takeIf { it.isNotBlank() }?.let {
+            codes.add(com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(it))
+        }
+        for (tag in settings.enabledLanguages) {
+            if (tag.value.isNotBlank()) {
+                codes.add(com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(tag.value))
+            }
+        }
+        return codes.filter { it.isNotBlank() }.map(::LanguageTag)
+    }
+
+    private suspend fun refreshActiveLanguageModelsFirst() {
+        val currentSettings = runCatching { userSettingsRepository.settings.first() }.getOrDefault(UserSettings())
+        val activeLanguages = buildActiveModelManagementLanguages(currentSettings)
+        if (activeLanguages.isNotEmpty()) {
+            queryAndMergeLanguageModels(activeLanguages)
+        }
+        val remainingLanguages = SettingsUiState.SUPPORTED_LANGUAGES.filter { it !in activeLanguages }
+        if (remainingLanguages.isNotEmpty()) {
+            queryAndMergeLanguageModels(remainingLanguages)
+        }
+    }
+
+    private suspend fun queryAndMergeLanguageModels(languages: List<LanguageTag>) {
+        if (languages.isEmpty()) return
+        val queried = analysisRepository.queryLanguageModelInfos(languages)
+        if (queried.isEmpty()) return
+        val queriedByCode = queried.associateBy {
+            com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(it.language.value)
+        }
+        languageModelsState.update { current ->
+            current.map { existing ->
+                val mgmtCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                    existing.language.value,
+                )
+                queriedByCode[mgmtCode] ?: existing
+            }
         }
     }
 
@@ -807,9 +885,11 @@ class SettingsViewModel @Inject constructor(
 /**
  * 設定画面の言語別音声認識エンジン選択で、指定した [engine]（`null` は自動）を選択可能（enabled）にするかどうかを返す。
  *
- * - `null`（自動）は常に選択可能。
- * - `ML_KIT` は端末・言語で対応が確認されている（`UNSUPPORTED` でも `CHECKING` でもない）ときだけ選択可能。
- * - `SPEECH_RECOGNIZER` と `SHERPA_ONNX` は非対応（`UNSUPPORTED`）でないとき選択可能（`SHERPA_ONNX` の未ダウンロード選択はダウンロード確認ダイアログを開く）。
+ * - `null`（自動）は少なくとも 1 つのエンジンが対応している（または確認中）のときに選択可能。
+ * - `ML_KIT`・`SPEECH_RECOGNIZER`・`SHERPA_ONNX` は、いずれも端末・言語で対応が確認されている
+ *   （`UNSUPPORTED` でも `CHECKING` でもない）ときだけ選択可能。
+ *   （`SHERPA_ONNX` の未ダウンロード選択はダウンロード確認ダイアログを開き、`ML_KIT` / `SPEECH_RECOGNIZER` の未ダウンロード選択は
+ *   OS へのモデル取得要求を行う。）
  */
 internal fun isSttEngineSelectableInSettings(
     info: OnDeviceLanguageModelInfo,
@@ -817,16 +897,18 @@ internal fun isSttEngineSelectableInSettings(
 ): Boolean {
     val enriched = info.enrichedWithCatalog()
     return when (engine) {
-        null -> true
+        null -> SttEngineSelection.isAnyEngineSupported(enriched)
 
         SttEngine.ML_KIT ->
             enriched.mlKitStatus != OnDeviceLanguageModelStatus.UNSUPPORTED &&
                 enriched.mlKitStatus != OnDeviceLanguageModelStatus.CHECKING
 
         SttEngine.SPEECH_RECOGNIZER ->
-            enriched.status != OnDeviceLanguageModelStatus.UNSUPPORTED
+            enriched.status != OnDeviceLanguageModelStatus.UNSUPPORTED &&
+                enriched.status != OnDeviceLanguageModelStatus.CHECKING
 
         SttEngine.SHERPA_ONNX ->
-            enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
+            enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED &&
+                enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.CHECKING
     }
 }

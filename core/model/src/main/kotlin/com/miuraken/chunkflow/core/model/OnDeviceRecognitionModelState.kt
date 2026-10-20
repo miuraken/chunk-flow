@@ -120,7 +120,7 @@ data class OnDeviceLanguageModelInfo(
     fun enrichedWithCatalog(languageOverride: LanguageTag = language): OnDeviceLanguageModelInfo {
         val entry = SupportedLanguageCatalog.findByCode(languageOverride.value) ?: return this
         return copy(
-            mlKitStatus = if (!entry.mlKitSupported) {
+            mlKitStatus = if (!entry.mlKitSupported || !entry.speechRecognizerSupported) {
                 OnDeviceLanguageModelStatus.UNSUPPORTED
             } else {
                 mlKitStatus

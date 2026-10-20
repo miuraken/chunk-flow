@@ -266,8 +266,22 @@ internal fun DetailedChunkTranscriptionDialog(
                     val status = dialogState.engineStatus(selectedLanguage, engine)
                     val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
                     val isEngineEnabled = dialogState.isEngineEnabled(selectedLanguage, engine)
+                    val baseLabel = stringResource(labelRes)
+                    val chipLabel = when (status) {
+                        OnDeviceLanguageModelStatus.INSTALLED,
+                        OnDeviceLanguageModelStatus.DOWNLOADING,
+                        -> baseLabel
+
+                        OnDeviceLanguageModelStatus.NOT_INSTALLED -> "$baseLabel (未DL)"
+
+                        OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> "$baseLabel (取得失敗)"
+
+                        OnDeviceLanguageModelStatus.CHECKING -> "$baseLabel (確認中)"
+
+                        OnDeviceLanguageModelStatus.UNSUPPORTED -> "$baseLabel (未対応)"
+                    }
                     FilterChip(
-                        selected = selectedEngine == engine,
+                        selected = selectedEngine == engine && isEngineEnabled,
                         onClick = {
                             if (isEngineEnabled) {
                                 selectedEngine = engine
@@ -281,7 +295,7 @@ internal fun DetailedChunkTranscriptionDialog(
                         } else {
                             null
                         },
-                        label = { Text(text = stringResource(labelRes)) },
+                        label = { Text(text = chipLabel) },
                         enabled = !dialogState.isRunning && isEngineEnabled,
                     )
                 }
@@ -395,10 +409,16 @@ internal fun DetailedChunkTranscriptionDialog(
             if (dialogState.recognizedEngineId != null) {
                 val langText = (dialogState.recognizedLanguage ?: selectedLanguage).value
                     .lowercase(JavaLocale.ROOT)
+                val friendlyEngineName = when (dialogState.recognizedEngineId) {
+                    "mlkit-genai-speech" -> stringResource(R.string.player_detailed_transcribe_engine_mlkit)
+                    "android-on-device-speech", "android-speech-recognizer" -> stringResource(R.string.player_detailed_transcribe_engine_os)
+                    "sherpa-onnx-whisper-tiny" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa)
+                    else -> dialogState.recognizedEngineId
+                }
                 Text(
                     text = stringResource(
                         R.string.player_detailed_transcribe_result_meta,
-                        dialogState.recognizedEngineId,
+                        friendlyEngineName,
                         langText,
                     ),
                     style = MaterialTheme.typography.bodySmall,

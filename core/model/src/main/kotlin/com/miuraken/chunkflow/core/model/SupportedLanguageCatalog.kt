@@ -13,7 +13,7 @@ import java.util.Locale
  * @property bcp47Candidates `SpeechRecognizer` のモデル照会・フォールバックに使う BCP-47 ロケール候補一覧。
  * @property whisperCode `sherpa-onnx` (Whisper) に渡す言語コード。非対応の場合は `null`。
  * @property speechRecognizerSupported Android `SpeechRecognizer` (SODA / Google 音声認識) の対象言語かどうか。
- * @property mlKitSupported `ML Kit Language Identification` の対象言語かどうか。
+ * @property mlKitSupported `ML Kit`（言語識別および GenAI 音声認識）の対象言語かどうか。
  */
 data class SupportedLanguageEntry(
     val code: String,
@@ -349,7 +349,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("ceb-PH", "ceb"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "co",
@@ -359,7 +359,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("co-FR", "co"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "cs",
@@ -393,7 +393,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("eo"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "et",
@@ -445,7 +445,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("fy-NL", "fy"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "ga",
@@ -455,7 +455,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("ga-IE", "ga"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "gd",
@@ -465,7 +465,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("gd-GB", "gd"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "gl",
@@ -515,7 +515,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("hmn"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "hr",
@@ -614,7 +614,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("ku-TR", "ku"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "ky",
@@ -633,6 +633,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("la", "la-VA"),
             whisperCode = "la",
             speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "lb",
@@ -781,7 +782,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("ny-MW", "ny"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "oc",
@@ -885,7 +886,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("sm-WS", "sm"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "sn",
@@ -1002,7 +1003,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("ug-CN", "ug"),
             whisperCode = null,
             speechRecognizerSupported = false,
-            mlKitSupported = true,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "ur",
@@ -1037,6 +1038,7 @@ object SupportedLanguageCatalog {
             bcp47Candidates = listOf("yi", "ji"),
             whisperCode = "yi",
             speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "yo",

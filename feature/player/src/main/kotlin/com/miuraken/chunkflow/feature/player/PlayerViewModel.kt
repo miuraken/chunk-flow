@@ -552,27 +552,17 @@ data class DetailedTranscriptionDialogState(
     /**
      * 詳細文字起こしダイアログで、言語 [language] に対してエンジン [targetEngine] の選択肢を有効（選択可能）にするかどうかを返す。
      *
-     * - `ML_KIT`: 端末・言語で対応が確認されている（`UNSUPPORTED` でも `CHECKING` でもない）ときだけ有効。
-     * - `ANDROID_SPEECH_RECOGNIZER`: 非対応（`UNSUPPORTED`）でないとき有効。
-     * - `SHERPA_ONNX`: モデルがダウンロード済み（[OnDeviceLanguageModelStatus.INSTALLED]）のときだけ有効。
+     * いずれのエンジンも、端末・言語で対応が確認されている（[OnDeviceLanguageModelStatus.UNSUPPORTED] でも
+     * [OnDeviceLanguageModelStatus.CHECKING] でもない）ときだけ有効にする。
+     * 未ダウンロードのエンジンを選択した場合は、ダイアログ内の警告カードからモデルをダウンロードできる。
      */
     fun isEngineEnabled(
         language: LanguageTag?,
         targetEngine: OnDeviceTranscriptionEngine,
     ): Boolean {
         val status = engineStatus(language, targetEngine)
-        return when (targetEngine) {
-            OnDeviceTranscriptionEngine.ML_KIT,
-            OnDeviceTranscriptionEngine.AUTO,
-            -> status != OnDeviceLanguageModelStatus.UNSUPPORTED &&
-                status != OnDeviceLanguageModelStatus.CHECKING
-
-            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER ->
-                status != OnDeviceLanguageModelStatus.UNSUPPORTED
-
-            OnDeviceTranscriptionEngine.SHERPA_ONNX ->
-                status == OnDeviceLanguageModelStatus.INSTALLED
-        }
+        return status != OnDeviceLanguageModelStatus.UNSUPPORTED &&
+            status != OnDeviceLanguageModelStatus.CHECKING
     }
 
     /**

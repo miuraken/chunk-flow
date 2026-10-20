@@ -80,6 +80,14 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
      */
     private val cachedAvailableModeByTag = ConcurrentHashMap<String, Int>()
 
+    /**
+     * 端末単位で `MODE_ADVANCED`（AICore feature 0）が `FeatureStatus.AVAILABLE` であることが確認済みの場合はキャッシュする。
+     * `MODE_ADVANCED` の `checkStatus()` はロケールを見ずに AICore feature 0 の状態のみを返すため、
+     * ロケールごとの対応可否・言語パックのダウンロード状態は必ず `MODE_BASIC` 側で確認する。
+     */
+    @Volatile
+    private var cachedAdvancedFeatureAvailable: Boolean = false
+
     private fun normalizeTagKey(bcp47LocaleTag: String): String = bcp47LocaleTag.trim().replace('_', '-').lowercase(Locale.ROOT)
 
     override fun isDevicePotentiallySupported(): Boolean = runCatching { GenAiUtils.isAiCoreCompatible(context) }.getOrDefault(false)
@@ -115,17 +123,61 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
             onEvent(RecognitionModelDownloadEvent.FAILED)
             return false
         }
-        val modeAndStatus = checkFeatureStatusForTag(bcp47LocaleTag, useAvailableCache = false)
-        if (modeAndStatus == null || modeAndStatus.second == FeatureStatus.UNAVAILABLE) {
+        val basicStatus = checkSingleModeStatus(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_BASIC)
+        if (basicStatus == null || basicStatus == FeatureStatus.UNAVAILABLE) {
+            cachedAvailableModeByTag.remove(normalizeTagKey(bcp47LocaleTag))
             onEvent(RecognitionModelDownloadEvent.FAILED)
             return false
         }
-        if (modeAndStatus.second == FeatureStatus.AVAILABLE) {
-            cachedAvailableModeByTag[normalizeTagKey(bcp47LocaleTag)] = modeAndStatus.first
+        val advancedStatus = checkDeviceAdvancedStatus(bcp47LocaleTag, useAvailableCache = false)
+        val targetMode = if (advancedStatus != null && advancedStatus != FeatureStatus.UNAVAILABLE) {
+            SpeechRecognizerOptions.Mode.MODE_ADVANCED
+        } else {
+            SpeechRecognizerOptions.Mode.MODE_BASIC
+        }
+        if (basicStatus == FeatureStatus.AVAILABLE &&
+            (targetMode == SpeechRecognizerOptions.Mode.MODE_BASIC || advancedStatus == FeatureStatus.AVAILABLE)
+        ) {
+            cachedAvailableModeByTag[normalizeTagKey(bcp47LocaleTag)] = targetMode
             onEvent(RecognitionModelDownloadEvent.SUCCESS)
             return true
         }
-        val recognizer = createRecognizer(bcp47LocaleTag, modeAndStatus.first) ?: run {
+
+        // GoogleAsrService 側の言語別モデル取得は MODE_BASIC の download() でのみ locale タグが送信されるため、
+        // basicStatus が未インストールの場合は必ず MODE_BASIC でダウンロードを実行する。
+        val basicDownloaded = if (basicStatus != FeatureStatus.AVAILABLE) {
+            downloadSingleModeModel(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_BASIC, onEvent)
+        } else {
+            true
+        }
+        if (!basicDownloaded) {
+            return false
+        }
+        val advancedDownloaded = if (
+            targetMode == SpeechRecognizerOptions.Mode.MODE_ADVANCED &&
+            advancedStatus != FeatureStatus.AVAILABLE
+        ) {
+            downloadSingleModeModel(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_ADVANCED, onEvent)
+        } else {
+            true
+        }
+        val resolvedMode = if (targetMode == SpeechRecognizerOptions.Mode.MODE_ADVANCED && advancedDownloaded) {
+            cachedAdvancedFeatureAvailable = true
+            SpeechRecognizerOptions.Mode.MODE_ADVANCED
+        } else {
+            SpeechRecognizerOptions.Mode.MODE_BASIC
+        }
+        cachedAvailableModeByTag[normalizeTagKey(bcp47LocaleTag)] = resolvedMode
+        onEvent(RecognitionModelDownloadEvent.SUCCESS)
+        return true
+    }
+
+    private suspend fun downloadSingleModeModel(
+        bcp47LocaleTag: String,
+        mode: Int,
+        onEvent: (RecognitionModelDownloadEvent) -> Unit,
+    ): Boolean {
+        val recognizer = createRecognizer(bcp47LocaleTag, mode) ?: run {
             onEvent(RecognitionModelDownloadEvent.FAILED)
             return false
         }
@@ -145,8 +197,6 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
 
                         is DownloadStatus.DownloadCompleted -> {
                             completed = true
-                            cachedAvailableModeByTag[normalizeTagKey(bcp47LocaleTag)] = modeAndStatus.first
-                            onEvent(RecognitionModelDownloadEvent.SUCCESS)
                         }
 
                         is DownloadStatus.DownloadFailed -> {
@@ -208,6 +258,39 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
             }
         }
 
+        val primaryAttempt = recognizePcm16LeWithMode(
+            pcm16LeBytes = pcm16LeBytes,
+            sampleRateHz = sampleRateHz,
+            bcp47LocaleTag = bcp47LocaleTag,
+            selectedMode = selectedMode,
+            isProbe = isProbe,
+        )
+        if (
+            selectedMode == SpeechRecognizerOptions.Mode.MODE_ADVANCED &&
+            (primaryAttempt == null || (primaryAttempt.text.isBlank() && primaryAttempt.errorCode != null && primaryAttempt.errorCode != AndroidSpeechRecognizer.ERROR_NO_MATCH))
+        ) {
+            val basicAttempt = recognizePcm16LeWithMode(
+                pcm16LeBytes = pcm16LeBytes,
+                sampleRateHz = sampleRateHz,
+                bcp47LocaleTag = bcp47LocaleTag,
+                selectedMode = SpeechRecognizerOptions.Mode.MODE_BASIC,
+                isProbe = isProbe,
+            )
+            if (basicAttempt != null && (basicAttempt.text.isNotBlank() || basicAttempt.errorCode == AndroidSpeechRecognizer.ERROR_NO_MATCH)) {
+                cachedAvailableModeByTag[normalizeTagKey(bcp47LocaleTag)] = SpeechRecognizerOptions.Mode.MODE_BASIC
+                return basicAttempt
+            }
+        }
+        return primaryAttempt
+    }
+
+    private suspend fun recognizePcm16LeWithMode(
+        pcm16LeBytes: ByteArray,
+        sampleRateHz: Int,
+        bcp47LocaleTag: String,
+        selectedMode: Int,
+        isProbe: Boolean,
+    ): SpeechRecognitionAttemptResult? {
         val leadingSilenceMs = if (isProbe) {
             ChunkPcmExtractor.PROBE_LEADING_SILENCE_MS
         } else {
@@ -365,8 +448,13 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
     }
 
     /**
-     * 指定された [bcp47LocaleTag] について `MODE_ADVANCED` → `MODE_BASIC` の順で利用可能状態を確認し、
+     * 指定された [bcp47LocaleTag] について、まず `MODE_BASIC` で `GoogleAsrService` のロケール対応可否と
+     * 言語モデルのダウンロード状態を確認し、対応ロケールであれば `MODE_ADVANCED` の可否と組み合わせて
      * 採用するモードと `@FeatureStatus` のペアを返す。
+     *
+     * （ML Kit GenAI Speech Recognition 1.0.0-alpha1 の `MODE_ADVANCED.checkStatus()` はロケール引数を見ずに
+     * AICore feature 0 の有無のみを返すため、`MODE_BASIC` を先に確認しないと非対応言語や未ダウンロード言語も
+     * すべて `AVAILABLE` と誤判定されてしまう。）
      *
      * @param useAvailableCache `true` の場合、すでに `FeatureStatus.AVAILABLE` が確認済みのロケールは
      *   AICore IPC (`checkStatus()`) を省略してキャッシュから即座に返す。
@@ -382,17 +470,14 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
                 return cachedMode to FeatureStatus.AVAILABLE
             }
         }
-        val advancedStatus = checkSingleModeStatus(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_ADVANCED)
-        if (advancedStatus != null && advancedStatus != FeatureStatus.UNAVAILABLE) {
-            if (advancedStatus == FeatureStatus.AVAILABLE) {
-                cachedAvailableModeByTag[tagKey] = SpeechRecognizerOptions.Mode.MODE_ADVANCED
-            } else {
-                cachedAvailableModeByTag.remove(tagKey)
-            }
-            return SpeechRecognizerOptions.Mode.MODE_ADVANCED to advancedStatus
-        }
         val basicStatus = checkSingleModeStatus(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_BASIC)
-        if (basicStatus != null) {
+        if (basicStatus == null || basicStatus == FeatureStatus.UNAVAILABLE) {
+            cachedAvailableModeByTag.remove(tagKey)
+            return null
+        }
+
+        val advancedStatus = checkDeviceAdvancedStatus(bcp47LocaleTag, useAvailableCache = useAvailableCache)
+        if (advancedStatus == null || advancedStatus == FeatureStatus.UNAVAILABLE) {
             if (basicStatus == FeatureStatus.AVAILABLE) {
                 cachedAvailableModeByTag[tagKey] = SpeechRecognizerOptions.Mode.MODE_BASIC
             } else {
@@ -400,8 +485,42 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
             }
             return SpeechRecognizerOptions.Mode.MODE_BASIC to basicStatus
         }
-        cachedAvailableModeByTag.remove(tagKey)
-        return advancedStatus?.let { SpeechRecognizerOptions.Mode.MODE_ADVANCED to it }
+
+        val combinedStatus = combineFeatureStatuses(basicStatus, advancedStatus)
+        if (combinedStatus == FeatureStatus.AVAILABLE) {
+            cachedAvailableModeByTag[tagKey] = SpeechRecognizerOptions.Mode.MODE_ADVANCED
+        } else {
+            cachedAvailableModeByTag.remove(tagKey)
+        }
+        return SpeechRecognizerOptions.Mode.MODE_ADVANCED to combinedStatus
+    }
+
+    private suspend fun checkDeviceAdvancedStatus(
+        bcp47LocaleTag: String,
+        useAvailableCache: Boolean,
+    ): Int? {
+        if (useAvailableCache && cachedAdvancedFeatureAvailable) {
+            return FeatureStatus.AVAILABLE
+        }
+        val status = checkSingleModeStatus(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_ADVANCED)
+        if (status == FeatureStatus.AVAILABLE) {
+            cachedAdvancedFeatureAvailable = true
+        }
+        return status
+    }
+
+    private fun combineFeatureStatuses(basicStatus: Int, advancedStatus: Int): Int = when {
+        basicStatus == FeatureStatus.UNAVAILABLE || advancedStatus == FeatureStatus.UNAVAILABLE ->
+            FeatureStatus.UNAVAILABLE
+
+        basicStatus == FeatureStatus.AVAILABLE && advancedStatus == FeatureStatus.AVAILABLE ->
+            FeatureStatus.AVAILABLE
+
+        basicStatus == FeatureStatus.DOWNLOADING || advancedStatus == FeatureStatus.DOWNLOADING ->
+            FeatureStatus.DOWNLOADING
+
+        else ->
+            FeatureStatus.DOWNLOADABLE
     }
 
     private suspend fun checkSingleModeStatus(bcp47LocaleTag: String, mode: Int): Int? {

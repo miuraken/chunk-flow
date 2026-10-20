@@ -533,5 +533,23 @@ class SettingsViewModelTest {
             ),
         )
         assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ko")])
+
+        // ラテン語 (la): ML Kit / SpeechRecognizer はカタログで非対応、sherpa-onnx のみ対応
+        val laInfo = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("la") }
+        assertFalse(isSttEngineSelectableInSettings(laInfo, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT))
+        assertFalse(isSttEngineSelectableInSettings(laInfo, com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER))
+        assertTrue(isSttEngineSelectableInSettings(laInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
+        assertTrue(isSttEngineSelectableInSettings(laInfo, null))
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            com.miuraken.chunkflow.core.model.SttEngineSelection.resolveAutoEngine(laInfo),
+        )
+
+        // エスペラント語 (eo): 全エンジン非対応のため「自動」も含めて選択不可
+        val eoInfo = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("eo") }
+        assertFalse(isSttEngineSelectableInSettings(eoInfo, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT))
+        assertFalse(isSttEngineSelectableInSettings(eoInfo, com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER))
+        assertFalse(isSttEngineSelectableInSettings(eoInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
+        assertFalse(isSttEngineSelectableInSettings(eoInfo, null))
     }
 }

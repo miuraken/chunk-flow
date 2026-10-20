@@ -252,15 +252,17 @@ class PlayerScreenTest {
     }
 
     @Test
-    fun `詳細文字起こしエンジン選択制御_MLKit非対応または未確認時は無効化されsherpaはインストール済みのみ有効になる`() {
+    fun `詳細文字起こしエンジン選択制御_非対応や確認中は無効化され対応エンジンは未DLでも選択可能になる`() {
         val en = LanguageTag("en")
         val ko = LanguageTag("ko")
+        val la = LanguageTag("la")
+        val sm = LanguageTag("sm")
         val state = DetailedTranscriptionDialogState(
             chunkId = ChunkId(1L),
             chunkIndex = 0,
             languageOverride = en,
             languageModelInfos = mapOf(
-                // en: ML Kit が CHECKING（非対応端末等）、SpeechRecognizer が INSTALLED、sherpa-onnx が NOT_INSTALLED
+                // en: ML Kit が CHECKING、SpeechRecognizer が INSTALLED、sherpa-onnx が NOT_INSTALLED
                 en to OnDeviceLanguageModelInfo(
                     language = en,
                     mlKitStatus = OnDeviceLanguageModelStatus.CHECKING,
@@ -274,13 +276,27 @@ class PlayerScreenTest {
                     status = OnDeviceLanguageModelStatus.INSTALLED,
                     sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
                 ),
+                // la（ラテン語）: ML Kit / SpeechRecognizer はカタログで非対応、sherpa-onnx は対応（NOT_INSTALLED）
+                la to OnDeviceLanguageModelInfo(
+                    language = la,
+                    mlKitStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                ),
+                // sm（サモア語）: 全エンジン非対応
+                sm to OnDeviceLanguageModelInfo(
+                    language = sm,
+                    mlKitStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                ),
             ),
         )
 
-        // en: ML Kit は CHECKING なので無効、sherpa-onnx は NOT_INSTALLED なので無効、SpeechRecognizer のみ有効
+        // en: ML Kit は CHECKING なので無効、SpeechRecognizer と sherpa-onnx（未DLだが対応）は有効、既定は INSTALLED の SpeechRecognizer
         assertFalse(state.isEngineEnabled(en, OnDeviceTranscriptionEngine.ML_KIT))
         assertTrue(state.isEngineEnabled(en, OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER))
-        assertFalse(state.isEngineEnabled(en, OnDeviceTranscriptionEngine.SHERPA_ONNX))
+        assertTrue(state.isEngineEnabled(en, OnDeviceTranscriptionEngine.SHERPA_ONNX))
         assertEquals(
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
             state.selectDefaultEngineForLanguage(en),
@@ -294,6 +310,20 @@ class PlayerScreenTest {
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
             state.selectDefaultEngineForLanguage(ko),
         )
+
+        // la: カタログ補正により ML Kit / SpeechRecognizer は UNSUPPORTED となり無効、sherpa-onnx のみ有効
+        assertFalse(state.isEngineEnabled(la, OnDeviceTranscriptionEngine.ML_KIT))
+        assertFalse(state.isEngineEnabled(la, OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER))
+        assertTrue(state.isEngineEnabled(la, OnDeviceTranscriptionEngine.SHERPA_ONNX))
+        assertEquals(
+            OnDeviceTranscriptionEngine.SHERPA_ONNX,
+            state.selectDefaultEngineForLanguage(la),
+        )
+
+        // sm: 全エンジン非対応のためすべて無効
+        assertFalse(state.isEngineEnabled(sm, OnDeviceTranscriptionEngine.ML_KIT))
+        assertFalse(state.isEngineEnabled(sm, OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER))
+        assertFalse(state.isEngineEnabled(sm, OnDeviceTranscriptionEngine.SHERPA_ONNX))
     }
 
     @Test

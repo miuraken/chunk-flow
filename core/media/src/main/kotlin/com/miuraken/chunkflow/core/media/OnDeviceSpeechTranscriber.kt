@@ -2878,7 +2878,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             engineOverride = engineOverride,
             itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
             engineByLanguage = emptyMap(),
-            compareBothLanguages = true,
+            compareBothLanguages = languagePair?.base != null,
         )
     }
 
@@ -4615,19 +4615,44 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     ): SpeechRecognitionAttemptResult? {
         val candidates = candidateBcp47TagsFor(language?.value, bcp47LocaleTag)
         var lastAttempt: SpeechRecognitionAttemptResult? = null
+        val catalogEntry = language?.value?.let { com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(it) }
 
         val effectiveTryOrder = when (activeTrialEngineOverride) {
             OnDeviceTranscriptionEngine.AUTO -> com.miuraken.chunkflow.core.model.SttEngine.AUTO_ORDER
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER)
             OnDeviceTranscriptionEngine.SHERPA_ONNX -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX)
-            OnDeviceTranscriptionEngine.ML_KIT -> com.miuraken.chunkflow.core.model.SttEngine.tryOrder(com.miuraken.chunkflow.core.model.SttEngine.ML_KIT)
+            OnDeviceTranscriptionEngine.ML_KIT -> listOf(com.miuraken.chunkflow.core.model.SttEngine.ML_KIT)
             null -> tryOrder
         }
 
         for (engine in effectiveTryOrder) {
+            if (!isProbe) {
+                activeStepMutableState.update { current ->
+                    if (current != null &&
+                        (current.step == TranscriptionStep.RECOGNIZING_PRIMARY || current.step == TranscriptionStep.RECOGNIZING_FALLBACK)
+                    ) {
+                        val langLabel = language?.value ?: bcp47LocaleTag
+                        val engineLabel = when (engine) {
+                            com.miuraken.chunkflow.core.model.SttEngine.ML_KIT -> "ML Kit GenAI"
+                            com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER -> "SpeechRecognizer"
+                            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX -> "sherpa-onnx"
+                        }
+                        current.copy(detail = "$langLabel ($engineLabel)")
+                    } else {
+                        current
+                    }
+                }
+            }
             when (engine) {
                 com.miuraken.chunkflow.core.model.SttEngine.ML_KIT -> {
-                    if (isMlKitPotentiallyAvailable()) {
+                    if (catalogEntry != null && (!catalogEntry.mlKitSupported || !catalogEntry.speechRecognizerSupported)) {
+                        lastAttempt = SpeechRecognitionAttemptResult(
+                            text = "",
+                            errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                            engineId = MlKitGenAiSpeechTranscriber.ML_KIT_GENAI_ENGINE_ID,
+                        )
+                        recordExternalDiagnostic("fallback", "Fallback from ML_KIT: ML_KIT is unsupported for ${language.value}", true)
+                    } else if (isMlKitPotentiallyAvailable()) {
                         val mlKitAttempt = tryMlKitInference(
                             pcm16LeBytes = pcm16LeBytes,
                             sampleRateHz = sampleRateHz,
@@ -4653,7 +4678,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 }
 
                 com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER -> {
-                    if (onDeviceAvailabilityChecker() || standardAvailabilityChecker() || attemptRunner != null) {
+                    if (catalogEntry != null && !catalogEntry.speechRecognizerSupported) {
+                        lastAttempt = SpeechRecognitionAttemptResult(
+                            text = "",
+                            errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                            engineId = OnDeviceChunkTranscriptionResult.DEFAULT_ON_DEVICE_ENGINE_ID,
+                        )
+                        recordExternalDiagnostic(
+                            "fallback",
+                            "Fallback from SPEECH_RECOGNIZER: SPEECH_RECOGNIZER is unsupported for ${language.value}",
+                            true,
+                        )
+                    } else if (onDeviceAvailabilityChecker() || standardAvailabilityChecker() || attemptRunner != null) {
                         var osAttempt: SpeechRecognitionAttemptResult? = null
                         var lastCandidate = bcp47LocaleTag
                         for ((index, candidateTag) in candidates.withIndex()) {
@@ -4747,17 +4783,26 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
                 com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX -> {
                     if (language != null) {
-                        trySherpaInference(pcm16LeBytes, sampleRateHz, language)?.let { return it }
-                        if (isSherpaSupportedFor(language) && !isSherpaInstalledFor(language)) {
-                            requestSttModelDownload(language, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX)
-                            recordExternalDiagnostic("fallback", "Fallback from SHERPA_ONNX: SHERPA_ONNX is unavailable", true)
+                        if (catalogEntry != null && catalogEntry.whisperCode == null) {
                             lastAttempt = SpeechRecognitionAttemptResult(
                                 text = "",
-                                errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                                errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
                                 engineId = SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID,
                             )
+                            recordExternalDiagnostic("fallback", "Fallback from SHERPA_ONNX: SHERPA_ONNX is unsupported for ${language.value}", true)
                         } else {
-                            recordExternalDiagnostic("fallback", "Fallback from SHERPA_ONNX: SHERPA_ONNX inference failed or unsupported", true)
+                            trySherpaInference(pcm16LeBytes, sampleRateHz, language)?.let { return it }
+                            if (isSherpaSupportedFor(language) && !isSherpaInstalledFor(language)) {
+                                requestSttModelDownload(language, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX)
+                                recordExternalDiagnostic("fallback", "Fallback from SHERPA_ONNX: SHERPA_ONNX is unavailable", true)
+                                lastAttempt = SpeechRecognitionAttemptResult(
+                                    text = "",
+                                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                                    engineId = SherpaOnnxWhisperTranscriber.SHERPA_ONNX_ENGINE_ID,
+                                )
+                            } else {
+                                recordExternalDiagnostic("fallback", "Fallback from SHERPA_ONNX: SHERPA_ONNX inference failed or unsupported", true)
+                            }
                         }
                     }
                 }

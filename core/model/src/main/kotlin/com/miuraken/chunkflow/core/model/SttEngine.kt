@@ -103,13 +103,25 @@ object SttEngineSelection {
     }
 
     /**
+     * モデルの状態 [info] において、少なくとも 1 つのエンジンが対応（[OnDeviceLanguageModelStatus.UNSUPPORTED] 以外）しているかどうかを返す。
+     */
+    fun isAnyEngineSupported(info: OnDeviceLanguageModelInfo): Boolean {
+        val enriched = info.enrichedWithCatalog()
+        return SttEngine.AUTO_ORDER.any { engine ->
+            enriched.statusOf(engine) != OnDeviceLanguageModelStatus.UNSUPPORTED
+        }
+    }
+
+    /**
      * モデルの状態 [info] から、「自動」が選択されたときに解決される既定のエンジンを返す。
      *
      * 1. [SttEngine.AUTO_ORDER] の順で、すでにインストール済み（[OnDeviceLanguageModelStatus.INSTALLED]）の最初のエンジン。
      * 2. いずれも未インストールの場合は、ML Kit が端末・言語で対応確認済み（[OnDeviceLanguageModelStatus.NOT_INSTALLED] または
      *    [OnDeviceLanguageModelStatus.DOWNLOADING]）のときのみ [SttEngine.ML_KIT] を返す。未確認（`CHECKING`）や非対応（`UNSUPPORTED`）の
      *    環境では ML Kit を選ばない。
-     * 3. それ以外は [SttEngine.SPEECH_RECOGNIZER] を返す。
+     * 3. `SpeechRecognizer` が非対応でなければ [SttEngine.SPEECH_RECOGNIZER] を返す。
+     * 4. `sherpa-onnx` が非対応でなければ [SttEngine.SHERPA_ONNX] を返す。
+     * 5. それ以外は [SttEngine.SPEECH_RECOGNIZER] を返す。
      */
     fun resolveAutoEngine(info: OnDeviceLanguageModelInfo): SttEngine {
         val enriched = info.enrichedWithCatalog()
@@ -122,7 +134,7 @@ object SttEngineSelection {
         if (enriched.status != OnDeviceLanguageModelStatus.UNSUPPORTED) {
             return SttEngine.SPEECH_RECOGNIZER
         }
-        if (enriched.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED) {
+        if (enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED) {
             return SttEngine.SHERPA_ONNX
         }
         return SttEngine.SPEECH_RECOGNIZER
