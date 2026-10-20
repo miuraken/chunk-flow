@@ -84,7 +84,6 @@ fun PlaybackControlStrip(
     val isWholeFileRepeat = practice.repeatWholeFile
     val isRepeatOn = isWholeFileRepeat || practice.loop !is LoopMode.Off || practice.repeatCheckedOnly
     val isSkipSilenceOn = practice.skipOriginalSilence
-    val toggleColors = brightnessToggleChipColors()
     var showWholeFileRepeatDialog by remember { mutableStateOf(false) }
 
     Row(
@@ -105,19 +104,19 @@ fun PlaybackControlStrip(
                     maxLines = 1,
                 )
             },
-            colors = toggleColors,
         )
 
         // 2. 「{指定速度}」（短押しで指定速度に切り替え、長押しで速度設定シートを開く）
+        // 色は M3 の FilterChip 既定に揃える（未選択: 透明 + 枠線、選択: secondaryContainer。調査 §3.2 C4）。
         val customChipContainerColor = if (isCustomSpeedSelected) {
-            MaterialTheme.colorScheme.primaryContainer
+            MaterialTheme.colorScheme.secondaryContainer
         } else {
-            MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+            Color.Transparent
         }
         val customChipContentColor = if (isCustomSpeedSelected) {
-            MaterialTheme.colorScheme.onPrimaryContainer
+            MaterialTheme.colorScheme.onSecondaryContainer
         } else {
-            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+            MaterialTheme.colorScheme.onSurfaceVariant
         }
         val customChipBorder = if (isCustomSpeedSelected) {
             null
@@ -152,14 +151,14 @@ fun PlaybackControlStrip(
 
         // 3. 「リピート」（短押しでチャンク・全ファイルリピートの ON/OFF、長押しでファイル全体リピートの確認ダイアログ）
         val repeatChipContainerColor = when {
-            isWholeFileRepeat -> WholeFileRepeatContainerColor
-            isRepeatOn -> MaterialTheme.colorScheme.primaryContainer
-            else -> MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f)
+            isWholeFileRepeat -> wholeFileRepeatContainerColor()
+            isRepeatOn -> MaterialTheme.colorScheme.secondaryContainer
+            else -> Color.Transparent
         }
         val repeatChipContentColor = when {
-            isWholeFileRepeat -> Color.White
-            isRepeatOn -> MaterialTheme.colorScheme.onPrimaryContainer
-            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+            isWholeFileRepeat -> onWholeFileRepeatContainerColor()
+            isRepeatOn -> MaterialTheme.colorScheme.onSecondaryContainer
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
         }
         val repeatChipBorder = if (isRepeatOn) {
             null
@@ -181,8 +180,17 @@ fun PlaybackControlStrip(
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // ファイル全体リピートは絵文字ではなく Icon で示す（調査 §3.2 C7）。
+                if (isWholeFileRepeat) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Repeat,
+                        contentDescription = null,
+                        modifier = Modifier.size(FilterChipDefaults.IconSize),
+                    )
+                }
                 Text(
                     text = if (isWholeFileRepeat) {
                         stringResource(R.string.designsystem_playback_chip_repeat_whole_file)
@@ -207,7 +215,6 @@ fun PlaybackControlStrip(
                     maxLines = 1,
                 )
             },
-            colors = toggleColors,
         )
 
         // 5. 「再生設定」（⚙️ アイコン）
@@ -252,7 +259,7 @@ fun PlaybackControlStrip(
 
 @ChunkFlowPreviews
 @Composable
-private fun PlaybackControlStripPreview() {
+internal fun PlaybackControlStripPreview() {
     ChunkFlowTheme {
         Surface {
             Column(

@@ -126,7 +126,7 @@ fun LanguagePairBadge(
 
 @ChunkFlowPreviews
 @Composable
-private fun LanguageRoleBadgePreview() {
+internal fun LanguageRoleBadgePreview() {
     ChunkFlowTheme {
         Surface {
             Column(

@@ -156,7 +156,7 @@ fun SpeedSheetContent(
 
 @ChunkFlowPreviews
 @Composable
-private fun SpeedSheetContentPreview() {
+internal fun SpeedSheetContentPreview() {
     ChunkFlowTheme {
         Surface {
             SpeedSheetContent(

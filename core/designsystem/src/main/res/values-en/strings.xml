@@ -2,7 +2,7 @@
 <resources>
     <!-- 再生操作ストリップ（PlaybackControlStrip） -->
     <string name="designsystem_playback_chip_repeat">Repeat</string>
-    <string name="designsystem_playback_chip_repeat_whole_file">🔁Repeat</string>
+    <string name="designsystem_playback_chip_repeat_whole_file">Repeat all</string>
     <string name="designsystem_playback_whole_file_repeat_confirm_message">Repeat the entire file?</string>
     <string name="designsystem_playback_whole_file_repeat_yes">Yes</string>
     <string name="designsystem_playback_whole_file_repeat_no">No</string>
