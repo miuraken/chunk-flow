@@ -1133,6 +1133,29 @@ object ChunkFlowIcons {
         }
     }
 
+    /** 警告（Material Symbols の warning 相当）アイコン。⚠️ 絵文字の代替（調査 §3.2 C7）。 */
+    val Warning: ImageVector by lazy {
+        materialIcon(name = "Warning") {
+            moveTo(1f, 21f)
+            horizontalLineToRelative(22f)
+            lineTo(12f, 2f)
+            lineTo(1f, 21f)
+            close()
+            moveTo(13f, 18f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(-2f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(2f)
+            close()
+            moveTo(13f, 14f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(-4f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(4f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,
