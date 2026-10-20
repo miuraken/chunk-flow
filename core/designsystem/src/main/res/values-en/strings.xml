@@ -14,4 +14,11 @@
     <string name="designsystem_playback_speed_decrease_cd">Decrease speed by 0.05x</string>
     <string name="designsystem_playback_speed_increase_cd">Increase speed by 0.05x</string>
     <string name="designsystem_playback_speed_slider_cd">Playback speed slider</string>
+
+    <!-- Expressive wrappers (component/expressive) -->
+    <string name="designsystem_play">Play</string>
+    <string name="designsystem_pause">Pause</string>
+    <string name="designsystem_state_on">On</string>
+    <string name="designsystem_state_off">Off</string>
+    <string name="designsystem_split_button_menu_cd">%1$s menu</string>
 </resources>

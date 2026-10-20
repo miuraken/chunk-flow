@@ -15,4 +15,11 @@
     <string name="designsystem_playback_speed_decrease_cd">再生速度を 0.05 倍下げる</string>
     <string name="designsystem_playback_speed_increase_cd">再生速度を 0.05 倍上げる</string>
     <string name="designsystem_playback_speed_slider_cd">再生速度スライダー</string>
+
+    <!-- Expressive ラッパー（component/expressive） -->
+    <string name="designsystem_play">再生</string>
+    <string name="designsystem_pause">一時停止</string>
+    <string name="designsystem_state_on">オン</string>
+    <string name="designsystem_state_off">オフ</string>
+    <string name="designsystem_split_button_menu_cd">%1$s のメニュー</string>
 </resources>

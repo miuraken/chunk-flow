@@ -3,6 +3,12 @@ package com.miuraken.chunkflow.core.designsystem
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import com.android.tools.screenshot.PreviewTest
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowFloatingToolbarPreview
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowPlayPauseButtonPreview
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowProgressIndicatorsPreview
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowSplitButtonPreview
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonGroupPreview
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowTransportButtonPreview
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadgePreview
 import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackControlStripPreview
 import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContentPreview
@@ -53,3 +59,35 @@ fun SpeedSheetContentScreenshot() = SpeedSheetContentPreview()
 @ChunkFlowPreviews
 @Composable
 fun LanguageRoleBadgeScreenshot() = LanguageRoleBadgePreview()
+
+// ---- Expressive ラッパー（Phase B） ----
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowToggleButtonGroupScreenshot() = ChunkFlowToggleButtonGroupPreview()
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowSplitButtonScreenshot() = ChunkFlowSplitButtonPreview()
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowFloatingToolbarScreenshot() = ChunkFlowFloatingToolbarPreview()
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowProgressIndicatorsScreenshot() = ChunkFlowProgressIndicatorsPreview()
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowPlayPauseButtonScreenshot() = ChunkFlowPlayPauseButtonPreview()
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowTransportButtonScreenshot() = ChunkFlowTransportButtonPreview()
