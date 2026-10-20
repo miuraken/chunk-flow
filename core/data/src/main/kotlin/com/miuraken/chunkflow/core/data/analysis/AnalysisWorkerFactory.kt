@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import com.miuraken.chunkflow.core.audio.SpeechProbabilityStreamFactory
 import com.miuraken.chunkflow.core.data.library.LibraryMediaFileResolver
 import com.miuraken.chunkflow.core.database.dao.AnalysisStateDao
 import com.miuraken.chunkflow.core.database.dao.ChunkDao
@@ -25,6 +26,7 @@ class AnalysisWorkerFactory(
     private val mediaFileResolver: LibraryMediaFileResolver,
     private val userSettingsRepository: UserSettingsRepository,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val speechProbabilityStreamFactory: SpeechProbabilityStreamFactory? = null,
 ) : WorkerFactory() {
 
     @Inject
@@ -35,6 +37,7 @@ class AnalysisWorkerFactory(
         mediaItemDao: MediaItemDao,
         mediaFileResolver: LibraryMediaFileResolver,
         userSettingsRepository: UserSettingsRepository,
+        speechProbabilityStreamFactory: SpeechProbabilityStreamFactory,
     ) : this(
         audioStreamDecoder = audioStreamDecoder,
         analysisStateDao = analysisStateDao,
@@ -43,6 +46,7 @@ class AnalysisWorkerFactory(
         mediaFileResolver = mediaFileResolver,
         userSettingsRepository = userSettingsRepository,
         clock = System::currentTimeMillis,
+        speechProbabilityStreamFactory = speechProbabilityStreamFactory,
     )
 
     override fun createWorker(
@@ -60,6 +64,7 @@ class AnalysisWorkerFactory(
             mediaFileResolver = mediaFileResolver,
             userSettingsRepository = userSettingsRepository,
             clock = clock,
+            speechProbabilityStreamFactory = speechProbabilityStreamFactory,
         )
 
         else -> null

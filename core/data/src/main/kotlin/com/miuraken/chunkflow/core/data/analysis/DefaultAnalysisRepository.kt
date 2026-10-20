@@ -15,6 +15,7 @@ import com.miuraken.chunkflow.core.audio.FeatureAccumulator
 import com.miuraken.chunkflow.core.audio.FrameFeatureExtractor
 import com.miuraken.chunkflow.core.audio.PcmSlidingWindowBuffer
 import com.miuraken.chunkflow.core.audio.SampleSink
+import com.miuraken.chunkflow.core.audio.SpeechProbabilityStreamFactory
 import com.miuraken.chunkflow.core.audio.StoredFeatures
 import com.miuraken.chunkflow.core.audio.TranscriptOffsetAligner
 import com.miuraken.chunkflow.core.data.di.ChunkFlowDispatchers
@@ -141,6 +142,7 @@ class DefaultAnalysisRepository(
     private val textTranslator: OnDeviceTextTranslator = MlKitOnDeviceTextTranslator(),
     /** CPU を使う処理（一括言語判定の Whisper 推論など）の Dispatcher。 */
     @Dispatcher(ChunkFlowDispatchers.Default) private val computeDispatcher: CoroutineDispatcher = ioDispatcher,
+    private val speechProbabilityStreamFactory: SpeechProbabilityStreamFactory? = null,
 ) : AnalysisRepository {
 
     @Inject
@@ -160,6 +162,7 @@ class DefaultAnalysisRepository(
         itemSttOverrideRepository: ItemSttOverrideRepository,
         textTranslator: OnDeviceTextTranslator,
         @Dispatcher(ChunkFlowDispatchers.Default) computeDispatcher: CoroutineDispatcher,
+        speechProbabilityStreamFactory: SpeechProbabilityStreamFactory,
     ) : this(
         context = context,
         analysisStateDao = analysisStateDao,
@@ -177,6 +180,7 @@ class DefaultAnalysisRepository(
         itemSttOverrideRepository = itemSttOverrideRepository,
         textTranslator = textTranslator,
         computeDispatcher = computeDispatcher,
+        speechProbabilityStreamFactory = speechProbabilityStreamFactory,
     )
 
     private data class ChunkLangCacheKey(
@@ -546,7 +550,15 @@ class DefaultAnalysisRepository(
 
         val waveformFile = File(analysisDir, WAVEFORM_FILE_NAME)
         val featuresFile = File(analysisDir, FEATURES_FILE_NAME)
-        if (skipIfAlreadyDone && waveformFile.isFile && featuresFile.isFile) {
+        val existingStoredFeatures = if (featuresFile.isFile) {
+            AnalysisBinaryFormat.readFeatures(featuresFile)
+        } else {
+            null
+        }
+        val needsVadUpgrade = speechProbabilityStreamFactory != null &&
+            existingStoredFeatures?.speechProbability == null
+
+        if (skipIfAlreadyDone && waveformFile.isFile && existingStoredFeatures != null && !needsVadUpgrade) {
             val existingByStage = analysisStateDao.getByMediaId(mediaId.value)
                 .mapNotNull { it.toStageAndStatus() }
                 .toMap()
@@ -594,7 +606,7 @@ class DefaultAnalysisRepository(
             }
         }
 
-        val needDecode = AnalysisStage.FEATURES in requestedStages || !featuresFile.isFile
+        val needDecode = AnalysisStage.FEATURES in requestedStages || existingStoredFeatures == null || needsVadUpgrade
 
         try {
             coroutineScope {
@@ -842,6 +854,7 @@ class DefaultAnalysisRepository(
                             sampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
                             sink = accumulator,
                         )
+                        val vadStream = runCatching { speechProbabilityStreamFactory?.createStream() }.getOrNull()
 
                         var lastCheckpointMs = now
                         var lastProgressUpdateMs = now
@@ -856,6 +869,7 @@ class DefaultAnalysisRepository(
                                 throw AnalysisPreemptedException()
                             }
                             extractor.process(samples, count)
+                            vadStream?.onSamples(samples, count)
                             pcmWindowBuffer?.appendFloats(samples, count)
                         }
                         val onProgressCallback: suspend (com.miuraken.chunkflow.core.media.DecodeProgress) -> Unit = { progress ->
@@ -905,11 +919,17 @@ class DefaultAnalysisRepository(
                                         ),
                                     )
                                 }
+                                val currentEnergy = accumulator.logEnergyDb()
+                                val currentSpeechProb = vadStream?.currentProbabilities(
+                                    targetFrameCount = currentEnergy.size,
+                                    binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                                )
                                 val provisionalChunks = chunkSegmenter.segment(
-                                    logEnergyDb = accumulator.logEnergyDb(),
+                                    logEnergyDb = currentEnergy,
                                     params = segmentationParams,
                                     binMs = ChunkSegmenter.DEFAULT_BIN_MS,
-                                    durationMs = accumulator.size.toLong() * ChunkSegmenter.DEFAULT_BIN_MS,
+                                    durationMs = currentEnergy.size.toLong() * ChunkSegmenter.DEFAULT_BIN_MS,
+                                    speechProbability = currentSpeechProb,
                                 )
                                 val confirmedChunks = if (provisionalChunks.size > 1) {
                                     provisionalChunks.dropLast(1)
@@ -997,6 +1017,11 @@ class DefaultAnalysisRepository(
                             is AudioDecodeResult.Success -> {
                                 extractor.finish()
                                 decodedDurationMs = decodeResult.durationMs
+                                val finalEnergy = accumulator.logEnergyDb()
+                                val finalSpeechProb = vadStream?.finish(
+                                    targetFrameCount = finalEnergy.size,
+                                    binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+                                )
 
                                 val waveformSaved = AnalysisBinaryFormat.writeWaveformAtomic(
                                     file = waveformFile,
@@ -1006,7 +1031,8 @@ class DefaultAnalysisRepository(
                                     file = featuresFile,
                                     features = StoredFeatures(
                                         binMs = ChunkSegmenter.DEFAULT_BIN_MS,
-                                        logEnergyDb = accumulator.logEnergyDb(),
+                                        logEnergyDb = finalEnergy,
+                                        speechProbability = finalSpeechProb,
                                     ),
                                 )
                                 if (!waveformSaved || !featuresSaved) {
@@ -1077,6 +1103,7 @@ class DefaultAnalysisRepository(
                             params = params,
                             binMs = storedFeatures.binMs,
                             durationMs = durationMs,
+                            speechProbability = storedFeatures.speechProbability,
                         )
                         val chunkEntities = autoChunks.map {
                             it.toEntity(
@@ -1241,7 +1268,20 @@ class DefaultAnalysisRepository(
         withContext(ioDispatcher) {
             val now = clock()
             val featuresFile = resolveAnalysisFile(id, FEATURES_FILE_NAME)
-            val storedFeatures = featuresFile?.let { AnalysisBinaryFormat.readFeatures(it) }
+            var storedFeatures = featuresFile?.let { AnalysisBinaryFormat.readFeatures(it) }
+
+            if (
+                storedFeatures != null &&
+                storedFeatures.speechProbability == null &&
+                speechProbabilityStreamFactory != null &&
+                audioStreamDecoder != null &&
+                featuresFile != null
+            ) {
+                val upgraded = upgradeStoredFeaturesWithVadIfPossible(id, featuresFile)
+                if (upgraded != null) {
+                    storedFeatures = upgraded
+                }
+            }
 
             if (storedFeatures == null) {
                 analysisStateDao.upsert(
@@ -1273,6 +1313,7 @@ class DefaultAnalysisRepository(
                 params = params,
                 binMs = storedFeatures.binMs,
                 durationMs = totalDurationMs,
+                speechProbability = storedFeatures.speechProbability,
             )
             val chunkEntities = segments.map {
                 it.toEntity(
@@ -1303,6 +1344,59 @@ class DefaultAnalysisRepository(
                 startLanguageDetectionInternal(id, onlyMissingLanguage = false)
             }
         }
+    }
+
+    private suspend fun upgradeStoredFeaturesWithVadIfPossible(
+        mediaId: MediaId,
+        featuresFile: File,
+    ): StoredFeatures? {
+        val decoder = audioStreamDecoder ?: return null
+        val factory = speechProbabilityStreamFactory ?: return null
+        val vadStream = runCatching { factory.createStream() }.getOrNull() ?: return null
+        val mediaItem = mediaItemDao.getById(mediaId.value)
+        val audioSource = resolveAudioSource(mediaId, mediaFileResolver, mediaItemDao, mediaItem) ?: return null
+        val expectedDurationMs = mediaItem?.durationMs?.takeIf { it > 0L }
+
+        val accumulator = FeatureAccumulator(binMs = ChunkSegmenter.DEFAULT_BIN_MS)
+        val extractor = FrameFeatureExtractor(
+            sampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+            sink = accumulator,
+        )
+        val sink = SampleSink { samples, count ->
+            extractor.process(samples, count)
+            vadStream.onSamples(samples, count)
+        }
+        val decodeResult = runCatching {
+            when (audioSource) {
+                is ResolvedAudioSource.LocalFile -> decoder.decode(
+                    file = audioSource.file,
+                    sink = sink,
+                    outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                    expectedDurationMs = expectedDurationMs,
+                )
+
+                is ResolvedAudioSource.SourceUri -> decoder.decode(
+                    uri = audioSource.uri,
+                    sink = sink,
+                    outputSampleRate = AnalysisWorker.TARGET_SAMPLE_RATE_HZ,
+                    expectedDurationMs = expectedDurationMs,
+                )
+            }
+        }.getOrNull()
+        if (decodeResult !is AudioDecodeResult.Success) return null
+        extractor.finish()
+        val energy = accumulator.logEnergyDb()
+        val probs = vadStream.finish(
+            targetFrameCount = energy.size,
+            binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+        )
+        val upgraded = StoredFeatures(
+            binMs = ChunkSegmenter.DEFAULT_BIN_MS,
+            logEnergyDb = energy,
+            speechProbability = probs,
+        )
+        AnalysisBinaryFormat.writeFeaturesAtomic(featuresFile, upgraded)
+        return upgraded
     }
 
     override suspend fun setCustomSegmentationParams(id: MediaId, params: SegmentationParams?) {
@@ -2159,10 +2253,16 @@ class DefaultAnalysisRepository(
                     .toMap()
                 val waveformFile = resolveAnalysisFile(id, WAVEFORM_FILE_NAME)
                 val featuresFile = resolveAnalysisFile(id, FEATURES_FILE_NAME)
+                val storedFeatures = featuresFile?.takeIf { it.isFile }?.let { AnalysisBinaryFormat.readFeatures(it) }
+                val needsVadUpgrade = speechProbabilityStreamFactory != null &&
+                    audioStreamDecoder != null &&
+                    storedFeatures?.speechProbability == null
                 val needFeatures = existingByStage[AnalysisStage.FEATURES] !is StageStatus.Done ||
                     waveformFile?.isFile != true ||
-                    featuresFile?.isFile != true
-                val needSegmentation = existingByStage[AnalysisStage.SEGMENTATION] !is StageStatus.Done
+                    storedFeatures == null ||
+                    needsVadUpgrade
+                val needSegmentation = existingByStage[AnalysisStage.SEGMENTATION] !is StageStatus.Done ||
+                    needsVadUpgrade
                 if (needFeatures || needSegmentation) {
                     requestAnalysisInternal(
                         id = id,
@@ -3621,6 +3721,7 @@ class DefaultAnalysisRepository(
                 splitPositionMs = splitPositionMs,
                 params = segmentationParams,
                 binMs = energyAndBinMs.second,
+                speechProbability = storedFeatures?.speechProbability,
             )
         } else {
             listOf(target.startMs to splitPositionMs, splitPositionMs to target.endMs)
@@ -3927,6 +4028,7 @@ class DefaultAnalysisRepository(
             rangeEndMs = endMs,
             params = segmentationParams,
             binMs = energyAndBinMs.second,
+            speechProbability = storedFeatures?.speechProbability,
         )
         val (trimmedStartMs, trimmedEndMs) = if (energyAndBinMs != null && !isSilenceOnly) {
             chunkSegmenter.trimSilenceInRange(
@@ -3935,6 +4037,7 @@ class DefaultAnalysisRepository(
                 rangeEndMs = endMs,
                 params = segmentationParams,
                 binMs = energyAndBinMs.second,
+                speechProbability = storedFeatures?.speechProbability,
             )
         } else {
             startMs to endMs
