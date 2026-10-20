@@ -15,7 +15,9 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -117,11 +119,25 @@ fun SpeedSheetContent(
             }
         }
 
-        Slider(
-            value = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED),
-            onValueChange = onSetSpeed,
-            valueRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
+        // 非推奨の Slider(value, onValueChange) ではなく SliderState を使う（material3 1.5）。
+        // 外から速度が変わったとき（±0.05 ボタン・プリセット）は LaunchedEffect で state に同期する。
+        val sliderValue = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+        val sliderState = rememberSliderState(
+            value = sliderValue,
             steps = 29,
+            trackRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
+        )
+        LaunchedEffect(sliderState, sliderValue) {
+            if (sliderState.value != sliderValue) {
+                sliderState.value = sliderValue
+            }
+        }
+        Slider(
+            state = sliderState,
+            onValueChange = { newValue ->
+                sliderState.value = newValue
+                onSetSpeed(newValue)
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .semantics { contentDescription = sliderCd },
