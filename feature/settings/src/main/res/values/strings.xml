@@ -3,7 +3,7 @@
     <string name="settings_title">全体設定</string>
     <string name="settings_back">戻る</string>
     <string name="settings_tab_playback">再生</string>
-    <string name="settings_tab_segmentation">チャンク分割</string>
+    <string name="settings_tab_segmentation">分割</string>
     <string name="settings_tab_transcription">文字起こし</string>
     <string name="settings_section_playback">再生設定</string>
     <string name="settings_seek_back_label">巻き戻し秒数</string>
@@ -14,6 +14,7 @@
     <string name="settings_auto_pause_off">OFF</string>
     <string name="settings_auto_pause_fixed">固定 %1$.1f 秒 追加</string>
     <string name="settings_auto_pause_proportional">チャンク長 x %1$.1f</string>
+    <string name="settings_auto_pause_scope_label">ポーズを入れる言語</string>
     <string name="settings_auto_pause_scope_all">両言語</string>
     <string name="settings_auto_pause_scope_target">学習対象言語のみ</string>
     <string name="settings_auto_pause_scope_base">ベース言語のみ</string>

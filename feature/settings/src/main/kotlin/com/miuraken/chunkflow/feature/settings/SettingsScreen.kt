@@ -1,11 +1,10 @@
 package com.miuraken.chunkflow.feature.settings
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,28 +20,20 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderState
 import androidx.compose.material3.Surface
@@ -51,6 +42,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -63,15 +55,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsListContent
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonGroup
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonItem
 import com.miuraken.chunkflow.core.designsystem.component.languageSettingDisplayName
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
@@ -95,11 +92,14 @@ import kotlin.math.roundToInt
 /**
  * 設定画面のタブ種別。
  */
-enum class SettingsTab {
-    PLAYBACK,
-    SEGMENTATION,
-    TRANSCRIPTION,
-    LANGUAGE,
+enum class SettingsTab(
+    /** タブのラベル（固定幅タブに収まる短い名前）。 */
+    @StringRes val labelRes: Int,
+) {
+    PLAYBACK(R.string.settings_tab_playback),
+    SEGMENTATION(R.string.settings_tab_segmentation),
+    TRANSCRIPTION(R.string.settings_tab_transcription),
+    LANGUAGE(R.string.settings_tab_language),
 }
 
 /**
@@ -165,6 +165,9 @@ fun SettingsScreen(
         )
     }
 
+    // 本文がスクロールしても TopAppBar は固定し、スクロール中は色だけを変える（計画書 §4 Phase B）。
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -177,44 +180,39 @@ fun SettingsScreen(
                         )
                     }
                 },
+                scrollBehavior = scrollBehavior,
             )
         },
-        modifier = modifier,
+        modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            PrimaryScrollableTabRow(selectedTabIndex = selectedTab.ordinal, edgePadding = 0.dp) {
-                Tab(
-                    selected = selectedTab == SettingsTab.PLAYBACK,
-                    onClick = { selectedTabOrdinal = SettingsTab.PLAYBACK.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_playback)) },
-                )
-                Tab(
-                    selected = selectedTab == SettingsTab.SEGMENTATION,
-                    onClick = { selectedTabOrdinal = SettingsTab.SEGMENTATION.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_segmentation)) },
-                )
-                Tab(
-                    selected = selectedTab == SettingsTab.TRANSCRIPTION,
-                    onClick = { selectedTabOrdinal = SettingsTab.TRANSCRIPTION.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_transcription)) },
-                )
-                Tab(
-                    selected = selectedTab == SettingsTab.LANGUAGE,
-                    onClick = { selectedTabOrdinal = SettingsTab.LANGUAGE.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_language)) },
-                )
+            // 4 タブを固定幅で並べ、360dp 幅でも全タブが見えるようにする（調査 §3.2 C11）。
+            PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
+                SettingsTab.entries.forEach { tab ->
+                    Tab(
+                        selected = selectedTab == tab,
+                        onClick = { selectedTabOrdinal = tab.ordinal },
+                        text = {
+                            Text(
+                                text = stringResource(tab.labelRes),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                            )
+                        },
+                    )
+                }
             }
 
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .padding(vertical = 8.dp),
             ) {
                 when (selectedTab) {
                     SettingsTab.PLAYBACK -> {
@@ -263,7 +261,6 @@ fun SettingsScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun PlaybackSettingsSection(
     seekBackMs: Long,
@@ -307,85 +304,53 @@ private fun PlaybackSettingsSection(
         }
     }
 
-    SettingsCard(title = stringResource(R.string.settings_section_playback)) {
-        Text(
-            text = stringResource(R.string.settings_seek_back_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
+    SettingsSection(title = stringResource(R.string.settings_section_playback)) {
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_seek_back_label),
+            value = stringResource(R.string.settings_seconds_format, (seekBackMs / 1_000L).toInt()),
         )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.SEEK_BACK_OPTIONS_MS.forEach { optionMs ->
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.SEEK_BACK_OPTIONS_MS.map { optionMs ->
                 val sec = (optionMs / 1_000L).toInt()
-                FilterChip(
-                    selected = seekBackMs == optionMs,
-                    onClick = { onEvent(SettingsEvent.SetSeekBackMs(optionMs)) },
-                    label = { Text(text = stringResource(R.string.settings_seconds_format, sec)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
+                ChunkFlowToggleButtonItem(
+                    label = stringResource(R.string.settings_seconds_format, sec),
+                    checked = seekBackMs == optionMs,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetSeekBackMs(optionMs))
+                    },
                 )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = stringResource(R.string.settings_seek_forward_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.SEEK_FORWARD_OPTIONS_MS.forEach { optionMs ->
-                val sec = (optionMs / 1_000L).toInt()
-                FilterChip(
-                    selected = seekForwardMs == optionMs,
-                    onClick = { onEvent(SettingsEvent.SetSeekForwardMs(optionMs)) },
-                    label = { Text(text = stringResource(R.string.settings_seconds_format, sec)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Row(
+            },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = stringResource(R.string.settings_default_speed_label),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 8.dp),
-            )
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = MaterialTheme.shapes.small,
-            ) {
-                Text(
-                    text = formatSpeed(defaultSpeed),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            compact = true,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_seek_forward_label),
+            value = stringResource(R.string.settings_seconds_format, (seekForwardMs / 1_000L).toInt()),
+        )
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.SEEK_FORWARD_OPTIONS_MS.map { optionMs ->
+                val sec = (optionMs / 1_000L).toInt()
+                ChunkFlowToggleButtonItem(
+                    label = stringResource(R.string.settings_seconds_format, sec),
+                    checked = seekForwardMs == optionMs,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetSeekForwardMs(optionMs))
+                    },
                 )
-            }
-        }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            compact = true,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_default_speed_label),
+            value = formatSpeed(defaultSpeed),
+        )
 
         SettingsSlider(
             value = defaultSpeed,
@@ -395,158 +360,99 @@ private fun PlaybackSettingsSection(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            SettingsUiState.SPEED_PRESETS.forEach { preset ->
-                val isSelected = abs(defaultSpeed - preset) < 0.01f
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onEvent(SettingsEvent.SetDefaultSpeed(preset)) },
-                    label = { Text(text = formatSpeed(preset)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ),
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = stringResource(R.string.settings_section_skip_silence),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .toggleable(
-                    value = skipOriginalSilence,
-                    onValueChange = { onEvent(SettingsEvent.SetSkipOriginalSilence(it)) },
-                    role = Role.Checkbox,
-                )
-                .padding(vertical = 2.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = skipOriginalSilence,
-                onCheckedChange = null,
-            )
-            Text(
-                text = stringResource(R.string.settings_skip_original_silence_label),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = stringResource(R.string.settings_default_auto_pause_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-
-        SingleChoiceSegmentedButtonRow(
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.forEachIndexed { index, scopeOption ->
-                val isSelected = defaultAutoPauseScope == scopeOption
-                SegmentedButton(
-                    selected = isSelected,
-                    onClick = { onEvent(SettingsEvent.SetDefaultAutoPauseScope(scopeOption)) },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.size,
-                    ),
-                    icon = {},
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
-                    label = {
-                        Text(
-                            text = autoPauseScopeLabel(scopeOption),
-                            style = MaterialTheme.typography.labelMedium,
-                            textAlign = TextAlign.Center,
-                        )
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.SPEED_PRESETS.map { preset ->
+                ChunkFlowToggleButtonItem(
+                    label = formatSpeed(preset),
+                    checked = abs(defaultSpeed - preset) < 0.01f,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetDefaultSpeed(preset))
                     },
                 )
-            }
-        }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            compact = true,
+        )
+    }
 
-        val isOffSelected = defaultAutoPause is AutoPause.Off
-        val isFixedSelected = defaultAutoPause is AutoPause.Fixed
-        val isProportionalSelected = defaultAutoPause is AutoPause.Proportional
-        val displayFixedSeconds = if (defaultAutoPause is AutoPause.Fixed) {
-            (defaultAutoPause.pauseMs / 1_000f).coerceIn(0f, 4.0f)
-        } else {
-            fixedSeconds
-        }
-        val displayProportionalFactor = if (defaultAutoPause is AutoPause.Proportional) {
-            defaultAutoPause.factor.coerceIn(
-                SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-                SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-            )
-        } else {
-            proportionalFactor
-        }
+    SettingsSectionDivider()
+
+    SettingsSwitchItem(
+        headline = stringResource(R.string.settings_section_skip_silence),
+        checked = skipOriginalSilence,
+        onCheckedChange = { onEvent(SettingsEvent.SetSkipOriginalSilence(it)) },
+        supporting = stringResource(R.string.settings_skip_original_silence_label),
+    )
+
+    SettingsSectionDivider()
+
+    val isOffSelected = defaultAutoPause is AutoPause.Off
+    val isFixedSelected = defaultAutoPause is AutoPause.Fixed
+    val isProportionalSelected = defaultAutoPause is AutoPause.Proportional
+    val displayFixedSeconds = if (defaultAutoPause is AutoPause.Fixed) {
+        (defaultAutoPause.pauseMs / 1_000f).coerceIn(0f, 4.0f)
+    } else {
+        fixedSeconds
+    }
+    val displayProportionalFactor = if (defaultAutoPause is AutoPause.Proportional) {
+        defaultAutoPause.factor.coerceIn(
+            SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+            SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+        )
+    } else {
+        proportionalFactor
+    }
+
+    SettingsSection(
+        title = stringResource(R.string.settings_default_auto_pause_label),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        SettingsItemHeader(
+            label = stringResource(R.string.settings_auto_pause_scope_label),
+            value = autoPauseScopeLabel(defaultAutoPauseScope),
+            modifier = Modifier.padding(horizontal = SettingsSectionPadding),
+        )
+        ChunkFlowToggleButtonGroup(
+            items = SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.map { scopeOption ->
+                ChunkFlowToggleButtonItem(
+                    label = autoPauseScopeLabel(scopeOption),
+                    checked = defaultAutoPauseScope == scopeOption,
+                    onCheckedChange = { checked ->
+                        if (checked) onEvent(SettingsEvent.SetDefaultAutoPauseScope(scopeOption))
+                    },
+                )
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = SettingsSectionPadding),
+            compact = true,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
 
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .selectableGroup(),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = isOffSelected,
-                        onClick = { onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Off)) },
-                        role = Role.RadioButton,
-                    )
-                    .padding(vertical = 2.dp, horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = isOffSelected,
-                    onClick = null,
-                )
-                Text(
-                    text = stringResource(R.string.settings_auto_pause_off),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
+            SettingsRadioItem(
+                headline = stringResource(R.string.settings_auto_pause_off),
+                selected = isOffSelected,
+                onClick = { onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Off)) },
+            )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = isFixedSelected,
-                        onClick = {
-                            val pauseMs = ((displayFixedSeconds * 2f).roundToInt() * 500L)
-                                .coerceIn(
-                                    SettingsUiState.MIN_AUTO_PAUSE_FIXED_MS,
-                                    SettingsUiState.MAX_AUTO_PAUSE_FIXED_MS,
-                                )
-                            onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(pauseMs)))
-                        },
-                        role = Role.RadioButton,
-                    )
-                    .padding(vertical = 2.dp, horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = isFixedSelected,
-                    onClick = null,
-                )
-                Text(
-                    text = stringResource(R.string.settings_auto_pause_fixed, displayFixedSeconds),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
+            SettingsRadioItem(
+                headline = stringResource(R.string.settings_auto_pause_fixed, displayFixedSeconds),
+                selected = isFixedSelected,
+                onClick = {
+                    val pauseMs = ((displayFixedSeconds * 2f).roundToInt() * 500L)
+                        .coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_FIXED_MS,
+                            SettingsUiState.MAX_AUTO_PAUSE_FIXED_MS,
+                        )
+                    onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(pauseMs)))
+                },
+            )
 
             SettingsSlider(
                 value = displayFixedSeconds,
@@ -565,44 +471,28 @@ private fun PlaybackSettingsSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(36.dp)
-                    .padding(start = 32.dp, end = 8.dp),
+                    .padding(start = SettingsRadioContentStart, end = SettingsSectionPadding),
             )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = isProportionalSelected,
-                        onClick = {
-                            val snappedFactor = ((displayProportionalFactor * 2f).roundToInt() * 0.5f)
-                                .coerceIn(
-                                    SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-                                    SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-                                )
-                            onEvent(
-                                SettingsEvent.SetDefaultAutoPause(
-                                    AutoPause.Proportional(factor = snappedFactor),
-                                ),
-                            )
-                        },
-                        role = Role.RadioButton,
+            SettingsRadioItem(
+                headline = stringResource(
+                    R.string.settings_auto_pause_proportional,
+                    displayProportionalFactor,
+                ),
+                selected = isProportionalSelected,
+                onClick = {
+                    val snappedFactor = ((displayProportionalFactor * 2f).roundToInt() * 0.5f)
+                        .coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                            SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                        )
+                    onEvent(
+                        SettingsEvent.SetDefaultAutoPause(
+                            AutoPause.Proportional(factor = snappedFactor),
+                        ),
                     )
-                    .padding(vertical = 2.dp, horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = isProportionalSelected,
-                    onClick = null,
-                )
-                Text(
-                    text = stringResource(
-                        R.string.settings_auto_pause_proportional,
-                        displayProportionalFactor,
-                    ),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
+                },
+            )
 
             SettingsSlider(
                 value = displayProportionalFactor,
@@ -621,7 +511,7 @@ private fun PlaybackSettingsSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(36.dp)
-                    .padding(start = 32.dp, end = 8.dp),
+                    .padding(start = SettingsRadioContentStart, end = SettingsSectionPadding),
             )
         }
     }
@@ -632,7 +522,7 @@ private fun SegmentationDefaultsSection(
     params: SegmentationParams,
     onEvent: (SettingsEvent) -> Unit,
 ) {
-    SettingsCard(title = stringResource(R.string.settings_section_segmentation)) {
+    SettingsSection(title = stringResource(R.string.settings_section_segmentation)) {
         Text(
             text = stringResource(R.string.settings_segmentation_min_silence, params.minSilenceMs),
             style = MaterialTheme.typography.bodyMedium,
@@ -712,57 +602,29 @@ private fun TranscriptionSettingsSection(
     expandFirstAccordion: Boolean = false,
     initialExpandedLanguages: Set<LanguageTag> = emptySet(),
 ) {
-    SettingsCard(title = stringResource(R.string.settings_section_transcription)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .toggleable(
-                    value = autoStartTranscriptionOnOpen,
-                    onValueChange = { enabled ->
-                        onEvent(SettingsEvent.SetAutoStartTranscriptionOnOpen(enabled))
-                    },
-                    role = Role.Checkbox,
-                )
-                .padding(vertical = 2.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = autoStartTranscriptionOnOpen,
-                onCheckedChange = null,
-            )
-            Text(
-                text = stringResource(R.string.settings_auto_start_transcription_on_open_label),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .toggleable(
-                    value = backgroundTranscriptionEnabled,
-                    onValueChange = { enabled ->
-                        onEvent(SettingsEvent.SetBackgroundTranscriptionEnabled(enabled))
-                    },
-                    role = Role.Checkbox,
-                )
-                .padding(vertical = 2.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = backgroundTranscriptionEnabled,
-                onCheckedChange = null,
-            )
-            Text(
-                text = stringResource(R.string.settings_background_transcription_enabled_label),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
+    SettingsSection(
+        title = stringResource(R.string.settings_section_transcription),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        SettingsSwitchItem(
+            headline = stringResource(R.string.settings_auto_start_transcription_on_open_label),
+            checked = autoStartTranscriptionOnOpen,
+            onCheckedChange = { enabled ->
+                onEvent(SettingsEvent.SetAutoStartTranscriptionOnOpen(enabled))
+            },
+        )
+        SettingsSwitchItem(
+            headline = stringResource(R.string.settings_background_transcription_enabled_label),
+            checked = backgroundTranscriptionEnabled,
+            onCheckedChange = { enabled ->
+                onEvent(SettingsEvent.SetBackgroundTranscriptionEnabled(enabled))
+            },
+        )
     }
 
-    SettingsCard(title = stringResource(R.string.settings_section_speech_models)) {
+    SettingsSectionDivider()
+
+    SettingsSection(title = stringResource(R.string.settings_section_speech_models)) {
         val displayEntries = LanguageSettings.SELECTABLE_LANGUAGES.filter {
             enabledLanguages.contains(LanguageTag(it.code))
         }
@@ -874,34 +736,163 @@ private fun SettingsSlider(
     )
 }
 
+/**
+ * 設定の 1 節。M3 の設定画面に合わせ、`Card` で囲まずに見出し（`titleSmall` / `primary`）だけで節を示す
+ * （計画書 §3.5、調査 §3.1 S7）。節と節の間は呼び出し側が [SettingsSectionDivider] で区切る。
+ *
+ * @param title 節の見出し。
+ * @param modifier 一番外側の `Column` に適用する Modifier。
+ * @param contentPadding 中身の余白。`ListItem`（自前で 16dp の余白を持つ）を並べる節では `PaddingValues(0.dp)` にする。
+ * @param content 節の中身。
+ */
 @Composable
-private fun SettingsCard(
+private fun SettingsSection(
     title: String,
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(horizontal = SettingsSectionPadding),
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = SettingsSectionPadding, vertical = 8.dp),
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(contentPadding),
             verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            content()
+            content = content,
+        )
+    }
+}
+
+/**
+ * 二値設定の行（`ListItem` + 末尾の `Switch`。M3 の設定画面の標準形。調査 §3.1 S7）。
+ *
+ * 行全体が `Role.Switch` としてタップでき、`Switch` 自体はクリックを受け取らない（読み上げが二重にならない）。
+ *
+ * @param headline 設定名。
+ * @param checked 現在の値。
+ * @param onCheckedChange 新しい値を受け取る。
+ * @param modifier 一番外側の `ListItem` に適用する Modifier。
+ * @param supporting 任意の補足説明。
+ */
+@Composable
+private fun SettingsSwitchItem(
+    headline: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    supporting: String? = null,
+) {
+    ListItem(
+        modifier = modifier.toggleable(
+            value = checked,
+            onValueChange = onCheckedChange,
+            role = Role.Switch,
+        ),
+        supportingContent = supporting?.let { text -> { Text(text = text) } },
+        trailingContent = {
+            Switch(checked = checked, onCheckedChange = null)
+        },
+    ) {
+        Text(text = headline)
+    }
+}
+
+/**
+ * 排他選択の 1 行（`ListItem` + 先頭の `RadioButton`）。スライダーを伴う選択肢（自動ポーズのモード）に使う。
+ * 親の `Column` に `selectableGroup()` を付ける。
+ *
+ * @param headline 選択肢のラベル。
+ * @param selected 選択されているかどうか。
+ * @param onClick 選ばれたときに呼ぶ。
+ * @param modifier 一番外側の `ListItem` に適用する Modifier。
+ */
+@Composable
+private fun SettingsRadioItem(
+    headline: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ListItem(
+        modifier = modifier.selectable(
+            selected = selected,
+            onClick = onClick,
+            role = Role.RadioButton,
+        ),
+        leadingContent = {
+            RadioButton(selected = selected, onClick = null)
+        },
+    ) {
+        Text(text = headline)
+    }
+}
+
+/** [SettingsRadioItem] の本文の開始位置（16dp 余白 + 48dp の RadioButton + 16dp 間隔）。スライダーの左端を揃えるのに使う。 */
+private val SettingsRadioContentStart = 80.dp
+
+/**
+ * 設定項目の見出し行（左に項目名、右に現在の値）。
+ *
+ * 選択肢が [ChunkFlowToggleButtonGroup] の `⋯` メニューに畳まれても、現在の値が常に見えるようにする。
+ *
+ * @param label 項目名。
+ * @param modifier 一番外側の `Row` に適用する Modifier。
+ * @param value 現在の値の表示（省略可）。
+ */
+@Composable
+private fun SettingsItemHeader(
+    label: String,
+    modifier: Modifier = Modifier,
+    value: String? = null,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 8.dp),
+        )
+        if (value != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = MaterialTheme.shapes.small,
+            ) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
         }
     }
 }
+
+/** 節と節の間の区切り線。 */
+@Composable
+private fun SettingsSectionDivider(modifier: Modifier = Modifier) {
+    HorizontalDivider(
+        modifier = modifier.padding(vertical = 8.dp),
+        color = MaterialTheme.colorScheme.outlineVariant,
+    )
+}
+
+/** 節の中身の横余白（`ListItem` の既定の左右余白と同じ 16dp）。 */
+private val SettingsSectionPadding = 16.dp
 
 @Composable
 private fun autoPauseScopeLabel(scope: AutoPauseScope): String = when (scope) {
@@ -926,7 +917,7 @@ private fun LanguageSettingsSection(
     enabledLanguages: Set<LanguageTag>,
     onEvent: (SettingsEvent) -> Unit,
 ) {
-    SettingsCard(title = stringResource(R.string.settings_tab_language)) {
+    SettingsSection(title = stringResource(R.string.settings_tab_language)) {
         LanguageSettingsListContent(
             enabledLanguages = enabledLanguages,
             onToggleLanguage = { language ->
@@ -1097,7 +1088,7 @@ private fun SherpaDownloadModalDialog(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = Modifier.padding(vertical = 8.dp),
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                    ChunkFlowLoadingIndicator(modifier = Modifier.size(40.dp))
                     Text(
                         text = stringResource(
                             R.string.settings_sherpa_downloading_message,
@@ -1120,7 +1111,8 @@ private fun SherpaDownloadModalDialog(
         },
         confirmButton = {
             if (!dialogState.isDownloading) {
-                TextButton(onClick = onConfirm) {
+                // ダイアログの最重要操作は Filled の Button にする（調査 §3.2 C10）。
+                Button(onClick = onConfirm) {
                     Text(text = stringResource(R.string.settings_sherpa_download_confirm_button))
                 }
             }

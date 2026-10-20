@@ -3,8 +3,8 @@
     <string name="settings_title">Global Settings</string>
     <string name="settings_back">Back</string>
     <string name="settings_tab_playback">Playback</string>
-    <string name="settings_tab_segmentation">Chunk Segmentation</string>
-    <string name="settings_tab_transcription">Transcription</string>
+    <string name="settings_tab_segmentation">Chunks</string>
+    <string name="settings_tab_transcription">Transcribe</string>
     <string name="settings_section_playback">Playback</string>
     <string name="settings_seek_back_label">Seek back duration</string>
     <string name="settings_seek_forward_label">Seek forward duration</string>
@@ -14,6 +14,7 @@
     <string name="settings_auto_pause_off">OFF</string>
     <string name="settings_auto_pause_fixed">Add fixed %1$.1f s</string>
     <string name="settings_auto_pause_proportional">Chunk length x %1$.1f</string>
+    <string name="settings_auto_pause_scope_label">Pause after</string>
     <string name="settings_auto_pause_scope_all">Both</string>
     <string name="settings_auto_pause_scope_target">Target only</string>
     <string name="settings_auto_pause_scope_base">Base only</string>
