@@ -919,6 +919,11 @@ private fun PlayerWaveform(
         onZoomedWaveformRenderComplete = {
             onEvent(PlayerEvent.MarkZoomedWaveformRenderComplete)
         },
+        skipOriginalSilence = state.practice.skipOriginalSilence,
+        autoPause = state.practice.autoPause,
+        autoPauseScope = state.practice.autoPauseScope,
+        speed = state.speed,
+        autoPauseEndsAtMs = state.autoPauseEndsAtMs,
         modifier = modifier,
     )
 }
