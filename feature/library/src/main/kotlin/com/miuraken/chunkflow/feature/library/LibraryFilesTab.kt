@@ -14,7 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenu
@@ -105,7 +105,7 @@ internal fun LibraryFilesTabContent(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(12.dp),
+                shape = MaterialTheme.shapes.medium,
                 colors = OutlinedTextFieldDefaults.colors(),
             )
 
@@ -136,7 +136,7 @@ internal fun LibraryFilesTabContent(
                         modifier = Modifier
                             .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
                             .fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = MaterialTheme.shapes.medium,
                     )
                     ExposedDropdownMenu(
                         expanded = sortMenuExpanded,
@@ -225,9 +225,18 @@ internal fun LibraryFilesTabContent(
                     val isLastFile = index == filteredFiles.lastIndex
                     val isSelected = itemModel.item.id in state.selectedItemIds
                     val shape = when {
-                        isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
-                        isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
-                        isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                        isFirstFile && isLastFile -> MaterialTheme.shapes.medium
+
+                        isFirstFile -> MaterialTheme.shapes.medium.copy(
+                            bottomStart = CornerSize(0.dp),
+                            bottomEnd = CornerSize(0.dp),
+                        )
+
+                        isLastFile -> MaterialTheme.shapes.medium.copy(
+                            topStart = CornerSize(0.dp),
+                            topEnd = CornerSize(0.dp),
+                        )
+
                         else -> RectangleShape
                     }
                     Surface(

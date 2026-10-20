@@ -18,7 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
@@ -94,7 +94,7 @@ internal fun LibraryPlaylistsTabContent(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
-                shape = RoundedCornerShape(12.dp),
+                shape = MaterialTheme.shapes.medium,
             ) {
                 Row(
                     modifier = Modifier
@@ -161,9 +161,18 @@ internal fun LibraryPlaylistsTabContent(
                         val isLastFile = index == playlistItems.lastIndex
                         val isSelected = itemModel.item.id in state.selectedItemIds
                         val shape = when {
-                            isFirstFile && isLastFile -> RoundedCornerShape(12.dp)
-                            isFirstFile -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
-                            isLastFile -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                            isFirstFile && isLastFile -> MaterialTheme.shapes.medium
+
+                            isFirstFile -> MaterialTheme.shapes.medium.copy(
+                                bottomStart = CornerSize(0.dp),
+                                bottomEnd = CornerSize(0.dp),
+                            )
+
+                            isLastFile -> MaterialTheme.shapes.medium.copy(
+                                topStart = CornerSize(0.dp),
+                                topEnd = CornerSize(0.dp),
+                            )
+
                             else -> RectangleShape
                         }
                         Surface(
@@ -271,7 +280,7 @@ private fun LibraryPlaylistEntryRow(
         Surface(
             modifier = Modifier.size(52.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(14.dp),
+            shape = MaterialTheme.shapes.large,
         ) {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -447,7 +456,7 @@ internal fun AddToPlaylistDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onSelectPlaylist(playlist.id) },
-                            shape = RoundedCornerShape(10.dp),
+                            shape = MaterialTheme.shapes.medium,
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                         ) {
                             Row(

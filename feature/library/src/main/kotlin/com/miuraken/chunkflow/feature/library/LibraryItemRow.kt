@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -592,7 +591,7 @@ internal fun AudioItemThumbnail(
         }
     }
 
-    val shape = RoundedCornerShape(6.dp)
+    val shape = MaterialTheme.shapes.small
     val previewStyle = if (isInspectionMode) {
         when {
             localFilePath == "preview:cover_pimsleur" || sourceUri == "preview:cover_pimsleur" -> 1
