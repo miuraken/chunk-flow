@@ -25,4 +25,5 @@
     <string name="designsystem_state_on">On</string>
     <string name="designsystem_state_off">Off</string>
     <string name="designsystem_split_button_menu_cd">%1$s menu</string>
+    <string name="designsystem_snackbar_dismiss_cd">Dismiss</string>
 </resources>

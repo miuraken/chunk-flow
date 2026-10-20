@@ -9,7 +9,9 @@ import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowPr
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowSplitButtonPreview
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonGroupPreview
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowTransportButtonPreview
+import com.miuraken.chunkflow.core.designsystem.component.feedback.ChunkFlowSnackbarPreview
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadgePreview
+import com.miuraken.chunkflow.core.designsystem.component.list.ChunkFlowListItemPreview
 import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackControlStripPreview
 import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContentPreview
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
@@ -91,3 +93,15 @@ fun ChunkFlowPlayPauseButtonScreenshot() = ChunkFlowPlayPauseButtonPreview()
 @ChunkFlowPreviews
 @Composable
 fun ChunkFlowTransportButtonScreenshot() = ChunkFlowTransportButtonPreview()
+
+// ---- Snackbar とリスト行（Phase B） ----
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowSnackbarScreenshot() = ChunkFlowSnackbarPreview()
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun ChunkFlowListItemScreenshot() = ChunkFlowListItemPreview()
