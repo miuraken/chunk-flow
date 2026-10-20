@@ -180,8 +180,17 @@ fun PlaybackControlStrip(
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // ファイル全体リピートは絵文字ではなく Icon で示す（調査 §3.2 C7）。
+                if (isWholeFileRepeat) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Repeat,
+                        contentDescription = null,
+                        modifier = Modifier.size(FilterChipDefaults.IconSize),
+                    )
+                }
                 Text(
                     text = if (isWholeFileRepeat) {
                         stringResource(R.string.designsystem_playback_chip_repeat_whole_file)
@@ -250,7 +259,7 @@ fun PlaybackControlStrip(
 
 @ChunkFlowPreviews
 @Composable
-private fun PlaybackControlStripPreview() {
+internal fun PlaybackControlStripPreview() {
     ChunkFlowTheme {
         Surface {
             Column(

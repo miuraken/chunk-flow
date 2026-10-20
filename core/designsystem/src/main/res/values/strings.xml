@@ -3,7 +3,7 @@
 <resources>
     <!-- 再生操作ストリップ（PlaybackControlStrip） -->
     <string name="designsystem_playback_chip_repeat">リピート</string>
-    <string name="designsystem_playback_chip_repeat_whole_file">🔁リピート</string>
+    <string name="designsystem_playback_chip_repeat_whole_file">全体リピート</string>
     <string name="designsystem_playback_whole_file_repeat_confirm_message">ファイル全体をリピートしますか？</string>
     <string name="designsystem_playback_whole_file_repeat_yes">Yes</string>
     <string name="designsystem_playback_whole_file_repeat_no">No</string>
