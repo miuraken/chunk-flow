@@ -112,6 +112,12 @@ class DataStoreUserSettingsRepository @Inject constructor(
                     "minMs must be >= 0: ${autoPause.minMs}"
                 }
             }
+
+            is AutoPause.OriginalSilence -> {
+                require(autoPause.factor > 0f && autoPause.factor.isFinite()) {
+                    "factor must be > 0: ${autoPause.factor}"
+                }
+            }
         }
         dataStore.edit { prefs ->
             prefs[KEY_DEFAULT_AUTO_PAUSE] = encodeAutoPause(autoPause)
@@ -333,6 +339,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
         const val AUTO_PAUSE_OFF = "OFF"
         const val PREFIX_FIXED = "FIXED:"
         const val PREFIX_PROPORTIONAL = "PROPORTIONAL:"
+        const val PREFIX_ORIGINAL_SILENCE = "ORIGINAL_SILENCE:"
 
         val KEY_DEFAULT_TARGET_LANG = stringPreferencesKey("default_target_lang")
         val KEY_DEFAULT_BASE_LANG = stringPreferencesKey("default_base_lang")
@@ -386,6 +393,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
             AutoPause.Off -> AUTO_PAUSE_OFF
             is AutoPause.Fixed -> "$PREFIX_FIXED${autoPause.pauseMs}"
             is AutoPause.Proportional -> "$PREFIX_PROPORTIONAL${autoPause.factor}:${autoPause.minMs}"
+            is AutoPause.OriginalSilence -> "$PREFIX_ORIGINAL_SILENCE${autoPause.factor}"
         }
 
         fun decodeAutoPause(raw: String): AutoPause = when {
@@ -402,6 +410,15 @@ class DataStoreUserSettingsRepository @Inject constructor(
                 val minMs = parts.getOrNull(1)?.toLongOrNull()
                 if (factor != null && factor > 0f && factor.isFinite() && minMs != null && minMs >= 0L) {
                     AutoPause.Proportional(factor = factor, minMs = minMs)
+                } else {
+                    AutoPause.Off
+                }
+            }
+
+            raw.startsWith(PREFIX_ORIGINAL_SILENCE) -> {
+                val factor = raw.removePrefix(PREFIX_ORIGINAL_SILENCE).toFloatOrNull()
+                if (factor != null && factor > 0f && factor.isFinite()) {
+                    AutoPause.OriginalSilence(factor = factor)
                 } else {
                     AutoPause.Off
                 }

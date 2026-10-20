@@ -84,6 +84,9 @@ class DataStoreUserSettingsRepositoryTest {
         repository.setDefaultAutoPause(AutoPause.Proportional(factor = 1.5f, minMs = 800L))
         assertEquals(AutoPause.Proportional(factor = 1.5f, minMs = 800L), repository.settings.first().defaultAutoPause)
 
+        repository.setDefaultAutoPause(AutoPause.OriginalSilence(factor = 0.75f))
+        assertEquals(AutoPause.OriginalSilence(factor = 0.75f), repository.settings.first().defaultAutoPause)
+
         repository.setDefaultAutoPause(AutoPause.Off)
         assertEquals(AutoPause.Off, repository.settings.first().defaultAutoPause)
 
