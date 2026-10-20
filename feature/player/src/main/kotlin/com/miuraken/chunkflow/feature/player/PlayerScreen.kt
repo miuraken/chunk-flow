@@ -71,6 +71,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackControlStrip
+import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContent
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ChunkId
@@ -342,9 +344,14 @@ fun PlayerScreen(
                         )
 
                         PlaybackControlStrip(
-                            state = state,
-                            onEvent = onEvent,
+                            speed = state.speed,
+                            customSpeed = state.customSpeed,
+                            practice = state.practice,
+                            onSetSpeed = { speed -> onEvent(PlayerEvent.SetSpeed(speed)) },
                             onOpenSpeedSheet = { showSpeedSheet = true },
+                            onToggleRepeat = { onEvent(PlayerEvent.ToggleRepeat) },
+                            onEnableWholeFileRepeat = { onEvent(PlayerEvent.EnableWholeFileRepeat) },
+                            onToggleSkipSilence = { onEvent(PlayerEvent.ToggleSkipSilence) },
                             onOpenPlaybackSettings = onOpenPlaybackSettings,
                         )
 
@@ -474,9 +481,14 @@ fun PlayerScreen(
                         ) {
                             // b) 再生に関するボタン類（再生ボタン類のすぐ上部）
                             PlaybackControlStrip(
-                                state = state,
-                                onEvent = onEvent,
+                                speed = state.speed,
+                                customSpeed = state.customSpeed,
+                                practice = state.practice,
+                                onSetSpeed = { speed -> onEvent(PlayerEvent.SetSpeed(speed)) },
                                 onOpenSpeedSheet = { showSpeedSheet = true },
+                                onToggleRepeat = { onEvent(PlayerEvent.ToggleRepeat) },
+                                onEnableWholeFileRepeat = { onEvent(PlayerEvent.EnableWholeFileRepeat) },
+                                onToggleSkipSilence = { onEvent(PlayerEvent.ToggleSkipSilence) },
                                 onOpenPlaybackSettings = onOpenPlaybackSettings,
                             )
 
@@ -604,8 +616,10 @@ fun PlayerScreen(
 
     if (showSpeedSheet) {
         ModalBottomSheet(onDismissRequest = { showSpeedSheet = false }) {
-            PlayerSpeedSheetContent(
+            SpeedSheetContent(
                 speed = state.customSpeed,
+                presets = PlayerUiState.SPEED_PRESETS,
+                closeLabel = stringResource(R.string.player_sheet_close),
                 onSetSpeed = { speed -> onEvent(PlayerEvent.SetCustomSpeed(speed)) },
                 onAdjustSpeed = { delta -> onEvent(PlayerEvent.AdjustCustomSpeed(delta)) },
                 onClose = { showSpeedSheet = false },

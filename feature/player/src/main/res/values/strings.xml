@@ -11,10 +11,6 @@
     <string name="player_seek_back_cd">%1$d 秒巻き戻す</string>
     <string name="player_seek_forward_cd">%1$d 秒早送りする</string>
     <string name="player_seek_slider_cd">再生位置</string>
-    <string name="player_speed_section_title">再生速度</string>
-    <string name="player_speed_decrease_cd">再生速度を 0.05 倍下げる</string>
-    <string name="player_speed_increase_cd">再生速度を 0.05 倍上げる</string>
-    <string name="player_speed_slider_cd">再生速度スライダー</string>
     <string name="player_error_source_missing">音声ファイルが見つかりません。同じ音声を取り込み直すと復元されます。</string>
     <string name="player_error_decoder">音声ファイルのデコードに失敗しました。</string>
     <string name="player_error_unknown">再生中にエラーが発生しました。</string>
@@ -46,13 +42,6 @@
     <string name="player_dismiss_banner">閉じる</string>
 
     
-    <string name="player_chip_repeat">リピート</string>
-    <string name="player_chip_repeat_whole_file">🔁リピート</string>
-    <string name="player_whole_file_repeat_confirm_message">ファイル全体をリピートしますか？</string>
-    <string name="player_whole_file_repeat_yes">Yes</string>
-    <string name="player_whole_file_repeat_no">No</string>
-    <string name="player_chip_skip_silence">無音スキップ</string>
-    <string name="player_chip_playback_settings">再生設定</string>
     <string name="player_chip_repeat_off">リピート: OFF</string>
     <string name="player_chip_repeat_single_3">1チャンク×3</string>
     <string name="player_chip_repeat_single_inf">1チャンク∞</string>

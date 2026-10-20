@@ -112,17 +112,6 @@
     <string name="library_bookmarks_next_chunk_label">Next</string>
     <string name="library_bookmarks_prev_chunk_cd">Previous chunk</string>
     <string name="library_bookmarks_next_chunk_cd">Next chunk</string>
-    <string name="library_bookmarks_chip_repeat">Repeat</string>
-    <string name="library_bookmarks_chip_repeat_whole_file">🔁Repeat</string>
-    <string name="library_bookmarks_whole_file_repeat_confirm_message">Repeat the entire file?</string>
-    <string name="library_bookmarks_whole_file_repeat_yes">Yes</string>
-    <string name="library_bookmarks_whole_file_repeat_no">No</string>
-    <string name="library_bookmarks_chip_skip_silence">Skip silence</string>
-    <string name="library_bookmarks_chip_playback_settings">Playback settings</string>
-    <string name="library_bookmarks_speed_section_title">Playback speed</string>
-    <string name="library_bookmarks_speed_decrease_cd">Decrease speed by 0.05x</string>
-    <string name="library_bookmarks_speed_increase_cd">Increase speed by 0.05x</string>
-    <string name="library_bookmarks_speed_slider_cd">Playback speed slider</string>
     <string name="library_files_search_placeholder">Search by file name</string>
     <string name="library_files_filter_all_languages">All</string>
     <string name="library_files_no_matching_results">No matching files found</string>
