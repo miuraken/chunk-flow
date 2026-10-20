@@ -22,7 +22,6 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -32,6 +31,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -414,46 +414,44 @@ private fun PlaybackSettingsSection(
                 )
             }
         }
+    }
 
-        Spacer(modifier = Modifier.height(4.dp))
+    SettingsSectionDivider()
 
-        Text(
-            text = stringResource(R.string.settings_section_skip_silence),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
+    SettingsSwitchItem(
+        headline = stringResource(R.string.settings_section_skip_silence),
+        checked = skipOriginalSilence,
+        onCheckedChange = { onEvent(SettingsEvent.SetSkipOriginalSilence(it)) },
+        supporting = stringResource(R.string.settings_skip_original_silence_label),
+    )
+
+    SettingsSectionDivider()
+
+    val isOffSelected = defaultAutoPause is AutoPause.Off
+    val isFixedSelected = defaultAutoPause is AutoPause.Fixed
+    val isProportionalSelected = defaultAutoPause is AutoPause.Proportional
+    val displayFixedSeconds = if (defaultAutoPause is AutoPause.Fixed) {
+        (defaultAutoPause.pauseMs / 1_000f).coerceIn(0f, 4.0f)
+    } else {
+        fixedSeconds
+    }
+    val displayProportionalFactor = if (defaultAutoPause is AutoPause.Proportional) {
+        defaultAutoPause.factor.coerceIn(
+            SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+            SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
         )
-        Row(
+    } else {
+        proportionalFactor
+    }
+
+    SettingsSection(
+        title = stringResource(R.string.settings_default_auto_pause_label),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        SingleChoiceSegmentedButtonRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .toggleable(
-                    value = skipOriginalSilence,
-                    onValueChange = { onEvent(SettingsEvent.SetSkipOriginalSilence(it)) },
-                    role = Role.Checkbox,
-                )
-                .padding(vertical = 2.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = skipOriginalSilence,
-                onCheckedChange = null,
-            )
-            Text(
-                text = stringResource(R.string.settings_skip_original_silence_label),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = stringResource(R.string.settings_default_auto_pause_label),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-        )
-
-        SingleChoiceSegmentedButtonRow(
-            modifier = Modifier.fillMaxWidth(),
+                .padding(horizontal = SettingsSectionPadding),
         ) {
             SettingsUiState.AUTO_PAUSE_SCOPE_OPTIONS.forEachIndexed { index, scopeOption ->
                 val isSelected = defaultAutoPauseScope == scopeOption
@@ -477,78 +475,29 @@ private fun PlaybackSettingsSection(
             }
         }
 
-        val isOffSelected = defaultAutoPause is AutoPause.Off
-        val isFixedSelected = defaultAutoPause is AutoPause.Fixed
-        val isProportionalSelected = defaultAutoPause is AutoPause.Proportional
-        val displayFixedSeconds = if (defaultAutoPause is AutoPause.Fixed) {
-            (defaultAutoPause.pauseMs / 1_000f).coerceIn(0f, 4.0f)
-        } else {
-            fixedSeconds
-        }
-        val displayProportionalFactor = if (defaultAutoPause is AutoPause.Proportional) {
-            defaultAutoPause.factor.coerceIn(
-                SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-                SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-            )
-        } else {
-            proportionalFactor
-        }
-
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .selectableGroup(),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = isOffSelected,
-                        onClick = { onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Off)) },
-                        role = Role.RadioButton,
-                    )
-                    .padding(vertical = 2.dp, horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = isOffSelected,
-                    onClick = null,
-                )
-                Text(
-                    text = stringResource(R.string.settings_auto_pause_off),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
+            SettingsRadioItem(
+                headline = stringResource(R.string.settings_auto_pause_off),
+                selected = isOffSelected,
+                onClick = { onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Off)) },
+            )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = isFixedSelected,
-                        onClick = {
-                            val pauseMs = ((displayFixedSeconds * 2f).roundToInt() * 500L)
-                                .coerceIn(
-                                    SettingsUiState.MIN_AUTO_PAUSE_FIXED_MS,
-                                    SettingsUiState.MAX_AUTO_PAUSE_FIXED_MS,
-                                )
-                            onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(pauseMs)))
-                        },
-                        role = Role.RadioButton,
-                    )
-                    .padding(vertical = 2.dp, horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = isFixedSelected,
-                    onClick = null,
-                )
-                Text(
-                    text = stringResource(R.string.settings_auto_pause_fixed, displayFixedSeconds),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
+            SettingsRadioItem(
+                headline = stringResource(R.string.settings_auto_pause_fixed, displayFixedSeconds),
+                selected = isFixedSelected,
+                onClick = {
+                    val pauseMs = ((displayFixedSeconds * 2f).roundToInt() * 500L)
+                        .coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_FIXED_MS,
+                            SettingsUiState.MAX_AUTO_PAUSE_FIXED_MS,
+                        )
+                    onEvent(SettingsEvent.SetDefaultAutoPause(AutoPause.Fixed(pauseMs)))
+                },
+            )
 
             SettingsSlider(
                 value = displayFixedSeconds,
@@ -567,44 +516,28 @@ private fun PlaybackSettingsSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(36.dp)
-                    .padding(start = 32.dp, end = 8.dp),
+                    .padding(start = SettingsRadioContentStart, end = SettingsSectionPadding),
             )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = isProportionalSelected,
-                        onClick = {
-                            val snappedFactor = ((displayProportionalFactor * 2f).roundToInt() * 0.5f)
-                                .coerceIn(
-                                    SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-                                    SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
-                                )
-                            onEvent(
-                                SettingsEvent.SetDefaultAutoPause(
-                                    AutoPause.Proportional(factor = snappedFactor),
-                                ),
-                            )
-                        },
-                        role = Role.RadioButton,
+            SettingsRadioItem(
+                headline = stringResource(
+                    R.string.settings_auto_pause_proportional,
+                    displayProportionalFactor,
+                ),
+                selected = isProportionalSelected,
+                onClick = {
+                    val snappedFactor = ((displayProportionalFactor * 2f).roundToInt() * 0.5f)
+                        .coerceIn(
+                            SettingsUiState.MIN_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                            SettingsUiState.MAX_AUTO_PAUSE_PROPORTIONAL_FACTOR,
+                        )
+                    onEvent(
+                        SettingsEvent.SetDefaultAutoPause(
+                            AutoPause.Proportional(factor = snappedFactor),
+                        ),
                     )
-                    .padding(vertical = 2.dp, horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = isProportionalSelected,
-                    onClick = null,
-                )
-                Text(
-                    text = stringResource(
-                        R.string.settings_auto_pause_proportional,
-                        displayProportionalFactor,
-                    ),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
+                },
+            )
 
             SettingsSlider(
                 value = displayProportionalFactor,
@@ -623,7 +556,7 @@ private fun PlaybackSettingsSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(36.dp)
-                    .padding(start = 32.dp, end = 8.dp),
+                    .padding(start = SettingsRadioContentStart, end = SettingsSectionPadding),
             )
         }
     }
@@ -714,54 +647,24 @@ private fun TranscriptionSettingsSection(
     expandFirstAccordion: Boolean = false,
     initialExpandedLanguages: Set<LanguageTag> = emptySet(),
 ) {
-    SettingsSection(title = stringResource(R.string.settings_section_transcription)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .toggleable(
-                    value = autoStartTranscriptionOnOpen,
-                    onValueChange = { enabled ->
-                        onEvent(SettingsEvent.SetAutoStartTranscriptionOnOpen(enabled))
-                    },
-                    role = Role.Checkbox,
-                )
-                .padding(vertical = 2.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = autoStartTranscriptionOnOpen,
-                onCheckedChange = null,
-            )
-            Text(
-                text = stringResource(R.string.settings_auto_start_transcription_on_open_label),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .toggleable(
-                    value = backgroundTranscriptionEnabled,
-                    onValueChange = { enabled ->
-                        onEvent(SettingsEvent.SetBackgroundTranscriptionEnabled(enabled))
-                    },
-                    role = Role.Checkbox,
-                )
-                .padding(vertical = 2.dp, horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = backgroundTranscriptionEnabled,
-                onCheckedChange = null,
-            )
-            Text(
-                text = stringResource(R.string.settings_background_transcription_enabled_label),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
+    SettingsSection(
+        title = stringResource(R.string.settings_section_transcription),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        SettingsSwitchItem(
+            headline = stringResource(R.string.settings_auto_start_transcription_on_open_label),
+            checked = autoStartTranscriptionOnOpen,
+            onCheckedChange = { enabled ->
+                onEvent(SettingsEvent.SetAutoStartTranscriptionOnOpen(enabled))
+            },
+        )
+        SettingsSwitchItem(
+            headline = stringResource(R.string.settings_background_transcription_enabled_label),
+            checked = backgroundTranscriptionEnabled,
+            onCheckedChange = { enabled ->
+                onEvent(SettingsEvent.SetBackgroundTranscriptionEnabled(enabled))
+            },
+        )
     }
 
     SettingsSectionDivider()
@@ -910,6 +813,73 @@ private fun SettingsSection(
         )
     }
 }
+
+/**
+ * 二値設定の行（`ListItem` + 末尾の `Switch`。M3 の設定画面の標準形。調査 §3.1 S7）。
+ *
+ * 行全体が `Role.Switch` としてタップでき、`Switch` 自体はクリックを受け取らない（読み上げが二重にならない）。
+ *
+ * @param headline 設定名。
+ * @param checked 現在の値。
+ * @param onCheckedChange 新しい値を受け取る。
+ * @param modifier 一番外側の `ListItem` に適用する Modifier。
+ * @param supporting 任意の補足説明。
+ */
+@Composable
+private fun SettingsSwitchItem(
+    headline: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    supporting: String? = null,
+) {
+    ListItem(
+        modifier = modifier.toggleable(
+            value = checked,
+            onValueChange = onCheckedChange,
+            role = Role.Switch,
+        ),
+        supportingContent = supporting?.let { text -> { Text(text = text) } },
+        trailingContent = {
+            Switch(checked = checked, onCheckedChange = null)
+        },
+    ) {
+        Text(text = headline)
+    }
+}
+
+/**
+ * 排他選択の 1 行（`ListItem` + 先頭の `RadioButton`）。スライダーを伴う選択肢（自動ポーズのモード）に使う。
+ * 親の `Column` に `selectableGroup()` を付ける。
+ *
+ * @param headline 選択肢のラベル。
+ * @param selected 選択されているかどうか。
+ * @param onClick 選ばれたときに呼ぶ。
+ * @param modifier 一番外側の `ListItem` に適用する Modifier。
+ */
+@Composable
+private fun SettingsRadioItem(
+    headline: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ListItem(
+        modifier = modifier.selectable(
+            selected = selected,
+            onClick = onClick,
+            role = Role.RadioButton,
+        ),
+        leadingContent = {
+            RadioButton(selected = selected, onClick = null)
+        },
+    ) {
+        Text(text = headline)
+    }
+}
+
+/** [SettingsRadioItem] の本文の開始位置（16dp 余白 + 48dp の RadioButton + 16dp 間隔）。スライダーの左端を揃えるのに使う。 */
+private val SettingsRadioContentStart = 80.dp
 
 /** 節と節の間の区切り線。 */
 @Composable
