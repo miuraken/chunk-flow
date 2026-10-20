@@ -1915,15 +1915,30 @@ class LibraryViewModel @Inject constructor(
             is LibraryEvent.ImportUris -> {
                 if (event.uris.isNotEmpty()) {
                     val firstUri = event.uris.first()
-                    val resolvedParentFolder = event.parentFolderName
-                        ?.trim()
-                        ?.trim('/')
-                        ?.takeIf { it.isNotBlank() }
-                        ?: extractParentFolderNameFromUri(firstUri)
                     val resolvedParentDirUri = event.parentDirectoryUri
                         ?.trim()
                         ?.takeIf { it.isNotBlank() }
                         ?: extractParentDirectoryUriFromFileUri(firstUri)
+                    val normalizedParentSafUri = resolvedParentDirUri?.let {
+                        resolveSafDirectoryUriAndLocalPathFromFolderUri(it)?.first ?: it
+                    }
+                    val matchingRealFolderCourse = normalizedParentSafUri?.let { targetSafUri ->
+                        uiState.value.courseFolders.firstOrNull { folder ->
+                            val folderTreeUri = folder.treeUri
+                            folder.kind == LibraryFolderKind.LOCAL_DIRECTORY &&
+                                folderTreeUri != null &&
+                                (
+                                    folderTreeUri == resolvedParentDirUri ||
+                                        resolveSafDirectoryUriAndLocalPathFromFolderUri(folderTreeUri)?.first == targetSafUri
+                                    )
+                        }?.coursePath
+                    }
+                    val resolvedParentFolder = matchingRealFolderCourse
+                        ?: event.parentFolderName
+                            ?.trim()
+                            ?.trim('/')
+                            ?.takeIf { it.isNotBlank() }
+                        ?: extractParentFolderNameFromUri(firstUri)
                     val initialCourse = resolvedParentFolder ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
                     pendingImportConfig.value = PendingImportConfig(
                         uris = event.uris,

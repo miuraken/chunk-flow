@@ -2859,4 +2859,61 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.MarkZoomedWaveformRenderComplete)
         assertTrue(viewModel.uiState.value.isWaveformRenderComplete)
     }
+
+    @Test
+    fun `open_別ファイルへ切り替えた際に前回のファイルのタイトルやチャンクや再生状態が混在しない`() = runTest {
+        val sample1 = SampleMaterials.jaKo
+        val item1 = sample1.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("track-switch-1"),
+            title = "First Track",
+        )
+        val item2 = sample1.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("track-switch-2"),
+            title = "Second Track",
+        )
+        val chunks1 = sample1.chunks.mapIndexed { i, c ->
+            c.copy(id = com.miuraken.chunkflow.core.model.ChunkId(100L + i))
+        }
+        val chunks2 = sample1.chunks.mapIndexed { i, c ->
+            c.copy(id = com.miuraken.chunkflow.core.model.ChunkId(200L + i))
+        }
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item1, item2))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample1.copy(item = item1, chunks = chunks1, transcripts = emptyMap()))
+            put(sample1.copy(item = item2, chunks = chunks2, transcripts = emptyMap()))
+        }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+
+        val emittedStates = mutableListOf<PlayerUiState>()
+        backgroundScope.launch(testDispatcher) {
+            viewModel.uiState.collect { emittedStates.add(it) }
+        }
+
+        // 1. まず item1 を開いて再生状態にする
+        viewModel.open(item1.id)
+        viewModel.onEvent(PlayerEvent.TogglePlayPause)
+        assertEquals(item1.id, viewModel.uiState.value.mediaId)
+        assertEquals(item1.title, viewModel.uiState.value.title)
+        assertTrue(viewModel.uiState.value.isPlaying)
+
+        emittedStates.clear()
+
+        // 2. item2 を開く
+        viewModel.open(item2.id)
+
+        // すべての emit された状態で、mediaId が item2 なのに item1 のタイトルやチャンクが混ざっていないことを確認
+        val chunk1Ids = chunks1.map { it.id }.toSet()
+        for (state in emittedStates) {
+            if (state.mediaId == item2.id) {
+                assertEquals(item2.title, state.title)
+                assertTrue(state.chunks.none { it.id in chunk1Ids })
+            }
+        }
+        val current = viewModel.uiState.value
+        assertEquals(item2.id, current.mediaId)
+        assertEquals(item2.title, current.title)
+    }
 }

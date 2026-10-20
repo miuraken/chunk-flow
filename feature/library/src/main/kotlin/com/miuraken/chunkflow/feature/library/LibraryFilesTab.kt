@@ -1,27 +1,28 @@
 package com.miuraken.chunkflow.feature.library
 
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerSize
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenu
-import androidx.compose.material3.ExposedDropdownMenuAnchorType
-import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,15 +32,18 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -47,7 +51,7 @@ import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.model.LanguageTag
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun LibraryFilesTabContent(
     state: LibraryUiState,
@@ -57,6 +61,16 @@ internal fun LibraryFilesTabContent(
     val filteredFiles = state.filteredAllFiles
     val targetLanguages = state.availableTargetLanguages
     var sortMenuExpanded by remember { mutableStateOf(false) }
+    var languageMenuExpanded by remember { mutableStateOf(false) }
+    var isSearchExpanded by rememberSaveable { mutableStateOf(false) }
+    val searchFocusRequester = remember { FocusRequester() }
+    val showExpandedSearch = isSearchExpanded || state.fileSearchQuery.isNotEmpty()
+
+    LaunchedEffect(isSearchExpanded) {
+        if (isSearchExpanded) {
+            runCatching { searchFocusRequester.requestFocus() }
+        }
+    }
 
     @Composable
     fun sortOptionLabel(option: LibraryFileSortOption, ascending: Boolean): String {
@@ -75,72 +89,177 @@ internal fun LibraryFilesTabContent(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            OutlinedTextField(
-                value = state.fileSearchQuery,
-                onValueChange = { onEvent(LibraryEvent.UpdateFileSearchQuery(it)) },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = {
-                    Text(text = stringResource(R.string.library_files_search_placeholder))
-                },
-                leadingIcon = {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Search,
-                        contentDescription = null,
-                    )
-                },
-                trailingIcon = {
-                    if (state.fileSearchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onEvent(LibraryEvent.UpdateFileSearchQuery("")) }) {
+            if (showExpandedSearch) {
+                OutlinedTextField(
+                    value = state.fileSearchQuery,
+                    onValueChange = { onEvent(LibraryEvent.UpdateFileSearchQuery(it)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(searchFocusRequester),
+                    placeholder = {
+                        Text(
+                            text = stringResource(R.string.library_files_search_placeholder),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Search,
+                            contentDescription = null,
+                        )
+                    },
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                if (state.fileSearchQuery.isNotEmpty()) {
+                                    onEvent(LibraryEvent.UpdateFileSearchQuery(""))
+                                }
+                                isSearchExpanded = false
+                            },
+                        ) {
                             Icon(
                                 imageVector = ChunkFlowIcons.Close,
                                 contentDescription = stringResource(R.string.library_selection_clear),
                             )
                         }
-                    }
-                },
-                singleLine = true,
-                shape = MaterialTheme.shapes.medium,
-                colors = OutlinedTextFieldDefaults.colors(),
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = stringResource(R.string.library_files_sort_label),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    shape = MaterialTheme.shapes.small,
+                    colors = OutlinedTextFieldDefaults.colors(),
                 )
-                ExposedDropdownMenuBox(
-                    expanded = sortMenuExpanded,
-                    onExpandedChange = { sortMenuExpanded = it },
-                    modifier = Modifier.weight(1f),
+            } else {
+                Surface(
+                    onClick = { isSearchExpanded = true },
+                    modifier = Modifier.height(38.dp),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 ) {
-                    OutlinedTextField(
-                        value = sortOptionLabel(state.fileSortOption, state.fileSortAscending),
-                        onValueChange = {},
-                        readOnly = true,
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyMedium,
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = sortMenuExpanded)
-                        },
-                        modifier = Modifier
-                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                            .fillMaxWidth(),
+                    Box(
+                        modifier = Modifier.padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Search,
+                            contentDescription = stringResource(R.string.library_files_search_placeholder),
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                val activeFilterCode = state.fileTargetLanguageFilter?.value?.lowercase(Locale.ROOT)
+                val allLanguagesLabel = stringResource(R.string.library_files_filter_all_languages)
+                val currentLanguageLabel = activeFilterCode ?: allLanguagesLabel
+
+                Box {
+                    Surface(
+                        onClick = { languageMenuExpanded = true },
+                        modifier = Modifier.height(38.dp),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = stringResource(
+                                    R.string.library_files_language_filter_button_format,
+                                    currentLanguageLabel,
+                                ),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+
+                    DropdownMenu(
+                        expanded = languageMenuExpanded,
+                        onDismissRequest = { languageMenuExpanded = false },
                         shape = MaterialTheme.shapes.medium,
-                    )
-                    ExposedDropdownMenu(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .widthIn(min = 180.dp, max = 260.dp)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            LanguageFilterPillChip(
+                                label = allLanguagesLabel,
+                                selected = activeFilterCode == null,
+                                onClick = {
+                                    languageMenuExpanded = false
+                                    onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null))
+                                },
+                            )
+                            if (targetLanguages.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    targetLanguages.forEach { lang ->
+                                        val code = lang.value.lowercase(Locale.ROOT)
+                                        val isSelected = activeFilterCode == code
+                                        LanguageFilterPillChip(
+                                            label = code,
+                                            selected = isSelected,
+                                            onClick = {
+                                                languageMenuExpanded = false
+                                                onEvent(
+                                                    LibraryEvent.SelectFileTargetLanguageFilter(
+                                                        if (isSelected) null else LanguageTag(code),
+                                                    ),
+                                                )
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                Box {
+                    Surface(
+                        onClick = { sortMenuExpanded = true },
+                        modifier = Modifier.height(38.dp),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(start = 12.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = sortOptionLabel(state.fileSortOption, state.fileSortAscending),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                            )
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = sortMenuExpanded)
+                        }
+                    }
+
+                    DropdownMenu(
                         expanded = sortMenuExpanded,
                         onDismissRequest = { sortMenuExpanded = false },
+                        shape = MaterialTheme.shapes.medium,
                     ) {
                         LibraryFileSortOption.entries.forEach { option ->
                             listOf(true, false).forEach { ascending ->
@@ -161,38 +280,6 @@ internal fun LibraryFilesTabContent(
                                 )
                             }
                         }
-                    }
-                }
-            }
-
-            if (targetLanguages.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val activeFilterCode = state.fileTargetLanguageFilter?.value?.lowercase(Locale.ROOT)
-                    FilterChip(
-                        selected = activeFilterCode == null,
-                        onClick = { onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null)) },
-                        label = { Text(text = stringResource(R.string.library_files_filter_all_languages)) },
-                    )
-                    targetLanguages.forEach { lang ->
-                        val code = lang.value.lowercase(Locale.ROOT)
-                        val isSelected = activeFilterCode == code
-                        FilterChip(
-                            selected = isSelected,
-                            onClick = {
-                                onEvent(
-                                    LibraryEvent.SelectFileTargetLanguageFilter(
-                                        if (isSelected) null else LanguageTag(code),
-                                    ),
-                                )
-                            },
-                            label = { Text(text = code) },
-                        )
                     }
                 }
             }
@@ -301,5 +388,41 @@ internal fun LibraryFilesTabContent(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LanguageFilterPillChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = CircleShape,
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        border = if (selected) {
+            null
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        },
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+        )
     }
 }

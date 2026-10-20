@@ -113,6 +113,7 @@
     <string name="library_bookmarks_next_chunk_cd">Next chunk</string>
     <string name="library_files_search_placeholder">Search by file name</string>
     <string name="library_files_filter_all_languages">All</string>
+    <string name="library_files_language_filter_button_format">Lang: %1$s</string>
     <string name="library_files_no_matching_results">No matching files found</string>
     <string name="library_playlist_recently_opened">Recently opened files</string>
     <string name="library_playlist_frequently_accessed">Frequently accessed files</string>
