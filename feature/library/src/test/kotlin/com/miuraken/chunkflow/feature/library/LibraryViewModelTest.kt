@@ -1856,4 +1856,70 @@ class LibraryViewModelTest {
         assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
         assertNull(viewModel.uiState.value.currentDirectoryPath)
     }
+
+    @Test
+    fun `実フォルダの名前変更_アプリ内表示名を変更しても実フォルダ種別とtreeUriが維持され同一ディレクトリからの取り込みでも変更後の名前が使われる`() = runTest {
+        val treeUriStr = "content://com.android.externalstorage.documents/tree/primary%3AMusic%2FKorean"
+        val docDirUriStr = "content://com.android.externalstorage.documents/document/primary%3AMusic%2FKorean"
+        val item = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("real-folder-item-1"),
+            course = "Korean",
+        )
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(item),
+            initialCourseFolders = listOf(
+                com.miuraken.chunkflow.core.model.LibraryCourseFolder(
+                    coursePath = "Korean",
+                    kind = com.miuraken.chunkflow.core.model.LibraryFolderKind.LOCAL_DIRECTORY,
+                    languagePair = com.miuraken.chunkflow.core.model.LanguagePair(
+                        target = com.miuraken.chunkflow.core.model.LanguageTag("ko"),
+                        base = com.miuraken.chunkflow.core.model.LanguageTag("ja"),
+                    ),
+                    treeUri = treeUriStr,
+                ),
+            ),
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        assertTrue(viewModel.uiState.value.isRealFolder("Korean"))
+
+        // 1. 実フォルダ「Korean」を「韓国語講座」に名前変更する
+        viewModel.onEvent(LibraryEvent.OpenDirectory("Korean"))
+        viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("Korean"))
+        viewModel.onEvent(
+            LibraryEvent.ConfirmEditDirectoryMetadata(
+                currentCourse = "Korean",
+                newCourse = "韓国語講座",
+                languages = com.miuraken.chunkflow.core.model.LanguagePair(
+                    target = com.miuraken.chunkflow.core.model.LanguageTag("ko"),
+                    base = com.miuraken.chunkflow.core.model.LanguageTag("ja"),
+                ),
+            ),
+        )
+
+        // 2. フォルダ名とアイテムの所属コースが「韓国語講座」に更新され、実フォルダ種別・treeUri・現在開いているパスが維持される
+        val stateAfterRename = viewModel.uiState.value
+        assertEquals("韓国語講座", stateAfterRename.currentDirectoryPath)
+        assertTrue(stateAfterRename.isRealFolder("韓国語講座"))
+        assertFalse(stateAfterRename.isRealFolder("Korean"))
+        assertEquals("韓国語講座", stateAfterRename.items.single().item.course)
+        val updatedFolder = stateAfterRename.courseFolders.single { it.coursePath == "韓国語講座" }
+        assertEquals(com.miuraken.chunkflow.core.model.LibraryFolderKind.LOCAL_DIRECTORY, updatedFolder.kind)
+        assertEquals(treeUriStr, updatedFolder.treeUri)
+        assertEquals(
+            docDirUriStr,
+            stateAfterRename.resolveInitialImportDirectoryUriString { true },
+        )
+
+        // 3. 同じ物理ディレクトリ（docDirUriStr）から新たにファイルを選択した場合、初期格納先フォルダ名に「韓国語講座」が選ばれる
+        viewModel.onEvent(
+            LibraryEvent.ImportUris(
+                uris = listOf(StubUri.create("$docDirUriStr%2F02.mp3")),
+                parentFolderName = "Korean",
+                parentDirectoryUri = docDirUriStr,
+            ),
+        )
+        assertEquals("韓国語講座", viewModel.uiState.value.pendingImportConfig?.initialCourse)
+    }
 }

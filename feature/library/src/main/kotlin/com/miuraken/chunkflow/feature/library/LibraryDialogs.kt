@@ -739,15 +739,14 @@ internal fun EditDirectoryMetadataDialog(
                     ),
                     style = MaterialTheme.typography.titleLarge,
                 )
-            } else {
-                OutlinedTextField(
-                    value = courseText,
-                    onValueChange = { courseText = it },
-                    label = { Text(text = stringResource(R.string.library_edit_course_label)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
             }
+            OutlinedTextField(
+                value = courseText,
+                onValueChange = { courseText = it },
+                label = { Text(text = stringResource(R.string.library_edit_course_label)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
 
             LanguagePairDropdownSection(
                 targetLangCode = targetLangText,
@@ -772,10 +771,8 @@ internal fun EditDirectoryMetadataDialog(
                     onClick = {
                         val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
                         val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
-                        val nextCourse = if (directoryEdit.isRealFolder) {
-                            directoryEdit.currentCourse
-                        } else {
-                            courseText.trim().ifBlank { null }
+                        val nextCourse = courseText.trim().ifBlank {
+                            if (directoryEdit.isRealFolder) directoryEdit.currentCourse else null
                         }
                         onConfirm(
                             nextCourse,

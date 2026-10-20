@@ -113,6 +113,7 @@
     <string name="library_bookmarks_next_chunk_cd">次のチャンクへ</string>
     <string name="library_files_search_placeholder">ファイル名で検索</string>
     <string name="library_files_filter_all_languages">すべて</string>
+    <string name="library_files_language_filter_button_format">言語: %1$s</string>
     <string name="library_files_no_matching_results">条件に一致するファイルがありません</string>
     <string name="library_playlist_recently_opened">最近開いたファイル</string>
     <string name="library_playlist_frequently_accessed">よくアクセスするファイル</string>

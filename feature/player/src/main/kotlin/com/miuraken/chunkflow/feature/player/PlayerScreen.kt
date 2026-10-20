@@ -154,48 +154,55 @@ fun PlayerRoute(
         }
     }
 
-    PlayerScreen(
-        state = state,
-        positionProvider = viewModel.positionProvider,
-        onEvent = { event ->
-            when {
-                event is PlayerEvent.Back -> {
-                    viewModel.onEvent(event)
-                    onBack()
-                }
-
-                event is PlayerEvent.SetLookaheadEnabled && event.enabled && !state.lookaheadStatus.enabled -> {
-                    if (ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO,
-                        ) == PackageManager.PERMISSION_GRANTED
-                    ) {
+    if (state.mediaId != mediaId) {
+        Surface(
+            modifier = modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+        ) {}
+    } else {
+        PlayerScreen(
+            state = state,
+            positionProvider = viewModel.positionProvider,
+            onEvent = { event ->
+                when {
+                    event is PlayerEvent.Back -> {
                         viewModel.onEvent(event)
-                    } else {
-                        showRecordAudioRationaleDialog = true
+                        onBack()
                     }
-                }
 
-                else -> viewModel.onEvent(event)
-            }
-        },
-        onOpenPlaybackSettings = onOpenPlaybackSettings,
-        onOpenLanguageSettings = onOpenLanguageSettings,
-        onPickTranscriptJson = {
-            transcriptPickerLauncher.launch(
-                arrayOf("*/*"),
-            )
-        },
-        onOpenTranscriptExport = {
-            val targetId = state.mediaId ?: mediaId
-            onOpenTranscriptExport(targetId)
-        },
-        hasRecordAudioPermission = hasRecordAudioPermission,
-        onRequestRecordAudioPermission = {
-            detailedRecordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        },
-        modifier = modifier,
-    )
+                    event is PlayerEvent.SetLookaheadEnabled && event.enabled && !state.lookaheadStatus.enabled -> {
+                        if (ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO,
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            viewModel.onEvent(event)
+                        } else {
+                            showRecordAudioRationaleDialog = true
+                        }
+                    }
+
+                    else -> viewModel.onEvent(event)
+                }
+            },
+            onOpenPlaybackSettings = onOpenPlaybackSettings,
+            onOpenLanguageSettings = onOpenLanguageSettings,
+            onPickTranscriptJson = {
+                transcriptPickerLauncher.launch(
+                    arrayOf("*/*"),
+                )
+            },
+            onOpenTranscriptExport = {
+                val targetId = state.mediaId ?: mediaId
+                onOpenTranscriptExport(targetId)
+            },
+            hasRecordAudioPermission = hasRecordAudioPermission,
+            onRequestRecordAudioPermission = {
+                detailedRecordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            },
+            modifier = modifier,
+        )
+    }
 
     if (showRecordAudioRationaleDialog) {
         AlertDialog(

@@ -368,12 +368,22 @@ class FakeLibraryRepository(
         }
         if (!currentCourse.isNullOrBlank()) {
             val targetPath = newCourse?.trim()?.trim('/')?.takeIf { it.isNotEmpty() } ?: currentCourse
+            val prefix = "$currentCourse/"
             courseFolders.update { folders ->
                 folders.map { folder ->
-                    if (folder.coursePath == currentCourse) {
-                        folder.copy(coursePath = targetPath, languagePair = languages)
-                    } else {
-                        folder
+                    when {
+                        folder.coursePath == currentCourse -> {
+                            folder.copy(coursePath = targetPath, languagePair = languages)
+                        }
+
+                        folder.coursePath.startsWith(prefix) -> {
+                            val suffix = folder.coursePath.removePrefix(prefix)
+                            folder.copy(coursePath = "$targetPath/$suffix", languagePair = languages)
+                        }
+
+                        else -> {
+                            folder
+                        }
                     }
                 }
             }

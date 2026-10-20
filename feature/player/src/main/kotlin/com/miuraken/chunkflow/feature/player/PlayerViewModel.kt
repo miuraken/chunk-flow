@@ -1314,45 +1314,35 @@ class PlayerViewModel @Inject constructor(
     val positionProvider: PositionProvider
         get() = playbackController.position
 
-    private val currentAudioItem = currentMediaId.flatMapLatest { id ->
-        if (id == null) flowOf(null) else libraryRepository.observeItem(id)
-    }
-
-    private val currentItemState = currentMediaId.flatMapLatest { id ->
-        if (id == null) flowOf(null) else libraryRepository.observeItemState(id)
-    }
-
-    private val currentItemSttOverride = currentMediaId.flatMapLatest { id ->
-        if (id == null) kotlinx.coroutines.flow.flowOf(com.miuraken.chunkflow.core.model.ItemSttOverride.NONE) else itemSttOverrideRepository.observe(id)
+    private fun observeAnalysisSnapshot(id: MediaId) = combine(
+        combine(
+            analysisRepository.observeStatus(id),
+            analysisRepository.observeWaveform(id),
+            analysisRepository.observeChunks(id),
+            analysisRepository.observeBookmarks(id),
+        ) { status, waveform, chunks, bookmarks ->
+            Quad(status, waveform, chunks, bookmarks)
+        },
+        analysisRepository.observeTranscripts(id),
+        analysisRepository.observeAvailableChunkOrigins(id),
+        analysisRepository.observeLookaheadStatus(id),
+    ) { (status, waveform, chunks, bookmarks), transcripts, origins, lookahead ->
+        AnalysisSnapshot(
+            status = status,
+            waveform = waveform,
+            chunks = chunks,
+            transcripts = transcripts,
+            bookmarks = bookmarks,
+            availableOrigins = origins,
+            lookaheadStatus = lookahead,
+        )
     }
 
     private val currentAnalysisSnapshot = currentMediaId.flatMapLatest { id ->
         if (id == null) {
             flowOf(AnalysisSnapshot())
         } else {
-            combine(
-                combine(
-                    analysisRepository.observeStatus(id),
-                    analysisRepository.observeWaveform(id),
-                    analysisRepository.observeChunks(id),
-                    analysisRepository.observeBookmarks(id),
-                ) { status, waveform, chunks, bookmarks ->
-                    Quad(status, waveform, chunks, bookmarks)
-                },
-                analysisRepository.observeTranscripts(id),
-                analysisRepository.observeAvailableChunkOrigins(id),
-                analysisRepository.observeLookaheadStatus(id),
-            ) { (status, waveform, chunks, bookmarks), transcripts, origins, lookahead ->
-                AnalysisSnapshot(
-                    status = status,
-                    waveform = waveform,
-                    chunks = chunks,
-                    transcripts = transcripts,
-                    bookmarks = bookmarks,
-                    availableOrigins = origins,
-                    lookaheadStatus = lookahead,
-                )
-            }
+            observeAnalysisSnapshot(id)
         }
     }
 
@@ -1361,37 +1351,49 @@ class PlayerViewModel @Inject constructor(
         val item: AudioItem?,
         val itemState: ItemState?,
         val analysis: AnalysisSnapshot,
-        val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride =
+            com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
         val nextMediaId: MediaId? = null,
     )
 
-    private val currentItemAndNextMediaFlow = combine(
-        currentAudioItem,
-        libraryRepository.observeItems(),
-    ) { item, allItems ->
-        val nextId = if (item == null) {
-            null
+    private val mediaAndAnalysisFlow = currentMediaId.flatMapLatest { id ->
+        if (id == null) {
+            flowOf(MediaStateInfo(mediaId = null, item = null, itemState = null, analysis = AnalysisSnapshot()))
         } else {
-            val sameCourse = allItems
-                .filter { it.course == item.course }
-                .sortedWith { a, b ->
-                    val cmp = compareFileNamesNatural(a.title, b.title)
-                    if (cmp != 0) cmp else a.id.value.compareTo(b.id.value)
+            val itemAndNextFlow = combine(
+                libraryRepository.observeItem(id),
+                libraryRepository.observeItems(),
+            ) { item, allItems ->
+                val nextId = if (item == null) {
+                    null
+                } else {
+                    val sameCourse = allItems
+                        .filter { it.course == item.course }
+                        .sortedWith { a, b ->
+                            val cmp = compareFileNamesNatural(a.title, b.title)
+                            if (cmp != 0) cmp else a.id.value.compareTo(b.id.value)
+                        }
+                    val idx = sameCourse.indexOfFirst { it.id == item.id }
+                    if (idx >= 0) sameCourse.getOrNull(idx + 1)?.id else null
                 }
-            val idx = sameCourse.indexOfFirst { it.id == item.id }
-            if (idx >= 0) sameCourse.getOrNull(idx + 1)?.id else null
+                item to nextId
+            }
+            combine(
+                itemAndNextFlow,
+                libraryRepository.observeItemState(id),
+                observeAnalysisSnapshot(id),
+                itemSttOverrideRepository.observe(id),
+            ) { (item, nextMediaId), itemState, analysis, override ->
+                MediaStateInfo(
+                    mediaId = id,
+                    item = item,
+                    itemState = itemState,
+                    analysis = analysis,
+                    itemSttOverride = override,
+                    nextMediaId = nextMediaId,
+                )
+            }
         }
-        item to nextId
-    }
-
-    private val mediaAndAnalysisFlow = combine(
-        currentMediaId,
-        currentItemAndNextMediaFlow,
-        currentItemState,
-        currentAnalysisSnapshot,
-        currentItemSttOverride,
-    ) { mediaId, (item, nextMediaId), itemState, analysis, override ->
-        MediaStateInfo(mediaId, item, itemState, analysis, override, nextMediaId)
     }
 
     /** プレイヤー画面の UI 状態。 */
@@ -3943,8 +3945,25 @@ class PlayerViewModel @Inject constructor(
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
         nextMediaId: MediaId? = null,
     ): PlayerUiState {
+        val requestedMediaId = currentMediaId.value
+        val resolvedMediaId = if (requestedMediaId != null) {
+            mediaId?.takeIf { it == requestedMediaId }
+        } else {
+            mediaId ?: status.mediaId ?: item?.id
+        }
+        val isStatusForOtherMedia = status.mediaId != null &&
+            (
+                (requestedMediaId != null && status.mediaId != requestedMediaId) ||
+                    (resolvedMediaId != null && status.mediaId != resolvedMediaId)
+                )
+        val effectiveStatusDurationMs = if (isStatusForOtherMedia) 0L else status.durationMs
+        val effectiveCurrentChunkId = if (isStatusForOtherMedia) null else status.currentChunkId
+        val effectiveIsPlaying = if (isStatusForOtherMedia) false else status.isPlaying
+        val effectiveAutoPauseEndsAtMs = if (isStatusForOtherMedia) null else status.autoPauseEndsAtMs
+        val effectiveError = if (isStatusForOtherMedia) null else status.error
+
         val resolvedDurationMs = when {
-            status.durationMs > 0L -> status.durationMs
+            effectiveStatusDurationMs > 0L -> effectiveStatusDurationMs
             item != null && item.durationMs > 0L -> item.durationMs
             analysis.waveform != null -> analysis.waveform.durationMs
             else -> 0L
@@ -3981,7 +4000,7 @@ class PlayerViewModel @Inject constructor(
                 origin = chunk.origin,
             )
         }
-        val activeIndex = status.currentChunkId?.let { activeId ->
+        val activeIndex = effectiveCurrentChunkId?.let { activeId ->
             chunkUis.indexOfFirst { it.id == activeId }.takeIf { it >= 0 }
                 ?: run {
                     val posMs = playbackController.position.currentPositionMs().coerceAtLeast(0L)
@@ -4024,7 +4043,6 @@ class PlayerViewModel @Inject constructor(
             local.customSegmentationParams ?: persistedCustomSeg ?: settings.defaultSegmentationParams
         }
 
-        val resolvedMediaId = mediaId ?: status.mediaId ?: item?.id
         val currentWaveformSignature = computeWaveformRenderSignature(analysis.waveform, chunkUis)
         val isWaveformBuilding = analysis.status[AnalysisStage.FEATURES] is StageStatus.Running ||
             analysis.status[AnalysisStage.SEGMENTATION] is StageStatus.Running ||
@@ -4053,20 +4071,20 @@ class PlayerViewModel @Inject constructor(
             title = item?.title.orEmpty(),
             course = item?.course,
             languagePair = item?.languagePair,
-            isPlaying = status.isPlaying,
+            isPlaying = effectiveIsPlaying,
             durationMs = resolvedDurationMs,
             speed = status.speed,
             customSpeed = resolvedCustomSpeed,
             seekBackMs = settings.seekBackMs,
             seekForwardMs = settings.seekForwardMs,
             practice = practice,
-            autoPauseEndsAtMs = status.autoPauseEndsAtMs,
+            autoPauseEndsAtMs = effectiveAutoPauseEndsAtMs,
             waveform = analysis.waveform,
             chunks = chunkUis,
             bookmarks = analysis.bookmarks,
             activeChunkIndex = activeIndex,
             analysis = analysis.status,
-            error = status.error,
+            error = effectiveError,
             blindMode = local.blindMode,
             revealedChunkIds = local.revealedChunkIds,
             chineseScript = explicitChineseScriptForTag(item?.languagePair?.target?.value)
