@@ -20,7 +20,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsListContent
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonGroup
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonItem
 import com.miuraken.chunkflow.core.designsystem.component.languageSettingDisplayName
@@ -1087,7 +1088,7 @@ private fun SherpaDownloadModalDialog(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = Modifier.padding(vertical = 8.dp),
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                    ChunkFlowLoadingIndicator(modifier = Modifier.size(40.dp))
                     Text(
                         text = stringResource(
                             R.string.settings_sherpa_downloading_message,
@@ -1110,7 +1111,8 @@ private fun SherpaDownloadModalDialog(
         },
         confirmButton = {
             if (!dialogState.isDownloading) {
-                TextButton(onClick = onConfirm) {
+                // ダイアログの最重要操作は Filled の Button にする（調査 §3.2 C10）。
+                Button(onClick = onConfirm) {
                     Text(text = stringResource(R.string.settings_sherpa_download_confirm_button))
                 }
             }
