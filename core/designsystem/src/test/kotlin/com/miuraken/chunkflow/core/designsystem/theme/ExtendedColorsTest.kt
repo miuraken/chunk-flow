@@ -46,16 +46,27 @@ class ExtendedColorsTest {
     }
 
     @Test
-    fun `色相が基準色相から15度以内_琥珀と緑と青`() {
+    fun `色相が基準色相から15度以内_琥珀と緑と青と茶色`() {
         for (argb in primaries) {
             val c = extendedColorsFor(Color(argb), darkTheme = false)
             val favoriteHue = Hct.fromInt(c.favorite.toArgb()).hue
             val successHue = Hct.fromInt(c.success.toArgb()).hue
             val repeatHue = Hct.fromInt(c.wholeFileRepeat.toArgb()).hue
+            val autoPauseHue = Hct.fromInt(c.autoPauseWaveform.toArgb()).hue
             // 色域で彩度が落ちた色の色相は数度ずれることがあるため、調和の上限 15° に 5° の余裕を加える。
             assertTrue("favorite hue=$favoriteHue", MathUtils.differenceDegrees(favoriteHue, ChunkFlowHues.FAVORITE_HUE) <= 20.0)
             assertTrue("success hue=$successHue", MathUtils.differenceDegrees(successHue, ChunkFlowHues.COMPLETED_HUE) <= 20.0)
             assertTrue("repeat hue=$repeatHue", MathUtils.differenceDegrees(repeatHue, ChunkFlowHues.BASE_HUE) <= 20.0)
+            assertTrue("autoPause hue=$autoPauseHue", MathUtils.differenceDegrees(autoPauseHue, ChunkFlowHues.AUTO_PAUSE_HUE) <= 20.0)
+        }
+    }
+
+    @Test
+    fun `自動ポーズ波形のトーンがライトよりもダークで明るい`() {
+        for (argb in primaries) {
+            val lightTone = Hct.fromInt(extendedColorsFor(Color(argb), darkTheme = false).autoPauseWaveform.toArgb()).tone
+            val darkTone = Hct.fromInt(extendedColorsFor(Color(argb), darkTheme = true).autoPauseWaveform.toArgb()).tone
+            assertTrue("lightTone=$lightTone darkTone=$darkTone", darkTone > lightTone)
         }
     }
 }
