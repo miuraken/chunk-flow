@@ -517,6 +517,7 @@ data class LibraryUiState(
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     val showLanguageOnboardingDialog: Boolean = false,
+    val showLanguageSettingsModal: Boolean = false,
     val currentDirectoryPath: String? = null,
     val selectedDirectoryPaths: Set<String> = emptySet(),
     val selectedItemIds: Set<MediaId> = emptySet(),
@@ -1340,8 +1341,11 @@ sealed interface LibraryEvent {
     /** 設定画面を開く。 */
     data object OpenSettings : LibraryEvent
 
-    /** 全体設定の「言語」タブを開く。 */
+    /** 全体設定の「言語」モーダルダイアログを開く。 */
     data object OpenLanguageSettings : LibraryEvent
+
+    /** 全体設定の「言語」モーダルダイアログを閉じる。 */
+    data object DismissLanguageSettingsModal : LibraryEvent
 
     /** 教材のコース名・言語ペア編集ダイアログを開く（F2.3）。 */
     data class RequestEditMetadata(val item: AudioItem) : LibraryEvent
@@ -1551,6 +1555,7 @@ private data class DialogAndImportSnapshot(
     val pendingEditItemSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
+    val showLanguageSettingsModal: Boolean = false,
 )
 
 private data class NavigationAndSelectionSnapshot(
@@ -1622,6 +1627,7 @@ class LibraryViewModel @Inject constructor(
     private val pendingEditItem = MutableStateFlow<AudioItem?>(null)
     private val pendingEditDirectory = MutableStateFlow<PendingDirectoryEdit?>(null)
     private val pendingImportConfig = MutableStateFlow<PendingImportConfig?>(null)
+    private val showLanguageSettingsModal = MutableStateFlow(false)
     private val selectedDirectoryName = MutableStateFlow<String?>(null)
     private val collapsedDirectories = MutableStateFlow<Set<String?>>(emptySet())
     private val currentDirectoryPath = MutableStateFlow<String?>(null)
@@ -1770,7 +1776,8 @@ class LibraryViewModel @Inject constructor(
             Triple(editItem, editItemOverride, editDir)
         },
         pendingImportConfig,
-    ) { currentImport, (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig ->
+        showLanguageSettingsModal,
+    ) { currentImport, (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig, showLangModal ->
         DialogAndImportSnapshot(
             importState = currentImport,
             pendingDeleteItem = deleteTarget,
@@ -1780,6 +1787,7 @@ class LibraryViewModel @Inject constructor(
             pendingEditItemSttOverride = editItemOverride,
             pendingEditDirectory = editDirTarget,
             pendingImportConfig = importConfig,
+            showLanguageSettingsModal = showLangModal,
         )
     }
 
@@ -2506,9 +2514,11 @@ class LibraryViewModel @Inject constructor(
             }
 
             LibraryEvent.OpenLanguageSettings -> {
-                pendingImportConfig.value = null
-                pendingEditItem.value = null
-                pendingEditDirectory.value = null
+                showLanguageSettingsModal.value = true
+            }
+
+            LibraryEvent.DismissLanguageSettingsModal -> {
+                showLanguageSettingsModal.value = false
             }
 
             is LibraryEvent.ToggleBookmarkFileAccordion -> {
@@ -3184,6 +3194,7 @@ class LibraryViewModel @Inject constructor(
             enabledLanguages = enabledLanguages,
             sttEngineByLanguage = sttEngineByLanguage,
             showLanguageOnboardingDialog = showLanguageOnboardingDialog,
+            showLanguageSettingsModal = dialogAndImport.showLanguageSettingsModal,
             currentDirectoryPath = navAndSelection.currentDirectoryPath,
             selectedDirectoryPaths = navAndSelection.selectedDirectoryPaths,
             selectedItemIds = filteredSelectedItemIds,

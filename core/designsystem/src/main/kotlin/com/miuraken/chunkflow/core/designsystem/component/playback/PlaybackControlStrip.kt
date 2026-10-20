@@ -231,7 +231,7 @@ private fun StripContent(
             )
         }
 
-        // 2. リピート: [リピート ▼]（▼ と長押しで「全体リピート」）。狭い幅ではアイコンだけ
+        // 2. リピート: [🔁 ▼]（▼ と長押しで「全体リピート」）。通常時はアイコンのみ表示し、「全体リピート」選択時のみ十分な幅があればラベルを併記する
         val repeatLabel = if (isWholeFileRepeat) {
             stringResource(R.string.designsystem_playback_chip_repeat_whole_file)
         } else {
@@ -241,8 +241,8 @@ private fun StripContent(
             label = repeatLabel,
             onClick = onToggleRepeat,
             checked = isRepeatOn,
-            icon = if (isWholeFileRepeat || !tier.repeatLabel) ChunkFlowIcons.Repeat else null,
-            showLabel = tier.repeatLabel,
+            icon = ChunkFlowIcons.Repeat,
+            showLabel = isWholeFileRepeat && tier.repeatLabel,
             onLongClick = onRequestWholeFileRepeat,
             menuItems = listOf(
                 ChunkFlowSplitButtonMenuItem(

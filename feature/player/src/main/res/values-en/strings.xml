@@ -263,4 +263,5 @@
     <string name="player_target_lang_change_confirm_message">Changing the target language will clear all current transcript and language detection data and restart language detection.</string>
     <string name="player_target_lang_change_confirm_ok">Change and clear</string>
     <string name="player_target_lang_change_confirm_cancel">Cancel</string>
+    <string name="player_transcription_badge_tooltip">Language detection finished. Tap here to start transcription</string>
 </resources>

@@ -2916,4 +2916,107 @@ class PlayerViewModelTest {
         assertEquals(item2.id, current.mediaId)
         assertEquals(item2.title, current.title)
     }
+
+    @Test
+    fun `autoStartTranscriptionOnOpenがfalseのとき_言語判定完了時に5秒間ツールチップが表示され自動で消える`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository(
+            UserSettings(autoStartTranscriptionOnOpen = false),
+        )
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            update(item.id) { entry ->
+                entry.copy(
+                    transcripts = emptyMap(),
+                    lookaheadStatus = entry.lookaheadStatus.copy(
+                        enabled = true,
+                        engineAvailable = true,
+                        isLanguageDetectionRunning = true,
+                    ),
+                )
+            }
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. ファイルを開いた直後（言語判定中）はツールチップ非表示、かつ自動文字起こしもオフ
+        viewModel.open(item.id)
+        assertFalse(viewModel.uiState.value.isTranscriptionBadgeTooltipVisible)
+        assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertTrue(analysisRepo.lookaheadTriggers.isEmpty())
+
+        // 2. 言語判定が完了すると、文字起こしは自動開始されずツールチップが表示される
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(
+                    isLanguageDetectionRunning = false,
+                ),
+            )
+        }
+        assertFalse(viewModel.uiState.value.lookaheadStatus.enabled)
+        assertTrue(analysisRepo.lookaheadTriggers.isEmpty())
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeTooltipVisible)
+
+        // 3. 5 秒未満ではまだ表示されているが、5 秒経過すると自動で非表示になる
+        advanceTimeBy(TRANSCRIPTION_BADGE_TOOLTIP_DURATION_MS - 1L)
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeTooltipVisible)
+        advanceTimeBy(2L)
+        assertFalse(viewModel.uiState.value.isTranscriptionBadgeTooltipVisible)
+    }
+
+    @Test
+    fun `autoStartTranscriptionOnOpenがfalseのとき_ツールチップ表示中に文字起こしをONにすると即座に消える`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository(
+            UserSettings(autoStartTranscriptionOnOpen = false),
+        )
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            update(item.id) { entry ->
+                entry.copy(
+                    transcripts = emptyMap(),
+                    lookaheadStatus = entry.lookaheadStatus.copy(
+                        enabled = false,
+                        engineAvailable = true,
+                        isLanguageDetectionRunning = true,
+                    ),
+                )
+            }
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                lookaheadStatus = entry.lookaheadStatus.copy(
+                    isLanguageDetectionRunning = false,
+                ),
+            )
+        }
+        assertTrue(viewModel.uiState.value.isTranscriptionBadgeTooltipVisible)
+
+        // バッジをタップして文字起こしを ON にすると即座にツールチップが消える
+        viewModel.onEvent(PlayerEvent.SetLookaheadEnabled(true))
+        assertFalse(viewModel.uiState.value.isTranscriptionBadgeTooltipVisible)
+        assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
+    }
 }

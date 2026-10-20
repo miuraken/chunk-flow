@@ -263,4 +263,5 @@
     <string name="player_target_lang_change_confirm_message">学習対象言語を切り替えると、現在の文字起こしデータと言語判定データがすべてクリアされ、言語判定がやり直されます。</string>
     <string name="player_target_lang_change_confirm_ok">変更してクリア</string>
     <string name="player_target_lang_change_confirm_cancel">キャンセル</string>
+    <string name="player_transcription_badge_tooltip">言語判定が完了しました。文字起こしを始めるにはここをタップしてください</string>
 </resources>

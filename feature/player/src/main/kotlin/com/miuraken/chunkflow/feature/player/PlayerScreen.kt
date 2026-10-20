@@ -34,15 +34,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -74,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowFloatingToolbar
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
 import com.miuraken.chunkflow.core.designsystem.component.feedback.ChunkFlowSnackbarHost
@@ -265,6 +270,7 @@ fun PlayerScreen(
 ) {
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showResegmentSheet by remember { mutableStateOf(false) }
+    var showLanguageSettingsModal by rememberSaveable { mutableStateOf(false) }
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
     var showFloatingControls by rememberSaveable { mutableStateOf(false) }
     var floatingOffsetX by rememberSaveable { mutableFloatStateOf(0f) }
@@ -704,12 +710,22 @@ fun PlayerScreen(
                     showResegmentSheet = false
                 },
                 onOpenGlobalSettings = {
-                    showResegmentSheet = false
-                    onOpenLanguageSettings()
+                    showLanguageSettingsModal = true
                 },
                 onClose = { showResegmentSheet = false },
             )
         }
+    }
+
+    if (showLanguageSettingsModal) {
+        LanguageSettingsModalDialog(
+            enabledLanguages = state.enabledLanguages.toSet(),
+            onToggleLanguage = { language ->
+                onEvent(PlayerEvent.ToggleEnabledLanguage(language))
+            },
+            onDismiss = { showLanguageSettingsModal = false },
+            isFirstLaunchOnboarding = false,
+        )
     }
 
     if (showDiagnosticsDialog) {
@@ -770,6 +786,7 @@ private fun FloatingTransportContent(
  * - 全チャンクの文字起こしが完了している場合は、ライブラリ画面と同様に緑丸＋白抜きの文字起こしアイコンを表示する。
  * - 未完了の場合は `{文字起こしアイコン}{スピナー（実行中のみ）}{進捗率%}` をトグルバッジとして表示し、タップでオン（再開）/ オフ（一時停止）を切り替えられる。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerTranscriptionStatusBadge(
     state: PlayerUiState,
@@ -837,43 +854,66 @@ private fun PlayerTranscriptionStatusBadge(
         FilterChipDefaults.filterChipBorder(enabled = true, selected = false)
     }
 
-    Surface(
-        shape = FilterChipDefaults.shape,
-        color = badgeContainerColor,
-        contentColor = badgeContentColor,
-        border = badgeBorder,
-        modifier = modifier
-            .heightIn(min = FilterChipDefaults.Height)
-            .clip(FilterChipDefaults.shape)
-            .clickable { onToggleTranscription(!isRunning) }
-            .semantics(mergeDescendants = true) {
-                contentDescription = statusDescription
-            },
+    val tooltipState = rememberTooltipState(
+        initialIsVisible = state.isTranscriptionBadgeTooltipVisible,
+        isPersistent = true,
+    )
+    LaunchedEffect(state.isTranscriptionBadgeTooltipVisible) {
+        if (state.isTranscriptionBadgeTooltipVisible) {
+            tooltipState.show()
+        } else {
+            tooltipState.dismiss()
+        }
+    }
+
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = {
+            PlainTooltip {
+                Text(text = stringResource(R.string.player_transcription_badge_tooltip))
+            }
+        },
+        state = tooltipState,
+        enableUserInput = false,
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Surface(
+            shape = FilterChipDefaults.shape,
+            color = badgeContainerColor,
+            contentColor = badgeContentColor,
+            border = badgeBorder,
+            modifier = modifier
+                .heightIn(min = FilterChipDefaults.Height)
+                .clip(FilterChipDefaults.shape)
+                .clickable { onToggleTranscription(!isRunning) }
+                .semantics(mergeDescendants = true) {
+                    contentDescription = statusDescription
+                },
         ) {
-            Icon(
-                imageVector = ChunkFlowIcons.SpeechToText,
-                contentDescription = null,
-                tint = badgeContentColor,
-                modifier = Modifier.size(18.dp),
-            )
-            if (isRunning) {
-                ChunkFlowLoadingIndicator(
-                    modifier = Modifier.size(16.dp),
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = ChunkFlowIcons.SpeechToText,
+                    contentDescription = null,
+                    tint = badgeContentColor,
+                    modifier = Modifier.size(18.dp),
+                )
+                if (isRunning) {
+                    ChunkFlowLoadingIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = badgeContentColor,
+                    )
+                }
+                Text(
+                    text = "$progressPercent%",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (isRunning) FontWeight.SemiBold else FontWeight.Normal,
                     color = badgeContentColor,
+                    maxLines = 1,
                 )
             }
-            Text(
-                text = "$progressPercent%",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (isRunning) FontWeight.SemiBold else FontWeight.Normal,
-                color = badgeContentColor,
-                maxLines = 1,
-            )
         }
     }
 }

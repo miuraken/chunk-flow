@@ -220,15 +220,34 @@ class DefaultAnalysisRepository(
     private val activeLanguageDetectionJobs = ConcurrentHashMap<MediaId, Job>()
     private val pipelinedLidProcessedChunkIds = ConcurrentHashMap<MediaId, MutableSet<Long>>()
     private val globalBackgroundTranscriptionEnabled = AtomicBoolean(true)
+    private val defaultAutoStartLookaheadEnabled = AtomicBoolean(true)
 
     init {
         val settingsFlow = userSettingsRepository?.settings
         if (settingsFlow != null) {
             if (settingsFlow is kotlinx.coroutines.flow.StateFlow<*>) {
-                val initial = (settingsFlow.value as? com.miuraken.chunkflow.core.model.UserSettings)?.backgroundTranscriptionEnabled
-                if (initial != null) {
-                    globalBackgroundTranscriptionEnabled.set(initial)
+                val initialSettings = settingsFlow.value as? com.miuraken.chunkflow.core.model.UserSettings
+                if (initialSettings != null) {
+                    globalBackgroundTranscriptionEnabled.set(initialSettings.backgroundTranscriptionEnabled)
+                    defaultAutoStartLookaheadEnabled.set(
+                        initialSettings.lookaheadTranscriptionEnabled && initialSettings.autoStartTranscriptionOnOpen,
+                    )
                 }
+            }
+            backgroundScope.launch(ioDispatcher) {
+                settingsFlow
+                    .map { it.lookaheadTranscriptionEnabled && it.autoStartTranscriptionOnOpen }
+                    .distinctUntilChanged()
+                    .collect { defaultEnabled ->
+                        defaultAutoStartLookaheadEnabled.set(defaultEnabled)
+                        for ((mediaId, stateFlow) in lookaheadStates) {
+                            if (mediaId !in explicitlyConfiguredLookaheadMediaIds) {
+                                stateFlow.update { current ->
+                                    if (current.enabled == defaultEnabled) current else current.copy(enabled = defaultEnabled)
+                                }
+                            }
+                        }
+                    }
             }
             backgroundScope.launch {
                 settingsFlow
@@ -278,6 +297,20 @@ class DefaultAnalysisRepository(
                         }
                     }
             }
+        }
+    }
+
+    private suspend fun ensureDefaultLookaheadEnabledConfigured(id: MediaId) {
+        if (id in explicitlyConfiguredLookaheadMediaIds) return
+        val repo = userSettingsRepository ?: return
+        val defaultEnabled = runCatching {
+            val s = repo.settings.first()
+            s.lookaheadTranscriptionEnabled && s.autoStartTranscriptionOnOpen
+        }.getOrElse { defaultAutoStartLookaheadEnabled.get() }
+        defaultAutoStartLookaheadEnabled.set(defaultEnabled)
+        val stateFlow = lookaheadStateFor(id)
+        if (id !in explicitlyConfiguredLookaheadMediaIds && stateFlow.value.enabled != defaultEnabled) {
+            stateFlow.update { it.copy(enabled = defaultEnabled) }
         }
     }
 
@@ -593,6 +626,7 @@ class DefaultAnalysisRepository(
                         }
                     }
                 }
+                ensureDefaultLookaheadEnabledConfigured(mediaId)
                 val resumeStartIndex = resumeLookaheadStartIndexOrNull(mediaId)
                 if (
                     !launchedLid &&
@@ -790,7 +824,6 @@ class DefaultAnalysisRepository(
                                 chunkPersistenceMutex.withLock {
                                     flushPendingStreamLidResultsLocked()
                                 }
-                                stateFlow.update { it.copy(isLanguageDetectionRunning = false) }
                                 val done = lidCompletedCount.get()
                                 val total = lidTotalEnqueuedCount.get()
                                 if (total > 0) {
@@ -1172,18 +1205,23 @@ class DefaultAnalysisRepository(
                                 ConcurrentHashMap.newKeySet()
                             }.addAll(evaluatedAutoIds)
 
+                            ensureDefaultLookaheadEnabledConfigured(mediaId)
                             val resumeStartIndex = resumeLookaheadStartIndexOrNull(mediaId)
                             if (missingLidChunkIds.isNotEmpty()) {
                                 startLanguageDetectionInternal(mediaId, onlyMissingLanguage = true)
-                            } else if (
-                                resumeStartIndex != null &&
-                                stateFlow.value.enabled &&
-                                canContinueTranscriptionForMedia(mediaId)
-                            ) {
-                                triggerLookaheadAt(mediaId, resumeStartIndex)
+                            } else {
+                                stateFlow.update { it.copy(isLanguageDetectionRunning = false) }
+                                if (
+                                    resumeStartIndex != null &&
+                                    stateFlow.value.enabled &&
+                                    canContinueTranscriptionForMedia(mediaId)
+                                ) {
+                                    triggerLookaheadAt(mediaId, resumeStartIndex)
+                                }
                             }
                         } else {
                             activePipelinedLidJobs.remove(mediaId)?.complete(Unit)
+                            ensureDefaultLookaheadEnabledConfigured(mediaId)
                             val resumeStartIndex = resumeLookaheadStartIndexOrNull(mediaId)
                             if (
                                 mediaItem != null &&
@@ -1205,11 +1243,17 @@ class DefaultAnalysisRepository(
                         pcmWindowBuffer?.clear()
                         lidRequestChannel?.close()
                         lidConsumerJob?.cancel()
+                        if (activeLanguageDetectionJobs[mediaId]?.isActive != true) {
+                            stateFlow.update { it.copy(isLanguageDetectionRunning = false) }
+                        }
                     }
                 } catch (t: Throwable) {
                     pcmWindowBuffer?.clear()
                     lidRequestChannel?.close()
                     lidConsumerJob?.cancel()
+                    if (activeLanguageDetectionJobs[mediaId]?.isActive != true) {
+                        stateFlow.update { it.copy(isLanguageDetectionRunning = false) }
+                    }
                     throw t
                 }
             }
@@ -1566,6 +1610,7 @@ class DefaultAnalysisRepository(
             }
 
             // 第1段階（一括言語判定）の完了後、先読み文字起こしセッションが進行中であれば第2段階（文字起こし）へ自動移行する
+            ensureDefaultLookaheadEnabledConfigured(id)
             val resumeStartIndex = resumeLookaheadStartIndexOrNull(id)
             if (resumeStartIndex != null && stateFlow.value.enabled && canContinueTranscriptionForMedia(id)) {
                 triggerLookaheadAt(id, resumeStartIndex)
@@ -2187,6 +2232,11 @@ class DefaultAnalysisRepository(
     override fun setMediaTranscriptionSessionOpen(id: MediaId, open: Boolean) {
         hasExplicitSessionTracking.set(true)
         if (open) {
+            if (id !in explicitlyConfiguredLookaheadMediaIds) {
+                backgroundScope.launch(ioDispatcher) {
+                    ensureDefaultLookaheadEnabledConfigured(id)
+                }
+            }
             backgroundJobs.remove(id)?.cancel()
             backgroundDeferredEmptyChunkIds.remove(id)
             val previouslyOpen = activeOpenMediaIds.toList()
@@ -3062,15 +3112,8 @@ class DefaultAnalysisRepository(
                 }
 
                 lookaheadMutexFor(id).withLock {
+                    ensureDefaultLookaheadEnabledConfigured(id)
                     val stateFlow = lookaheadStateFor(id)
-                    if (id !in explicitlyConfiguredLookaheadMediaIds && userSettingsRepository != null) {
-                        val defaultEnabled = runCatching {
-                            userSettingsRepository.settings.first().lookaheadTranscriptionEnabled
-                        }.getOrDefault(true)
-                        if (stateFlow.value.enabled != defaultEnabled) {
-                            stateFlow.update { it.copy(enabled = defaultEnabled) }
-                        }
-                    }
                     val currentStatus = stateFlow.value
                     val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
                     if (!currentStatus.enabled || !canContinueTranscriptionForMedia(id)) {
@@ -4354,7 +4397,7 @@ class DefaultAnalysisRepository(
         val available = runCatching { onDeviceChunkTranscriber.isAvailable() }.getOrDefault(false)
         MutableStateFlow(
             LookaheadTranscriptionStatus(
-                enabled = true,
+                enabled = defaultAutoStartLookaheadEnabled.get(),
                 engineAvailable = available,
             ),
         )
