@@ -19,6 +19,7 @@ enum class LibraryFolderKind {
  * @property languagePair コースに設定された学習言語・母語ペア。
  * @property treeUri ローカルフォルダの場合の SAF Tree URI 文字列。
  * @property lastScannedAtEpochMs 最終スキャン時刻（ミリ秒）。
+ * @property sortOrder ルートフォルダの表示順序（小さい値ほど上に表示。`null` の場合は名前順）。
  */
 data class LibraryCourseFolder(
     val coursePath: String,
@@ -26,6 +27,7 @@ data class LibraryCourseFolder(
     val languagePair: LanguagePair,
     val treeUri: String? = null,
     val lastScannedAtEpochMs: Long = 0L,
+    val sortOrder: Int? = null,
 ) {
     companion object {
         /** 単一・複数ファイル選択時に既定で格納される仮想ディレクトリ名。 */

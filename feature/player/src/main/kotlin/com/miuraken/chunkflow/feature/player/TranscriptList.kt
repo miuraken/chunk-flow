@@ -516,7 +516,7 @@ fun TranscriptList(
             if (!isAutoFollowPaused && targetIdx in displayedChunks.indices) {
                 programmaticScrollCount++
                 try {
-                    listState.animateScrollToItem(targetIdx)
+                    listState.animateScrollToItem(resolveAutoFollowScrollTargetIndex(targetIdx))
                 } finally {
                     programmaticScrollCount--
                 }
@@ -724,7 +724,7 @@ fun TranscriptList(
                     coroutineScope.launch {
                         programmaticScrollCount++
                         try {
-                            listState.animateScrollToItem(activeDisplayIndex)
+                            listState.animateScrollToItem(resolveAutoFollowScrollTargetIndex(activeDisplayIndex))
                         } finally {
                             programmaticScrollCount--
                         }
@@ -2162,3 +2162,12 @@ private fun TranscriptListRecognitionModelMissingPreview() {
         }
     }
 }
+
+/** 自動追従スクロール時に再生中のチャンクの上に表示する直前チャンクの数（再生中のチャンクを上から 3 番目に配置する）。 */
+internal const val AUTO_FOLLOW_LEADING_CONTEXT_ITEMS: Int = 2
+
+/**
+ * 再生中のチャンクの表示インデックス [activeDisplayIndex] に対し、
+ * 自動追従スクロールで先頭に合わせるべきアイテムのインデックスを返す。
+ */
+internal fun resolveAutoFollowScrollTargetIndex(activeDisplayIndex: Int): Int = (activeDisplayIndex - AUTO_FOLLOW_LEADING_CONTEXT_ITEMS).coerceAtLeast(0)

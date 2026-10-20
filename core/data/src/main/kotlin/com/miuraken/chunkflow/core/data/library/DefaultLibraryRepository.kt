@@ -157,13 +157,21 @@ class DefaultLibraryRepository(
 
     private val audioFileStateVersion = MutableStateFlow(0L)
     private val scheduledAnalysisMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
+    private val rootFolderOrderFile = File(context.filesDir, ROOT_FOLDER_ORDER_FILE_NAME)
+    private val rootFolderSortOrders = MutableStateFlow(readRootFolderOrderFromDisk())
 
     override fun observeItems(): Flow<List<AudioItem>> = mediaItemDao.observeAll().map { entities ->
         entities.map(MediaItemEntity::toExternalModel)
     }
 
-    override fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = courseFolderDao.observeAll().map { entities ->
-        entities.map(CourseFolderEntity::toExternalModel)
+    override fun observeCourseFolders(): Flow<List<LibraryCourseFolder>> = combine(
+        courseFolderDao.observeAll(),
+        rootFolderSortOrders,
+    ) { entities, sortOrders ->
+        entities.map { entity ->
+            val model = entity.toExternalModel()
+            model.copy(sortOrder = sortOrders[model.coursePath])
+        }
     }
 
     override fun observePlaylists(): Flow<List<LibraryPlaylist>> = combine(
@@ -390,6 +398,9 @@ class DefaultLibraryRepository(
             ?: existingFolder?.toExternalModel()?.languagePair
             ?: defaultLanguages
 
+        val topSegment = resolvedRootCourse.substringBefore('/')
+        val isNewRootFolder = resolvedRootCourse == topSegment && !isExistingRootCourseInDb(topSegment)
+
         val nowMs = clock()
         courseFolderDao.upsert(
             CourseFolderEntity(
@@ -401,6 +412,9 @@ class DefaultLibraryRepository(
                 lastScannedAt = nowMs,
             ),
         )
+        if (isNewRootFolder) {
+            assignTopSortOrderForNewRootFolder(topSegment)
+        }
         if (rootDocId != null) {
             writeCourseJsonToSafDir(
                 treeUri = treeUri,
@@ -663,6 +677,8 @@ class DefaultLibraryRepository(
     ): Boolean = withContext(ioDispatcher) {
         val normalizedCourse = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() }
             ?: return@withContext false
+        val topSegment = normalizedCourse.substringBefore('/')
+        val isNewRootFolder = normalizedCourse == topSegment && !isExistingRootCourseInDb(topSegment)
         val existing = courseFolderDao.getByPath(normalizedCourse)
         val kind = existing?.kind ?: LibraryFolderKind.VIRTUAL_DIRECTORY.name
         courseFolderDao.upsert(
@@ -675,6 +691,9 @@ class DefaultLibraryRepository(
                 lastScannedAt = existing?.lastScannedAt ?: clock(),
             ),
         )
+        if (isNewRootFolder) {
+            assignTopSortOrderForNewRootFolder(topSegment)
+        }
         true
     }
 
@@ -685,6 +704,8 @@ class DefaultLibraryRepository(
     ): Boolean = withContext(ioDispatcher) {
         val normalizedCourse = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() }
             ?: return@withContext false
+        val topSegment = normalizedCourse.substringBefore('/')
+        val isNewRootFolder = normalizedCourse == topSegment && !isExistingRootCourseInDb(topSegment)
         val existing = courseFolderDao.getByPath(normalizedCourse)
         val resolvedTreeUri = existing?.treeUri?.takeIf { it.isNotBlank() }
             ?: treeUri?.takeIf { it.isNotBlank() }
@@ -698,6 +719,9 @@ class DefaultLibraryRepository(
                 lastScannedAt = existing?.lastScannedAt ?: clock(),
             ),
         )
+        if (isNewRootFolder) {
+            assignTopSortOrderForNewRootFolder(topSegment)
+        }
         true
     }
 
@@ -881,6 +905,19 @@ class DefaultLibraryRepository(
                         }
                     }
                 }
+                if (!currentCourse.contains('/')) {
+                    val currentOrders = rootFolderSortOrders.value
+                    val oldOrder = currentOrders[currentCourse]
+                    if (oldOrder != null) {
+                        val updatedOrders = LinkedHashMap(currentOrders)
+                        updatedOrders.remove(currentCourse)
+                        if (normalizedNewCourse != null && !normalizedNewCourse.contains('/')) {
+                            updatedOrders[normalizedNewCourse] = oldOrder
+                        }
+                        rootFolderSortOrders.value = updatedOrders
+                        writeRootFolderOrderToDisk(updatedOrders)
+                    }
+                }
             } else {
                 mediaItemDao.updateUncategorizedCourseMetadata(
                     newCourse = normalizedNewCourse,
@@ -1062,6 +1099,101 @@ class DefaultLibraryRepository(
         if (orderedMediaIds.isEmpty()) return
         withContext(ioDispatcher) {
             itemStateDao.updateFileSortOrders(orderedMediaIds.map { it.value })
+        }
+    }
+
+    override suspend fun reorderRootFolders(orderedCoursePaths: List<String>) {
+        val cleaned = orderedCoursePaths
+            .mapNotNull { sanitizeCoursePath(it).takeIf { p -> p.isNotBlank() && !p.contains('/') } }
+            .distinct()
+        if (cleaned.isEmpty()) return
+        withContext(ioDispatcher) {
+            val defaultLanguages = userSettingsRepository.settings.first().defaultLanguagePair
+            val allItems = mediaItemDao.observeAll().first()
+            val now = clock()
+            for (rootCourse in cleaned) {
+                if (courseFolderDao.getByPath(rootCourse) == null) {
+                    val itemMatch = allItems.firstOrNull {
+                        val c = it.course?.trim()?.trim('/')
+                        c == rootCourse || c?.startsWith("$rootCourse/") == true
+                    }
+                    val targetLang = itemMatch?.targetLang?.takeIf { it.isNotBlank() }
+                        ?: defaultLanguages.target.value
+                    val baseLang = if (itemMatch != null) {
+                        itemMatch.baseLang
+                    } else {
+                        defaultLanguages.base?.value
+                    }
+                    courseFolderDao.upsert(
+                        CourseFolderEntity(
+                            coursePath = rootCourse,
+                            kind = LibraryFolderKind.VIRTUAL_DIRECTORY.name,
+                            targetLang = targetLang,
+                            baseLang = baseLang,
+                            treeUri = null,
+                            lastScannedAt = now,
+                        ),
+                    )
+                }
+            }
+            val updatedOrders = LinkedHashMap<String, Int>(cleaned.size)
+            cleaned.forEachIndexed { index, rootCourse ->
+                updatedOrders[rootCourse] = index
+            }
+            rootFolderSortOrders.value = updatedOrders
+            writeRootFolderOrderToDisk(updatedOrders)
+        }
+    }
+
+    private suspend fun isExistingRootCourseInDb(topSegment: String): Boolean {
+        if (topSegment in rootFolderSortOrders.value) return true
+        val existingFolders = courseFolderDao.getAll()
+        if (existingFolders.any { it.coursePath == topSegment || it.coursePath.startsWith("$topSegment/") }) {
+            return true
+        }
+        val existingItems = mediaItemDao.observeAll().first()
+        return existingItems.any {
+            val c = it.course?.trim()?.trim('/')
+            c == topSegment || c?.startsWith("$topSegment/") == true
+        }
+    }
+
+    private fun assignTopSortOrderForNewRootFolder(topSegment: String) {
+        val currentOrders = rootFolderSortOrders.value
+        val nextSortOrder = (currentOrders.values.minOrNull() ?: 0) - 1
+        val updatedOrders = LinkedHashMap<String, Int>(currentOrders.size + 1)
+        updatedOrders[topSegment] = nextSortOrder
+        for ((k, v) in currentOrders) {
+            if (k != topSegment) {
+                updatedOrders[k] = v
+            }
+        }
+        rootFolderSortOrders.value = updatedOrders
+        writeRootFolderOrderToDisk(updatedOrders)
+    }
+
+    private fun readRootFolderOrderFromDisk(): Map<String, Int> = runCatching {
+        if (!rootFolderOrderFile.isFile) return emptyMap()
+        val result = LinkedHashMap<String, Int>()
+        rootFolderOrderFile.readLines(Charsets.UTF_8).forEach { line ->
+            val tabIdx = line.lastIndexOf('\t')
+            if (tabIdx > 0) {
+                val path = line.substring(0, tabIdx).trim()
+                val order = line.substring(tabIdx + 1).trim().toIntOrNull()
+                if (path.isNotEmpty() && order != null) {
+                    result[path] = order
+                }
+            }
+        }
+        result
+    }.getOrDefault(emptyMap())
+
+    private fun writeRootFolderOrderToDisk(orders: Map<String, Int>) {
+        runCatching {
+            val serialized = orders.entries
+                .sortedBy { it.value }
+                .joinToString("\n") { (path, order) -> "$path\t$order" }
+            rootFolderOrderFile.writeText(serialized, Charsets.UTF_8)
         }
     }
 
@@ -2582,6 +2714,7 @@ class DefaultLibraryRepository(
         private const val TRANSCRIPTION_DIR_NAME: String = "transcription"
         private const val CHUNKFLOW_DIR_NAME: String = ".chunkflow"
         private const val COURSE_JSON_FILE_NAME: String = "course.json"
+        private const val ROOT_FOLDER_ORDER_FILE_NAME: String = "root_folder_order.txt"
         private const val MAX_TREE_DEPTH: Int = 6
         private const val MAX_EXPORT_SEGMENT_CHARS: Int = 2_000
         private val COURSE_NAME_JSON_REGEX = Regex(""""courseName"\s*:\s*"([^"]+)"""")

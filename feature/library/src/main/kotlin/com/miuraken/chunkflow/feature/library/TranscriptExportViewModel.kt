@@ -137,7 +137,7 @@ class TranscriptExportViewModel @Inject constructor(
             val previews = linkedMapOf<TranscriptExportFormat, String>()
             for (format in TranscriptExportFormat.entries) {
                 val exported = libraryRepository.exportTranscriptText(firstId, format).orEmpty()
-                previews[format] = formatPreviewLines(exported)
+                previews[format] = formatPreviewLines(exported, maxLines = maxPreviewLinesFor(format))
             }
             _uiState.update { current ->
                 current.copy(
@@ -221,8 +221,14 @@ class TranscriptExportViewModel @Inject constructor(
     }
 
     companion object {
-        /** プレビューに表示する最大行数。 */
+        /** プレビューに表示する最大行数（標準フォーマット）。 */
         internal const val MAX_PREVIEW_LINES = 10
+
+        /** JSON プレビューに表示する最大行数（標準フォーマットの 2 倍）。 */
+        internal const val MAX_JSON_PREVIEW_LINES = MAX_PREVIEW_LINES * 2
+
+        /** フォーマット [format] に対応するプレビュー最大行数を返す。 */
+        internal fun maxPreviewLinesFor(format: TranscriptExportFormat): Int = if (format == TranscriptExportFormat.JSON) MAX_JSON_PREVIEW_LINES else MAX_PREVIEW_LINES
 
         /**
          * エクスポート文字列 [fullText] の先頭 [maxLines] 行を取り出してプレビュー文字列に整形する。

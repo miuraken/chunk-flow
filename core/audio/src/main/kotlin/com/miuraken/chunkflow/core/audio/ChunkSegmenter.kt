@@ -344,6 +344,66 @@ class ChunkSegmenter(
     }
 
     /**
+     * 指定した範囲 `[rangeStartMs, rangeEndMs)` が「無音判定の感度（[SegmentationParams.thresholdRatio]）」に照らして
+     * 無音のみであるかを判定する。
+     *
+     * 特徴量が空の場合は、無音とは判定できないため `false` を返す。
+     *
+     * @param logEnergyDb フレームごとの対数エネルギー（dBFS）。
+     * @param rangeStartMs 判定範囲の開始時刻（ミリ秒）。
+     * @param rangeEndMs 判定範囲の終了時刻（ミリ秒、`rangeStartMs < rangeEndMs`）。
+     * @param params 無音判定の感度（`thresholdRatio`）を含む分割パラメータ。
+     * @param binMs 1 フレームの長さ（ミリ秒）。
+     * @return 範囲内がすべて無音と判定される場合は `true`、有音フレームを含む場合は `false`。
+     */
+    fun isSilenceOnlyInRange(
+        logEnergyDb: FloatArray,
+        rangeStartMs: Long,
+        rangeEndMs: Long,
+        params: SegmentationParams = SegmentationParams(),
+        binMs: Int = defaultBinMs,
+    ): Boolean {
+        require(binMs > 0) { "binMs must be > 0: $binMs" }
+        require(rangeStartMs < rangeEndMs) {
+            "rangeStartMs ($rangeStartMs) must be < rangeEndMs ($rangeEndMs)"
+        }
+        if (logEnergyDb.isEmpty()) {
+            return false
+        }
+
+        val smoothed = EnergyVoiceActivityDetector.medianFilter5(logEnergyDb)
+        val totalFrames = smoothed.size
+        val startFrame = (rangeStartMs / binMs).toInt().coerceIn(0, totalFrames)
+        val endFrame = ((rangeEndMs + binMs - 1L) / binMs).toInt().coerceIn(startFrame, totalFrames)
+        if (startFrame >= endFrame) {
+            return false
+        }
+
+        val globalSorted = FloatArray(totalFrames) { i ->
+            smoothed[i].coerceAtLeast(DbfsQuantizer.FLOOR_DB)
+        }.apply { sort() }
+        val globalN = EnergyVoiceActivityDetector.percentileSorted(globalSorted, 0.10f)
+        val globalS = EnergyVoiceActivityDetector.percentileSorted(globalSorted, 0.90f)
+        val ratio = params.thresholdRatio.coerceIn(0f, 1f)
+        val thresholdDb = (globalN + ratio * (globalS - globalN)).coerceIn(
+            EnergyVoiceActivityDetector.MIN_THRESHOLD_DB,
+            EnergyVoiceActivityDetector.MAX_THRESHOLD_DB,
+        )
+
+        var localMax = DbfsQuantizer.FLOOR_DB
+        for (f in startFrame until endFrame) {
+            val e = smoothed[f].coerceAtLeast(DbfsQuantizer.FLOOR_DB)
+            if (e > localMax) {
+                localMax = e
+            }
+        }
+        if (globalS - globalN < 3f && localMax < -45f) {
+            return true
+        }
+        return localMax < thresholdDb
+    }
+
+    /**
      * 指定した範囲 `[rangeStartMs, rangeEndMs]` 内に有音領域がある場合は左右の無音領域をトリミングした区間を返し、
      * 無音領域しかない場合（または特徴量が空の場合）は選択範囲 `[rangeStartMs, rangeEndMs]` をそのまま返す。
      *

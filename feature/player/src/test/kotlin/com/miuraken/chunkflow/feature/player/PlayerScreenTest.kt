@@ -295,4 +295,55 @@ class PlayerScreenTest {
             state.selectDefaultEngineForLanguage(ko),
         )
     }
+
+    @Test
+    fun `resolveAutoFollowScrollTargetIndex_再生中チャンクが上から3番目に配置されるスクロールインデックスを返す`() {
+        assertEquals(0, resolveAutoFollowScrollTargetIndex(0))
+        assertEquals(0, resolveAutoFollowScrollTargetIndex(1))
+        assertEquals(0, resolveAutoFollowScrollTargetIndex(2))
+        assertEquals(1, resolveAutoFollowScrollTargetIndex(3))
+        assertEquals(8, resolveAutoFollowScrollTargetIndex(10))
+    }
+
+    @Test
+    fun `shouldShowOverviewChunkBoundaryTicks_言語判定中は表示し言語判定終了後は非表示にする`() {
+        val c1 = ChunkUi(id = ChunkId(1L), startMs = 0L, endMs = 1_000L, text = null, language = null)
+        val c2 = ChunkUi(id = ChunkId(2L), startMs = 1_500L, endMs = 2_500L, text = null, language = null)
+
+        // 言語判定前（language == null）は下部チャンク境界オーバーレイを表示する
+        assertTrue(
+            shouldShowOverviewChunkBoundaryTicks(
+                featureStatus = com.miuraken.chunkflow.core.model.StageStatus.Done,
+                segmentationStatus = com.miuraken.chunkflow.core.model.StageStatus.Done,
+                lookaheadStatus = LookaheadTranscriptionStatus(),
+                chunks = listOf(c1, c2),
+            ),
+        )
+
+        // 言語判定中も下部チャンク境界オーバーレイを表示する
+        assertTrue(
+            shouldShowOverviewChunkBoundaryTicks(
+                featureStatus = com.miuraken.chunkflow.core.model.StageStatus.Done,
+                segmentationStatus = com.miuraken.chunkflow.core.model.StageStatus.Done,
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    inFlightChunkId = c2.id,
+                    inFlightStep = com.miuraken.chunkflow.core.model.TranscriptionStep.DETECTING_LANGUAGE,
+                ),
+                chunks = listOf(c1.copy(language = LanguageTag("ja")), c2),
+            ),
+        )
+
+        // 全チャンクの言語判定が終了した後は下部チャンク境界オーバーレイを非表示にする
+        assertFalse(
+            shouldShowOverviewChunkBoundaryTicks(
+                featureStatus = com.miuraken.chunkflow.core.model.StageStatus.Done,
+                segmentationStatus = com.miuraken.chunkflow.core.model.StageStatus.Done,
+                lookaheadStatus = LookaheadTranscriptionStatus(),
+                chunks = listOf(
+                    c1.copy(language = LanguageTag("ja")),
+                    c2.copy(language = LanguageTag("ko")),
+                ),
+            ),
+        )
+    }
 }

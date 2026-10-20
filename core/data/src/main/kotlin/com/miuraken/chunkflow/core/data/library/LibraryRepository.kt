@@ -225,6 +225,11 @@ interface LibraryRepository {
     suspend fun reorderAllFiles(orderedMediaIds: List<MediaId>) = Unit
 
     /**
+     * 「フォルダ」タブにおけるルートフォルダのカスタム並び順を永続化する。
+     */
+    suspend fun reorderRootFolders(orderedCoursePaths: List<String>) = Unit
+
+    /**
      * 教材の文字起こし（手動修正された言語ラベルを含む）を `.chunkflow.json` 形式でアプリ内部ファイルへ書き出す。
      *
      * @return 書き出しに成功した場合は `true`、書き出す文字起こしがない場合は `false`。

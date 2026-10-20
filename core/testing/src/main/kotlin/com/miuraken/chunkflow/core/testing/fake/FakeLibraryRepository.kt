@@ -181,6 +181,25 @@ class FakeLibraryRepository(
         return import(uris)
     }
 
+    private fun nextTopSortOrder(
+        existingFolders: List<LibraryCourseFolder>,
+        existingSortOrder: Int?,
+        isExistingRoot: Boolean,
+    ): Int? {
+        if (isExistingRoot) return existingSortOrder
+        val currentMin = existingFolders.mapNotNull { it.sortOrder }.minOrNull() ?: 0
+        return currentMin - 1
+    }
+
+    private fun isExistingRootCourse(
+        topSegment: String,
+        folders: List<LibraryCourseFolder>,
+    ): Boolean = folders.any { it.coursePath == topSegment || it.coursePath.startsWith("$topSegment/") } ||
+        items.value.any {
+            val c = it.course?.trim()?.trim('/')
+            c == topSegment || c?.startsWith("$topSegment/") == true
+        }
+
     override fun linkLocalDirectory(
         treeUri: Uri,
         course: String?,
@@ -189,7 +208,15 @@ class FakeLibraryRepository(
         linkedLocalDirectories += Triple(treeUri, course, languages)
         val resolvedCourse = course?.trim()?.takeIf { it.isNotEmpty() } ?: "local-folder"
         val resolvedLanguages = languages ?: LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
+        val topSegment = resolvedCourse.substringBefore('/')
         courseFolders.update { list ->
+            val existing = list.firstOrNull { it.coursePath == resolvedCourse }
+            val isExistingRoot = isExistingRootCourse(topSegment, list)
+            val nextSortOrder = if (resolvedCourse == topSegment) {
+                nextTopSortOrder(list, existing?.sortOrder, isExistingRoot)
+            } else {
+                existing?.sortOrder
+            }
             list.filterNot { it.coursePath == resolvedCourse } +
                 LibraryCourseFolder(
                     coursePath = resolvedCourse,
@@ -197,6 +224,7 @@ class FakeLibraryRepository(
                     languagePair = resolvedLanguages,
                     treeUri = treeUri.toString(),
                     lastScannedAtEpochMs = System.currentTimeMillis(),
+                    sortOrder = nextSortOrder,
                 )
         }
         return import(listOf(treeUri), resolvedCourse, resolvedLanguages)
@@ -213,8 +241,15 @@ class FakeLibraryRepository(
     ): Boolean {
         val trimmed = coursePath.trim().trim('/')
         if (trimmed.isEmpty()) return false
+        val topSegment = trimmed.substringBefore('/')
         courseFolders.update { list ->
             val existing = list.firstOrNull { it.coursePath == trimmed }
+            val isExistingRoot = isExistingRootCourse(topSegment, list)
+            val nextSortOrder = if (trimmed == topSegment) {
+                nextTopSortOrder(list, existing?.sortOrder, isExistingRoot)
+            } else {
+                existing?.sortOrder
+            }
             list.filterNot { it.coursePath == trimmed } +
                 LibraryCourseFolder(
                     coursePath = trimmed,
@@ -222,6 +257,7 @@ class FakeLibraryRepository(
                     languagePair = languages,
                     treeUri = existing?.treeUri,
                     lastScannedAtEpochMs = existing?.lastScannedAtEpochMs ?: 0L,
+                    sortOrder = nextSortOrder,
                 )
         }
         return true
@@ -234,8 +270,15 @@ class FakeLibraryRepository(
     ): Boolean {
         val trimmed = coursePath.trim().trim('/')
         if (trimmed.isEmpty()) return false
+        val topSegment = trimmed.substringBefore('/')
         courseFolders.update { list ->
             val existing = list.firstOrNull { it.coursePath == trimmed }
+            val isExistingRoot = isExistingRootCourse(topSegment, list)
+            val nextSortOrder = if (trimmed == topSegment) {
+                nextTopSortOrder(list, existing?.sortOrder, isExistingRoot)
+            } else {
+                existing?.sortOrder
+            }
             val resolvedTreeUri = existing?.treeUri?.takeIf { it.isNotBlank() }
                 ?: treeUri?.takeIf { it.isNotBlank() }
             list.filterNot { it.coursePath == trimmed } +
@@ -245,6 +288,7 @@ class FakeLibraryRepository(
                     languagePair = languages,
                     treeUri = resolvedTreeUri,
                     lastScannedAtEpochMs = existing?.lastScannedAtEpochMs ?: 0L,
+                    sortOrder = nextSortOrder,
                 )
         }
         return true
@@ -537,6 +581,35 @@ class FakeLibraryRepository(
                 )
             }
             next
+        }
+    }
+
+    override suspend fun reorderRootFolders(orderedCoursePaths: List<String>) {
+        val cleaned = orderedCoursePaths
+            .map { it.trim().trim('/') }
+            .filter { it.isNotEmpty() && !it.contains('/') }
+            .distinct()
+        if (cleaned.isEmpty()) return
+        courseFolders.update { current ->
+            val byPath = current.associateBy { it.coursePath }.toMutableMap()
+            cleaned.forEachIndexed { index, rootPath ->
+                val existing = byPath[rootPath]
+                if (existing != null) {
+                    byPath[rootPath] = existing.copy(sortOrder = index)
+                } else {
+                    val itemLang = items.value.firstOrNull {
+                        val c = it.course?.trim()?.trim('/')
+                        c == rootPath || c?.startsWith("$rootPath/") == true
+                    }?.languagePair ?: LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
+                    byPath[rootPath] = LibraryCourseFolder(
+                        coursePath = rootPath,
+                        kind = LibraryFolderKind.VIRTUAL_DIRECTORY,
+                        languagePair = itemLang,
+                        sortOrder = index,
+                    )
+                }
+            }
+            byPath.values.toList()
         }
     }
 

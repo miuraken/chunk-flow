@@ -28,7 +28,7 @@
     <string name="settings_lookahead_label">先読み簡易文字起こしを有効にする</string>
     <string name="settings_lookahead_description">音声の再生中やチャンク選択時に、端末内の音声認識モデルで簡易文字起こしと2言語判定を行います。</string>
     <string name="settings_auto_start_transcription_on_open_label">ファイルを開いたら文字起こしを自動で始める</string>
-    <string name="settings_background_transcription_enabled_label">バックグラウンドでの文字起こしする</string>
+    <string name="settings_background_transcription_enabled_label">バックグラウンドで文字起こしを続ける</string>
     <string name="settings_section_transcription_engine">文字起こしライブラリ</string>
     <string name="settings_transcription_engine_description">端末内文字起こし処理を進めるライブラリを選択します。</string>
     <string name="settings_engine_auto_title">自動（OS 標準優先 ＋ sherpa-onnx 補完）</string>

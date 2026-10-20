@@ -341,4 +341,51 @@ class ChunkSegmenterTest {
             ),
         )
     }
+
+    @Test
+    fun `isSilenceOnlyInRange_無音判定感度に応じて無音のみかどうかを判定する`() {
+        val segmenter = ChunkSegmenter()
+        // 0..5000ms: 1000..2000ms は発話 (-12dB)、3000..4000ms は小さなノイズ (-35dB)、それ以外は無音 (-65dB)
+        val energy = FloatArray(500) { frame ->
+            val ms = frame * 10
+            when (ms) {
+                in 1_000 until 2_000 -> -12f
+                in 3_000 until 4_000 -> -35f
+                else -> -65f
+            }
+        }
+
+        // 有音を含む区間 [800..2200ms] は false
+        assertTrue(
+            !segmenter.isSilenceOnlyInRange(
+                logEnergyDb = energy,
+                rangeStartMs = 800L,
+                rangeEndMs = 2_200L,
+                params = SegmentationParams(thresholdRatio = 0.55f),
+                binMs = 10,
+            ),
+        )
+
+        // 無音のみの区間 [4100..4900ms] は true
+        assertTrue(
+            segmenter.isSilenceOnlyInRange(
+                logEnergyDb = energy,
+                rangeStartMs = 4_100L,
+                rangeEndMs = 4_900L,
+                params = SegmentationParams(thresholdRatio = 0.55f),
+                binMs = 10,
+            ),
+        )
+
+        // 感度 (thresholdRatio) を高くすると小さなノイズ区間 [3000..4000ms] も無音と判定される
+        assertTrue(
+            segmenter.isSilenceOnlyInRange(
+                logEnergyDb = energy,
+                rangeStartMs = 3_000L,
+                rangeEndMs = 4_000L,
+                params = SegmentationParams(thresholdRatio = 0.85f),
+                binMs = 10,
+            ),
+        )
+    }
 }

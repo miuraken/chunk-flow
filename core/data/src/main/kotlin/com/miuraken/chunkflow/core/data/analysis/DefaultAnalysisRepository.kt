@@ -1295,9 +1295,10 @@ class DefaultAnalysisRepository(
                 if (activeChunks.isEmpty()) return@launch
 
                 val alreadyProcessedByPipelinedLid = pipelinedLidProcessedChunkIds[id].orEmpty()
+                val skippedEmptyIds = attemptedEmptyChunkIds[id].orEmpty()
                 val transcriptsByChunkId = transcriptDao.observeByMediaId(id.value).first().associateBy { it.chunkId }
                 val targetChunks = activeChunks.filter { chunk ->
-                    if (chunk.id in alreadyProcessedByPipelinedLid) {
+                    if (chunk.id in alreadyProcessedByPipelinedLid || chunk.id in skippedEmptyIds) {
                         return@filter false
                     }
                     val existing = transcriptsByChunkId[chunk.id]
@@ -3861,9 +3862,17 @@ class DefaultAnalysisRepository(
                 null
             }
         }
-        val (trimmedStartMs, trimmedEndMs) = if (energyAndBinMs != null) {
-            val segmentationParams = userSettingsRepository?.settings?.first()?.defaultSegmentationParams
-                ?: SegmentationParams()
+        val segmentationParams = itemState?.let { ItemStateEntity.decodeSegmentationParams(it.customSegmentation) }
+            ?: userSettingsRepository?.settings?.first()?.defaultSegmentationParams
+            ?: SegmentationParams()
+        val isSilenceOnly = energyAndBinMs != null && chunkSegmenter.isSilenceOnlyInRange(
+            logEnergyDb = energyAndBinMs.first,
+            rangeStartMs = startMs,
+            rangeEndMs = endMs,
+            params = segmentationParams,
+            binMs = energyAndBinMs.second,
+        )
+        val (trimmedStartMs, trimmedEndMs) = if (energyAndBinMs != null && !isSilenceOnly) {
             chunkSegmenter.trimSilenceInRange(
                 logEnergyDb = energyAndBinMs.first,
                 rangeStartMs = startMs,
@@ -3876,6 +3885,16 @@ class DefaultAnalysisRepository(
         }
         if (trimmedStartMs >= trimmedEndMs) {
             return@withContext false
+        }
+
+        val previousEmptyChunkIds = attemptedEmptyChunkIds[id].orEmpty()
+        val previousEmptyRanges = if (previousEmptyChunkIds.isNotEmpty()) {
+            activeChunks
+                .filter { it.id in previousEmptyChunkIds }
+                .map { it.startMs to it.endMs }
+                .toSet()
+        } else {
+            emptySet()
         }
 
         val effectiveTranscripts = resolveEffectiveTranscriptsForActiveChunks(id, activeChunks, allChunks)
@@ -3891,17 +3910,18 @@ class DefaultAnalysisRepository(
             isSkipped = false,
         )
 
-        var inserted = false
+        var insertedChunkIndex = -1
         for (chunk in activeChunks) {
-            if (!inserted && chunk.startMs >= trimmedEndMs) {
+            if (insertedChunkIndex < 0 && chunk.startMs >= trimmedEndMs) {
+                insertedChunkIndex = newChunks.size
                 newChunks.add(insertedEntity)
-                inserted = true
             }
             val destIndex = newChunks.size
             newChunks.add(chunk.copy(id = 0L, origin = ChunkOrigin.MANUAL.name))
             effectiveTranscripts[chunk.id]?.let { newTranscriptsByIndex[destIndex] = it }
         }
-        if (!inserted) {
+        if (insertedChunkIndex < 0) {
+            insertedChunkIndex = newChunks.size
             newChunks.add(insertedEntity)
         }
 
@@ -3915,6 +3935,26 @@ class DefaultAnalysisRepository(
         syncManualChunksSkippedExact(id.value, insertedChunks, newChunks)
         syncManualTranscriptsExact(insertedChunks, newTranscriptsByIndex)
         setChunkSource(id, ChunkOrigin.MANUAL)
+
+        if (previousEmptyRanges.isNotEmpty() || isSilenceOnly) {
+            val skippedSet = attemptedEmptyChunkIds.computeIfAbsent(id) {
+                ConcurrentHashMap.newKeySet()
+            }
+            skippedSet.clear()
+            for ((index, chunk) in insertedChunks.withIndex()) {
+                if ((chunk.startMs to chunk.endMs) in previousEmptyRanges) {
+                    skippedSet.add(chunk.id)
+                }
+                if (isSilenceOnly && index == insertedChunkIndex) {
+                    skippedSet.add(chunk.id)
+                }
+            }
+            lookaheadStateFor(id).update { current ->
+                current.copy(skippedEmptyChunkIds = currentSkippedChunkIds(id))
+            }
+            updateQueuedChunkIdsState(id)
+        }
+
         persistTranscriptBackupFile(id)
         true
     }

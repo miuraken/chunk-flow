@@ -313,11 +313,26 @@ fun WaveformSection(
                 )
             }
 
+            val showOverviewBoundaryTicks = remember(
+                featureStatus,
+                segmentationStatus,
+                lookaheadStatus,
+                chunks,
+            ) {
+                shouldShowOverviewChunkBoundaryTicks(
+                    featureStatus = featureStatus,
+                    segmentationStatus = segmentationStatus,
+                    lookaheadStatus = lookaheadStatus,
+                    chunks = chunks,
+                )
+            }
+
             OverviewWaveformCanvas(
                 waveform = waveform,
                 durationMs = effectiveDurationMs,
                 zoomWindowMs = zoomWindowMs,
                 chunks = chunks,
+                showBoundaryTicks = showOverviewBoundaryTicks,
                 languagePair = languagePair,
                 loopMode = loopMode,
                 downsampler = downsampler,
@@ -681,12 +696,41 @@ private fun ZoomedWaveformHeaderStatusArea(
     }
 }
 
+/**
+ * 全体波形の下部にチャンク境界の目盛り（オーバーレイ）を表示するかどうかを判定する。
+ *
+ * チャンク分割時（特徴量抽出・チャンク分割・言語判別が進行中、またはまだ言語判別結果がない段階）にのみ表示し、
+ * 言語判別が完了した段階では非表示にして言語別の色付き波形のみを表示する。
+ */
+internal fun shouldShowOverviewChunkBoundaryTicks(
+    featureStatus: StageStatus?,
+    segmentationStatus: StageStatus?,
+    lookaheadStatus: com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus,
+    chunks: List<ChunkUi>,
+): Boolean {
+    if (chunks.isEmpty()) return false
+    if (
+        featureStatus is StageStatus.Running ||
+        segmentationStatus is StageStatus.Running ||
+        lookaheadStatus.isLanguageDetectionRunning ||
+        lookaheadStatus.inFlightStep == com.miuraken.chunkflow.core.model.TranscriptionStep.DETECTING_LANGUAGE
+    ) {
+        return true
+    }
+    val hasAnyResolvedLanguage = chunks.any { chunk ->
+        val tag = chunk.language?.value?.trim()
+        !tag.isNullOrEmpty() && !tag.equals("und", ignoreCase = true)
+    }
+    return !hasAnyResolvedLanguage
+}
+
 @Composable
 private fun OverviewWaveformCanvas(
     waveform: Waveform?,
     durationMs: Long,
     zoomWindowMs: Long,
     chunks: List<ChunkUi>,
+    showBoundaryTicks: Boolean,
     languagePair: LanguagePair?,
     loopMode: LoopMode,
     downsampler: WaveformDownsampler,
@@ -862,16 +906,18 @@ private fun OverviewWaveformCanvas(
                         abLoopHighlightColor = abLoopHighlightColor,
                     )
 
-                    // チャンク境界の目盛り
-                    val tickHeight = size.height * 0.28f
-                    for (chunk in chunks) {
-                        val x = (chunk.startMs.toFloat() / durationMs.toFloat()) * size.width
-                        drawLine(
-                            color = boundaryTickColor,
-                            start = Offset(x, size.height - tickHeight),
-                            end = Offset(x, size.height),
-                            strokeWidth = 1.dp.toPx(),
-                        )
+                    // チャンク境界の目盛り（チャンク分割時のみ表示し、言語判別完了後は非表示）
+                    if (showBoundaryTicks) {
+                        val tickHeight = size.height * 0.28f
+                        for (chunk in chunks) {
+                            val x = (chunk.startMs.toFloat() / durationMs.toFloat()) * size.width
+                            drawLine(
+                                color = boundaryTickColor,
+                                start = Offset(x, size.height - tickHeight),
+                                end = Offset(x, size.height),
+                                strokeWidth = 1.dp.toPx(),
+                            )
+                        }
                     }
 
                     // アルファチャンネル画像としてキャッシュ済みの全体波形を描画

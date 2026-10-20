@@ -434,9 +434,11 @@ fun LibraryScreen(
                 },
                 actions = {
                     if (state.isSelectionMode) {
+                        val showFileOnlySelectionBadges =
+                            state.selectedItemIds.isNotEmpty() && state.selectedDirectoryPaths.isEmpty()
                         val hasSelectedFiles = state.selectedItemIds.isNotEmpty() ||
                             state.selectedTargetItemIds.isNotEmpty()
-                        if (hasSelectedFiles) {
+                        if (showFileOnlySelectionBadges) {
                             FilledTonalButton(
                                 onClick = { showAddToPlaylistDialog = true },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
@@ -481,6 +483,8 @@ fun LibraryScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        if (hasSelectedFiles) {
                             FilledTonalButton(
                                 onClick = {
                                     val targetIds = state.selectedTargetItemIds
@@ -875,7 +879,7 @@ private fun LibraryFoldersTabContent(
     val currentDirs = state.currentDirectories
     val currentFiles = state.currentFiles
     val hasRecentItems = state.recentItems.isNotEmpty()
-    var isRecentFilesExpanded by rememberSaveable { mutableStateOf(true) }
+    var isRecentFilesExpanded by rememberSaveable { mutableStateOf(false) }
     val currentFolderPath = state.currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -901,12 +905,14 @@ private fun LibraryFoldersTabContent(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
         ) {
-            items(
+            itemsIndexed(
                 items = currentDirs,
-                key = { dir -> "dir_${dir.name.orEmpty()}" },
-            ) { directory ->
+                key = { _, dir -> "dir_${dir.name.orEmpty()}" },
+            ) { index, directory ->
                 val dirPath = directory.name.orEmpty()
                 val isSelected = dirPath in state.selectedDirectoryPaths
+                val showRootDragHandle =
+                    currentFolderPath == null && state.isSelectionMode && dirPath.isNotEmpty()
                 LibraryDirectoryRow(
                     directory = directory,
                     isSelectionMode = state.isSelectionMode,
@@ -926,7 +932,23 @@ private fun LibraryFoldersTabContent(
                     onEditDirectoryMetadata = {
                         onEvent(LibraryEvent.RequestEditDirectoryMetadata(directory.name))
                     },
-                    modifier = Modifier.padding(start = 24.dp, bottom = 8.dp),
+                    dragHandle = if (showRootDragHandle) {
+                        {
+                            ReorderDragHandle(
+                                currentIndex = index,
+                                totalCount = currentDirs.size,
+                                onMove = { from, to ->
+                                    onEvent(LibraryEvent.MoveRootDirectory(from, to))
+                                },
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.padding(
+                        start = if (showRootDragHandle) 0.dp else 24.dp,
+                        bottom = 8.dp,
+                    ),
                 )
             }
             itemsIndexed(
@@ -1872,6 +1894,7 @@ private fun LibraryDirectoryRow(
     onLongClick: () -> Unit,
     onEditDirectoryMetadata: () -> Unit,
     modifier: Modifier = Modifier,
+    dragHandle: (@Composable () -> Unit)? = null,
 ) {
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
     val containerColor = when {
@@ -1885,68 +1908,77 @@ private fun LibraryDirectoryRow(
         MaterialTheme.colorScheme.tertiary
     }
 
-    Surface(
+    Row(
         modifier = modifier.fillMaxWidth(),
-        color = containerColor,
-        shape = RoundedCornerShape(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = onLongClick,
-                )
-                .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        if (dragHandle != null) {
+            dragHandle()
+            Spacer(modifier = Modifier.width(4.dp))
+        }
+        Surface(
+            modifier = Modifier.weight(1f),
+            color = containerColor,
+            shape = RoundedCornerShape(12.dp),
         ) {
-            if (isSelectionMode) {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = { onClick() },
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-            }
-            Icon(
-                imageVector = ChunkFlowIcons.Folder,
-                contentDescription = null,
-                tint = folderIconTint,
-                modifier = Modifier.size(22.dp),
-            )
-            Spacer(modifier = Modifier.width(10.dp))
             Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick,
+                    )
+                    .padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = directoryTitle,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                FolderKindBadge(isRealFolder = directory.isRealFolder)
-                Text(
-                    text = stringResource(
-                        R.string.library_directory_item_count,
-                        directory.items.size,
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (!isSelectionMode) {
-                IconButton(
-                    onClick = onEditDirectoryMetadata,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Edit,
-                        contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
+                if (isSelectionMode) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onClick() },
                     )
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
+                Icon(
+                    imageVector = ChunkFlowIcons.Folder,
+                    contentDescription = null,
+                    tint = folderIconTint,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = directoryTitle,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    FolderKindBadge(isRealFolder = directory.isRealFolder)
+                    Text(
+                        text = stringResource(
+                            R.string.library_directory_item_count,
+                            directory.items.size,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (!isSelectionMode) {
+                    IconButton(
+                        onClick = onEditDirectoryMetadata,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Edit,
+                            contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
         }

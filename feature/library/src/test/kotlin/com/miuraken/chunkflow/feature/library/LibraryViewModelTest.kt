@@ -1696,4 +1696,49 @@ class LibraryViewModelTest {
         assertEquals(listOf(item1.id, item1.id, item2.id), analysisRepo.clearTranscriptsRequests)
         assertEquals(listOf(item1.id, item1.id, item2.id), analysisRepo.languageDetectionOnlyRequests)
     }
+
+    @Test
+    fun `フォルダビュー_新規追加したルートフォルダが最上部に表示され手動で順番を変更できる`() = runTest {
+        val itemA = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("dir-a"),
+            course = "Folder B",
+        )
+        val itemB = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("dir-b"),
+            course = "Folder C",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(itemA, itemB))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        assertEquals(
+            listOf("Folder B", "Folder C"),
+            viewModel.uiState.value.currentDirectories.mapNotNull { it.name },
+        )
+
+        // 新しいフォルダ「Folder Z」を追加すると、辞書順にかかわらず最上部に表示される
+        repo.createVirtualFolder(
+            coursePath = "Folder Z",
+            languages = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+        )
+        assertEquals(
+            listOf("Folder Z", "Folder B", "Folder C"),
+            viewModel.uiState.value.currentDirectories.mapNotNull { it.name },
+        )
+
+        // MoveRootDirectory で先頭 (0: Folder Z) を末尾 (2) へ移動すると順番が入れ替わる
+        viewModel.onEvent(LibraryEvent.MoveRootDirectory(fromIndex = 0, toIndex = 2))
+        assertEquals(
+            listOf("Folder B", "Folder C", "Folder Z"),
+            viewModel.uiState.value.currentDirectories.mapNotNull { it.name },
+        )
+    }
+
+    @Test
+    fun `maxPreviewLinesFor_JSONのみ20行で他の形式は10行を返す`() {
+        assertEquals(20, TranscriptExportViewModel.maxPreviewLinesFor(com.miuraken.chunkflow.core.model.TranscriptExportFormat.JSON))
+        assertEquals(10, TranscriptExportViewModel.maxPreviewLinesFor(com.miuraken.chunkflow.core.model.TranscriptExportFormat.SRT))
+        assertEquals(10, TranscriptExportViewModel.maxPreviewLinesFor(com.miuraken.chunkflow.core.model.TranscriptExportFormat.LRC))
+        assertEquals(10, TranscriptExportViewModel.maxPreviewLinesFor(com.miuraken.chunkflow.core.model.TranscriptExportFormat.TSV))
+    }
 }

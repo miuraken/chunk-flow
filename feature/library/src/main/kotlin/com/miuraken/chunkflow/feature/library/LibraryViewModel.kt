@@ -1033,11 +1033,24 @@ data class LibraryUiState(
         }
 
     /**
-     * 現在開いている階層（[currentDirectoryPath]）の直下にあるサブディレクトリ一覧（ディレクトリ名の自然昇順）。
+     * 現在開いている階層（[currentDirectoryPath]）の直下にあるサブディレクトリ一覧（ルート階層では手動並び順優先、それ以外はディレクトリ名の自然昇順）。
      */
     val currentDirectories: List<LibraryDirectoryUiModel>
         get() {
             val currentPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+            val rootSortOrders = if (currentPath == null) {
+                buildMap {
+                    for (folder in courseFolders) {
+                        val path = folder.coursePath.trim('/')
+                        val order = folder.sortOrder
+                        if (path.isNotBlank() && '/' !in path && order != null) {
+                            put(path, order)
+                        }
+                    }
+                }
+            } else {
+                emptyMap()
+            }
             val grouped = linkedMapOf<String, MutableList<LibraryItemUiModel>>()
             for (folder in courseFolders) {
                 val path = folder.coursePath.trim('/').takeIf { it.isNotBlank() } ?: continue
@@ -1069,9 +1082,21 @@ data class LibraryUiState(
             }
             return grouped.entries
                 .sortedWith { a, b ->
-                    val nameA = a.key.substringAfterLast('/')
-                    val nameB = b.key.substringAfterLast('/')
-                    compareFileNamesAscending(nameA, nameB)
+                    val orderA = rootSortOrders[a.key]
+                    val orderB = rootSortOrders[b.key]
+                    val orderCmp = when {
+                        orderA != null && orderB != null -> orderA.compareTo(orderB)
+                        orderA != null -> -1
+                        orderB != null -> 1
+                        else -> 0
+                    }
+                    if (orderCmp != 0) {
+                        orderCmp
+                    } else {
+                        val nameA = a.key.substringAfterLast('/')
+                        val nameB = b.key.substringAfterLast('/')
+                        compareFileNamesAscending(nameA, nameB)
+                    }
                 }
                 .map { (dirFullPath, dirItems) ->
                     val sortedItems = dirItems.sortedWith { a, b ->
@@ -1124,6 +1149,15 @@ data class LibraryUiState(
      */
     val directories: List<LibraryDirectoryUiModel>
         get() {
+            val rootSortOrders = buildMap {
+                for (folder in courseFolders) {
+                    val path = folder.coursePath.trim('/')
+                    val order = folder.sortOrder
+                    if (path.isNotBlank() && '/' !in path && order != null) {
+                        put(path, order)
+                    }
+                }
+            }
             val grouped = linkedMapOf<String?, MutableList<LibraryItemUiModel>>()
             for (itemModel in items) {
                 val dirName = itemModel.item.course ?: selectedDirectoryName
@@ -1135,18 +1169,31 @@ data class LibraryUiState(
                     grouped.getOrPut(folderPath) { mutableListOf() }
                 }
             }
-            return grouped.map { (dirName, dirItems) ->
-                val sortedItems = dirItems.sortedWith { a, b ->
-                    val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                    if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+            return grouped.entries
+                .sortedWith { a, b ->
+                    val topA = a.key?.trim('/')?.substringBefore('/')
+                    val topB = b.key?.trim('/')?.substringBefore('/')
+                    val orderA = topA?.let { rootSortOrders[it] }
+                    val orderB = topB?.let { rootSortOrders[it] }
+                    when {
+                        orderA != null && orderB != null -> orderA.compareTo(orderB)
+                        orderA != null -> -1
+                        orderB != null -> 1
+                        else -> 0
+                    }
                 }
-                LibraryDirectoryUiModel(
-                    name = dirName,
-                    items = sortedItems,
-                    isExpanded = dirName !in collapsedDirectories,
-                    isRealFolder = isRealFolder(dirName),
-                )
-            }
+                .map { (dirName, dirItems) ->
+                    val sortedItems = dirItems.sortedWith { a, b ->
+                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                    }
+                    LibraryDirectoryUiModel(
+                        name = dirName,
+                        items = sortedItems,
+                        isExpanded = dirName !in collapsedDirectories,
+                        isRealFolder = isRealFolder(dirName),
+                    )
+                }
         }
 
     /**
@@ -1382,6 +1429,9 @@ sealed interface LibraryEvent {
 
     /** ファイルタブ内の教材アイテムの並び順を変更する。 */
     data class MoveFileTabItem(val fromIndex: Int, val toIndex: Int) : LibraryEvent
+
+    /** フォルダタブのルート階層のフォルダ並び順を変更する。 */
+    data class MoveRootDirectory(val fromIndex: Int, val toIndex: Int) : LibraryEvent
 
     /** 教材 [id] のお気に入り登録状態を切り替える。 */
     data class ToggleFavorite(val id: MediaId) : LibraryEvent
@@ -2080,6 +2130,23 @@ class LibraryViewModel @Inject constructor(
                     val allOrdered = buildUpdatedAllFileOrder(uiState.value, currentFiltered)
                     viewModelScope.launch {
                         libraryRepository.reorderAllFiles(allOrdered)
+                    }
+                }
+            }
+
+            is LibraryEvent.MoveRootDirectory -> {
+                if (currentDirectoryPath.value != null) return
+                val currentRootDirs = uiState.value.currentDirectories
+                    .mapNotNull { it.name?.trim('/')?.takeIf { p -> p.isNotEmpty() && '/' !in p } }
+                    .toMutableList()
+                if (event.fromIndex in currentRootDirs.indices &&
+                    event.toIndex in currentRootDirs.indices &&
+                    event.fromIndex != event.toIndex
+                ) {
+                    val moved = currentRootDirs.removeAt(event.fromIndex)
+                    currentRootDirs.add(event.toIndex, moved)
+                    viewModelScope.launch {
+                        libraryRepository.reorderRootFolders(currentRootDirs)
                     }
                 }
             }

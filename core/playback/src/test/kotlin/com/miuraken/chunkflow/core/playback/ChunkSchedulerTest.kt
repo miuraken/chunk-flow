@@ -805,7 +805,7 @@ class ChunkSchedulerTest {
         assertEquals(1, seekCount)
         assertTrue(exoPlayer.currentPosition in c4.startMs..(c4.startMs + 300L))
 
-        // c4 (7000..8500, en) 直後の空白 [8500, 9000) を再生し、9000ms (= c5.startMs) で以降に該当チャンクがないため一時停止する
+        // c4 (7000..8500, en) 直後の空白 [8500, 8950) (末尾50msカット) を再生し、8950ms (= c5.startMs - 50ms) で以降に該当チャンクがないため一時停止する
         runUntil { exoPlayer.currentPosition in 8_600L..8_900L }
         pumpLoopers()
         assertTrue(exoPlayer.playWhenReady)
@@ -813,7 +813,7 @@ class ChunkSchedulerTest {
         runUntil { !exoPlayer.playWhenReady }
         pumpLoopers()
         assertFalse(exoPlayer.playWhenReady)
-        assertTrue(exoPlayer.currentPosition in 9_000L..9_250L)
+        assertTrue(exoPlayer.currentPosition in 8_950L..9_250L)
     }
 
     @Test
@@ -847,11 +847,11 @@ class ChunkSchedulerTest {
         assertEquals(c2.id, scheduler.currentChunkId.value)
         assertTrue(exoPlayer.currentPosition in c2.startMs..(c2.startMs + 200L))
 
-        // c2 とその後の空白 [4500, 5000) を再生し終えると 5000ms (c3.startMs) で一時停止する
+        // c2 とその後の空白 [4500, 4950) (末尾50msカット) を再生し終えると 4950ms (c3.startMs - 50ms) で一時停止する
         runUntil { !exoPlayer.playWhenReady }
         pumpLoopers()
         assertFalse(exoPlayer.playWhenReady)
-        assertTrue(exoPlayer.currentPosition in 5_000L..5_250L)
+        assertTrue(exoPlayer.currentPosition in 4_950L..5_250L)
 
         // 末尾停止後に再度 play() すると、先頭の母語チャンク c2 (2500ms) へ戻って再生する
         exoPlayer.play()
@@ -1305,6 +1305,53 @@ class ChunkSchedulerTest {
         exoPlayer.play()
         runUntil { scheduler.currentChunkId.value == chunk2.id }
         assertEquals(chunk2.id, scheduler.currentChunkId.value)
+    }
+
+    @Test
+    fun `RepeatChunkIds_無音スキップOFF時は選択チャンク直後の無音を末尾50msカットで再生し無音スキップON時は即座に次チャンクへシークする`() {
+        val c1 = Chunk(ChunkId(1L), startMs = 0L, endMs = 2_000L, origin = ChunkOrigin.AUTO)
+        val c2 = Chunk(ChunkId(2L), startMs = 2_800L, endMs = 4_200L, origin = ChunkOrigin.AUTO)
+        val c3 = Chunk(ChunkId(3L), startMs = 5_000L, endMs = 6_500L, origin = ChunkOrigin.AUTO)
+        scheduler.setChunks(listOf(c1, c2, c3))
+        practiceController.update {
+            it.copy(
+                languageFilter = LanguageFilter.CHECKED_ONLY,
+                repeatChunkIds = setOf(c1.id, c3.id),
+                repeatCheckedOnly = false,
+                skipOriginalSilence = false,
+            )
+        }
+        pumpLoopers()
+
+        exoPlayer.play()
+        pumpLoopers()
+
+        var seekCount = 0
+        exoPlayer.addListener(
+            object : Player.Listener {
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                        seekCount++
+                    }
+                }
+            },
+        )
+
+        // c1 (0..2000) 直後の無音 [2000, 2750) はシークせずそのまま再生される
+        runUntil { exoPlayer.currentPosition in 2_150L..2_650L }
+        pumpLoopers()
+        assertEquals(0, seekCount)
+        assertEquals(c1.id, scheduler.currentChunkId.value)
+
+        // 2750ms (= c2.startMs - 50ms) で非選択の c2 を飛ばして c3 (5000ms) へシークする
+        runUntil { scheduler.currentChunkId.value == c3.id }
+        pumpLoopers()
+        assertEquals(1, seekCount)
+        assertTrue(exoPlayer.currentPosition in c3.startMs..(c3.startMs + 300L))
     }
 
     private fun sampleTranscript(

@@ -4651,11 +4651,14 @@ class DefaultAnalysisRepositoryTest {
         assertEquals(4_000L to 5_000L, afterAdd[2].startMs to afterAdd[2].endMs)
         assertEquals(6_000L to 7_000L, afterAdd[3].startMs to afterAdd[3].endMs)
 
-        // 無音しかない [7500..8500ms] にチャンクを追加すると、選択された全範囲がそのまま新チャンクになる
+        // 無音しかない [7500..8500ms] にチャンクを追加すると、選択された全範囲がそのまま新チャンクになり、無音のみのため skippedEmptyChunkIds に入る
         assertTrue(repository.addChunk(mediaId, startMs = 7_500L, endMs = 8_500L))
         val afterAddSilent = repository.observeChunks(mediaId).first()
         assertEquals(5, afterAddSilent.size)
         assertEquals(7_500L to 8_500L, afterAddSilent[4].startMs to afterAddSilent[4].endMs)
+        val lookaheadAfterAddSilent = repository.observeLookaheadStatus(mediaId).first()
+        assertTrue(afterAddSilent[4].id in lookaheadAfterAddSilent.skippedEmptyChunkIds)
+        assertFalse(afterAddSilent[1].id in lookaheadAfterAddSilent.skippedEmptyChunkIds)
 
         // 2. deleteChunks で中間の 2 チャンク（afterAddSilent[1], afterAddSilent[2]）を一括解除できる
         val idsToRemove = setOf(afterAddSilent[1].id, afterAddSilent[2].id)
@@ -4668,5 +4671,8 @@ class DefaultAnalysisRepositoryTest {
         val remainingTranscripts = repository.observeTranscripts(mediaId).first()
         assertEquals("first", remainingTranscripts[afterDelete[0].id]?.text)
         assertEquals("third", remainingTranscripts[afterDelete[1].id]?.text)
+        // チャンク削除による再採番後も、無音チャンクの skippedEmptyChunkIds は新しい ChunkId に引き継がれる
+        val lookaheadAfterDelete = repository.observeLookaheadStatus(mediaId).first()
+        assertTrue(afterDelete[2].id in lookaheadAfterDelete.skippedEmptyChunkIds)
     }
 }

@@ -1574,7 +1574,9 @@ class PlayerViewModel @Inject constructor(
                 if (snapshot.status[AnalysisStage.SEGMENTATION] is StageStatus.Running) return@combine null
                 if (snapshot.lookaheadStatus.isLanguageDetectionRunning) return@combine null
                 val hasUntranscribedChunk = snapshot.chunks.any { chunk ->
-                    !chunk.isSkipped && snapshot.transcripts[chunk.id]?.text.isNullOrBlank()
+                    !chunk.isSkipped &&
+                        chunk.id !in snapshot.lookaheadStatus.skippedEmptyChunkIds &&
+                        snapshot.transcripts[chunk.id]?.text.isNullOrBlank()
                 }
                 if (!hasUntranscribedChunk) return@combine null
                 mediaId
@@ -3485,10 +3487,17 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    private fun isChunkUndetected(chunk: ChunkUi): Boolean = chunk.text.isNullOrBlank() ||
-        chunk.language == null ||
-        chunk.language.value.isBlank() ||
-        chunk.language.value.equals("und", ignoreCase = true)
+    private fun isChunkUndetected(
+        chunk: ChunkUi,
+        skippedEmptyChunkIds: Set<ChunkId> = uiState.value.lookaheadStatus.skippedEmptyChunkIds,
+    ): Boolean = !chunk.isSkipped &&
+        chunk.id !in skippedEmptyChunkIds &&
+        (
+            chunk.text.isNullOrBlank() ||
+                chunk.language == null ||
+                chunk.language.value.isBlank() ||
+                chunk.language.value.equals("und", ignoreCase = true)
+            )
 
     private fun syncLookaheadState(mediaId: MediaId, enabled: Boolean) {
         lookaheadLoopJob?.cancel()
@@ -3508,16 +3517,24 @@ class PlayerViewModel @Inject constructor(
                     ?: run {
                         val repoChunks = analysisRepository.observeChunks(mediaId).firstOrNull().orEmpty()
                         val repoTranscripts = analysisRepository.observeTranscripts(mediaId).firstOrNull().orEmpty()
+                        val repoSkippedEmpty = analysisRepository.observeLookaheadStatus(mediaId)
+                            .firstOrNull()?.skippedEmptyChunkIds.orEmpty()
                         repoChunks.firstOrNull { chunk ->
-                            val transcript = repoTranscripts[chunk.id]
-                            transcript?.text.isNullOrBlank() ||
-                                transcript.language == null ||
-                                transcript.language?.value.isNullOrBlank() ||
-                                transcript.language?.value.equals("und", ignoreCase = true)
-                        }?.id ?: repoChunks.firstOrNull()?.id
+                            if (chunk.isSkipped || chunk.id in repoSkippedEmpty) {
+                                false
+                            } else {
+                                val transcript = repoTranscripts[chunk.id]
+                                transcript?.text.isNullOrBlank() ||
+                                    transcript.language == null ||
+                                    transcript.language?.value.isNullOrBlank() ||
+                                    transcript.language?.value.equals("und", ignoreCase = true)
+                            }
+                        }?.id ?: repoChunks.firstOrNull { !it.isSkipped && it.id !in repoSkippedEmpty }?.id
                     }
-                requestedStartIds.add(initialChunkId)
-                analysisRepository.triggerLookaheadAt(mediaId, initialChunkId)
+                if (initialChunkId != null) {
+                    requestedStartIds.add(initialChunkId)
+                    analysisRepository.triggerLookaheadAt(mediaId, initialChunkId)
+                }
 
                 while (isActive) {
                     val currentState = uiState.value
