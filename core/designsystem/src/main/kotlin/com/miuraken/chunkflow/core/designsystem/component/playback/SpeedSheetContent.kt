@@ -1,4 +1,4 @@
-package com.miuraken.chunkflow.feature.player
+package com.miuraken.chunkflow.core.designsystem.component.playback
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,25 +23,46 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.R
+import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
+import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.util.formatCompactSpeed
 import com.miuraken.chunkflow.core.model.ItemState
 import kotlin.math.abs
-import kotlin.math.min
 
+/** [SpeedSheetContent] の ± ボタンで変える速度の幅（ボタンのラベル `±0.05x` と一致させる）。 */
+private const val SPEED_STEP: Float = 0.05f
+
+/**
+ * 「指定速度」を調整するボトムシートの中身（プレイヤーとライブラリのブックマーク再生コントローラーで共有）。
+ *
+ * 上から: タイトルと現在値、`-0.05x` / `+0.05x` ボタン、スライダー、プリセットのチップ、閉じるボタン。
+ *
+ * @param speed 現在の指定速度。
+ * @param presets プリセットのチップに並べる速度の一覧。
+ * @param closeLabel 右下のボタンの文言（呼び出し側の画面の語彙に合わせる: 「閉じる」「キャンセル」など）。
+ * @param onSetSpeed スライダーまたはプリセットで速度が選ばれたとき。
+ * @param onAdjustSpeed ± ボタンが押されたとき（差分 `±0.05f`）。
+ * @param onClose 閉じるボタンが押されたとき。
+ * @param modifier 一番外側の [Column] に適用する Modifier。
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun PlayerSpeedSheetContent(
+fun SpeedSheetContent(
     speed: Float,
+    presets: List<Float>,
+    closeLabel: String,
     onSetSpeed: (Float) -> Unit,
     onAdjustSpeed: (Float) -> Unit,
     onClose: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    val decreaseCd = stringResource(R.string.player_speed_decrease_cd)
-    val increaseCd = stringResource(R.string.player_speed_increase_cd)
-    val sliderCd = stringResource(R.string.player_speed_slider_cd)
+    val decreaseCd = stringResource(R.string.designsystem_playback_speed_decrease_cd)
+    val increaseCd = stringResource(R.string.designsystem_playback_speed_increase_cd)
+    val sliderCd = stringResource(R.string.designsystem_playback_speed_slider_cd)
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -52,7 +73,7 @@ internal fun PlayerSpeedSheetContent(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = stringResource(R.string.player_speed_section_title),
+                text = stringResource(R.string.designsystem_playback_speed_section_title),
                 style = MaterialTheme.typography.titleMedium,
             )
             Surface(
@@ -75,7 +96,7 @@ internal fun PlayerSpeedSheetContent(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
-                onClick = { onAdjustSpeed(-PlayerUiState.SPEED_STEP) },
+                onClick = { onAdjustSpeed(-SPEED_STEP) },
                 enabled = speed > ItemState.MIN_SPEED + 0.001f,
                 modifier = Modifier
                     .weight(1f)
@@ -85,7 +106,7 @@ internal fun PlayerSpeedSheetContent(
                 Text(text = "-0.05x")
             }
             OutlinedButton(
-                onClick = { onAdjustSpeed(PlayerUiState.SPEED_STEP) },
+                onClick = { onAdjustSpeed(SPEED_STEP) },
                 enabled = speed < ItemState.MAX_SPEED - 0.001f,
                 modifier = Modifier
                     .weight(1f)
@@ -111,7 +132,7 @@ internal fun PlayerSpeedSheetContent(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            PlayerUiState.SPEED_PRESETS.forEach { preset ->
+            presets.forEach { preset ->
                 val isSelected = abs(speed - preset) < 0.01f
                 val labelText = formatCompactSpeed(preset)
                 FilterChip(
@@ -127,8 +148,25 @@ internal fun PlayerSpeedSheetContent(
             horizontalArrangement = Arrangement.End,
         ) {
             TextButton(onClick = onClose) {
-                Text(text = stringResource(R.string.player_sheet_close))
+                Text(text = closeLabel)
             }
+        }
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun SpeedSheetContentPreview() {
+    ChunkFlowTheme {
+        Surface {
+            SpeedSheetContent(
+                speed = 1.25f,
+                presets = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f),
+                closeLabel = "閉じる",
+                onSetSpeed = {},
+                onAdjustSpeed = {},
+                onClose = {},
+            )
         }
     }
 }

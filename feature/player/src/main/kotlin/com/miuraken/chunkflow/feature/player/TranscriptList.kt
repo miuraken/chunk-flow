@@ -99,6 +99,8 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeRole
+import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadge
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
@@ -1793,41 +1795,23 @@ internal fun ChunkLanguageBadge(
     languagePair: LanguagePair?,
     modifier: Modifier = Modifier,
 ) {
-    val colorScheme = MaterialTheme.colorScheme
-    val langPalette = chunkFlowLanguagePalette()
     val normalizedValue = language?.value?.trim()?.takeUnless {
         it.isEmpty() || it.equals("und", ignoreCase = true)
     }
-    val isTarget = matchesLanguageRole(language, languagePair?.target)
-    val isBase = matchesLanguageRole(language, languagePair?.base)
-
-    val containerColor = when {
-        isTarget -> langPalette.targetBadgeContainer
-        isBase -> langPalette.baseBadgeContainer
-        normalizedValue != null -> colorScheme.secondaryContainer
-        else -> colorScheme.surfaceVariant
-    }
-    val contentColor = when {
-        isTarget -> langPalette.onTargetBadgeContainer
-        isBase -> langPalette.onBaseBadgeContainer
-        normalizedValue != null -> colorScheme.onSecondaryContainer
-        else -> colorScheme.onSurfaceVariant
+    val role = when {
+        matchesLanguageRole(language, languagePair?.target) -> LanguageBadgeRole.TARGET
+        matchesLanguageRole(language, languagePair?.base) -> LanguageBadgeRole.BASE
+        normalizedValue != null -> LanguageBadgeRole.OTHER
+        else -> LanguageBadgeRole.UNKNOWN
     }
     val badgeText = normalizedValue?.lowercase(JavaLocale.ROOT)?.ifBlank { "-" } ?: "-"
 
-    Surface(
+    LanguageRoleBadge(
+        code = badgeText,
+        role = role,
+        // 既存の見た目（角の描画）を変えないため、Surface の clip に加えてここでも clip する。
         modifier = modifier.clip(RoundedCornerShape(4.dp)),
-        color = containerColor,
-        contentColor = contentColor,
-        shape = RoundedCornerShape(4.dp),
-    ) {
-        Text(
-            text = badgeText,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-        )
-    }
+    )
 }
 
 @Composable

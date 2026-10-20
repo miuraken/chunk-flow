@@ -34,55 +34,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeCompactPadding
+import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeRole
+import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadge
+import com.miuraken.chunkflow.core.designsystem.component.playback.brightnessToggleChipColors
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
-import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import java.util.Locale
 import kotlin.math.min
-
-/**
- * ON / OFF のトグルをボタンの明度で表現する [FilterChip] カラー設定。
- *
- * ON（`selected = true`）は明るく強調し、OFF（`selected = false`）は暗め（低明度・低不透明度）にする。
- */
-@Composable
-internal fun brightnessToggleChipColors() = FilterChipDefaults.filterChipColors(
-    containerColor = MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.55f),
-    labelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
-    iconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
-    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-)
-
-@Composable
-private fun LanguageCodePill(
-    code: String,
-    containerColor: Color,
-    contentColor: Color,
-    modifier: Modifier = Modifier,
-) {
-    Surface(
-        color = containerColor,
-        contentColor = contentColor,
-        shape = MaterialTheme.shapes.extraSmall,
-        modifier = modifier,
-    ) {
-        Text(
-            text = code,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-        )
-    }
-}
 
 /**
  * チャンクの表示に関する設定の行（チャンクリストの上に置く）。
@@ -102,7 +66,6 @@ internal fun ChunkDisplaySettingsStrip(
 ) {
     var langFilterMenuExpanded by remember { mutableStateOf(false) }
 
-    val langPalette = chunkFlowLanguagePalette()
     val targetLangCode = state.languagePair?.target?.value?.trim()
         ?.takeIf { it.isNotEmpty() }
         ?.lowercase(Locale.ROOT)
@@ -198,17 +161,17 @@ internal fun ChunkDisplaySettingsStrip(
                         when (languageFilter) {
                             LanguageFilter.ALL -> {
                                 if (baseLangCode != null) {
-                                    LanguageCodePill(
+                                    LanguageRoleBadge(
                                         code = baseLangCode,
-                                        containerColor = langPalette.baseBadgeContainer,
-                                        contentColor = langPalette.onBaseBadgeContainer,
+                                        role = LanguageBadgeRole.BASE,
+                                        contentPadding = LanguageBadgeCompactPadding,
                                     )
                                 }
                                 if (targetLangCode != null) {
-                                    LanguageCodePill(
+                                    LanguageRoleBadge(
                                         code = targetLangCode,
-                                        containerColor = langPalette.targetBadgeContainer,
-                                        contentColor = langPalette.onTargetBadgeContainer,
+                                        role = LanguageBadgeRole.TARGET,
+                                        contentPadding = LanguageBadgeCompactPadding,
                                     )
                                 }
                                 if (baseLangCode == null && targetLangCode == null) {
@@ -221,18 +184,18 @@ internal fun ChunkDisplaySettingsStrip(
                             }
 
                             LanguageFilter.BASE_ONLY -> {
-                                LanguageCodePill(
+                                LanguageRoleBadge(
                                     code = baseDisplayCode,
-                                    containerColor = langPalette.baseBadgeContainer,
-                                    contentColor = langPalette.onBaseBadgeContainer,
+                                    role = LanguageBadgeRole.BASE,
+                                    contentPadding = LanguageBadgeCompactPadding,
                                 )
                             }
 
                             LanguageFilter.TARGET_ONLY -> {
-                                LanguageCodePill(
+                                LanguageRoleBadge(
                                     code = targetDisplayCode,
-                                    containerColor = langPalette.targetBadgeContainer,
-                                    contentColor = langPalette.onTargetBadgeContainer,
+                                    role = LanguageBadgeRole.TARGET,
+                                    contentPadding = LanguageBadgeCompactPadding,
                                 )
                             }
 
@@ -258,16 +221,16 @@ internal fun ChunkDisplaySettingsStrip(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 if (baseLangCode != null) {
-                                    LanguageCodePill(
+                                    LanguageRoleBadge(
                                         code = baseLangCode,
-                                        containerColor = langPalette.baseBadgeContainer,
-                                        contentColor = langPalette.onBaseBadgeContainer,
+                                        role = LanguageBadgeRole.BASE,
+                                        contentPadding = LanguageBadgeCompactPadding,
                                     )
                                 }
-                                LanguageCodePill(
+                                LanguageRoleBadge(
                                     code = targetDisplayCode,
-                                    containerColor = langPalette.targetBadgeContainer,
-                                    contentColor = langPalette.onTargetBadgeContainer,
+                                    role = LanguageBadgeRole.TARGET,
+                                    contentPadding = LanguageBadgeCompactPadding,
                                 )
                                 Text(
                                     text = stringResource(R.string.player_menu_lang_filter_both_play),
@@ -287,10 +250,10 @@ internal fun ChunkDisplaySettingsStrip(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                LanguageCodePill(
+                                LanguageRoleBadge(
                                     code = baseDisplayCode,
-                                    containerColor = langPalette.baseBadgeContainer,
-                                    contentColor = langPalette.onBaseBadgeContainer,
+                                    role = LanguageBadgeRole.BASE,
+                                    contentPadding = LanguageBadgeCompactPadding,
                                 )
                                 Text(
                                     text = stringResource(R.string.player_menu_lang_filter_only_play),
@@ -311,10 +274,10 @@ internal fun ChunkDisplaySettingsStrip(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                LanguageCodePill(
+                                LanguageRoleBadge(
                                     code = targetDisplayCode,
-                                    containerColor = langPalette.targetBadgeContainer,
-                                    contentColor = langPalette.onTargetBadgeContainer,
+                                    role = LanguageBadgeRole.TARGET,
+                                    contentPadding = LanguageBadgeCompactPadding,
                                 )
                                 Text(
                                     text = stringResource(R.string.player_menu_lang_filter_only_play),

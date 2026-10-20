@@ -112,17 +112,6 @@
     <string name="library_bookmarks_next_chunk_label">次へ</string>
     <string name="library_bookmarks_prev_chunk_cd">前のチャンクへ</string>
     <string name="library_bookmarks_next_chunk_cd">次のチャンクへ</string>
-    <string name="library_bookmarks_chip_repeat">リピート</string>
-    <string name="library_bookmarks_chip_repeat_whole_file">🔁リピート</string>
-    <string name="library_bookmarks_whole_file_repeat_confirm_message">ファイル全体をリピートしますか？</string>
-    <string name="library_bookmarks_whole_file_repeat_yes">Yes</string>
-    <string name="library_bookmarks_whole_file_repeat_no">No</string>
-    <string name="library_bookmarks_chip_skip_silence">無音スキップ</string>
-    <string name="library_bookmarks_chip_playback_settings">再生設定</string>
-    <string name="library_bookmarks_speed_section_title">再生速度</string>
-    <string name="library_bookmarks_speed_decrease_cd">再生速度を 0.05 倍下げる</string>
-    <string name="library_bookmarks_speed_increase_cd">再生速度を 0.05 倍上げる</string>
-    <string name="library_bookmarks_speed_slider_cd">再生速度スライダー</string>
     <string name="library_files_search_placeholder">ファイル名で検索</string>
     <string name="library_files_filter_all_languages">すべて</string>
     <string name="library_files_no_matching_results">条件に一致するファイルがありません</string>

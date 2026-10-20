@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- core:designsystem の共通部品が使う文字列（日本語が既定）。feature 側の文言をそのまま移したもの。 -->
+<resources>
+    <!-- 再生操作ストリップ（PlaybackControlStrip） -->
+    <string name="designsystem_playback_chip_repeat">リピート</string>
+    <string name="designsystem_playback_chip_repeat_whole_file">🔁リピート</string>
+    <string name="designsystem_playback_whole_file_repeat_confirm_message">ファイル全体をリピートしますか？</string>
+    <string name="designsystem_playback_whole_file_repeat_yes">Yes</string>
+    <string name="designsystem_playback_whole_file_repeat_no">No</string>
+    <string name="designsystem_playback_chip_skip_silence">無音スキップ</string>
+    <string name="designsystem_playback_chip_playback_settings">再生設定</string>
+
+    <!-- 再生速度シート（SpeedSheetContent） -->
+    <string name="designsystem_playback_speed_section_title">再生速度</string>
+    <string name="designsystem_playback_speed_decrease_cd">再生速度を 0.05 倍下げる</string>
+    <string name="designsystem_playback_speed_increase_cd">再生速度を 0.05 倍上げる</string>
+    <string name="designsystem_playback_speed_slider_cd">再生速度スライダー</string>
+</resources>
