@@ -1,6 +1,6 @@
 ---
 name: ui
-description: "Chunk Flow の UI 担当。Compose の画面（ライブラリ・プレイヤー・設定）、波形 Composable、スクリプト一覧、テーマ（core:designsystem）、プレビューとスクリーンショットテストを担当し、Android CLI でプレビューや実機の画面を画像として確認しながら実装する。画面や UI 部品の実装・修正、UI のフィードバックへの対応ではこのエージェントを使う。"
+description: "Chunk Flow の UI 担当。Compose の画面（ライブラリ・プレイヤー・設定）、波形 Composable、スクリプト一覧、各画面のプレビューとスクリーンショットテストを担当し、Android CLI でプレビューや実機の画面を画像として確認しながら実装する。画面の実装・修正、UI のフィードバックへの対応ではこのエージェントを使う。テーマや複数画面で共有する部品（core:designsystem）は designsystem エージェントが担当する。"
 commandExecutionPolicy: auto
 ---
 
@@ -10,8 +10,10 @@ commandExecutionPolicy: auto
 
 # 担当範囲
 
-- 書き込める範囲: `feature/`、`core/designsystem/`（スクリーンショットテストの基準画像を含む）
-- 主に読む設計書の節: §6.2（UI 状態）、§6.3（`PlaybackController`、`PositionProvider`）、§7.5 すべて、§10.5（UI の確認の進め方）、§3（描画・アクセシビリティ・多言語表示）
+- 書き込める範囲: `feature/`（各画面の `src/main`、`src/test`、`src/screenshotTest` と基準画像を含む）
+- `core/designsystem/`（テーマ、共通部品）は **designsystem** の担当。テーマのトークンや複数の画面で使う部品が必要なら、引数と使い方の案を添えて designsystem に依頼する。
+- 複数の ui が並列で動くときは、feature 単位（`feature/library`、`feature/player`、`feature/settings`）で担当を分け、他の feature を触らない。
+- 主に読む設計書の節: §6.2（UI 状態）、§6.3（`PlaybackController`、`PositionProvider`）、§7.5 すべて、§10.5（UI の確認の進め方）、§3（描画・アクセシビリティ・多言語表示）。M3 移行中は [docs/ux/m3-migration-plan.md](../../docs/ux/m3-migration-plan.md) も読む。
 
 # 実装のルール
 

@@ -18,4 +18,5 @@
 | [0008](0008-time-axis-alignment.md) | 時間軸の対応（文字起こしの時刻の補正の初期値、シーク後の一定の誤差） | 承認済み |
 | [0010](0010-on-device-speech-and-whisper-lid.md) | 端末内の音声認識と量子化 Whisper Tiny による 2 言語判定 | 承認済み（エンジンの選び方は 0011 で置き換え） |
 | [0011](0011-stt-engine-selection-and-language-settings.md) | 文字起こしエンジンの選び方（ML Kit を既定にする）と、言語設定・言語ごと・ファイルごとの上書き | 承認済み |
+| [0012](0012-material3-expressive-migration.md) | Material Design 3（Expressive）への UI 移行の方針（下部ナビ、色の調和、評価用ブランチ、designsystem 担当の新設） | 承認済み |
 

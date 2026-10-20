@@ -418,10 +418,9 @@ flowchart TB
 ### 7.5 画面仕様と UI ロジック（再実装可能な完全仕様）
 
 #### 7.5.1 画面遷移とアダプティブ 2 ペイン構成（`:app`）
-- Jetpack Navigation 3（`NavDisplay`）を使用し、ルートキーとして `LibraryRoute`、`PlayerRoute(mediaId)`、`SettingsRoute`、`TranscriptExportRoute(mediaIds)` を持つ。
-- ウィンドウ幅が `600.dp` 以上のタブレット・折りたたみ展開時・横向き大画面では：
-  - アプリレベルで「左ペイン：ライブラリ画面」「右ペイン：プレイヤー画面」の 2 ペイン構成が可能。
-  - さらにプレイヤー画面単体でも、幅 `600.dp` 以上では「左ペイン：波形セクション＋再生コントロール」「右ペイン：チャンク表示設定ストリップ＋スクリプト一覧」の 2 ペインレイアウトに自動適応する。
+- Jetpack Navigation 3（`NavDisplay`）を使用し、ルートキーとして `LibraryKey`、`PlayerKey(mediaId, initialChunkId?)`、`SettingsKey(initialTab)`、`TranscriptExportKey(mediaIds)` を持つ（`:app` の `ChunkFlowNavDisplay`）。予測型「戻る」は `NavDisplay` が扱う。
+- プレイヤー画面は、幅 `600.dp` 以上（タブレット・折りたたみ展開時・横向き大画面）で「左ペイン：波形セクション＋再生コントロール」「右ペイン：チャンク表示設定ストリップ＋スクリプト一覧」の 2 ペインレイアウトに自動適応する（`BoxWithConstraints` による判定）。
+- アプリ単位の List-detail 2 ペイン（左：ライブラリ、右：プレイヤー）は**未実装**。M3 移行（ADR 0012、`docs/ux/m3-migration-plan.md` Phase C）で `material3-adaptive` / Navigation 3 の Scene により追加する。
 
 ---
 

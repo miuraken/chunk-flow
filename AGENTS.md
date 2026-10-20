@@ -28,7 +28,8 @@
 | `playback` | `core/playback/`、`core/data/` の `library` パッケージ、`spikes/playback/`、`docs/spikes/S2-*.md` |
 | `audio-analysis` | `core/media/`、`core/audio/`、`core/data/` の `analysis` パッケージ、`spikes/audio/`、`docs/spikes/S3-*.md` |
 | `transcriber` | `core/transcript/`、`core/data/` の `transcript` パッケージ、`spikes/textai/`、`docs/spikes/S4-*.md` |
-| `ui` | `feature/`、`core/designsystem/`（スクリーンショットテストの基準画像を含む） |
+| `ui` | `feature/`（各画面のテスト・スクリーンショットの基準画像を含む）。複数の ui が並列で動くときは feature 単位で分ける |
+| `designsystem` | `core/designsystem/`（テーマ、共通 UI 部品、M3 Expressive のラッパー、基準画像を含む） |
 | `qa` | 各モジュールのテストディレクトリへの**新しいテストファイルの追加**、`docs/manual-test.md`、`docs/qa/` |
 
 - 担当範囲の中にあるテスト（`src/test/`、`src/androidTest/`、`src/screenshotTest/`）は、その担当者が書きます。qa は既存のテストファイルを変更せず、修正が必要なら担当者に依頼します。
