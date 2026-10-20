@@ -101,4 +101,30 @@ object SttEngineSelection {
     ): SttEngine? = tryOrder.firstOrNull { engine ->
         info.statusOf(engine) == OnDeviceLanguageModelStatus.INSTALLED
     }
+
+    /**
+     * モデルの状態 [info] から、「自動」が選択されたときに解決される既定のエンジンを返す。
+     *
+     * 1. [SttEngine.AUTO_ORDER] の順で、すでにインストール済み（[OnDeviceLanguageModelStatus.INSTALLED]）の最初のエンジン。
+     * 2. いずれも未インストールの場合は、ML Kit が端末・言語で対応確認済み（[OnDeviceLanguageModelStatus.NOT_INSTALLED] または
+     *    [OnDeviceLanguageModelStatus.DOWNLOADING]）のときのみ [SttEngine.ML_KIT] を返す。未確認（`CHECKING`）や非対応（`UNSUPPORTED`）の
+     *    環境では ML Kit を選ばない。
+     * 3. それ以外は [SttEngine.SPEECH_RECOGNIZER] を返す。
+     */
+    fun resolveAutoEngine(info: OnDeviceLanguageModelInfo): SttEngine {
+        val enriched = info.enrichedWithCatalog()
+        firstUsableEngine(SttEngine.AUTO_ORDER, enriched)?.let { return it }
+        if (enriched.mlKitStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+            enriched.mlKitStatus == OnDeviceLanguageModelStatus.DOWNLOADING
+        ) {
+            return SttEngine.ML_KIT
+        }
+        if (enriched.status != OnDeviceLanguageModelStatus.UNSUPPORTED) {
+            return SttEngine.SPEECH_RECOGNIZER
+        }
+        if (enriched.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED) {
+            return SttEngine.SHERPA_ONNX
+        }
+        return SttEngine.SPEECH_RECOGNIZER
+    }
 }

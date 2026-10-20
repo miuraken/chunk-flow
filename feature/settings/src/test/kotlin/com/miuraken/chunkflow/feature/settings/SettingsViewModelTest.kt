@@ -469,4 +469,44 @@ class SettingsViewModelTest {
         assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
         assertNull(repo.state.value.sttEngineByLanguage[LanguageTag("ja")])
     }
+
+    @Test
+    fun `MLKit非対応または未確認の言語ではMLKitを選択できず設定も変更されない`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val analysisRepo = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository().apply {
+            languageModelInfos[LanguageTag("ko")] =
+                com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                    language = LanguageTag("ko"),
+                    status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                    mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                )
+            languageModelInfos[LanguageTag("en")] =
+                com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo(
+                    language = LanguageTag("en"),
+                    status = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+                    mlKitStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.CHECKING,
+                    sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                )
+        }
+        val viewModel = SettingsViewModel(repo, analysisRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val koInfo = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("ko") }
+        val enInfo = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("en") }
+
+        assertFalse(isSttEngineSelectableInSettings(koInfo, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT))
+        assertFalse(isSttEngineSelectableInSettings(enInfo, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT))
+        assertTrue(isSttEngineSelectableInSettings(koInfo, com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER))
+        assertTrue(isSttEngineSelectableInSettings(koInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
+
+        // 非対応の ML Kit を選んでも sttEngineByLanguage には保存されない
+        viewModel.onEvent(
+            SettingsEvent.SetSttEngineForLanguage(
+                LanguageTag("ko"),
+                com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
+            ),
+        )
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ko")])
+    }
 }

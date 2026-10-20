@@ -768,8 +768,12 @@ private fun TranscriptionSettingsSection(
 
         displayEntries.forEachIndexed { index, entry ->
             val langTag = LanguageTag(entry.code)
-            val info = languageModels.firstOrNull { it.language.value == entry.code }
-                ?: OnDeviceLanguageModelInfo(language = langTag)
+            val mgmtCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(entry.code)
+            val rawInfo = languageModels.firstOrNull {
+                it.language.value == entry.code ||
+                    com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(it.language.value) == mgmtCode
+            } ?: OnDeviceLanguageModelInfo(language = langTag)
+            val info = rawInfo.copy(language = langTag).enrichedWithCatalog(langTag)
             val preferredEngine = sttEngineByLanguage[LanguageSettings.normalize(langTag)]
 
             if (index > 0) {
@@ -784,7 +788,7 @@ private fun TranscriptionSettingsSection(
                     onEvent(SettingsEvent.SetSttEngineForLanguage(langTag, engine))
                 },
                 onDeleteSherpaModel = {
-                    onEvent(SettingsEvent.DeleteSherpaModel(info.language))
+                    onEvent(SettingsEvent.DeleteSherpaModel(rawInfo.language))
                 },
                 initialExpanded = (expandFirstAccordion && index == 0) ||
                     initialExpandedLanguages.contains(langTag),
@@ -899,19 +903,20 @@ private fun SttEngineAccordion(
     initialExpanded: Boolean = false,
 ) {
     val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
+    val enrichedInfo = info.enrichedWithCatalog()
 
-    val autoResolvedEngine = SttEngineSelection.firstUsableEngine(SttEngine.AUTO_ORDER, info)
-        ?: SttEngine.ML_KIT
+    val autoResolvedEngine = SttEngineSelection.resolveAutoEngine(enrichedInfo)
     val autoLabel = stringResource(
         R.string.settings_stt_engine_auto_with_resolved,
         sttEngineDisplayName(autoResolvedEngine),
     )
-    val currentEngineLabel = when (preferredEngine) {
+    val effectivePreferred = preferredEngine?.takeIf { isSttEngineSelectableInSettings(enrichedInfo, it) }
+    val currentEngineLabel = when (effectivePreferred) {
         null -> autoLabel
-        else -> sttEngineDisplayName(preferredEngine)
+        else -> sttEngineDisplayName(effectivePreferred)
     }
-    val sizeMb = SherpaDownloadDialogState.resolveSizeMb(info.sherpaModelSizeBytes)
-    val isSherpaInstalled = info.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
+    val sizeMb = SherpaDownloadDialogState.resolveSizeMb(enrichedInfo.sherpaModelSizeBytes)
+    val isSherpaInstalled = enrichedInfo.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
     val sherpaLabel = if (isSherpaInstalled) {
         stringResource(R.string.settings_stt_engine_sherpa_downloaded, sizeMb)
     } else {
@@ -932,7 +937,7 @@ private fun SttEngineAccordion(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = speechModelLanguageDisplayName(info.language),
+                    text = speechModelLanguageDisplayName(enrichedInfo.language),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
@@ -971,13 +976,19 @@ private fun SttEngineAccordion(
                 )
 
                 options.forEach { (engine, label) ->
-                    val isSelected = preferredEngine == engine
+                    val isOptionEnabled = isSttEngineSelectableInSettings(enrichedInfo, engine)
+                    val isSelected = effectivePreferred == engine
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .selectable(
                                 selected = isSelected,
-                                onClick = { onPreferredEngineChange(engine) },
+                                enabled = isOptionEnabled,
+                                onClick = {
+                                    if (isOptionEnabled) {
+                                        onPreferredEngineChange(engine)
+                                    }
+                                },
                                 role = Role.RadioButton,
                             )
                             .padding(vertical = 4.dp, horizontal = 4.dp),
@@ -986,10 +997,16 @@ private fun SttEngineAccordion(
                         RadioButton(
                             selected = isSelected,
                             onClick = null,
+                            enabled = isOptionEnabled,
                         )
                         Text(
                             text = label,
                             style = MaterialTheme.typography.bodyMedium,
+                            color = if (isOptionEnabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            },
                             modifier = Modifier.padding(start = 8.dp),
                         )
                         if (engine == SttEngine.SHERPA_ONNX && isSherpaInstalled) {

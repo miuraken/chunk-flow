@@ -2669,4 +2669,32 @@ class OnDeviceSpeechTranscriberTest {
             lastOnEvent?.invoke(event)
         }
     }
+
+    @Test
+    fun `queryLanguageModelInfos_MLKit非対応端末やカタログ非対応言語ではmlKitStatusがUNSUPPORTEDになる`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val gateway = FakeRecognitionModelGateway().apply {
+            supportResult = mapOf(
+                "en-US" to RecognitionModelSupport.INSTALLED,
+                "ko-KR" to RecognitionModelSupport.INSTALLED,
+            )
+        }
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 1),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            modelGateway = gateway,
+            mlKitGateway = null,
+        )
+
+        val infos = transcriber.queryLanguageModelInfos(listOf(LanguageTag("en"), LanguageTag("ko")))
+        val enInfo = infos.first { it.language == LanguageTag("en") }
+        val koInfo = infos.first { it.language == LanguageTag("ko") }
+
+        assertEquals(com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED, enInfo.status)
+        assertEquals(com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED, enInfo.mlKitStatus)
+        assertEquals(com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED, koInfo.status)
+        assertEquals(com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED, koInfo.mlKitStatus)
+    }
 }

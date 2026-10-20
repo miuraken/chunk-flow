@@ -267,11 +267,14 @@ internal fun DetailedChunkTranscriptionDialog(
                         }
                         val status = dialogState.engineStatus(selectedLanguage, engine)
                         val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
+                        val isEngineEnabled = dialogState.isEngineEnabled(selectedLanguage, engine)
                         FilterChip(
                             selected = selectedEngine == engine,
                             onClick = {
-                                selectedEngine = engine
-                                onSelectEngine(engine)
+                                if (isEngineEnabled) {
+                                    selectedEngine = engine
+                                    onSelectEngine(engine)
+                                }
                             },
                             leadingIcon = if (isDownloading) {
                                 {
@@ -284,7 +287,7 @@ internal fun DetailedChunkTranscriptionDialog(
                                 null
                             },
                             label = { Text(text = stringResource(labelRes)) },
-                            enabled = !dialogState.isRunning,
+                            enabled = !dialogState.isRunning && isEngineEnabled,
                         )
                     }
                 }

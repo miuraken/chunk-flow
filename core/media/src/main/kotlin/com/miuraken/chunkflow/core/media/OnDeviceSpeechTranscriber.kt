@@ -2325,7 +2325,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     language = lang,
                     osStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
                     resolvedBcp47Tag = candidateBcp47TagsFor(lang.value).firstOrNull(),
-                    mlKitSupport = null,
+                    mlKitSupport = Pair(OnDeviceLanguageModelStatus.UNSUPPORTED, null),
                 )
             }
         }
@@ -2382,6 +2382,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             (baseCandidates + extra).distinct()
         }
         val currentIssues = modelIssuesState.value
+        val osAvailable = onDeviceAvailabilityChecker()
         return allLanguages.map { language ->
             val candidates = candidatesByLanguage[language].orEmpty()
 
@@ -2420,7 +2421,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     status to supportedTag
                 }
 
-                osSupport.isNotEmpty() -> {
+                osSupport.isNotEmpty() || !osAvailable -> {
                     if (isSherpaInstalledFor(language)) {
                         clearModelIssue(language)
                     }
@@ -2449,8 +2450,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 mlKitInstalled != null -> OnDeviceLanguageModelStatus.INSTALLED
                 mlKitPending != null -> OnDeviceLanguageModelStatus.DOWNLOADING
                 mlKitSupported != null -> OnDeviceLanguageModelStatus.NOT_INSTALLED
-                mlKitSupportRaw.isNotEmpty() -> OnDeviceLanguageModelStatus.UNSUPPORTED
-                else -> OnDeviceLanguageModelStatus.CHECKING
+                else -> OnDeviceLanguageModelStatus.UNSUPPORTED
             }
 
             withSherpaAndMlKitModelFields(
@@ -2469,10 +2469,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         mlKitSupport: Pair<OnDeviceLanguageModelStatus, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>?,
     ): OnDeviceLanguageModelInfo {
         val manager = sherpaModelManager
-        val mlKitStatusVal = mlKitSupport?.first ?: OnDeviceLanguageModelStatus.CHECKING
+        val mlKitStatusVal = mlKitSupport?.first ?: OnDeviceLanguageModelStatus.UNSUPPORTED
         val mlKitModeVal = mlKitSupport?.second
-        if (manager == null) {
-            return OnDeviceLanguageModelInfo(
+        val rawInfo = if (manager == null) {
+            OnDeviceLanguageModelInfo(
                 language = language,
                 status = osStatus,
                 resolvedBcp47Tag = resolvedBcp47Tag,
@@ -2483,20 +2483,22 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 mlKitStatus = mlKitStatusVal,
                 mlKitMode = mlKitModeVal,
             )
+        } else {
+            val sherpaStatus = manager.getLanguageModelStatus(language)
+            val installed = sherpaStatus == OnDeviceLanguageModelStatus.INSTALLED
+            OnDeviceLanguageModelInfo(
+                language = language,
+                status = osStatus,
+                resolvedBcp47Tag = resolvedBcp47Tag,
+                sherpaModelStatus = sherpaStatus,
+                sherpaModelId = SherpaOnnxModelManager.MODEL_ID,
+                sherpaModelSizeBytes = manager.totalModelSizeBytes,
+                canDeleteSherpaModel = installed,
+                mlKitStatus = mlKitStatusVal,
+                mlKitMode = mlKitModeVal,
+            )
         }
-        val sherpaStatus = manager.getLanguageModelStatus(language)
-        val installed = sherpaStatus == OnDeviceLanguageModelStatus.INSTALLED
-        return OnDeviceLanguageModelInfo(
-            language = language,
-            status = osStatus,
-            resolvedBcp47Tag = resolvedBcp47Tag,
-            sherpaModelStatus = sherpaStatus,
-            sherpaModelId = SherpaOnnxModelManager.MODEL_ID,
-            sherpaModelSizeBytes = manager.totalModelSizeBytes,
-            canDeleteSherpaModel = installed,
-            mlKitStatus = mlKitStatusVal,
-            mlKitMode = mlKitModeVal,
-        )
+        return rawInfo.enrichedWithCatalog(language)
     }
 
     private fun candidateBcp47TagsFor(

@@ -550,19 +550,46 @@ data class DetailedTranscriptionDialogState(
     }
 
     /**
+     * 詳細文字起こしダイアログで、言語 [language] に対してエンジン [targetEngine] の選択肢を有効（選択可能）にするかどうかを返す。
+     *
+     * - `ML_KIT`: 端末・言語で対応が確認されている（`UNSUPPORTED` でも `CHECKING` でもない）ときだけ有効。
+     * - `ANDROID_SPEECH_RECOGNIZER`: 非対応（`UNSUPPORTED`）でないとき有効。
+     * - `SHERPA_ONNX`: モデルがダウンロード済み（[OnDeviceLanguageModelStatus.INSTALLED]）のときだけ有効。
+     */
+    fun isEngineEnabled(
+        language: LanguageTag?,
+        targetEngine: OnDeviceTranscriptionEngine,
+    ): Boolean {
+        val status = engineStatus(language, targetEngine)
+        return when (targetEngine) {
+            OnDeviceTranscriptionEngine.ML_KIT,
+            OnDeviceTranscriptionEngine.AUTO,
+            -> status != OnDeviceLanguageModelStatus.UNSUPPORTED &&
+                status != OnDeviceLanguageModelStatus.CHECKING
+
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER ->
+                status != OnDeviceLanguageModelStatus.UNSUPPORTED
+
+            OnDeviceTranscriptionEngine.SHERPA_ONNX ->
+                status == OnDeviceLanguageModelStatus.INSTALLED
+        }
+    }
+
+    /**
      * 言語 [language] でモデルがダウンロード済みですぐに使えるもの（[OnDeviceLanguageModelStatus.INSTALLED]）の
      * うち最上位（`ML Kit` → `SpeechRecognizer` → `sherpa-onnx` の順）のエンジンを返す。
-     * `INSTALLED` が 1 つもなければ、非 `UNSUPPORTED` の最上位を返す。
+     * `INSTALLED` が 1 つもなければ、[isEngineEnabled] が `true` の最上位（フォールバックは `SpeechRecognizer`）を返す。
      */
     fun selectDefaultEngineForLanguage(language: LanguageTag?): OnDeviceTranscriptionEngine {
         val installed = ENGINE_OPTIONS.firstOrNull { candidate ->
-            engineStatus(language, candidate) == OnDeviceLanguageModelStatus.INSTALLED
+            isEngineEnabled(language, candidate) &&
+                engineStatus(language, candidate) == OnDeviceLanguageModelStatus.INSTALLED
         }
         if (installed != null) return installed
-        val supported = ENGINE_OPTIONS.firstOrNull { candidate ->
-            engineStatus(language, candidate) != OnDeviceLanguageModelStatus.UNSUPPORTED
+        val enabled = ENGINE_OPTIONS.firstOrNull { candidate ->
+            isEngineEnabled(language, candidate)
         }
-        return supported ?: OnDeviceTranscriptionEngine.ML_KIT
+        return enabled ?: OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER
     }
 
     companion object {
@@ -590,26 +617,7 @@ data class DetailedTranscriptionDialogState(
         internal fun enrichWithCatalog(
             info: OnDeviceLanguageModelInfo,
             language: LanguageTag,
-        ): OnDeviceLanguageModelInfo {
-            val entry = SupportedLanguageCatalog.findByCode(language.value) ?: return info
-            return info.copy(
-                mlKitStatus = if (!entry.mlKitSupported) {
-                    OnDeviceLanguageModelStatus.UNSUPPORTED
-                } else {
-                    info.mlKitStatus
-                },
-                status = if (!entry.speechRecognizerSupported) {
-                    OnDeviceLanguageModelStatus.UNSUPPORTED
-                } else {
-                    info.status
-                },
-                sherpaModelStatus = if (entry.whisperCode == null) {
-                    OnDeviceLanguageModelStatus.UNSUPPORTED
-                } else {
-                    info.sherpaModelStatus
-                },
-            )
-        }
+        ): OnDeviceLanguageModelInfo = info.enrichedWithCatalog(language)
     }
 }
 
@@ -655,19 +663,27 @@ internal fun OnDeviceLanguageModelInfo.effectiveEngine(
     override: SttEngine? = null,
     userPreferred: SttEngine? = null,
 ): SttEngine? {
-    val enriched = DetailedTranscriptionDialogState.enrichWithCatalog(this, language)
+    val enriched = enrichedWithCatalog(language)
     val preferred = override ?: userPreferred
     if (preferred != null) {
         val preferredStatus = enriched.statusOf(preferred)
-        if (preferredStatus == OnDeviceLanguageModelStatus.INSTALLED ||
-            preferredStatus == OnDeviceLanguageModelStatus.CHECKING
-        ) {
+        val isPreferredUsable = when (preferred) {
+            SttEngine.ML_KIT ->
+                preferredStatus == OnDeviceLanguageModelStatus.INSTALLED ||
+                    preferredStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                    preferredStatus == OnDeviceLanguageModelStatus.DOWNLOADING
+
+            SttEngine.SHERPA_ONNX ->
+                preferredStatus == OnDeviceLanguageModelStatus.INSTALLED
+
+            SttEngine.SPEECH_RECOGNIZER ->
+                preferredStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
+        }
+        if (isPreferredUsable) {
             return preferred
         }
     }
-    val tryOrder = SttEngine.tryOrder(preferred)
-    SttEngineSelection.firstUsableEngine(tryOrder, enriched)?.let { return it }
-    return tryOrder.firstOrNull { enriched.statusOf(it) != OnDeviceLanguageModelStatus.UNSUPPORTED }
+    return SttEngineSelection.resolveAutoEngine(enriched)
 }
 
 /**
@@ -2641,6 +2657,7 @@ class PlayerViewModel @Inject constructor(
                             }
                             localUiState.update { state ->
                                 state.copy(
+                                    languageModelInfos = state.languageModelInfos + infoMap,
                                     backgroundSpeechRecognizerWarning = if (speechRecognizerLanguages.isNotEmpty()) {
                                         BackgroundSpeechRecognizerWarningState(
                                             speechRecognizerLanguages = speechRecognizerLanguages,
@@ -2819,6 +2836,7 @@ class PlayerViewModel @Inject constructor(
                     resultText = initialText,
                     trialEmptyMessage = null,
                     recognizedLanguage = initialLanguage,
+                    languageModelInfos = localUiState.value.languageModelInfos,
                     hasRecordAudioPermission = localUiState.value.hasRecordAudioPermission,
                 ).let { d ->
                     d.copy(engine = d.selectDefaultEngineForLanguage(initialLanguage))
@@ -2831,13 +2849,15 @@ class PlayerViewModel @Inject constructor(
                     val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
                     val infoMap = queried.associateBy { it.language }
                     localUiState.update { state ->
+                        val mergedInfos = state.languageModelInfos + infoMap
                         val current = state.detailedTranscriptionDialog
                         if (current == null || current.chunkId != event.chunkId) {
-                            state
+                            state.copy(languageModelInfos = mergedInfos)
                         } else {
-                            val withInfos = current.copy(languageModelInfos = infoMap)
+                            val withInfos = current.copy(languageModelInfos = mergedInfos)
                             val lang = withInfos.languageOverride ?: initialLanguage
                             state.copy(
+                                languageModelInfos = mergedInfos,
                                 detailedTranscriptionDialog = withInfos.copy(
                                     engine = withInfos.selectDefaultEngineForLanguage(lang),
                                 ),
@@ -2865,6 +2885,9 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.SelectDetailedTranscriptionEngine -> {
                 localUiState.update { state ->
                     val current = state.detailedTranscriptionDialog ?: return@update state
+                    if (!current.isEngineEnabled(current.languageOverride, event.engine)) {
+                        return@update state
+                    }
                     state.copy(
                         detailedTranscriptionDialog = current.copy(
                             engine = event.engine,
@@ -2902,6 +2925,7 @@ class PlayerViewModel @Inject constructor(
                         (normLang to downloadingInfo.copy(language = normLang)) +
                         (mgmtLang to downloadingInfo.copy(language = mgmtLang))
                     state.copy(
+                        languageModelInfos = state.languageModelInfos + nextMap,
                         detailedTranscriptionDialog = current.copy(
                             languageOverride = event.language,
                             engine = event.engine,
@@ -2929,11 +2953,13 @@ class PlayerViewModel @Inject constructor(
                         queriedMap[mgmtLang] = failedInfo.copy(language = mgmtLang)
                     }
                     localUiState.update { state ->
+                        val mergedInfos = state.languageModelInfos + queriedMap
                         val dialog = state.detailedTranscriptionDialog
                         if (dialog == null || dialog.chunkId != currentDialog.chunkId) {
-                            state
+                            state.copy(languageModelInfos = mergedInfos)
                         } else {
                             state.copy(
+                                languageModelInfos = mergedInfos,
                                 detailedTranscriptionDialog = dialog.copy(
                                     languageModelInfos = dialog.languageModelInfos + queriedMap,
                                 ),
@@ -2954,16 +2980,32 @@ class PlayerViewModel @Inject constructor(
             is PlayerEvent.SetTargetEngineOverride -> {
                 val mediaId = uiState.value.mediaId ?: return
                 viewModelScope.launch {
+                    val requestedEngine = event.engine
+                    if (requestedEngine != null) {
+                        val targetLang = uiState.value.languagePair?.target
+                            ?: libraryRepository.observeItem(mediaId).firstOrNull()?.languagePair?.target
+                        if (targetLang != null && !isEngineOverrideSelectableForLanguage(targetLang, requestedEngine)) {
+                            return@launch
+                        }
+                    }
                     val current = itemSttOverrideRepository.get(mediaId)
-                    itemSttOverrideRepository.set(mediaId, current.copy(targetEngine = event.engine))
+                    itemSttOverrideRepository.set(mediaId, current.copy(targetEngine = requestedEngine))
                 }
             }
 
             is PlayerEvent.SetBaseEngineOverride -> {
                 val mediaId = uiState.value.mediaId ?: return
                 viewModelScope.launch {
+                    val requestedEngine = event.engine
+                    if (requestedEngine != null) {
+                        val baseLang = uiState.value.languagePair?.base
+                            ?: libraryRepository.observeItem(mediaId).firstOrNull()?.languagePair?.base
+                        if (baseLang != null && !isEngineOverrideSelectableForLanguage(baseLang, requestedEngine)) {
+                            return@launch
+                        }
+                    }
                     val current = itemSttOverrideRepository.get(mediaId)
-                    itemSttOverrideRepository.set(mediaId, current.copy(baseEngine = event.engine))
+                    itemSttOverrideRepository.set(mediaId, current.copy(baseEngine = requestedEngine))
                 }
             }
 
@@ -3131,6 +3173,50 @@ class PlayerViewModel @Inject constructor(
         SttEngine.ML_KIT -> info.copy(mlKitStatus = status)
         SttEngine.SPEECH_RECOGNIZER -> info.copy(status = status)
         SttEngine.SHERPA_ONNX -> info.copy(sherpaModelStatus = status)
+    }
+
+    private suspend fun isEngineOverrideSelectableForLanguage(
+        language: LanguageTag,
+        engine: SttEngine,
+    ): Boolean {
+        val normLang = LanguageSettings.normalize(language)
+        val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(language.value))
+        var infoMap = localUiState.value.languageModelInfos
+        var rawInfo = listOfNotNull(
+            infoMap[language],
+            infoMap[normLang],
+            infoMap[mgmtLang],
+        ).firstOrNull { candidate ->
+            candidate != OnDeviceLanguageModelInfo(language = candidate.language)
+        }
+        if (rawInfo == null) {
+            val queryLanguages = buildDetailedQueryLanguages(uiState.value.languagePair, language)
+            val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+            val queriedMap = queried.associateBy { it.language }
+            localUiState.update { state ->
+                state.copy(languageModelInfos = state.languageModelInfos + queriedMap)
+            }
+            infoMap = localUiState.value.languageModelInfos
+            rawInfo = listOfNotNull(
+                infoMap[language],
+                infoMap[normLang],
+                infoMap[mgmtLang],
+            ).firstOrNull { candidate ->
+                candidate != OnDeviceLanguageModelInfo(language = candidate.language)
+            } ?: infoMap[language]
+        }
+        val enriched = (rawInfo ?: OnDeviceLanguageModelInfo(language = language)).enrichedWithCatalog(language)
+        return when (engine) {
+            SttEngine.ML_KIT ->
+                enriched.mlKitStatus != OnDeviceLanguageModelStatus.UNSUPPORTED &&
+                    enriched.mlKitStatus != OnDeviceLanguageModelStatus.CHECKING
+
+            SttEngine.SPEECH_RECOGNIZER ->
+                enriched.status != OnDeviceLanguageModelStatus.UNSUPPORTED
+
+            SttEngine.SHERPA_ONNX ->
+                enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
+        }
     }
 
     private fun startDetailedChunkPreview(chunkId: ChunkId, speed: Float) {

@@ -250,4 +250,49 @@ class PlayerScreenTest {
         val undOnlyState = lidCompletedState.copy(chunks = listOf(c3))
         assertFalse(undOnlyState.hasChunkLanguage)
     }
+
+    @Test
+    fun `詳細文字起こしエンジン選択制御_MLKit非対応または未確認時は無効化されsherpaはインストール済みのみ有効になる`() {
+        val en = LanguageTag("en")
+        val ko = LanguageTag("ko")
+        val state = DetailedTranscriptionDialogState(
+            chunkId = ChunkId(1L),
+            chunkIndex = 0,
+            languageOverride = en,
+            languageModelInfos = mapOf(
+                // en: ML Kit が CHECKING（非対応端末等）、SpeechRecognizer が INSTALLED、sherpa-onnx が NOT_INSTALLED
+                en to OnDeviceLanguageModelInfo(
+                    language = en,
+                    mlKitStatus = OnDeviceLanguageModelStatus.CHECKING,
+                    status = OnDeviceLanguageModelStatus.INSTALLED,
+                    sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                ),
+                // ko: ML Kit が UNSUPPORTED、SpeechRecognizer が INSTALLED、sherpa-onnx が INSTALLED
+                ko to OnDeviceLanguageModelInfo(
+                    language = ko,
+                    mlKitStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                    status = OnDeviceLanguageModelStatus.INSTALLED,
+                    sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                ),
+            ),
+        )
+
+        // en: ML Kit は CHECKING なので無効、sherpa-onnx は NOT_INSTALLED なので無効、SpeechRecognizer のみ有効
+        assertFalse(state.isEngineEnabled(en, OnDeviceTranscriptionEngine.ML_KIT))
+        assertTrue(state.isEngineEnabled(en, OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER))
+        assertFalse(state.isEngineEnabled(en, OnDeviceTranscriptionEngine.SHERPA_ONNX))
+        assertEquals(
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            state.selectDefaultEngineForLanguage(en),
+        )
+
+        // ko: ML Kit は UNSUPPORTED なので無効、SpeechRecognizer と sherpa-onnx（INSTALLED）は有効
+        assertFalse(state.isEngineEnabled(ko, OnDeviceTranscriptionEngine.ML_KIT))
+        assertTrue(state.isEngineEnabled(ko, OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER))
+        assertTrue(state.isEngineEnabled(ko, OnDeviceTranscriptionEngine.SHERPA_ONNX))
+        assertEquals(
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+            state.selectDefaultEngineForLanguage(ko),
+        )
+    }
 }

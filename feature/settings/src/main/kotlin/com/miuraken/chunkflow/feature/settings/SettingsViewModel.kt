@@ -579,11 +579,24 @@ class SettingsViewModel @Inject constructor(
             }
 
             is SettingsEvent.SetSttEngineForLanguage -> {
+                val mgmtCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                    event.language.value,
+                )
+                val rawInfo = languageModelsState.value.firstOrNull {
+                    it.language == event.language ||
+                        com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                            it.language.value,
+                        ) == mgmtCode
+                }
+                val modelInfo = (rawInfo ?: OnDeviceLanguageModelInfo(language = event.language))
+                    .enrichedWithCatalog(event.language)
+                if (!isSttEngineSelectableInSettings(modelInfo, event.engine)) {
+                    return
+                }
                 if (event.engine == SttEngine.SHERPA_ONNX) {
-                    val modelInfo = languageModelsState.value.firstOrNull { it.language == event.language }
-                    if (modelInfo?.sherpaModelStatus != OnDeviceLanguageModelStatus.INSTALLED) {
+                    if (modelInfo.sherpaModelStatus != OnDeviceLanguageModelStatus.INSTALLED) {
                         val sizeMb = SherpaDownloadDialogState.resolveSizeMb(
-                            modelInfo?.sherpaModelSizeBytes ?: 0L,
+                            modelInfo.sherpaModelSizeBytes,
                         )
                         sherpaDownloadDialogState.value = SherpaDownloadDialogState(
                             language = event.language,
@@ -761,5 +774,32 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             userSettingsRepository.setEnabledLanguages(cleaned)
         }
+    }
+}
+
+/**
+ * 設定画面の言語別音声認識エンジン選択で、指定した [engine]（`null` は自動）を選択可能（enabled）にするかどうかを返す。
+ *
+ * - `null`（自動）は常に選択可能。
+ * - `ML_KIT` は端末・言語で対応が確認されている（`UNSUPPORTED` でも `CHECKING` でもない）ときだけ選択可能。
+ * - `SPEECH_RECOGNIZER` と `SHERPA_ONNX` は非対応（`UNSUPPORTED`）でないとき選択可能（`SHERPA_ONNX` の未ダウンロード選択はダウンロード確認ダイアログを開く）。
+ */
+internal fun isSttEngineSelectableInSettings(
+    info: OnDeviceLanguageModelInfo,
+    engine: SttEngine?,
+): Boolean {
+    val enriched = info.enrichedWithCatalog()
+    return when (engine) {
+        null -> true
+
+        SttEngine.ML_KIT ->
+            enriched.mlKitStatus != OnDeviceLanguageModelStatus.UNSUPPORTED &&
+                enriched.mlKitStatus != OnDeviceLanguageModelStatus.CHECKING
+
+        SttEngine.SPEECH_RECOGNIZER ->
+            enriched.status != OnDeviceLanguageModelStatus.UNSUPPORTED
+
+        SttEngine.SHERPA_ONNX ->
+            enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
     }
 }

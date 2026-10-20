@@ -386,48 +386,25 @@ fun resolveConfiguredDefaultEngineForLanguage(
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
 ): SttEngine {
-    val normalized = normalizeSelectableLanguageCode(rawCode).ifBlank { return SttEngine.ML_KIT }
+    val normalized = normalizeSelectableLanguageCode(rawCode).ifBlank { return SttEngine.SPEECH_RECOGNIZER }
     val langTag = LanguageTag(normalized)
     val settingsNormalizedTag = LanguageSettings.normalize(langTag)
     val modelLangTag = LanguageTag(
         SupportedLanguageCatalog.normalizeToModelManagementCode(langTag.value),
     )
 
-    val explicitPreferred = sttEngineByLanguage[langTag]
-        ?: sttEngineByLanguage[settingsNormalizedTag]
-        ?: sttEngineByLanguage[modelLangTag]
-    if (explicitPreferred != null) {
-        return explicitPreferred
-    }
-
     val rawInfo = languageModelInfos[langTag]
         ?: languageModelInfos[settingsNormalizedTag]
         ?: languageModelInfos[modelLangTag]
         ?: OnDeviceLanguageModelInfo(language = langTag)
-    val entry = SupportedLanguageCatalog.findByCode(langTag.value)
-    val enriched = if (entry != null) {
-        rawInfo.copy(
-            mlKitStatus = if (!entry.mlKitSupported) {
-                OnDeviceLanguageModelStatus.UNSUPPORTED
-            } else {
-                rawInfo.mlKitStatus
-            },
-            status = if (!entry.speechRecognizerSupported) {
-                OnDeviceLanguageModelStatus.UNSUPPORTED
-            } else {
-                rawInfo.status
-            },
-            sherpaModelStatus = if (entry.whisperCode == null) {
-                OnDeviceLanguageModelStatus.UNSUPPORTED
-            } else {
-                rawInfo.sherpaModelStatus
-            },
-        )
-    } else {
-        rawInfo
+    val enriched = rawInfo.enrichedWithCatalog(langTag)
+
+    val explicitPreferred = sttEngineByLanguage[langTag]
+        ?: sttEngineByLanguage[settingsNormalizedTag]
+        ?: sttEngineByLanguage[modelLangTag]
+    if (explicitPreferred != null && enriched.statusOf(explicitPreferred) != OnDeviceLanguageModelStatus.UNSUPPORTED) {
+        return explicitPreferred
     }
-    val tryOrder = SttEngine.tryOrder(null)
-    return SttEngineSelection.firstUsableEngine(tryOrder, enriched)
-        ?: tryOrder.firstOrNull { enriched.statusOf(it) != OnDeviceLanguageModelStatus.UNSUPPORTED }
-        ?: SttEngine.ML_KIT
+
+    return SttEngineSelection.resolveAutoEngine(enriched)
 }

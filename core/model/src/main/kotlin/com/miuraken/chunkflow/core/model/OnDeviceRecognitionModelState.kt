@@ -112,6 +112,31 @@ data class OnDeviceLanguageModelInfo(
         SttEngine.SPEECH_RECOGNIZER -> status
         SttEngine.SHERPA_ONNX -> sherpaModelStatus
     }
+
+    /**
+     * [SupportedLanguageCatalog] のエンジン対応情報（`mlKitSupported`・`speechRecognizerSupported`・`whisperCode`）を反映した
+     * [OnDeviceLanguageModelInfo] を返す。カタログ上非対応のエンジンは [OnDeviceLanguageModelStatus.UNSUPPORTED] になる。
+     */
+    fun enrichedWithCatalog(languageOverride: LanguageTag = language): OnDeviceLanguageModelInfo {
+        val entry = SupportedLanguageCatalog.findByCode(languageOverride.value) ?: return this
+        return copy(
+            mlKitStatus = if (!entry.mlKitSupported) {
+                OnDeviceLanguageModelStatus.UNSUPPORTED
+            } else {
+                mlKitStatus
+            },
+            status = if (!entry.speechRecognizerSupported) {
+                OnDeviceLanguageModelStatus.UNSUPPORTED
+            } else {
+                status
+            },
+            sherpaModelStatus = if (entry.whisperCode == null) {
+                OnDeviceLanguageModelStatus.UNSUPPORTED
+            } else {
+                sherpaModelStatus
+            },
+        )
+    }
 }
 
 /**

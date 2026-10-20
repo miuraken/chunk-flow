@@ -104,4 +104,61 @@ class SttEngineSelectionTest {
         assertTrue(ItemSttOverride.NONE.isEmpty)
         assertFalse(ItemSttOverride(baseEngine = SttEngine.ML_KIT).isEmpty)
     }
+
+    @Test
+    fun `enrichedWithCatalog_カタログで非対応のエンジンはUNSUPPORTEDになる`() {
+        // ba は SupportedLanguageCatalog で speechRecognizerSupported = false, mlKitSupported = false
+        val baInfo = OnDeviceLanguageModelInfo(
+            language = LanguageTag("ba"),
+            status = OnDeviceLanguageModelStatus.CHECKING,
+            mlKitStatus = OnDeviceLanguageModelStatus.CHECKING,
+            sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+        ).enrichedWithCatalog()
+        assertEquals(OnDeviceLanguageModelStatus.UNSUPPORTED, baInfo.mlKitStatus)
+        assertEquals(OnDeviceLanguageModelStatus.UNSUPPORTED, baInfo.status)
+        assertEquals(OnDeviceLanguageModelStatus.NOT_INSTALLED, baInfo.sherpaModelStatus)
+
+        // en はすべて対応なのでそのまま維持される
+        val enInfo = OnDeviceLanguageModelInfo(
+            language = LanguageTag("en"),
+            status = OnDeviceLanguageModelStatus.INSTALLED,
+            mlKitStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+        ).enrichedWithCatalog()
+        assertEquals(OnDeviceLanguageModelStatus.NOT_INSTALLED, enInfo.mlKitStatus)
+        assertEquals(OnDeviceLanguageModelStatus.INSTALLED, enInfo.status)
+    }
+
+    @Test
+    fun `resolveAutoEngine_MLKitが未確認や非対応の環境ではMLKitを自動選択しない`() {
+        // 1. デフォルト（CHECKING）状態では ML Kit が確認されていないので SpeechRecognizer にフォールバックする
+        assertEquals(
+            SttEngine.SPEECH_RECOGNIZER,
+            SttEngineSelection.resolveAutoEngine(OnDeviceLanguageModelInfo(language = LanguageTag("en"))),
+        )
+
+        // 2. ML Kit が UNSUPPORTED、SpeechRecognizer が NOT_INSTALLED の場合も SpeechRecognizer を返す
+        assertEquals(
+            SttEngine.SPEECH_RECOGNIZER,
+            SttEngineSelection.resolveAutoEngine(
+                OnDeviceLanguageModelInfo(
+                    language = LanguageTag("en"),
+                    status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    mlKitStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
+                ),
+            ),
+        )
+
+        // 3. ML Kit が端末・言語で対応確認済み（NOT_INSTALLED または INSTALLED）のときだけ ML Kit を選ぶ
+        assertEquals(
+            SttEngine.ML_KIT,
+            SttEngineSelection.resolveAutoEngine(
+                OnDeviceLanguageModelInfo(
+                    language = LanguageTag("en"),
+                    status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    mlKitStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                ),
+            ),
+        )
+    }
 }
