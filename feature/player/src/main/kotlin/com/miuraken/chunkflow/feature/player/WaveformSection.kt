@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.player
 
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -81,9 +82,12 @@ import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.model.AnalysisStage
+import com.miuraken.chunkflow.core.model.AutoPause
+import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -128,6 +132,391 @@ internal fun matchesLanguageRole(
         return false
     }
     return true
+}
+
+/**
+ * 拡大波形の仮想タイムラインを構成する区間セグメント。
+ *
+ * - 無音スキップが ON のとき、チャンク外の隙間は折りたたまれ（[SilenceGap] は作られず）、チャンク同士または自動ポーズ区間が直結する。
+ * - 自動ポーズが有効なとき、各チャンクの直後にそのチャンクで発生する自動ポーズ時間分の [AutoPauseSegment] が挿入される。
+ */
+internal sealed interface ZoomedTimelineSegment {
+    val virtualStartMs: Long
+    val virtualEndMs: Long
+    val mediaStartMs: Long
+    val mediaEndMs: Long
+
+    /** チャンク外の元の無音・非チャンク区間（無音スキップ OFF のときのみ生成される）。 */
+    data class SilenceGap(
+        override val virtualStartMs: Long,
+        override val virtualEndMs: Long,
+        override val mediaStartMs: Long,
+        override val mediaEndMs: Long,
+    ) : ZoomedTimelineSegment
+
+    /** チャンク本体の区間（仮想時刻と実メディア時刻は 1:1 で対応）。 */
+    data class ChunkSegment(
+        val chunkIndex: Int,
+        val chunk: ChunkUi,
+        override val virtualStartMs: Long,
+        override val virtualEndMs: Long,
+        override val mediaStartMs: Long,
+        override val mediaEndMs: Long,
+    ) : ZoomedTimelineSegment
+
+    /** チャンク直後の自動ポーズ区間（実メディア時刻は `chunk.endMs` に固定）。 */
+    data class AutoPauseSegment(
+        val chunkIndex: Int,
+        val chunk: ChunkUi,
+        val pauseDurationMs: Long,
+        override val virtualStartMs: Long,
+        override val virtualEndMs: Long,
+        override val mediaStartMs: Long = chunk.endMs,
+        override val mediaEndMs: Long = chunk.endMs,
+    ) : ZoomedTimelineSegment
+}
+
+/**
+ * 拡大波形（[ZoomedWaveformCanvas]）用の仮想タイムライン。
+ *
+ * 無音スキップ ON 時のチャンク外の無音区間の折りたたみと、自動ポーズ ON 時のチャンク直後のポーズ空白区間を
+ * 実メディア時刻と相互変換する。
+ */
+internal class ZoomedVirtualTimeline(
+    val durationMs: Long,
+    val totalVirtualDurationMs: Long,
+    val segments: List<ZoomedTimelineSegment>,
+    val isIdentity: Boolean,
+    private val chunkVirtualRanges: Map<Int, LongRange>,
+    private val collapsedSilenceMappings: List<CollapsedSilenceMapping>,
+) {
+    internal data class CollapsedSilenceMapping(
+        val mediaStartMs: Long,
+        val mediaEndMs: Long,
+        val virtualMs: Long,
+    )
+
+    /**
+     * 実メディア時刻 [mediaMs]（および自動ポーズ中の経過時間 [autoPauseElapsedMs]）を仮想タイムライン上の時刻に変換する。
+     */
+    fun mediaToVirtualMs(
+        mediaMs: Long,
+        activeAutoPauseChunkIndex: Int? = null,
+        autoPauseElapsedMs: Long = 0L,
+    ): Long {
+        if (activeAutoPauseChunkIndex != null && autoPauseElapsedMs > 0L) {
+            val autoPauseSeg = segments.firstOrNull {
+                it is ZoomedTimelineSegment.AutoPauseSegment && it.chunkIndex == activeAutoPauseChunkIndex
+            } as? ZoomedTimelineSegment.AutoPauseSegment
+            if (autoPauseSeg != null) {
+                return (autoPauseSeg.virtualStartMs + autoPauseElapsedMs)
+                    .coerceIn(autoPauseSeg.virtualStartMs, autoPauseSeg.virtualEndMs)
+            }
+        }
+        if (isIdentity) {
+            return mediaMs.coerceIn(0L, totalVirtualDurationMs)
+        }
+        val clampedMediaMs = mediaMs.coerceIn(0L, durationMs.coerceAtLeast(0L))
+
+        for (seg in segments) {
+            when (seg) {
+                is ZoomedTimelineSegment.ChunkSegment -> {
+                    if (clampedMediaMs >= seg.mediaStartMs && clampedMediaMs < seg.mediaEndMs) {
+                        return seg.virtualStartMs + (clampedMediaMs - seg.mediaStartMs)
+                    }
+                }
+
+                is ZoomedTimelineSegment.SilenceGap -> {
+                    if (clampedMediaMs >= seg.mediaStartMs && clampedMediaMs < seg.mediaEndMs) {
+                        return seg.virtualStartMs + (clampedMediaMs - seg.mediaStartMs)
+                    }
+                }
+
+                is ZoomedTimelineSegment.AutoPauseSegment -> Unit
+            }
+        }
+
+        // チャンク終端ちょうど（かつ自動ポーズ経過時間が 0）または末尾の境界を判定
+        for (seg in segments) {
+            when (seg) {
+                is ZoomedTimelineSegment.ChunkSegment -> {
+                    if (clampedMediaMs == seg.mediaEndMs) {
+                        return seg.virtualEndMs
+                    }
+                }
+
+                is ZoomedTimelineSegment.SilenceGap -> {
+                    if (clampedMediaMs == seg.mediaEndMs) {
+                        return seg.virtualEndMs
+                    }
+                }
+
+                is ZoomedTimelineSegment.AutoPauseSegment -> Unit
+            }
+        }
+
+        // 無音スキップ ON で折りたたまれた非チャンク区間に含まれる場合
+        for (collapsed in collapsedSilenceMappings) {
+            if (clampedMediaMs in collapsed.mediaStartMs..collapsed.mediaEndMs) {
+                return collapsed.virtualMs
+            }
+        }
+
+        return totalVirtualDurationMs
+    }
+
+    /**
+     * 仮想タイムライン上の時刻 [virtualMs] を実メディア時刻に変換する。
+     */
+    fun virtualToMediaMs(virtualMs: Long): Long {
+        if (isIdentity) {
+            return virtualMs.coerceIn(0L, durationMs.coerceAtLeast(0L))
+        }
+        val clampedVirtual = virtualMs.coerceIn(0L, totalVirtualDurationMs)
+        for (seg in segments) {
+            if (clampedVirtual >= seg.virtualStartMs && clampedVirtual < seg.virtualEndMs) {
+                return when (seg) {
+                    is ZoomedTimelineSegment.ChunkSegment ->
+                        seg.mediaStartMs + (clampedVirtual - seg.virtualStartMs)
+
+                    is ZoomedTimelineSegment.SilenceGap ->
+                        seg.mediaStartMs + (clampedVirtual - seg.virtualStartMs)
+
+                    is ZoomedTimelineSegment.AutoPauseSegment ->
+                        seg.mediaStartMs
+                }
+            }
+        }
+        val lastSeg = segments.lastOrNull()
+        return lastSeg?.mediaEndMs?.coerceIn(0L, durationMs.coerceAtLeast(0L))
+            ?: clampedVirtual.coerceIn(0L, durationMs.coerceAtLeast(0L))
+    }
+
+    /**
+     * 指定した [chunkIndex] のチャンクの仮想タイムライン上の範囲 `virtualStartMs..virtualEndMs` を返す。
+     */
+    fun chunkVirtualRange(chunkIndex: Int): LongRange? = chunkVirtualRanges[chunkIndex]
+
+    /**
+     * 仮想タイムライン上の時刻 [virtualMs] にあるセグメントを返す。
+     */
+    fun segmentAtVirtualMs(virtualMs: Long): ZoomedTimelineSegment? {
+        if (segments.isEmpty()) return null
+        val clamped = virtualMs.coerceIn(0L, totalVirtualDurationMs)
+        return segments.firstOrNull { clamped >= it.virtualStartMs && clamped < it.virtualEndMs }
+            ?: segments.lastOrNull { clamped == it.virtualEndMs }
+    }
+}
+
+/**
+ * チャンク [chunk]（インデックス [chunkIndex]）の直後に発生する自動ポーズ時間（ミリ秒）を
+ * `ChunkScheduler.computeAutoPauseDurationMs` と同じルールで計算する。
+ */
+internal fun computeChunkAutoPauseDurationMs(
+    chunkIndex: Int,
+    chunk: ChunkUi,
+    chunks: List<ChunkUi>,
+    autoPause: AutoPause,
+    autoPauseScope: AutoPauseScope,
+    languagePair: LanguagePair?,
+    speed: Float,
+): Long {
+    if (autoPause is AutoPause.Off) return 0L
+    if (chunk.isSkipped) return 0L
+
+    val scopeMatches = when (autoPauseScope) {
+        AutoPauseScope.ALL_CHUNKS -> true
+
+        AutoPauseScope.AFTER_TARGET_LANGUAGE -> {
+            val targetLang = languagePair?.target
+            val chunkLang = chunk.language
+            if (targetLang == null) {
+                true
+            } else if (chunkLang == null) {
+                true
+            } else {
+                matchesLanguageRole(chunkLang, targetLang)
+            }
+        }
+
+        AutoPauseScope.AFTER_BASE_LANGUAGE -> {
+            val baseLang = languagePair?.base
+            val chunkLang = chunk.language
+            if (baseLang == null) {
+                true
+            } else if (chunkLang == null) {
+                true
+            } else {
+                matchesLanguageRole(chunkLang, baseLang)
+            }
+        }
+    }
+    if (!scopeMatches) return 0L
+
+    return when (autoPause) {
+        AutoPause.Off -> 0L
+
+        is AutoPause.Fixed -> autoPause.pauseMs.coerceAtLeast(0L)
+
+        is AutoPause.Proportional -> {
+            val chunkDurationMs = (chunk.endMs - chunk.startMs).coerceAtLeast(0L)
+            val effectiveSpeed = speed.takeIf { it > 0f } ?: 1.0f
+            ((chunkDurationMs / effectiveSpeed) * autoPause.factor).roundToLong().coerceAtLeast(0L)
+        }
+
+        is AutoPause.OriginalSilence -> {
+            val nextChunk = chunks.getOrNull(chunkIndex + 1)
+            val originalSilenceMs = if (nextChunk != null) {
+                (nextChunk.startMs - chunk.endMs).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+            (originalSilenceMs * autoPause.factor).roundToLong().coerceAtLeast(0L)
+        }
+    }
+}
+
+/**
+ * チャンク一覧・無音スキップ設定・自動ポーズ設定から拡大波形用の [ZoomedVirtualTimeline] を構築する。
+ */
+internal fun buildZoomedVirtualTimeline(
+    durationMs: Long,
+    chunks: List<ChunkUi>,
+    skipOriginalSilence: Boolean = false,
+    autoPause: AutoPause = AutoPause.Off,
+    autoPauseScope: AutoPauseScope = AutoPauseScope.ALL_CHUNKS,
+    languagePair: LanguagePair? = null,
+    speed: Float = 1.0f,
+): ZoomedVirtualTimeline {
+    val safeDurationMs = durationMs.coerceAtLeast(1L)
+    if (chunks.isEmpty()) {
+        val gap = ZoomedTimelineSegment.SilenceGap(
+            virtualStartMs = 0L,
+            virtualEndMs = safeDurationMs,
+            mediaStartMs = 0L,
+            mediaEndMs = safeDurationMs,
+        )
+        return ZoomedVirtualTimeline(
+            durationMs = safeDurationMs,
+            totalVirtualDurationMs = safeDurationMs,
+            segments = listOf(gap),
+            isIdentity = true,
+            chunkVirtualRanges = emptyMap(),
+            collapsedSilenceMappings = emptyList(),
+        )
+    }
+
+    val segments = ArrayList<ZoomedTimelineSegment>(chunks.size * 3 + 1)
+    val chunkRanges = HashMap<Int, LongRange>(chunks.size)
+    val collapsedMappings = ArrayList<ZoomedVirtualTimeline.CollapsedSilenceMapping>(chunks.size + 1)
+    var currentVirtualMs = 0L
+    var cursorMediaMs = 0L
+
+    chunks.forEachIndexed { index, chunk ->
+        val chunkStartMs = chunk.startMs.coerceIn(cursorMediaMs, safeDurationMs)
+        val chunkEndMs = chunk.endMs.coerceIn(chunkStartMs, safeDurationMs)
+
+        if (chunkStartMs > cursorMediaMs) {
+            if (skipOriginalSilence) {
+                collapsedMappings.add(
+                    ZoomedVirtualTimeline.CollapsedSilenceMapping(
+                        mediaStartMs = cursorMediaMs,
+                        mediaEndMs = chunkStartMs,
+                        virtualMs = currentVirtualMs,
+                    ),
+                )
+            } else {
+                val gapLen = chunkStartMs - cursorMediaMs
+                segments.add(
+                    ZoomedTimelineSegment.SilenceGap(
+                        virtualStartMs = currentVirtualMs,
+                        virtualEndMs = currentVirtualMs + gapLen,
+                        mediaStartMs = cursorMediaMs,
+                        mediaEndMs = chunkStartMs,
+                    ),
+                )
+                currentVirtualMs += gapLen
+            }
+        }
+
+        val chunkLen = (chunkEndMs - chunkStartMs).coerceAtLeast(0L)
+        val chunkVirtualStart = currentVirtualMs
+        val chunkVirtualEnd = currentVirtualMs + chunkLen
+        segments.add(
+            ZoomedTimelineSegment.ChunkSegment(
+                chunkIndex = index,
+                chunk = chunk,
+                virtualStartMs = chunkVirtualStart,
+                virtualEndMs = chunkVirtualEnd,
+                mediaStartMs = chunkStartMs,
+                mediaEndMs = chunkEndMs,
+            ),
+        )
+        chunkRanges[index] = chunkVirtualStart..chunkVirtualEnd
+        currentVirtualMs = chunkVirtualEnd
+
+        val pauseMs = computeChunkAutoPauseDurationMs(
+            chunkIndex = index,
+            chunk = chunk,
+            chunks = chunks,
+            autoPause = autoPause,
+            autoPauseScope = autoPauseScope,
+            languagePair = languagePair,
+            speed = speed,
+        )
+        if (pauseMs > 0L) {
+            segments.add(
+                ZoomedTimelineSegment.AutoPauseSegment(
+                    chunkIndex = index,
+                    chunk = chunk,
+                    pauseDurationMs = pauseMs,
+                    virtualStartMs = currentVirtualMs,
+                    virtualEndMs = currentVirtualMs + pauseMs,
+                    mediaStartMs = chunkEndMs,
+                    mediaEndMs = chunkEndMs,
+                ),
+            )
+            currentVirtualMs += pauseMs
+        }
+
+        cursorMediaMs = chunkEndMs
+    }
+
+    if (safeDurationMs > cursorMediaMs) {
+        if (skipOriginalSilence) {
+            collapsedMappings.add(
+                ZoomedVirtualTimeline.CollapsedSilenceMapping(
+                    mediaStartMs = cursorMediaMs,
+                    mediaEndMs = safeDurationMs,
+                    virtualMs = currentVirtualMs,
+                ),
+            )
+        } else {
+            val tailLen = safeDurationMs - cursorMediaMs
+            segments.add(
+                ZoomedTimelineSegment.SilenceGap(
+                    virtualStartMs = currentVirtualMs,
+                    virtualEndMs = currentVirtualMs + tailLen,
+                    mediaStartMs = cursorMediaMs,
+                    mediaEndMs = safeDurationMs,
+                ),
+            )
+            currentVirtualMs += tailLen
+        }
+    }
+
+    val hasAutoPauseSegment = segments.any { it is ZoomedTimelineSegment.AutoPauseSegment }
+    val isIdentity = !skipOriginalSilence && !hasAutoPauseSegment
+    val totalVirtualDurationMs = currentVirtualMs.coerceAtLeast(1L)
+
+    return ZoomedVirtualTimeline(
+        durationMs = safeDurationMs,
+        totalVirtualDurationMs = totalVirtualDurationMs,
+        segments = segments,
+        isIdentity = isIdentity,
+        chunkVirtualRanges = chunkRanges,
+        collapsedSilenceMappings = collapsedMappings,
+    )
 }
 
 /** 拡大波形の既定の表示窓（30 秒 = 30,000ms）。 */
@@ -251,20 +640,26 @@ fun WaveformSection(
     renderGeneration: Long = 0L,
     onOverviewWaveformRenderComplete: () -> Unit = {},
     onZoomedWaveformRenderComplete: () -> Unit = {},
+    skipOriginalSilence: Boolean = false,
+    autoPause: AutoPause = AutoPause.Off,
+    autoPauseScope: AutoPauseScope = AutoPauseScope.ALL_CHUNKS,
+    speed: Float = 1.0f,
+    autoPauseEndsAtMs: Long? = null,
 ) {
     val effectiveDurationMs = max(durationMs, waveform?.durationMs ?: 0L).coerceAtLeast(1L)
     val featureStatus = analysis[AnalysisStage.FEATURES]
     val segmentationStatus = analysis[AnalysisStage.SEGMENTATION]
     val downsampler = remember { WaveformDownsampler() }
     val isInspectionMode = LocalInspectionMode.current
+    val isAutoPausing = autoPauseEndsAtMs != null
 
     // 描画フェーズでのみ読むフレームカウンタ（コンポーズ中には読まない）
     val frameTick = remember { mutableLongStateOf(0L) }
     if (!isInspectionMode) {
-        LaunchedEffect(isPlaying, positionProvider) {
+        LaunchedEffect(isPlaying, isAutoPausing, positionProvider) {
             var lastPosMs = -1L
             while (isActive) {
-                if (isPlaying) {
+                if (isPlaying || isAutoPausing) {
                     withFrameNanos { frameNanos ->
                         frameTick.longValue = frameNanos
                         lastPosMs = positionProvider.currentPositionMs()
@@ -329,6 +724,7 @@ fun WaveformSection(
     val selectedChunkBorderColor = colorScheme.primary
     val selectedChunkCheckColor = colorScheme.onPrimary
     val dummyWaveColor = colorScheme.outlineVariant.copy(alpha = 0.35f)
+    val autoPauseWaveformColor = chunkFlowExtendedColors().autoPauseWaveform
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -472,6 +868,12 @@ fun WaveformSection(
                 selectedChunkBorderColor = selectedChunkBorderColor,
                 selectedChunkCheckColor = selectedChunkCheckColor,
                 dummyWaveColor = dummyWaveColor,
+                autoPauseWaveformColor = autoPauseWaveformColor,
+                skipOriginalSilence = skipOriginalSilence,
+                autoPause = autoPause,
+                autoPauseScope = autoPauseScope,
+                speed = speed,
+                autoPauseEndsAtMs = autoPauseEndsAtMs,
                 onSetChunkSelected = onSetChunkSelected,
                 contentDescriptionText = zoomedCd,
                 prevChunkActionLabel = prevChunkActionLabel,
@@ -1267,6 +1669,12 @@ private fun ZoomedWaveformCanvas(
     selectedChunkBorderColor: Color,
     selectedChunkCheckColor: Color,
     dummyWaveColor: Color,
+    autoPauseWaveformColor: Color,
+    skipOriginalSilence: Boolean,
+    autoPause: AutoPause,
+    autoPauseScope: AutoPauseScope,
+    speed: Float,
+    autoPauseEndsAtMs: Long?,
     onSetChunkSelected: (ChunkId, Boolean) -> Unit,
     contentDescriptionText: String,
     prevChunkActionLabel: String,
@@ -1286,9 +1694,59 @@ private fun ZoomedWaveformCanvas(
     val isInspectionMode = LocalInspectionMode.current
     val hapticFeedback = LocalHapticFeedback.current
 
+    val timeline = remember(
+        durationMs,
+        chunks,
+        skipOriginalSilence,
+        autoPause,
+        autoPauseScope,
+        languagePair,
+        speed,
+    ) {
+        buildZoomedVirtualTimeline(
+            durationMs = durationMs,
+            chunks = chunks,
+            skipOriginalSilence = skipOriginalSilence,
+            autoPause = autoPause,
+            autoPauseScope = autoPauseScope,
+            languagePair = languagePair,
+            speed = speed,
+        )
+    }
+
+    val pauseStartedAtRealtimeMs = remember(autoPauseEndsAtMs, isInspectionMode) {
+        if (autoPauseEndsAtMs == null || isInspectionMode) {
+            0L
+        } else {
+            SystemClock.elapsedRealtime()
+        }
+    }
+
+    fun computeCurrentAutoPauseElapsedMs(): Long {
+        val endsAt = autoPauseEndsAtMs ?: return 0L
+        val idx = activeChunkIndex ?: return 0L
+        val autoPauseSeg = timeline.segments.firstOrNull {
+            it is ZoomedTimelineSegment.AutoPauseSegment && it.chunkIndex == idx
+        } as? ZoomedTimelineSegment.AutoPauseSegment ?: return 0L
+        if (isInspectionMode) {
+            return (autoPauseSeg.pauseDurationMs / 2L).coerceIn(0L, autoPauseSeg.pauseDurationMs)
+        }
+        val nowRealtime = SystemClock.elapsedRealtime()
+        val remainingFromEndsAt = endsAt - nowRealtime
+        val elapsed = if (remainingFromEndsAt in 0L..autoPauseSeg.pauseDurationMs) {
+            autoPauseSeg.pauseDurationMs - remainingFromEndsAt
+        } else {
+            (nowRealtime - pauseStartedAtRealtimeMs).coerceAtLeast(0L)
+        }
+        return elapsed.coerceIn(0L, autoPauseSeg.pauseDurationMs)
+    }
+
     // pointerInput や LaunchedEffect の中では、起動したときにキャプチャした古い値ではなく最新の値を読む
     val currentZoomWindowMs by rememberUpdatedState(zoomWindowMs)
     val currentChunks by rememberUpdatedState(chunks)
+    val currentTimeline by rememberUpdatedState(timeline)
+    val currentActiveChunkIndex by rememberUpdatedState(activeChunkIndex)
+    val currentAutoPauseEndsAtMs by rememberUpdatedState(autoPauseEndsAtMs)
     val currentLoopMode by rememberUpdatedState(loopMode)
     val currentScrubPositionMs by rememberUpdatedState(scrubPositionMs)
     val currentAnchorCenterMs by rememberUpdatedState(cachedAnchorCenterMs)
@@ -1628,23 +2086,40 @@ private fun ZoomedWaveformCanvas(
                 )
             }
             // タップ: 範囲選択中なら範囲選択を解除してタッチ位置へ移動する。
-            // 通常時はチャンクの上ならそのチャンクの冒頭から再生し、チャンクの外ならその位置へ移動する
+            // 通常時はチャンク（またはその自動ポーズ区間）の上ならそのチャンクの冒頭から再生し、チャンクの外ならその位置へ移動する
             .pointerInput(durationMs) {
                 detectTapGestures(
                     onTap = { offset ->
                         if (size.width > 0) {
-                            val targetMs = zoomedTouchXToMs(
+                            val tl = currentTimeline
+                            val scrubMs = currentScrubPositionMs
+                            val centerVirtualMs = if (scrubMs != null) {
+                                tl.mediaToVirtualMs(scrubMs)
+                            } else {
+                                tl.mediaToVirtualMs(
+                                    mediaMs = positionProvider.currentPositionMs(),
+                                    activeAutoPauseChunkIndex = if (currentAutoPauseEndsAtMs != null) currentActiveChunkIndex else null,
+                                    autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
+                                )
+                            }
+                            val touchVirtualMs = zoomedTouchXToMs(
                                 x = offset.x,
                                 widthPx = size.width,
-                                centerMs = currentScrubPositionMs ?: positionProvider.currentPositionMs(),
+                                centerMs = centerVirtualMs,
                                 windowMs = currentZoomWindowMs,
-                                durationMs = durationMs,
+                                durationMs = tl.totalVirtualDurationMs,
                             )
+                            val touchedSeg = tl.segmentAtVirtualMs(touchVirtualMs)
+                            val targetMs = tl.virtualToMediaMs(touchVirtualMs)
                             val activeAbRange = (currentLoopMode as? LoopMode.AbRange)?.takeIf { it.startMs < it.endMs }
                             if (activeAbRange != null) {
                                 currentOnDismissAbRangeAndSeek(targetMs)
                             } else {
-                                val targetChunk = findChunkAt(currentChunks, targetMs)
+                                val targetChunk = when (touchedSeg) {
+                                    is ZoomedTimelineSegment.ChunkSegment -> touchedSeg.chunk
+                                    is ZoomedTimelineSegment.AutoPauseSegment -> touchedSeg.chunk
+                                    else -> findChunkAt(currentChunks, targetMs)
+                                }
                                 if (targetChunk != null) {
                                     currentOnSeekToChunk(targetChunk.id)
                                 } else {
@@ -1657,24 +2132,35 @@ private fun ZoomedWaveformCanvas(
             }
             // ピンチで表示幅を変え、1 本指の左右ドラッグで再生位置を動かす
             .pointerInput(durationMs) {
-                var activeScrubMs: Long? = null
+                var activeScrubVirtualMs: Long? = null
                 detectZoomAndPanGestures(
                     // パンの基準位置はジェスチャーごとに取り直す（前回のパンの終了位置に戻らないように）
-                    onGestureStart = { activeScrubMs = null },
+                    onGestureStart = { activeScrubVirtualMs = null },
                     onGesture = { pan, zoom ->
                         if (size.width > 0) {
                             val liveWindow = currentZoomWindowMs
                             if (abs(zoom - 1f) > 0.004f) {
                                 currentOnZoomWindowChange((liveWindow.toFloat() / zoom).roundToLong())
                             } else if (abs(pan.x) > 0.5f) {
-                                val baseMs = activeScrubMs
-                                    ?: currentScrubPositionMs
-                                    ?: positionProvider.currentPositionMs()
-                                val deltaMs = ((-pan.x / size.width.toFloat()) * liveWindow).roundToLong()
-                                val nextMs = (baseMs + deltaMs).coerceIn(0L, durationMs)
-                                activeScrubMs = nextMs
-                                currentOnScrubChange(nextMs)
-                                currentOnSeekTo(nextMs)
+                                val tl = currentTimeline
+                                val baseVirtualMs = activeScrubVirtualMs ?: run {
+                                    val scrubMs = currentScrubPositionMs
+                                    if (scrubMs != null) {
+                                        tl.mediaToVirtualMs(scrubMs)
+                                    } else {
+                                        tl.mediaToVirtualMs(
+                                            mediaMs = positionProvider.currentPositionMs(),
+                                            activeAutoPauseChunkIndex = if (currentAutoPauseEndsAtMs != null) currentActiveChunkIndex else null,
+                                            autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
+                                        )
+                                    }
+                                }
+                                val deltaVirtualMs = ((-pan.x / size.width.toFloat()) * liveWindow).roundToLong()
+                                val nextVirtualMs = (baseVirtualMs + deltaVirtualMs).coerceIn(0L, tl.totalVirtualDurationMs)
+                                activeScrubVirtualMs = nextVirtualMs
+                                val nextMediaMs = tl.virtualToMediaMs(nextVirtualMs).coerceIn(0L, durationMs)
+                                currentOnScrubChange(nextMediaMs)
+                                currentOnSeekTo(nextMediaMs)
                             }
                         }
                     },
@@ -1685,19 +2171,40 @@ private fun ZoomedWaveformCanvas(
             // 長押しが成立したあとの指の動きをピンチ・パンより先に受け取るため、いちばん内側（最後）に置く
             .pointerInput(durationMs) {
                 var initialTouchedChunk: ChunkUi? = null
+                var abStartVirtualMs = 0L
+                var abCurrentVirtualMs = 0L
                 var abStartMs = 0L
                 var abCurrentMs = 0L
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
                         if (size.width > 0) {
-                            val touchMs = zoomedTouchXToMs(
+                            val tl = currentTimeline
+                            val scrubMs = currentScrubPositionMs
+                            val centerVirtualMs = if (scrubMs != null) {
+                                tl.mediaToVirtualMs(scrubMs)
+                            } else {
+                                tl.mediaToVirtualMs(
+                                    mediaMs = positionProvider.currentPositionMs(),
+                                    activeAutoPauseChunkIndex = if (currentAutoPauseEndsAtMs != null) currentActiveChunkIndex else null,
+                                    autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
+                                )
+                            }
+                            val touchVirtualMs = zoomedTouchXToMs(
                                 x = offset.x,
                                 widthPx = size.width,
-                                centerMs = currentScrubPositionMs ?: positionProvider.currentPositionMs(),
+                                centerMs = centerVirtualMs,
                                 windowMs = currentZoomWindowMs,
-                                durationMs = durationMs,
+                                durationMs = tl.totalVirtualDurationMs,
                             )
-                            initialTouchedChunk = findChunkAt(currentChunks, touchMs)
+                            val touchedSeg = tl.segmentAtVirtualMs(touchVirtualMs)
+                            val touchMs = tl.virtualToMediaMs(touchVirtualMs).coerceIn(0L, durationMs)
+                            initialTouchedChunk = when (touchedSeg) {
+                                is ZoomedTimelineSegment.ChunkSegment -> touchedSeg.chunk
+                                is ZoomedTimelineSegment.AutoPauseSegment -> touchedSeg.chunk
+                                else -> findChunkAt(currentChunks, touchMs)
+                            }
+                            abStartVirtualMs = touchVirtualMs
+                            abCurrentVirtualMs = touchVirtualMs
                             abStartMs = touchMs
                             abCurrentMs = touchMs
                             currentOnAbDragUpdate(abStartMs, abCurrentMs)
@@ -1707,15 +2214,17 @@ private fun ZoomedWaveformCanvas(
                     onDrag = { change, dragAmount ->
                         change.consume()
                         if (size.width > 0) {
-                            val deltaMs = ((dragAmount.x / size.width.toFloat()) * currentZoomWindowMs).roundToLong()
-                            abCurrentMs = (abCurrentMs + deltaMs).coerceIn(0L, durationMs)
+                            val tl = currentTimeline
+                            val deltaVirtualMs = ((dragAmount.x / size.width.toFloat()) * currentZoomWindowMs).roundToLong()
+                            abCurrentVirtualMs = (abCurrentVirtualMs + deltaVirtualMs).coerceIn(0L, tl.totalVirtualDurationMs)
+                            abCurrentMs = tl.virtualToMediaMs(abCurrentVirtualMs).coerceIn(0L, durationMs)
                             currentOnAbDragUpdate(abStartMs, abCurrentMs)
                         }
                     },
                     onDragEnd = {
                         val touched = initialTouchedChunk
                         initialTouchedChunk = null
-                        if (abs(abCurrentMs - abStartMs) < 100L && touched != null) {
+                        if (abs(abCurrentVirtualMs - abStartVirtualMs) < 100L && touched != null) {
                             currentOnSetChunkSelected(touched.id, !touched.isRepeatChecked)
                         }
                         currentOnAbDragFinish()
@@ -1768,8 +2277,18 @@ private fun ZoomedWaveformCanvas(
                     val liveWindowMs = zoomWindowMs.coerceAtLeast(1L)
                     val currentPosMs = (scrubPositionMs ?: positionProvider.currentPositionMs())
                         .coerceIn(0L, durationMs)
-                    val windowStartMs = currentPosMs - liveWindowMs / 2L
-                    val windowEndMs = windowStartMs + liveWindowMs
+                    val currentAutoPauseElapsedMs = computeCurrentAutoPauseElapsedMs()
+                    val centerVirtualMs = if (scrubPositionMs != null) {
+                        timeline.mediaToVirtualMs(scrubPositionMs)
+                    } else {
+                        timeline.mediaToVirtualMs(
+                            mediaMs = currentPosMs,
+                            activeAutoPauseChunkIndex = if (autoPauseEndsAtMs != null) activeChunkIndex else null,
+                            autoPauseElapsedMs = currentAutoPauseElapsedMs,
+                        )
+                    }
+                    val windowVirtualStartMs = centerVirtualMs - liveWindowMs / 2L
+                    val windowVirtualEndMs = windowVirtualStartMs + liveWindowMs
                     val pxPerMs = size.width / liveWindowMs.toFloat()
                     val centerX = size.width * 0.5f
                     val activeRevealFraction = if (isInspectionMode || isRenderComplete) {
@@ -1777,24 +2296,32 @@ private fun ZoomedWaveformCanvas(
                     } else {
                         revealFraction.coerceIn(0f, 1f)
                     }
-                    val cutoffMs = computeProgressiveRevealCutoffMs(
-                        startMs = windowStartMs,
-                        endMs = windowEndMs,
+                    val cutoffVirtualMs = computeProgressiveRevealCutoffMs(
+                        startMs = windowVirtualStartMs,
+                        endMs = windowVirtualEndMs,
                         revealFraction = activeRevealFraction,
                     )
                     val cutoffX = (size.width * activeRevealFraction).coerceIn(0f, size.width)
 
-                    fun chunkRect(chunk: ChunkUi): Rect? = chunkRectOnCanvas(
-                        leftX = (chunk.startMs - windowStartMs) * pxPerMs,
-                        rightX = (chunk.endMs - windowStartMs) * pxPerMs,
-                        heightPx = size.height,
-                        gapPx = chunkGapPx,
-                    )
+                    fun chunkRect(index: Int, chunk: ChunkUi): Rect? {
+                        val range = timeline.chunkVirtualRange(index)
+                        val vStart = range?.first ?: chunk.startMs
+                        val vEnd = range?.last ?: chunk.endMs
+                        return chunkRectOnCanvas(
+                            leftX = (vStart - windowVirtualStartMs) * pxPerMs,
+                            rightX = (vEnd - windowVirtualStartMs) * pxPerMs,
+                            heightPx = size.height,
+                            gapPx = chunkGapPx,
+                        )
+                    }
 
                     fun drawChunkBackgrounds(targetChunks: List<ChunkUi>) {
                         targetChunks.forEachIndexed { index, chunk ->
-                            if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) return@forEachIndexed
-                            val rect = chunkRect(chunk) ?: return@forEachIndexed
+                            val range = timeline.chunkVirtualRange(index)
+                            val vStart = range?.first ?: chunk.startMs
+                            val vEnd = range?.last ?: chunk.endMs
+                            if (vEnd <= windowVirtualStartMs || vStart >= windowVirtualEndMs) return@forEachIndexed
+                            val rect = chunkRect(index, chunk) ?: return@forEachIndexed
                             val roleColor = when {
                                 matchesLanguageRole(chunk.language, languagePair?.target) -> targetChunkBackgroundColor
                                 matchesLanguageRole(chunk.language, languagePair?.base) -> baseChunkBackgroundColor
@@ -1841,52 +2368,136 @@ private fun ZoomedWaveformCanvas(
 
                     // 2. 波形画像を水平方向に拡大縮小して描く。表示幅が近傍画像の解像度の 2 倍以内で、
                     // 表示範囲が近傍画像に収まっていれば近傍画像を、それ以外（ピンチ中・大きな移動の直後など）は全体画像を使う
-                    val visibleStartMs = windowStartMs.coerceAtLeast(0L)
-                    val visibleEndMs = windowEndMs.coerceAtMost(durationMs)
-                    val nearStrip = localStrip
-                    val nearLevelMs = localStripSpec?.levelMs
-                    val useNearStrip = nearStrip != null &&
-                        nearLevelMs != null &&
-                        liveWindowMs <= nearLevelMs * 2L &&
-                        visibleStartMs >= nearStrip.startMs &&
-                        visibleEndMs <= nearStrip.endMs
-                    val stripToDraw = if (useNearStrip) nearStrip else fullStrip
-                    val baseStripToDraw = if (useNearStrip) baseLocalStrip ?: baseFullStrip else baseFullStrip
+                    if (timeline.isIdentity) {
+                        val visibleStartMs = windowVirtualStartMs.coerceAtLeast(0L)
+                        val visibleEndMs = windowVirtualEndMs.coerceAtMost(durationMs)
+                        val nearStrip = localStrip
+                        val nearLevelMs = localStripSpec?.levelMs
+                        val useNearStrip = nearStrip != null &&
+                            nearLevelMs != null &&
+                            liveWindowMs <= nearLevelMs * 2L &&
+                            visibleStartMs >= nearStrip.startMs &&
+                            visibleEndMs <= nearStrip.endMs
+                        val stripToDraw = if (useNearStrip) nearStrip else fullStrip
+                        val baseStripToDraw = if (useNearStrip) baseLocalStrip ?: baseFullStrip else baseFullStrip
 
-                    if (activeRevealFraction < 1f && baseStripToDraw != null && stripToDraw != null) {
-                        if (cutoffMs > windowStartMs) {
-                            drawWaveformBitmapStrip(
-                                strip = stripToDraw,
-                                windowStartMs = windowStartMs,
-                                windowEndMs = windowEndMs,
-                                clipStartMs = windowStartMs,
-                                clipEndMs = cutoffMs,
-                            )
-                        }
-                        if (cutoffMs < windowEndMs) {
-                            drawWaveformBitmapStrip(
-                                strip = baseStripToDraw,
-                                windowStartMs = windowStartMs,
-                                windowEndMs = windowEndMs,
-                                clipStartMs = cutoffMs,
-                                clipEndMs = windowEndMs,
-                            )
+                        if (activeRevealFraction < 1f && baseStripToDraw != null && stripToDraw != null) {
+                            if (cutoffVirtualMs > windowVirtualStartMs) {
+                                drawWaveformBitmapStrip(
+                                    strip = stripToDraw,
+                                    windowStartMs = windowVirtualStartMs,
+                                    windowEndMs = windowVirtualEndMs,
+                                    clipStartMs = windowVirtualStartMs,
+                                    clipEndMs = cutoffVirtualMs,
+                                )
+                            }
+                            if (cutoffVirtualMs < windowVirtualEndMs) {
+                                drawWaveformBitmapStrip(
+                                    strip = baseStripToDraw,
+                                    windowStartMs = windowVirtualStartMs,
+                                    windowEndMs = windowVirtualEndMs,
+                                    clipStartMs = cutoffVirtualMs,
+                                    clipEndMs = windowVirtualEndMs,
+                                )
+                            }
+                        } else {
+                            stripToDraw?.let { strip ->
+                                drawWaveformBitmapStrip(
+                                    strip = strip,
+                                    windowStartMs = windowVirtualStartMs,
+                                    windowEndMs = windowVirtualEndMs,
+                                )
+                            }
                         }
                     } else {
-                        stripToDraw?.let { strip ->
-                            drawWaveformBitmapStrip(
-                                strip = strip,
-                                windowStartMs = windowStartMs,
-                                windowEndMs = windowEndMs,
-                            )
+                        var minMediaMs = Long.MAX_VALUE
+                        var maxMediaMs = Long.MIN_VALUE
+                        for (seg in timeline.segments) {
+                            if (seg.virtualEndMs <= windowVirtualStartMs || seg.virtualStartMs >= windowVirtualEndMs) continue
+                            if (seg is ZoomedTimelineSegment.ChunkSegment || seg is ZoomedTimelineSegment.SilenceGap) {
+                                val visVStart = max(seg.virtualStartMs, windowVirtualStartMs)
+                                val visVEnd = min(seg.virtualEndMs, windowVirtualEndMs)
+                                val mStart = seg.mediaStartMs + (visVStart - seg.virtualStartMs)
+                                val mEnd = seg.mediaStartMs + (visVEnd - seg.virtualStartMs)
+                                if (mStart < minMediaMs) minMediaMs = mStart
+                                if (mEnd > maxMediaMs) maxMediaMs = mEnd
+                            }
+                        }
+                        val nearStrip = localStrip
+                        val nearLevelMs = localStripSpec?.levelMs
+                        val useNearStrip = nearStrip != null &&
+                            nearLevelMs != null &&
+                            liveWindowMs <= nearLevelMs * 2L &&
+                            minMediaMs <= maxMediaMs &&
+                            minMediaMs >= nearStrip.startMs &&
+                            maxMediaMs <= nearStrip.endMs
+                        val stripToDraw = if (useNearStrip) nearStrip else fullStrip
+                        val baseStripToDraw = if (useNearStrip) baseLocalStrip ?: baseFullStrip else baseFullStrip
+
+                        for (seg in timeline.segments) {
+                            if (seg.virtualEndMs <= windowVirtualStartMs || seg.virtualStartMs >= windowVirtualEndMs) continue
+                            when (seg) {
+                                is ZoomedTimelineSegment.ChunkSegment,
+                                is ZoomedTimelineSegment.SilenceGap,
+                                -> {
+                                    val virtualOffsetMs = seg.virtualStartMs - seg.mediaStartMs
+                                    val shiftedWindowStartMs = windowVirtualStartMs - virtualOffsetMs
+                                    val shiftedWindowEndMs = windowVirtualEndMs - virtualOffsetMs
+                                    if (activeRevealFraction < 1f && baseStripToDraw != null && stripToDraw != null) {
+                                        val segCutoffVirtualMs = cutoffVirtualMs.coerceIn(seg.virtualStartMs, seg.virtualEndMs)
+                                        val segCutoffMediaMs = seg.mediaStartMs + (segCutoffVirtualMs - seg.virtualStartMs)
+                                        if (segCutoffMediaMs > seg.mediaStartMs) {
+                                            drawWaveformBitmapStrip(
+                                                strip = stripToDraw,
+                                                windowStartMs = shiftedWindowStartMs,
+                                                windowEndMs = shiftedWindowEndMs,
+                                                clipStartMs = seg.mediaStartMs,
+                                                clipEndMs = segCutoffMediaMs,
+                                            )
+                                        }
+                                        if (segCutoffMediaMs < seg.mediaEndMs) {
+                                            drawWaveformBitmapStrip(
+                                                strip = baseStripToDraw,
+                                                windowStartMs = shiftedWindowStartMs,
+                                                windowEndMs = shiftedWindowEndMs,
+                                                clipStartMs = segCutoffMediaMs,
+                                                clipEndMs = seg.mediaEndMs,
+                                            )
+                                        }
+                                    } else {
+                                        stripToDraw?.let { strip ->
+                                            drawWaveformBitmapStrip(
+                                                strip = strip,
+                                                windowStartMs = shiftedWindowStartMs,
+                                                windowEndMs = shiftedWindowEndMs,
+                                                clipStartMs = seg.mediaStartMs,
+                                                clipEndMs = seg.mediaEndMs,
+                                            )
+                                        }
+                                    }
+                                }
+
+                                is ZoomedTimelineSegment.AutoPauseSegment -> {
+                                    val segLeftX = ((seg.virtualStartMs - windowVirtualStartMs) * pxPerMs).coerceIn(0f, size.width)
+                                    val segRightX = ((seg.virtualEndMs - windowVirtualStartMs) * pxPerMs).coerceIn(0f, size.width)
+                                    drawAutoPauseWaveformBars(
+                                        leftX = segLeftX,
+                                        rightX = segRightX,
+                                        color = autoPauseWaveformColor,
+                                    )
+                                }
+                            }
                         }
                     }
 
                     // 3. 選択中のチャンクの枠線とチェックの印（チャンクリストのチェックボックスと連動）
-                    for (chunk in chunks) {
-                        if (!chunk.isRepeatChecked) continue
-                        if (chunk.endMs <= windowStartMs || chunk.startMs >= windowEndMs) continue
-                        val rect = chunkRect(chunk) ?: continue
+                    chunks.forEachIndexed { index, chunk ->
+                        if (!chunk.isRepeatChecked) return@forEachIndexed
+                        val range = timeline.chunkVirtualRange(index)
+                        val vStart = range?.first ?: chunk.startMs
+                        val vEnd = range?.last ?: chunk.endMs
+                        if (vEnd <= windowVirtualStartMs || vStart >= windowVirtualEndMs) return@forEachIndexed
+                        val rect = chunkRect(index, chunk) ?: return@forEachIndexed
                         val half = selectedStrokePx / 2f
                         drawRoundRect(
                             color = selectedChunkBorderColor,
@@ -1909,24 +2520,29 @@ private fun ZoomedWaveformCanvas(
                     }
 
                     // 4. 再生中のチャンクの枠線（選択中のチャンクでは、選択の枠線の内側に描く）
-                    if (activeChunk != null && activeChunk.endMs > windowStartMs && activeChunk.startMs < windowEndMs) {
-                        chunkRect(activeChunk)?.let { rect ->
-                            val inset = if (activeChunk.isRepeatChecked) selectedStrokePx + activeStrokePx / 2f else activeStrokePx / 2f
-                            val borderColor = when {
-                                matchesLanguageRole(activeChunk.language, languagePair?.target) -> targetActiveBorderColor
-                                matchesLanguageRole(activeChunk.language, languagePair?.base) -> baseActiveBorderColor
-                                else -> unknownActiveBorderColor
-                            }
-                            val width = rect.width - inset * 2f
-                            val height = rect.height - inset * 2f
-                            if (width > 0f && height > 0f) {
-                                drawRoundRect(
-                                    color = borderColor,
-                                    topLeft = Offset(rect.left + inset, rect.top + inset),
-                                    size = Size(width, height),
-                                    cornerRadius = chunkCorner,
-                                    style = Stroke(width = activeStrokePx),
-                                )
+                    if (activeChunk != null && activeChunkIndex != null) {
+                        val activeRange = timeline.chunkVirtualRange(activeChunkIndex)
+                        val activeVStart = activeRange?.first ?: activeChunk.startMs
+                        val activeVEnd = activeRange?.last ?: activeChunk.endMs
+                        if (activeVEnd > windowVirtualStartMs && activeVStart < windowVirtualEndMs) {
+                            chunkRect(activeChunkIndex, activeChunk)?.let { rect ->
+                                val inset = if (activeChunk.isRepeatChecked) selectedStrokePx + activeStrokePx / 2f else activeStrokePx / 2f
+                                val borderColor = when {
+                                    matchesLanguageRole(activeChunk.language, languagePair?.target) -> targetActiveBorderColor
+                                    matchesLanguageRole(activeChunk.language, languagePair?.base) -> baseActiveBorderColor
+                                    else -> unknownActiveBorderColor
+                                }
+                                val width = rect.width - inset * 2f
+                                val height = rect.height - inset * 2f
+                                if (width > 0f && height > 0f) {
+                                    drawRoundRect(
+                                        color = borderColor,
+                                        topLeft = Offset(rect.left + inset, rect.top + inset),
+                                        size = Size(width, height),
+                                        cornerRadius = chunkCorner,
+                                        style = Stroke(width = activeStrokePx),
+                                    )
+                                }
                             }
                         }
                     }
@@ -1942,9 +2558,11 @@ private fun ZoomedWaveformCanvas(
                         else -> null
                     }
                     abRange?.let { (abStart, abEnd) ->
-                        if (abEnd > windowStartMs && abStart < windowEndMs) {
-                            val leftX = ((abStart - windowStartMs) * pxPerMs).coerceIn(0f, size.width)
-                            val rightX = ((abEnd - windowStartMs) * pxPerMs).coerceIn(leftX, size.width)
+                        val abVirtualStart = timeline.mediaToVirtualMs(abStart)
+                        val abVirtualEnd = timeline.mediaToVirtualMs(abEnd)
+                        if (abVirtualEnd > windowVirtualStartMs && abVirtualStart < windowVirtualEndMs) {
+                            val leftX = ((abVirtualStart - windowVirtualStartMs) * pxPerMs).coerceIn(0f, size.width)
+                            val rightX = ((abVirtualEnd - windowVirtualStartMs) * pxPerMs).coerceIn(leftX, size.width)
                             drawRect(
                                 color = abLoopHighlightColor,
                                 topLeft = Offset(leftX, 0f),
@@ -2524,6 +3142,42 @@ private fun DrawScope.drawWaveformBitmapStrip(
     }
 }
 
+/**
+ * 拡大波形の自動ポーズ空白区間に、通常の波形ストリップと同じピッチ（`stepX = 3f`）で中央の最小高さバー列を描画する。
+ */
+private fun DrawScope.drawAutoPauseWaveformBars(
+    leftX: Float,
+    rightX: Float,
+    color: Color,
+) {
+    val clampedLeft = leftX.coerceIn(0f, size.width)
+    val clampedRight = rightX.coerceIn(0f, size.width)
+    if (clampedRight <= clampedLeft) return
+
+    val stepX = 3f
+    val barWidth = max(1f, stepX * 0.68f)
+    val cornerRadius = barWidth * 0.5f
+    val minHalfHeight = 1.5f
+    val centerY = size.height * 0.5f
+    val barTop = centerY - minHalfHeight
+    val barHeight = minHalfHeight * 2f
+    val corner = CornerRadius(cornerRadius, cornerRadius)
+
+    val firstCol = max(0, (clampedLeft / stepX).toInt())
+    val lastCol = ceil(clampedRight / stepX).toInt()
+    for (col in firstCol..lastCol) {
+        val barLeft = col * stepX + (stepX - barWidth) * 0.5f
+        val barRight = barLeft + barWidth
+        if (barRight <= clampedLeft || barLeft >= clampedRight) continue
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(barLeft, barTop),
+            size = Size(barWidth, barHeight),
+            cornerRadius = corner,
+        )
+    }
+}
+
 private fun DrawScope.drawLoopRangeOnOverview(
     loopMode: LoopMode,
     chunks: List<ChunkUi>,
@@ -2592,6 +3246,46 @@ private fun WaveformSectionPreview() {
                 onPreviousChunk = {},
                 onNextChunk = {},
                 onSeekBack = {},
+                modifier = Modifier.padding(12.dp),
+            )
+        }
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+private fun WaveformSectionAutoPauseCompactionPreview() {
+    val material = SampleMaterials.jaKo
+    val chunks = material.chunks.map { chunk ->
+        val transcript = material.transcripts[chunk.id]
+        ChunkUi(
+            id = chunk.id,
+            startMs = chunk.startMs,
+            endMs = chunk.endMs,
+            text = transcript?.text,
+            language = transcript?.language,
+        )
+    }
+    ChunkFlowTheme {
+        Surface {
+            WaveformSection(
+                waveform = material.waveform,
+                durationMs = material.item.durationMs,
+                isPlaying = false,
+                chunks = chunks,
+                activeChunkIndex = 1,
+                languagePair = material.item.languagePair,
+                loopMode = LoopMode.Off,
+                analysis = material.analysis,
+                positionProvider = FakePositionProvider(chunks[1].endMs),
+                onSeekTo = {},
+                onSetAbRange = { _, _ -> },
+                onPreviousChunk = {},
+                onNextChunk = {},
+                onSeekBack = {},
+                skipOriginalSilence = true,
+                autoPause = AutoPause.Fixed(2_000L),
+                autoPauseEndsAtMs = 2_000L,
                 modifier = Modifier.padding(12.dp),
             )
         }

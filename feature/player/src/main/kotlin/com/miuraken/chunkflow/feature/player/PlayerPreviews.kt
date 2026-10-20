@@ -245,6 +245,7 @@ private fun PlayerScreenWholeFileRepeatPreview() {
                 practice = PracticeSettings(
                     repeatWholeFile = true,
                     skipOriginalSilence = true,
+                    autoPause = AutoPause.OriginalSilence(1.0f),
                     repeatChunkIds = setOf(material.chunks.first().id),
                 ),
             ),
