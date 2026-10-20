@@ -14,6 +14,14 @@ internal const val SDCARD_ROOT_DOCUMENT_URI_STRING: String =
     "content://com.android.externalstorage.documents/document/primary%3A"
 
 /**
+ * 主ストレージの別名パス（`/storage/emulated/0` と同じ場所を指す旧来の表記）。
+ * ファイルパスとして使うのではなく、両表記を同一視して正規化・比較するためだけに使う。
+ */
+// Lint の SdCardPath はハードコードされた sdcard パスの利用を警告するが、ここは表記ゆれの比較用の定数なので抑止する。
+@Suppress("SdCardPath")
+private const val LEGACY_SDCARD_PATH: String = "/sdcard"
+
+/**
  * SAF のフォルダ選択（`OpenDocumentTree`）で指定されたディレクトリの走査結果。
  *
  * @property directoryName 選択されたディレクトリの表示名。
@@ -136,7 +144,7 @@ internal fun extractParentFolderNameFromUri(
             val segments = rawPath.split('/').filter { it.isNotBlank() }
             if (segments.size >= 2) {
                 val parentPath = "/" + segments.dropLast(1).joinToString("/")
-                if (parentPath == "/storage/emulated/0" || parentPath == "/sdcard") {
+                if (parentPath == "/storage/emulated/0" || parentPath == LEGACY_SDCARD_PATH) {
                     return "sdcard"
                 }
                 return segments[segments.size - 2]
@@ -167,7 +175,7 @@ internal fun extractParentFolderNameFromUri(
         val segments = path.trim('/').split('/').filter { it.isNotBlank() }
         if (segments.size >= 2) {
             val parentPath = "/" + segments.dropLast(1).joinToString("/")
-            if (parentPath == "/storage/emulated/0" || parentPath == "/sdcard") {
+            if (parentPath == "/storage/emulated/0" || parentPath == LEGACY_SDCARD_PATH) {
                 return "sdcard"
             }
             return segments[segments.size - 2]
@@ -353,7 +361,7 @@ internal fun resolveParentSafDirectoryUriAndLocalPathFromFile(
 internal fun localDirectoryPathToSafDocumentUriString(dirPath: String): String {
     val normalized = dirPath.trim().trimEnd('/').ifEmpty { "/" }
     return when {
-        normalized == "/storage/emulated/0" || normalized == "/sdcard" ->
+        normalized == "/storage/emulated/0" || normalized == LEGACY_SDCARD_PATH ->
             SDCARD_ROOT_DOCUMENT_URI_STRING
 
         normalized.startsWith("/storage/emulated/0/") -> {
@@ -361,8 +369,8 @@ internal fun localDirectoryPathToSafDocumentUriString(dirPath: String): String {
             buildSafExternalStorageDocumentUriString("primary:$rel")
         }
 
-        normalized.startsWith("/sdcard/") -> {
-            val rel = normalized.removePrefix("/sdcard/").trim('/')
+        normalized.startsWith("$LEGACY_SDCARD_PATH/") -> {
+            val rel = normalized.removePrefix("$LEGACY_SDCARD_PATH/").trim('/')
             buildSafExternalStorageDocumentUriString("primary:$rel")
         }
 
@@ -453,7 +461,7 @@ private fun queryParentFolderNameFromResolver(
             val dataPath = cursor.getString(dataIdx).orEmpty()
             val parent = File(dataPath).parentFile
             if (parent != null) {
-                if (parent.absolutePath == "/storage/emulated/0" || parent.absolutePath == "/sdcard") {
+                if (parent.absolutePath == "/storage/emulated/0" || parent.absolutePath == LEGACY_SDCARD_PATH) {
                     return@use "sdcard"
                 }
                 parent.name.takeIf { it.isNotBlank() }?.let { return@use it }
