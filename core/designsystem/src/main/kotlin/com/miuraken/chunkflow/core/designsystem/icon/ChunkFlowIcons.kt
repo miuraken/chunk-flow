@@ -1156,6 +1156,43 @@ object ChunkFlowIcons {
         }
     }
 
+    /**
+     * 無音スキップ（波形の途中が平らになっている）アイコン。Material Symbols に相当するものが無いため独自に定義。
+     * `graphic_eq` の 5 本の棒のうち中央を点にしたもの。
+     */
+    val SkipSilence: ImageVector by lazy {
+        materialIcon(name = "SkipSilence") {
+            // 左の 2 本
+            moveTo(3f, 7f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(10f)
+            horizontalLineTo(3f)
+            close()
+            moveTo(7f, 3f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(18f)
+            horizontalLineTo(7f)
+            close()
+            // 中央の「無音」
+            moveTo(11f, 11f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(-2f)
+            close()
+            // 右の 2 本
+            moveTo(15f, 3f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(18f)
+            horizontalLineToRelative(-2f)
+            close()
+            moveTo(19f, 7f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(10f)
+            horizontalLineToRelative(-2f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

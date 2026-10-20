@@ -73,6 +73,7 @@ data class ChunkFlowSplitButtonMenuItem(
  * @param checked 主操作がトグルで ON のとき `true`（配色と TalkBack の状態説明に反映）。
  * @param enabled 操作できるかどうか（▼ にも適用）。
  * @param icon 主操作ボタンの先頭アイコン。
+ * @param showLabel `false` にすると主操作ボタンにアイコンだけを描く（[icon] が必須）。[label] は読み上げに使う。
  * @param onLongClick 主操作ボタンの長押し。
  * @param menuItems ▼ で開くメニューの項目。
  * @param onMenuClick ▼ が押されたときの通知（[menuItems] が空のときの開き先。省略時は何もしない）。
@@ -88,6 +89,7 @@ fun ChunkFlowSplitButton(
     checked: Boolean = false,
     enabled: Boolean = true,
     icon: ImageVector? = null,
+    showLabel: Boolean = true,
     onLongClick: (() -> Unit)? = null,
     menuItems: List<ChunkFlowSplitButtonMenuItem> = emptyList(),
     onMenuClick: (() -> Unit)? = null,
@@ -123,7 +125,10 @@ fun ChunkFlowSplitButton(
                     enabled = enabled,
                     colors = colors,
                     contentPadding = if (compact) CompactContentPadding else SplitButtonDefaults.SmallLeadingButtonContentPadding,
-                    modifier = longClickModifier.semantics { stateDescription = stateText },
+                    modifier = longClickModifier.semantics {
+                        stateDescription = stateText
+                        if (!showLabel) contentDescription = label
+                    },
                 ) {
                     if (icon != null) {
                         Icon(
@@ -131,9 +136,11 @@ fun ChunkFlowSplitButton(
                             contentDescription = null,
                             modifier = Modifier.size(SplitButtonDefaults.LeadingIconSize),
                         )
-                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                        if (showLabel) Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                     }
-                    Text(text = label, maxLines = 1)
+                    if (showLabel) {
+                        Text(text = label, maxLines = 1)
+                    }
                 }
             },
             trailingButton = {
@@ -204,7 +211,7 @@ fun ChunkFlowSplitButton(
 private fun stringResourceMenuCd(label: String): String = androidx.compose.ui.res.stringResource(R.string.designsystem_split_button_menu_cd, label)
 
 /** `compact` 時の ▼ ボタンの幅（既定の最小幅より狭くする。タップ領域は 48dp に自動で広がる）。 */
-private val CompactTrailingButtonWidth = 36.dp
+private val CompactTrailingButtonWidth = 32.dp
 
 /** [ChunkFlowToggleButtonGroup]（`ToggleButtonDefaults.colors()`）と揃えた配色。未選択は `surfaceContainer`、選択は `primary`。 */
 @Composable
