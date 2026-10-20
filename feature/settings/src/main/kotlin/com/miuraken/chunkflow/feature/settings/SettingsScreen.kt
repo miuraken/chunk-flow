@@ -22,8 +22,6 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -218,8 +216,7 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                    .padding(vertical = 8.dp),
             ) {
                 when (selectedTab) {
                     SettingsTab.PLAYBACK -> {
@@ -312,7 +309,7 @@ private fun PlaybackSettingsSection(
         }
     }
 
-    SettingsCard(title = stringResource(R.string.settings_section_playback)) {
+    SettingsSection(title = stringResource(R.string.settings_section_playback)) {
         Text(
             text = stringResource(R.string.settings_seek_back_label),
             style = MaterialTheme.typography.titleSmall,
@@ -637,7 +634,7 @@ private fun SegmentationDefaultsSection(
     params: SegmentationParams,
     onEvent: (SettingsEvent) -> Unit,
 ) {
-    SettingsCard(title = stringResource(R.string.settings_section_segmentation)) {
+    SettingsSection(title = stringResource(R.string.settings_section_segmentation)) {
         Text(
             text = stringResource(R.string.settings_segmentation_min_silence, params.minSilenceMs),
             style = MaterialTheme.typography.bodyMedium,
@@ -717,7 +714,7 @@ private fun TranscriptionSettingsSection(
     expandFirstAccordion: Boolean = false,
     initialExpandedLanguages: Set<LanguageTag> = emptySet(),
 ) {
-    SettingsCard(title = stringResource(R.string.settings_section_transcription)) {
+    SettingsSection(title = stringResource(R.string.settings_section_transcription)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -767,7 +764,9 @@ private fun TranscriptionSettingsSection(
         }
     }
 
-    SettingsCard(title = stringResource(R.string.settings_section_speech_models)) {
+    SettingsSectionDivider()
+
+    SettingsSection(title = stringResource(R.string.settings_section_speech_models)) {
         val displayEntries = LanguageSettings.SELECTABLE_LANGUAGES.filter {
             enabledLanguages.contains(LanguageTag(it.code))
         }
@@ -879,34 +878,50 @@ private fun SettingsSlider(
     )
 }
 
+/**
+ * 設定の 1 節。M3 の設定画面に合わせ、`Card` で囲まずに見出し（`titleSmall` / `primary`）だけで節を示す
+ * （計画書 §3.5、調査 §3.1 S7）。節と節の間は呼び出し側が [SettingsSectionDivider] で区切る。
+ *
+ * @param title 節の見出し。
+ * @param modifier 一番外側の `Column` に適用する Modifier。
+ * @param contentPadding 中身の余白。`ListItem`（自前で 16dp の余白を持つ）を並べる節では `PaddingValues(0.dp)` にする。
+ * @param content 節の中身。
+ */
 @Composable
-private fun SettingsCard(
+private fun SettingsSection(
     title: String,
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(horizontal = SettingsSectionPadding),
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = SettingsSectionPadding, vertical = 8.dp),
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(contentPadding),
             verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            content()
-        }
+            content = content,
+        )
     }
 }
+
+/** 節と節の間の区切り線。 */
+@Composable
+private fun SettingsSectionDivider(modifier: Modifier = Modifier) {
+    HorizontalDivider(
+        modifier = modifier.padding(vertical = 8.dp),
+        color = MaterialTheme.colorScheme.outlineVariant,
+    )
+}
+
+/** 節の中身の横余白（`ListItem` の既定の左右余白と同じ 16dp）。 */
+private val SettingsSectionPadding = 16.dp
 
 @Composable
 private fun autoPauseScopeLabel(scope: AutoPauseScope): String = when (scope) {
@@ -931,7 +946,7 @@ private fun LanguageSettingsSection(
     enabledLanguages: Set<LanguageTag>,
     onEvent: (SettingsEvent) -> Unit,
 ) {
-    SettingsCard(title = stringResource(R.string.settings_tab_language)) {
+    SettingsSection(title = stringResource(R.string.settings_tab_language)) {
         LanguageSettingsListContent(
             enabledLanguages = enabledLanguages,
             onToggleLanguage = { language ->
