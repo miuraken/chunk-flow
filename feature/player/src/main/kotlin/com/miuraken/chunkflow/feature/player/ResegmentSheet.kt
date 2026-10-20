@@ -26,7 +26,9 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -345,11 +347,11 @@ internal fun ResegmentSheetContent(
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     },
                 )
-                Slider(
+                SegmentationSlider(
                     value = minSilenceMs.toFloat(),
-                    onValueChange = { minSilenceMs = ((it / 50f).roundToInt() * 50).coerceIn(200, 1_500) },
                     valueRange = 200f..1_500f,
                     enabled = slidersEnabled,
+                    onValueChange = { minSilenceMs = ((it / 50f).roundToInt() * 50).coerceIn(200, 1_500) },
                 )
 
                 Text(
@@ -361,11 +363,11 @@ internal fun ResegmentSheetContent(
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     },
                 )
-                Slider(
+                SegmentationSlider(
                     value = prePaddingMs.toFloat(),
-                    onValueChange = { prePaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
                     valueRange = 0f..500f,
                     enabled = slidersEnabled,
+                    onValueChange = { prePaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
                 )
 
                 Text(
@@ -377,11 +379,11 @@ internal fun ResegmentSheetContent(
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     },
                 )
-                Slider(
+                SegmentationSlider(
                     value = postPaddingMs.toFloat(),
-                    onValueChange = { postPaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
                     valueRange = 0f..500f,
                     enabled = slidersEnabled,
+                    onValueChange = { postPaddingMs = ((it / 25f).roundToInt() * 25).coerceIn(0, 500) },
                 )
 
                 Text(
@@ -396,11 +398,11 @@ internal fun ResegmentSheetContent(
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     },
                 )
-                Slider(
+                SegmentationSlider(
                     value = thresholdRatio,
-                    onValueChange = { thresholdRatio = ((it * 20f).roundToInt() / 20f).coerceIn(0.05f, 0.80f) },
                     valueRange = 0.05f..0.80f,
                     enabled = slidersEnabled,
+                    onValueChange = { thresholdRatio = ((it * 20f).roundToInt() / 20f).coerceIn(0.05f, 0.80f) },
                 )
 
                 Button(
@@ -506,6 +508,39 @@ internal fun BackgroundSpeechRecognizerWarningDialog(
             TextButton(onClick = onDismiss) {
                 Text(text = stringResource(R.string.player_background_speech_recognizer_warning_close))
             }
+        },
+    )
+}
+
+/**
+ * 分割パラメータのスライダー。非推奨の `Slider(value, onValueChange)` ではなく `SliderState` を使う（material3 1.5）。
+ * 呼び出し側が値を丸めるため、外から来た [value] と state がずれたときは `LaunchedEffect` で state に同期する
+ * （`core:designsystem` の `SpeedSheetContent` と同じ手法）。
+ */
+@Composable
+private fun SegmentationSlider(
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    enabled: Boolean,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val sliderState = rememberSliderState(
+        value = value,
+        trackRange = valueRange,
+    )
+    LaunchedEffect(sliderState, value) {
+        if (sliderState.value != value) {
+            sliderState.value = value
+        }
+    }
+    Slider(
+        state = sliderState,
+        modifier = modifier,
+        enabled = enabled,
+        onValueChange = { newValue ->
+            sliderState.value = newValue
+            onValueChange(newValue)
         },
     )
 }

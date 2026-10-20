@@ -24,13 +24,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -57,6 +55,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowWavyLinearProgress
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -112,7 +112,7 @@ internal fun EditChunkTextDialog(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun DetailedChunkTranscriptionDialog(
     dialogState: DetailedTranscriptionDialogState,
@@ -160,307 +160,313 @@ internal fun DetailedChunkTranscriptionDialog(
         selectedEngineStatus != OnDeviceLanguageModelStatus.DOWNLOADING &&
         selectedEngineStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
+    val content: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             Text(
                 text = stringResource(R.string.player_detailed_transcribe_dialog_title),
+                style = MaterialTheme.typography.titleLarge,
             )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+
+            // 1. 認識言語（自動判定なし、チャンク言語または学習対象言語が初期選択）
+            Text(
+                text = stringResource(R.string.player_detailed_transcribe_lang_label),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // 1. 認識言語（自動判定なし、チャンク言語または学習対象言語が初期選択）
-                Text(
-                    text = stringResource(R.string.player_detailed_transcribe_lang_label),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    if (languagePair != null) {
-                        val targetCode = languagePair.target.value.lowercase(JavaLocale.ROOT)
-                        FilterChip(
-                            selected = matchesLanguageRole(selectedLanguage, languagePair.target),
-                            onClick = {
-                                val nextLang = languagePair.target
-                                selectedLanguage = nextLang
-                                selectedEngine = dialogState.selectDefaultEngineForLanguage(nextLang)
-                                onSelectLanguage(nextLang)
-                            },
-                            label = {
-                                Text(
-                                    text = stringResource(
-                                        R.string.player_detailed_transcribe_lang_target,
-                                        targetCode,
-                                    ),
-                                )
-                            },
-                            enabled = !dialogState.isRunning,
-                        )
-                        languagePair.base?.takeIf { !matchesLanguageRole(it, languagePair.target) }?.let { baseLang ->
-                            val baseCode = baseLang.value.lowercase(JavaLocale.ROOT)
-                            FilterChip(
-                                selected = matchesLanguageRole(selectedLanguage, baseLang),
-                                onClick = {
-                                    selectedLanguage = baseLang
-                                    selectedEngine = dialogState.selectDefaultEngineForLanguage(baseLang)
-                                    onSelectLanguage(baseLang)
-                                },
-                                label = {
-                                    Text(
-                                        text = stringResource(
-                                            R.string.player_detailed_transcribe_lang_base,
-                                            baseCode,
-                                        ),
-                                    )
-                                },
-                                enabled = !dialogState.isRunning,
+                if (languagePair != null) {
+                    val targetCode = languagePair.target.value.lowercase(JavaLocale.ROOT)
+                    FilterChip(
+                        selected = matchesLanguageRole(selectedLanguage, languagePair.target),
+                        onClick = {
+                            val nextLang = languagePair.target
+                            selectedLanguage = nextLang
+                            selectedEngine = dialogState.selectDefaultEngineForLanguage(nextLang)
+                            onSelectLanguage(nextLang)
+                        },
+                        label = {
+                            Text(
+                                text = stringResource(
+                                    R.string.player_detailed_transcribe_lang_target,
+                                    targetCode,
+                                ),
                             )
-                        }
-                    } else {
-                        val langCode = selectedLanguage.value.lowercase(JavaLocale.ROOT)
+                        },
+                        enabled = !dialogState.isRunning,
+                    )
+                    languagePair.base?.takeIf { !matchesLanguageRole(it, languagePair.target) }?.let { baseLang ->
+                        val baseCode = baseLang.value.lowercase(JavaLocale.ROOT)
                         FilterChip(
-                            selected = true,
-                            onClick = {},
+                            selected = matchesLanguageRole(selectedLanguage, baseLang),
+                            onClick = {
+                                selectedLanguage = baseLang
+                                selectedEngine = dialogState.selectDefaultEngineForLanguage(baseLang)
+                                onSelectLanguage(baseLang)
+                            },
                             label = {
                                 Text(
                                     text = stringResource(
-                                        R.string.player_detailed_transcribe_lang_target,
-                                        langCode,
+                                        R.string.player_detailed_transcribe_lang_base,
+                                        baseCode,
                                     ),
                                 )
                             },
                             enabled = !dialogState.isRunning,
                         )
                     }
+                } else {
+                    val langCode = selectedLanguage.value.lowercase(JavaLocale.ROOT)
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = {
+                            Text(
+                                text = stringResource(
+                                    R.string.player_detailed_transcribe_lang_target,
+                                    langCode,
+                                ),
+                            )
+                        },
+                        enabled = !dialogState.isRunning,
+                    )
                 }
+            }
 
-                // 2. 文字起こしエンジン（ML Kit, SpeechRecognizer, sherpa-onnx の順、自動なし）
-                Text(
-                    text = stringResource(R.string.player_detailed_transcribe_engine_label),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    for (engine in DetailedTranscriptionDialogState.ENGINE_OPTIONS) {
-                        val labelRes = when (engine) {
-                            OnDeviceTranscriptionEngine.ML_KIT,
-                            OnDeviceTranscriptionEngine.AUTO,
-                            -> R.string.player_detailed_transcribe_engine_mlkit
+            // 2. 文字起こしエンジン（ML Kit, SpeechRecognizer, sherpa-onnx の順、自動なし）
+            Text(
+                text = stringResource(R.string.player_detailed_transcribe_engine_label),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                for (engine in DetailedTranscriptionDialogState.ENGINE_OPTIONS) {
+                    val labelRes = when (engine) {
+                        OnDeviceTranscriptionEngine.ML_KIT,
+                        OnDeviceTranscriptionEngine.AUTO,
+                        -> R.string.player_detailed_transcribe_engine_mlkit
 
-                            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER ->
-                                R.string.player_detailed_transcribe_engine_os
+                        OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER ->
+                            R.string.player_detailed_transcribe_engine_os
 
-                            OnDeviceTranscriptionEngine.SHERPA_ONNX ->
-                                R.string.player_detailed_transcribe_engine_sherpa
-                        }
-                        val status = dialogState.engineStatus(selectedLanguage, engine)
-                        val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
-                        val isEngineEnabled = dialogState.isEngineEnabled(selectedLanguage, engine)
-                        FilterChip(
-                            selected = selectedEngine == engine,
-                            onClick = {
-                                if (isEngineEnabled) {
-                                    selectedEngine = engine
-                                    onSelectEngine(engine)
-                                }
-                            },
-                            leadingIcon = if (isDownloading) {
-                                {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(14.dp),
-                                        strokeWidth = 2.dp,
-                                    )
-                                }
-                            } else {
-                                null
-                            },
-                            label = { Text(text = stringResource(labelRes)) },
-                            enabled = !dialogState.isRunning && isEngineEnabled,
-                        )
+                        OnDeviceTranscriptionEngine.SHERPA_ONNX ->
+                            R.string.player_detailed_transcribe_engine_sherpa
                     }
-                }
-                if (isAnyEngineDownloading && precheckWarning?.issue != DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                        )
-                        Text(
-                            text = stringResource(R.string.player_detailed_transcribe_model_downloading),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-
-                // 3. 音声の入力速度（0.5x, 0.75x, 1.0x, 1.5x、デフォルト 1.0x）
-                Text(
-                    text = stringResource(R.string.player_detailed_transcribe_speed_label),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    for (speedOption in DetailedTranscriptionDialogState.AUDIO_SPEED_OPTIONS) {
-                        val speedLabel = when {
-                            abs(speedOption - 0.5f) < 0.01f -> "0.5x"
-                            abs(speedOption - 0.75f) < 0.01f -> "0.75x"
-                            abs(speedOption - 1.0f) < 0.01f -> "1.0x"
-                            abs(speedOption - 1.5f) < 0.01f -> "1.5x"
-                            else -> String.format(JavaLocale.ROOT, "%.2fx", speedOption)
-                        }
-                        FilterChip(
-                            selected = abs(selectedSpeed - speedOption) < 0.01f,
-                            onClick = {
-                                selectedSpeed = speedOption
-                                if (dialogState.isPreviewPlaying) {
-                                    onPlayPreview(speedOption)
-                                }
-                            },
-                            label = { Text(text = speedLabel) },
-                            enabled = !dialogState.isRunning,
-                        )
-                    }
-                }
-
-                // 4. チャンクの波形と再生/停止ボタン（3の再生速度で再生）
-                Text(
-                    text = stringResource(R.string.player_detailed_transcribe_preview_label),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                DetailedChunkWaveformPreviewRow(
-                    chunk = targetChunk,
-                    waveform = waveform,
-                    isPreviewPlaying = dialogState.isPreviewPlaying,
-                    positionProvider = positionProvider,
-                    enabled = !dialogState.isRunning,
-                    onTogglePlayStop = {
-                        if (dialogState.isPreviewPlaying) {
-                            onStopPreview()
-                        } else {
-                            onPlayPreview(selectedSpeed)
-                        }
-                    },
-                )
-
-                // 4.5. 実行前チェックの警告カード（マイク権限不足 / モデル未DL / モデルDL中 / 非対応エンジン）
-                precheckWarning?.let { warning ->
-                    DetailedPrecheckWarningCard(
-                        warning = warning,
-                        selectedLanguage = selectedLanguage,
-                        onAction = {
-                            when (warning.issue) {
-                                DetailedTranscriptionPrecheckIssue.MIC_PERMISSION_REQUIRED ->
-                                    onRequestRecordAudioPermission()
-
-                                DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOAD_REQUIRED ->
-                                    onRequestModelDownload(selectedLanguage, selectedEngine)
-
-                                DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING,
-                                DetailedTranscriptionPrecheckIssue.ENGINE_UNSUPPORTED,
-                                -> Unit
+                    val status = dialogState.engineStatus(selectedLanguage, engine)
+                    val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
+                    val isEngineEnabled = dialogState.isEngineEnabled(selectedLanguage, engine)
+                    FilterChip(
+                        selected = selectedEngine == engine,
+                        onClick = {
+                            if (isEngineEnabled) {
+                                selectedEngine = engine
+                                onSelectEngine(engine)
                             }
                         },
+                        leadingIcon = if (isDownloading) {
+                            {
+                                ChunkFlowLoadingIndicator(modifier = Modifier.size(18.dp))
+                            }
+                        } else {
+                            null
+                        },
+                        label = { Text(text = stringResource(labelRes)) },
+                        enabled = !dialogState.isRunning && isEngineEnabled,
                     )
                 }
-
-                // 5. 「この条件で文字起こしを試す」ボタン
-                FilledTonalButton(
-                    onClick = {
-                        onRunTrial(selectedEngine, selectedLanguage, selectedSpeed)
-                    },
-                    enabled = canRunTrial,
-                    modifier = Modifier.fillMaxWidth(),
+            }
+            if (isAnyEngineDownloading && precheckWarning?.issue != DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    if (dialogState.isRunning) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = stringResource(R.string.player_detailed_transcribe_running))
-                    } else {
-                        Text(text = stringResource(R.string.player_detailed_transcribe_run_button))
-                    }
-                }
-
-                // 6. 認識結果テキストボックス（編集可）
-                if (dialogState.recognizedEngineId != null) {
-                    val langText = (dialogState.recognizedLanguage ?: selectedLanguage).value
-                        .lowercase(JavaLocale.ROOT)
+                    ChunkFlowLoadingIndicator(modifier = Modifier.size(18.dp))
                     Text(
-                        text = stringResource(
-                            R.string.player_detailed_transcribe_result_meta,
-                            dialogState.recognizedEngineId,
-                            langText,
-                        ),
+                        text = stringResource(R.string.player_detailed_transcribe_model_downloading),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
+            }
 
-                if (dialogState.hasAttempted && dialogState.resultText.isBlank() && !dialogState.isRunning) {
-                    val emptyReasonText = dialogState.trialEmptyMessage
-                        ?: stringResource(
-                            R.string.player_detailed_transcribe_empty_general,
-                            selectedLanguage.value,
-                        )
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = emptyReasonText,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        )
+            // 3. 音声の入力速度（0.5x, 0.75x, 1.0x, 1.5x、デフォルト 1.0x）
+            Text(
+                text = stringResource(R.string.player_detailed_transcribe_speed_label),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                for (speedOption in DetailedTranscriptionDialogState.AUDIO_SPEED_OPTIONS) {
+                    val speedLabel = when {
+                        abs(speedOption - 0.5f) < 0.01f -> "0.5x"
+                        abs(speedOption - 0.75f) < 0.01f -> "0.75x"
+                        abs(speedOption - 1.0f) < 0.01f -> "1.0x"
+                        abs(speedOption - 1.5f) < 0.01f -> "1.5x"
+                        else -> String.format(JavaLocale.ROOT, "%.2fx", speedOption)
                     }
+                    FilterChip(
+                        selected = abs(selectedSpeed - speedOption) < 0.01f,
+                        onClick = {
+                            selectedSpeed = speedOption
+                            if (dialogState.isPreviewPlaying) {
+                                onPlayPreview(speedOption)
+                            }
+                        },
+                        label = { Text(text = speedLabel) },
+                        enabled = !dialogState.isRunning,
+                    )
                 }
+            }
 
-                OutlinedTextField(
-                    value = editableText,
-                    onValueChange = { editableText = it },
-                    label = { Text(text = stringResource(R.string.player_detailed_transcribe_result_label)) },
-                    enabled = !dialogState.isRunning,
-                    modifier = Modifier.fillMaxWidth(),
+            // 4. チャンクの波形と再生/停止ボタン（3の再生速度で再生）
+            Text(
+                text = stringResource(R.string.player_detailed_transcribe_preview_label),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            DetailedChunkWaveformPreviewRow(
+                chunk = targetChunk,
+                waveform = waveform,
+                isPreviewPlaying = dialogState.isPreviewPlaying,
+                positionProvider = positionProvider,
+                enabled = !dialogState.isRunning,
+                onTogglePlayStop = {
+                    if (dialogState.isPreviewPlaying) {
+                        onStopPreview()
+                    } else {
+                        onPlayPreview(selectedSpeed)
+                    }
+                },
+            )
+
+            // 4.5. 実行前チェックの警告カード（マイク権限不足 / モデル未DL / モデルDL中 / 非対応エンジン）
+            precheckWarning?.let { warning ->
+                DetailedPrecheckWarningCard(
+                    warning = warning,
+                    selectedLanguage = selectedLanguage,
+                    onAction = {
+                        when (warning.issue) {
+                            DetailedTranscriptionPrecheckIssue.MIC_PERMISSION_REQUIRED ->
+                                onRequestRecordAudioPermission()
+
+                            DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOAD_REQUIRED ->
+                                onRequestModelDownload(selectedLanguage, selectedEngine)
+
+                            DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING,
+                            DetailedTranscriptionPrecheckIssue.ENGINE_UNSUPPORTED,
+                            -> Unit
+                        }
+                    },
                 )
             }
-        },
-        confirmButton = {
-            TextButton(
+
+            // 5. 「この条件で文字起こしを試す」ボタン
+            FilledTonalButton(
                 onClick = {
-                    onApply(editableText, selectedLanguage)
+                    onRunTrial(selectedEngine, selectedLanguage, selectedSpeed)
                 },
-                enabled = !dialogState.isRunning,
+                enabled = canRunTrial,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(text = stringResource(R.string.player_detailed_transcribe_apply))
+                if (dialogState.isRunning) {
+                    ChunkFlowLoadingIndicator(modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = stringResource(R.string.player_detailed_transcribe_running))
+                } else {
+                    Text(text = stringResource(R.string.player_detailed_transcribe_run_button))
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(text = stringResource(R.string.player_chunk_edit_cancel))
+
+            // 6. 認識結果テキストボックス（編集可）
+            if (dialogState.recognizedEngineId != null) {
+                val langText = (dialogState.recognizedLanguage ?: selectedLanguage).value
+                    .lowercase(JavaLocale.ROOT)
+                Text(
+                    text = stringResource(
+                        R.string.player_detailed_transcribe_result_meta,
+                        dialogState.recognizedEngineId,
+                        langText,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-        },
-    )
+
+            if (dialogState.hasAttempted && dialogState.resultText.isBlank() && !dialogState.isRunning) {
+                val emptyReasonText = dialogState.trialEmptyMessage
+                    ?: stringResource(
+                        R.string.player_detailed_transcribe_empty_general,
+                        selectedLanguage.value,
+                    )
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = emptyReasonText,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = editableText,
+                onValueChange = { editableText = it },
+                label = { Text(text = stringResource(R.string.player_detailed_transcribe_result_label)) },
+                enabled = !dialogState.isRunning,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
+                }
+                androidx.compose.material3.Button(
+                    onClick = {
+                        onApply(editableText, selectedLanguage)
+                    },
+                    enabled = !dialogState.isRunning,
+                ) {
+                    Text(text = stringResource(R.string.player_detailed_transcribe_apply))
+                }
+            }
+        }
+    }
+
+    if (LocalInspectionMode.current) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = MaterialTheme.shapes.extraLarge,
+        ) {
+            content()
+        }
+    } else {
+        androidx.compose.material3.ModalBottomSheet(
+            onDismissRequest = onDismiss,
+        ) {
+            content()
+        }
+    }
 }
 
 @Composable
@@ -526,11 +532,7 @@ private fun DetailedPrecheckWarningCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (warning.issue == DetailedTranscriptionPrecheckIssue.MODEL_DOWNLOADING) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = contentColor,
-                    )
+                    ChunkFlowLoadingIndicator(modifier = Modifier.size(20.dp), color = contentColor)
                 }
                 Text(
                     text = localizedMessage,
@@ -850,13 +852,11 @@ internal fun TranscriptionProgressOverlay(
                 )
             }
 
-            LinearProgressIndicator(
+            ChunkFlowWavyLinearProgress(
                 progress = { overallProgress },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 6.dp)
-                    .height(5.dp)
-                    .clip(MaterialTheme.shapes.extraSmall),
+                    .padding(horizontal = 6.dp),
                 // 既定のトラックの色はカードの色（secondaryContainer）と同じで見えないため、文字色を薄くして使う
                 trackColor = contentColor.copy(alpha = 0.18f),
             )
@@ -869,7 +869,7 @@ internal fun TranscriptionProgressOverlay(
                 if (isStalled) {
                     // 遅延の警告は絵文字ではなくアイコンで示す（文言は stall_short のまま）
                     Icon(
-                        imageVector = ChunkFlowIcons.Schedule,
+                        imageVector = ChunkFlowIcons.Warning,
                         contentDescription = null,
                         modifier = Modifier.size(14.dp),
                     )

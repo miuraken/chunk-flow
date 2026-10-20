@@ -53,7 +53,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -98,6 +97,7 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowWavyLinearProgress
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeRole
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadge
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -405,11 +405,9 @@ fun TranscriptList(
     revealedChunkIds: Set<ChunkId>,
     chineseScript: ChineseScript,
     cantoneseScript: ChineseScript,
-    transcriptImportBanner: TranscriptImportBannerState?,
     onSeekToChunk: (ChunkId) -> Unit,
     onSetLoopMode: (LoopMode) -> Unit,
     onToggleRevealChunk: (ChunkId) -> Unit,
-    onDismissTranscriptBanner: () -> Unit,
     modifier: Modifier = Modifier,
     showTargetRomanization: Boolean = false,
     showTargetTranslation: Boolean = false,
@@ -419,8 +417,6 @@ fun TranscriptList(
     showTranscriptionProgress: Boolean = lookaheadStatus.inFlightChunkId != null ||
         lookaheadStatus.isForcedChunkInFlight ||
         (lookaheadStatus.enabled && lookaheadStatus.queuedChunkIds.isNotEmpty()),
-    transcriptExportBanner: TranscriptExportBannerState? = null,
-    onDismissExportBanner: () -> Unit = {},
     onToggleBookmark: (ChunkId) -> Unit = {},
     onToggleRepeatChunk: (ChunkId) -> Unit = {},
     onSetChunksSkipped: (Set<ChunkId>, Boolean) -> Unit = { _, _ -> },
@@ -540,22 +536,6 @@ fun TranscriptList(
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            transcriptImportBanner?.let { banner ->
-                TranscriptImportStatusBanner(
-                    banner = banner,
-                    onDismiss = onDismissTranscriptBanner,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
-
-            transcriptExportBanner?.let { exportBanner ->
-                TranscriptExportStatusBanner(
-                    banner = exportBanner,
-                    onDismiss = onDismissExportBanner,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
-
             for ((issueLanguage, issueState) in lookaheadStatus.recognitionModelIssues) {
                 RecognitionModelIssueBanner(
                     language = issueLanguage,
@@ -1516,12 +1496,9 @@ private fun TranscriptChunkRow(
 
                     if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
                         val stepProgress = inFlightStep?.progressFraction ?: 0.35f
-                        LinearProgressIndicator(
+                        ChunkFlowWavyLinearProgress(
                             progress = { stepProgress },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(4.dp)
-                                .clip(MaterialTheme.shapes.extraSmall),
+                            modifier = Modifier.fillMaxWidth(),
                         )
                         val detailParts = buildList {
                             if (isForcedInFlight && inFlightStep != null) {
@@ -1901,125 +1878,6 @@ private fun RangeSelectionBanner(
     }
 }
 
-@Composable
-private fun TranscriptImportStatusBanner(
-    banner: TranscriptImportBannerState,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val isError = banner !is TranscriptImportBannerState.Attached
-    val containerColor = if (isError) {
-        MaterialTheme.colorScheme.errorContainer
-    } else {
-        MaterialTheme.colorScheme.secondaryContainer
-    }
-    val contentColor = if (isError) {
-        MaterialTheme.colorScheme.onErrorContainer
-    } else {
-        MaterialTheme.colorScheme.onSecondaryContainer
-    }
-    val message = when (banner) {
-        is TranscriptImportBannerState.Attached ->
-            if (banner.durationMismatch) {
-                stringResource(R.string.player_transcript_attached_mismatch, banner.chunkCount)
-            } else {
-                stringResource(R.string.player_transcript_attached, banner.chunkCount)
-            }
-
-        is TranscriptImportBannerState.NoMatchingAudio ->
-            stringResource(R.string.player_transcript_no_matching_audio)
-
-        is TranscriptImportBannerState.Invalid ->
-            stringResource(R.string.player_transcript_invalid)
-    }
-
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = containerColor,
-            contentColor = contentColor,
-        ),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onDismiss) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Close,
-                    contentDescription = stringResource(R.string.player_dismiss_banner),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TranscriptExportStatusBanner(
-    banner: TranscriptExportBannerState,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val isError = banner is TranscriptExportBannerState.Failed
-    val containerColor = if (isError) {
-        MaterialTheme.colorScheme.errorContainer
-    } else {
-        MaterialTheme.colorScheme.secondaryContainer
-    }
-    val contentColor = if (isError) {
-        MaterialTheme.colorScheme.onErrorContainer
-    } else {
-        MaterialTheme.colorScheme.onSecondaryContainer
-    }
-    val message = when (banner) {
-        is TranscriptExportBannerState.Exported ->
-            stringResource(
-                R.string.player_export_done,
-                banner.format.name,
-            )
-
-        TranscriptExportBannerState.ResetCompleted ->
-            stringResource(R.string.player_transcript_reset_done)
-
-        TranscriptExportBannerState.Failed ->
-            stringResource(R.string.player_export_failed)
-    }
-
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = containerColor,
-            contentColor = contentColor,
-        ),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onDismiss) {
-                Icon(
-                    imageVector = ChunkFlowIcons.Close,
-                    contentDescription = stringResource(R.string.player_dismiss_banner),
-                )
-            }
-        }
-    }
-}
-
 @ChunkFlowPreviews
 @Composable
 private fun TranscriptListPreview() {
@@ -2047,11 +1905,9 @@ private fun TranscriptListPreview() {
                 revealedChunkIds = emptySet(),
                 chineseScript = ChineseScript.HANT,
                 cantoneseScript = ChineseScript.HANT,
-                transcriptImportBanner = null,
                 onSeekToChunk = {},
                 onSetLoopMode = {},
                 onToggleRevealChunk = {},
-                onDismissTranscriptBanner = {},
             )
         }
     }
@@ -2082,7 +1938,6 @@ private fun TranscriptListTranscriptionStagesPreview() {
                 revealedChunkIds = emptySet(),
                 chineseScript = ChineseScript.HANS,
                 cantoneseScript = ChineseScript.HANT,
-                transcriptImportBanner = null,
                 lookaheadStatus = LookaheadTranscriptionStatus(
                     enabled = true,
                     engineAvailable = true,
@@ -2094,7 +1949,6 @@ private fun TranscriptListTranscriptionStagesPreview() {
                 onSeekToChunk = {},
                 onSetLoopMode = {},
                 onToggleRevealChunk = {},
-                onDismissTranscriptBanner = {},
             )
         }
     }
@@ -2128,7 +1982,6 @@ private fun TranscriptListRecognitionModelMissingPreview() {
                 revealedChunkIds = emptySet(),
                 chineseScript = ChineseScript.HANS,
                 cantoneseScript = ChineseScript.HANT,
-                transcriptImportBanner = null,
                 lookaheadStatus = LookaheadTranscriptionStatus(
                     enabled = true,
                     engineAvailable = true,
@@ -2139,7 +1992,6 @@ private fun TranscriptListRecognitionModelMissingPreview() {
                 onSeekToChunk = {},
                 onSetLoopMode = {},
                 onToggleRevealChunk = {},
-                onDismissTranscriptBanner = {},
             )
         }
     }

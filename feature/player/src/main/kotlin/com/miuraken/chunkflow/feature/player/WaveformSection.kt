@@ -716,7 +716,7 @@ private fun ZoomedWaveformHeaderStatusArea(
                 if (isStalled) {
                     // 遅延の警告は絵文字ではなくアイコンで示す（文言は stall_short のまま）
                     Icon(
-                        imageVector = ChunkFlowIcons.Schedule,
+                        imageVector = ChunkFlowIcons.Warning,
                         contentDescription = null,
                         tint = colorScheme.onSurfaceVariant,
                         modifier = Modifier

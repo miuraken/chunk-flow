@@ -250,6 +250,11 @@
     <string name="player_menu_lang_filter_only_play">のみ再生</string>
     <string name="player_floating_controls_title">再生コントロール</string>
     <string name="player_floating_controls_close_cd">フローティングコントローラーを閉じる</string>
+    <string name="player_seek_back_long_press_tooltip">長押しで巻き戻しの秒数を変更</string>
+    <string name="player_seek_forward_long_press_tooltip">長押しで早送りの秒数を変更</string>
+    <string name="player_prev_chunk_long_press_tooltip">長押しでファイルの先頭 / 前のチェック済みチャンクへ</string>
+    <string name="player_next_chunk_long_press_tooltip">長押しで次のチェック済みチャンク / 次のファイルへ</string>
+    <string name="player_play_pause_long_press_tooltip">長押しでフローティング操作バーを表示 / 非表示</string>
     <string name="player_transcription_progress_close_cd">文字起こし進捗を閉じる</string>
     <string name="player_missing_language_hint">設定したい言語が見つからないときは、全体設定 &gt; 言語 から追加してください。</string>
     <string name="player_resegment_reset_button">チャンク分割をリセット</string>

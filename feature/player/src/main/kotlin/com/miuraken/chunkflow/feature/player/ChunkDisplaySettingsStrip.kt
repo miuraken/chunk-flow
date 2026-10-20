@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +38,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonGroup
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowToggleButtonItem
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeCompactPadding
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageBadgeRole
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguageRoleBadge
@@ -89,7 +90,6 @@ internal fun ChunkDisplaySettingsStrip(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 1. 「言語」（[base][target]、[base]、[target]、☑ のみ）
-            val transcriptChipModifier = Modifier.alpha(if (state.hasTranscript) 1f else 0.28f)
             val hasLangOrTranscript = state.hasTranscript || state.hasChunkLanguage
             val hasCheckedChunks = state.practice.repeatChunkIds.isNotEmpty()
             val isLanguageFilterEnabled = hasLangOrTranscript ||
@@ -307,79 +307,62 @@ internal fun ChunkDisplaySettingsStrip(
                 }
             }
 
-            // 2. 「隠す」（on, *off）
+            // 2〜5. 表示トグル（隠す / 読み / 翻訳 / 🔖）。Chip ではなく連結トグル群で描く（調査 §3.2 C1）。
             val blindChipLabel = stringResource(R.string.player_chip_blind_target)
-            FilterChip(
-                selected = isHideTargetLangOn,
-                enabled = state.hasTranscript,
-                onClick = {
-                    val nextBlindMode = if (isHideTargetLangOn) {
-                        BlindMode.OFF
-                    } else {
-                        BlindMode.HIDE_TARGET_ONLY
-                    }
-                    onEvent(PlayerEvent.SetBlindMode(nextBlindMode))
-                },
-                label = {
-                    Text(
-                        text = blindChipLabel,
-                        fontWeight = if (isHideTargetLangOn) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1,
-                    )
-                },
-                modifier = transcriptChipModifier,
-            )
-
-            // 3. 「読み」（on, *off）
-            FilterChip(
-                selected = isReadingOn,
-                enabled = state.hasTranscript,
-                onClick = {
-                    onEvent(PlayerEvent.SetShowTargetRomanization(!isReadingOn))
-                },
-                label = {
-                    Text(
-                        text = stringResource(R.string.player_chip_reading),
-                        fontWeight = if (isReadingOn) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1,
-                    )
-                },
-                modifier = transcriptChipModifier,
-            )
-
-            // 4. 「翻訳」（on, *off）
-            if (state.isTranslationSupported) {
-                FilterChip(
-                    selected = state.showTargetTranslation,
-                    enabled = state.hasTranscript,
-                    onClick = {
-                        onEvent(PlayerEvent.SetShowTargetTranslation(!state.showTargetTranslation))
-                    },
-                    label = {
-                        Text(
-                            text = stringResource(R.string.player_chip_translate),
-                            fontWeight = if (state.showTargetTranslation) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1,
-                        )
-                    },
-                    modifier = transcriptChipModifier,
+            val readingLabel = stringResource(R.string.player_chip_reading)
+            val translateLabel = stringResource(R.string.player_chip_translate)
+            val bookmarksOnlyLabel = stringResource(R.string.player_chip_bookmarks_only_cd)
+            val toggleItems = buildList {
+                add(
+                    ChunkFlowToggleButtonItem(
+                        label = blindChipLabel,
+                        checked = isHideTargetLangOn,
+                        enabled = state.hasTranscript,
+                        onCheckedChange = { checked ->
+                            val nextBlindMode = if (checked) BlindMode.HIDE_TARGET_ONLY else BlindMode.OFF
+                            onEvent(PlayerEvent.SetBlindMode(nextBlindMode))
+                        },
+                    ),
                 )
-            }
-
-            // 5. 「🔖」（ブックマークしたチャンクのみ表示。1つでもブックマークがあるときのみ表示）
-            if (state.chunks.any { it.isBookmarked }) {
-                FilterChip(
-                    selected = isBookmarksOnlyOn,
-                    onClick = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
-                    label = {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Bookmark,
-                            contentDescription = stringResource(R.string.player_chip_bookmarks_only_cd),
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
+                add(
+                    ChunkFlowToggleButtonItem(
+                        label = readingLabel,
+                        checked = isReadingOn,
+                        enabled = state.hasTranscript,
+                        onCheckedChange = { checked ->
+                            onEvent(PlayerEvent.SetShowTargetRomanization(checked))
+                        },
+                    ),
                 )
+                if (state.isTranslationSupported) {
+                    add(
+                        ChunkFlowToggleButtonItem(
+                            label = translateLabel,
+                            checked = state.showTargetTranslation,
+                            enabled = state.hasTranscript,
+                            onCheckedChange = { checked ->
+                                onEvent(PlayerEvent.SetShowTargetTranslation(checked))
+                            },
+                        ),
+                    )
+                }
+                // 「🔖」（ブックマークしたチャンクのみ表示。1つでもブックマークがあるときのみ表示）
+                if (state.chunks.any { it.isBookmarked }) {
+                    add(
+                        ChunkFlowToggleButtonItem(
+                            label = bookmarksOnlyLabel,
+                            checked = isBookmarksOnlyOn,
+                            icon = ChunkFlowIcons.Bookmark,
+                            showLabel = false,
+                            onCheckedChange = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
+                        ),
+                    )
+                }
             }
+            ChunkFlowToggleButtonGroup(
+                items = toggleItems,
+                compact = true,
+            )
         }
     }
 }

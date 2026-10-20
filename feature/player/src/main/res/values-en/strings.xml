@@ -250,6 +250,11 @@
     <string name="player_menu_lang_filter_only_play">only</string>
     <string name="player_floating_controls_title">Playback Controls</string>
     <string name="player_floating_controls_close_cd">Close floating controls</string>
+    <string name="player_seek_back_long_press_tooltip">Long-press to change the rewind seconds</string>
+    <string name="player_seek_forward_long_press_tooltip">Long-press to change the fast-forward seconds</string>
+    <string name="player_prev_chunk_long_press_tooltip">Long-press to jump to the file start / previous checked chunk</string>
+    <string name="player_next_chunk_long_press_tooltip">Long-press to jump to the next checked chunk / next file</string>
+    <string name="player_play_pause_long_press_tooltip">Long-press to show / hide the floating controls</string>
     <string name="player_transcription_progress_close_cd">Close transcription progress</string>
     <string name="player_missing_language_hint">If you cannot find the language you want, add it from Global Settings &gt; Languages.</string>
     <string name="player_resegment_reset_button">Reset chunk segmentation</string>

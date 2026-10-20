@@ -27,18 +27,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -54,6 +57,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -70,6 +74,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowFloatingToolbar
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
+import com.miuraken.chunkflow.core.designsystem.component.feedback.ChunkFlowSnackbarHost
 import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackControlStrip
 import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContent
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -260,10 +267,49 @@ fun PlayerScreen(
     val isAudioAnalysisRunning = state.analysis[AnalysisStage.FEATURES] is StageStatus.Running ||
         state.analysis[AnalysisStage.SEGMENTATION] is StageStatus.Running
 
+    // スクロールで TopAppBar の色が変わる（M3 の scrolled 状態。計画書 Phase B）
+    val topBarScrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+
+    // 一時的な結果通知（文字起こしの取り込み結果・エクスポート完了など）は Snackbar に出す（調査 §3.2 C8）。
+    // UiState のバナー状態はそのままにし、Snackbar が閉じたら既存の dismiss イベントを呼ぶ。
+    val snackbarHostState = remember { SnackbarHostState() }
+    val importBanner = state.transcriptImportBanner
+    val importBannerMessage = importBanner?.let { transcriptImportBannerMessage(it) }
+    LaunchedEffect(importBanner) {
+        if (importBanner != null && importBannerMessage != null) {
+            snackbarHostState.showSnackbar(
+                message = importBannerMessage,
+                duration = if (importBanner is TranscriptImportBannerState.Attached) {
+                    SnackbarDuration.Short
+                } else {
+                    SnackbarDuration.Long
+                },
+            )
+            onEvent(PlayerEvent.DismissTranscriptBanner)
+        }
+    }
+    val exportBanner = state.transcriptExportBanner
+    val exportBannerMessage = exportBanner?.let { transcriptExportBannerMessage(it) }
+    LaunchedEffect(exportBanner) {
+        if (exportBanner != null && exportBannerMessage != null) {
+            snackbarHostState.showSnackbar(
+                message = exportBannerMessage,
+                duration = if (exportBanner is TranscriptExportBannerState.Failed) {
+                    SnackbarDuration.Long
+                } else {
+                    SnackbarDuration.Short
+                },
+            )
+            onEvent(PlayerEvent.DismissExportBanner)
+        }
+    }
+
     Scaffold(
-        modifier = modifier,
+        modifier = modifier.nestedScroll(topBarScrollBehavior.nestedScrollConnection),
+        snackbarHost = { ChunkFlowSnackbarHost(hostState = snackbarHostState) },
         topBar = {
             TopAppBar(
+                scrollBehavior = topBarScrollBehavior,
                 title = {
                     Column {
                         Text(
@@ -533,15 +579,12 @@ fun PlayerScreen(
                 val clampedX = floatingOffsetX.coerceIn(0f, maxOffsetX)
                 val clampedY = floatingOffsetY.coerceIn(0f, maxOffsetY)
 
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    tonalElevation = 6.dp,
-                    shadowElevation = 8.dp,
+                // フローティング操作バー（M3 Expressive の HorizontalFloatingToolbar。計画書 §3.4）。
+                // ドラッグ移動は従来の offset + pointerInput をそのまま使う。
+                ChunkFlowFloatingToolbar(
+                    expanded = true,
                     modifier = Modifier
                         .offset { IntOffset(clampedX.roundToInt(), clampedY.roundToInt()) }
-                        .widthIn(max = (maxWidth - 16.dp).coerceAtLeast(260.dp))
-                        .fillMaxWidth(if (isTwoPane) 0.52f else 0.94f)
                         .onSizeChanged { floatingSize = it }
                         .pointerInput(maxOffsetX, maxOffsetY) {
                             detectDragGestures { change, dragAmount ->
@@ -550,65 +593,26 @@ fun PlayerScreen(
                                 floatingOffsetY = (floatingOffsetY + dragAmount.y).coerceIn(0f, maxOffsetY)
                             }
                         },
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                imageVector = ChunkFlowIcons.DragHandle,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = stringResource(R.string.player_floating_controls_title),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                            )
-                            IconButton(
-                                onClick = { showFloatingControls = false },
-                                modifier = Modifier.size(32.dp),
-                            ) {
-                                Icon(
-                                    imageVector = ChunkFlowIcons.Close,
-                                    contentDescription = stringResource(R.string.player_floating_controls_close_cd),
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-                        }
-
-                        PlayerTransportControls(
-                            isPlaying = state.isPlaying,
-                            seekBackMs = state.seekBackMs,
-                            seekForwardMs = state.seekForwardMs,
-                            hasChunks = state.chunks.isNotEmpty(),
-                            hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
-                            hasNextCheckedChunk = state.hasNextCheckedChunk,
-                            hasNextMediaItem = state.nextMediaId != null,
-                            onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
-                            onSeekBack = { onEvent(PlayerEvent.SeekBack) },
-                            onSeekForward = { onEvent(PlayerEvent.SeekForward) },
-                            onPreviousChunk = { onEvent(PlayerEvent.PreviousChunk) },
-                            onNextChunk = { onEvent(PlayerEvent.NextChunk) },
-                            onSetSeekBackMs = { ms -> onEvent(PlayerEvent.SetSeekBackMs(ms)) },
-                            onSetSeekForwardMs = { ms -> onEvent(PlayerEvent.SetSeekForwardMs(ms)) },
-                            onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
-                            onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
-                            onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
-                            onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
-                            onToggleFloatingControls = { showFloatingControls = false },
+                    leadingContent = {
+                        Icon(
+                            imageVector = ChunkFlowIcons.DragHandle,
+                            contentDescription = stringResource(R.string.player_floating_controls_title),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    }
+                    },
+                    trailingContent = {
+                        IconButton(onClick = { showFloatingControls = false }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Close,
+                                contentDescription = stringResource(R.string.player_floating_controls_close_cd),
+                            )
+                        }
+                    },
+                ) {
+                    FloatingTransportContent(
+                        state = state,
+                        onEvent = onEvent,
+                    )
                 }
             }
         }
@@ -713,6 +717,57 @@ fun PlayerScreen(
 }
 
 /**
+ * フローティング操作バーの中身（`IconButton` 5 つ）。ツールバーの高さ（64dp）に収めるため、ラベル付きの
+ * [PlayerTransportControls] ではなくアイコンのみにする。長押しメニューは画面下部の操作部から使う。
+ */
+@Composable
+private fun FloatingTransportContent(
+    state: PlayerUiState,
+    onEvent: (PlayerEvent) -> Unit,
+) {
+    val hasChunks = state.chunks.isNotEmpty()
+    val seekBackSeconds = (state.seekBackMs / 1_000L).coerceAtLeast(1L)
+    val seekForwardSeconds = (state.seekForwardMs / 1_000L).coerceAtLeast(1L)
+    IconButton(onClick = { onEvent(PlayerEvent.SeekBack) }) {
+        Icon(
+            imageVector = ChunkFlowIcons.SeekBack,
+            contentDescription = stringResource(R.string.player_seek_back_cd, seekBackSeconds),
+        )
+    }
+    IconButton(onClick = { onEvent(PlayerEvent.PreviousChunk) }, enabled = hasChunks) {
+        Icon(
+            imageVector = ChunkFlowIcons.SkipPrevious,
+            contentDescription = stringResource(R.string.player_prev_chunk_cd),
+        )
+    }
+    FilledIconButton(onClick = { onEvent(PlayerEvent.TogglePlayPause) }) {
+        Icon(
+            imageVector = if (state.isPlaying) ChunkFlowIcons.Pause else ChunkFlowIcons.Play,
+            contentDescription = if (state.isPlaying) {
+                stringResource(R.string.player_pause)
+            } else {
+                stringResource(R.string.player_play)
+            },
+        )
+    }
+    IconButton(
+        onClick = { if (hasChunks) onEvent(PlayerEvent.NextChunk) },
+        enabled = hasChunks || state.nextMediaId != null,
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.SkipNext,
+            contentDescription = stringResource(R.string.player_next_chunk_cd),
+        )
+    }
+    IconButton(onClick = { onEvent(PlayerEvent.SeekForward) }) {
+        Icon(
+            imageVector = ChunkFlowIcons.SeekForward,
+            contentDescription = stringResource(R.string.player_seek_forward_cd, seekForwardSeconds),
+        )
+    }
+}
+
+/**
  * 再生画面 TopAppBar の設定アイコン左に表示する文字起こし進捗バッジ。
  *
  * - 全チャンクの文字起こしが完了している場合は、ライブラリ画面と同様に緑丸＋白抜きの文字起こしアイコンを表示する。
@@ -810,21 +865,10 @@ private fun PlayerTranscriptionStatusBadge(
                 modifier = Modifier.size(18.dp),
             )
             if (isRunning) {
-                if (LocalInspectionMode.current) {
-                    CircularProgressIndicator(
-                        progress = { 0.75f },
-                        modifier = Modifier.size(12.dp),
-                        strokeWidth = 1.5.dp,
-                        color = badgeContentColor,
-                        trackColor = Color.Transparent,
-                    )
-                } else {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(12.dp),
-                        strokeWidth = 1.5.dp,
-                        color = badgeContentColor,
-                    )
-                }
+                ChunkFlowLoadingIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = badgeContentColor,
+                )
             }
             Text(
                 text = "$progressPercent%",
@@ -920,12 +964,9 @@ private fun PlayerChunkList(
         showTargetRomanization = state.showTargetRomanization,
         showTargetTranslation = state.showTargetTranslation,
         bookmarksOnly = state.practice.bookmarksOnly,
-        transcriptImportBanner = state.transcriptImportBanner,
         positionProvider = positionProvider,
         lookaheadStatus = state.lookaheadStatus,
         showTranscriptionProgress = state.isTranscriptionProgressVisible,
-        transcriptExportBanner = state.transcriptExportBanner,
-        onDismissExportBanner = { onEvent(PlayerEvent.DismissExportBanner) },
         onToggleBookmark = { chunkId -> onEvent(PlayerEvent.ToggleBookmark(chunkId)) },
         onToggleRepeatChunk = { chunkId -> onEvent(PlayerEvent.ToggleChunkRepeat(chunkId)) },
         onSetChunksSkipped = { chunkIds, skipped ->
@@ -934,7 +975,6 @@ private fun PlayerChunkList(
         onSeekToChunk = { chunkId -> onEvent(PlayerEvent.SeekToChunk(chunkId)) },
         onSetLoopMode = { loop -> onEvent(PlayerEvent.SetLoopMode(loop)) },
         onToggleRevealChunk = { chunkId -> onEvent(PlayerEvent.ToggleRevealChunk(chunkId)) },
-        onDismissTranscriptBanner = { onEvent(PlayerEvent.DismissTranscriptBanner) },
         onUpdateChunkLanguage = { chunkId, lang ->
             onEvent(PlayerEvent.UpdateChunkLanguage(chunkId, lang))
         },
@@ -1029,4 +1069,34 @@ private fun PlayerTitleMetaRow(
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+/** 文字起こしの取り込み結果（[TranscriptImportBannerState]）を Snackbar の文言にする。 */
+@Composable
+private fun transcriptImportBannerMessage(banner: TranscriptImportBannerState): String = when (banner) {
+    is TranscriptImportBannerState.Attached ->
+        if (banner.durationMismatch) {
+            stringResource(R.string.player_transcript_attached_mismatch, banner.chunkCount)
+        } else {
+            stringResource(R.string.player_transcript_attached, banner.chunkCount)
+        }
+
+    is TranscriptImportBannerState.NoMatchingAudio ->
+        stringResource(R.string.player_transcript_no_matching_audio)
+
+    is TranscriptImportBannerState.Invalid ->
+        stringResource(R.string.player_transcript_invalid)
+}
+
+/** エクスポート / リセットの結果（[TranscriptExportBannerState]）を Snackbar の文言にする。 */
+@Composable
+private fun transcriptExportBannerMessage(banner: TranscriptExportBannerState): String = when (banner) {
+    is TranscriptExportBannerState.Exported ->
+        stringResource(R.string.player_export_done, banner.format.name)
+
+    TranscriptExportBannerState.ResetCompleted ->
+        stringResource(R.string.player_transcript_reset_done)
+
+    TranscriptExportBannerState.Failed ->
+        stringResource(R.string.player_export_failed)
 }
