@@ -176,7 +176,6 @@
     <string name="transcript_export_done_single">Exported transcript (%1$s)</string>
     <string name="transcript_export_done_multiple">Exported %1$d transcript file(s) to folder (%2$s)</string>
     <string name="transcript_export_failed">Failed to export transcript</string>
-    <string name="library_item_more_actions_cd">More actions</string>
     <string name="library_mini_player_expand_cd">Expand playback controls</string>
     <string name="library_mini_player_collapse_cd">Collapse to mini player</string>
 </resources>

@@ -26,10 +26,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -229,17 +228,14 @@ internal fun LibraryItemRow(
 ) {
     val item = itemModel.item
     val formattedDuration = formatDurationMs(item.durationMs)
-    val editCd = stringResource(R.string.library_edit_metadata_cd)
     val favoriteCd = stringResource(
         if (isFavorite) R.string.library_favorite_remove_cd else R.string.library_favorite_add_cd,
     )
     val removeFromPlaylistCd = stringResource(R.string.library_playlist_remove_item_cd)
-    val moreActionsCd = stringResource(R.string.library_item_more_actions_cd)
     val langPalette = chunkFlowLanguagePalette()
     val maxPercent = itemModel.maxProgressPercent
     // 既習（95% 超）の教材は、進捗バーを緑系にして一目でわかるようにする。
     val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
-    var overflowExpanded by remember { mutableStateOf(false) }
 
     ListItem(
         modifier = modifier
@@ -384,78 +380,37 @@ internal fun LibraryItemRow(
                 }
             }
         },
-        trailingContent = if (!isSelectionMode) {
+        trailingContent = if (!isSelectionMode && (onToggleFavoriteClick != null || onRemoveFromPlaylistClick != null)) {
             {
-                Box {
-                    IconButton(onClick = { overflowExpanded = true }) {
-                        Icon(
-                            imageVector = if (isFavorite) {
-                                ChunkFlowIcons.Favorite
-                            } else {
-                                ChunkFlowIcons.MoreVert
-                            },
-                            contentDescription = moreActionsCd,
-                            tint = if (isFavorite) {
-                                chunkFlowExtendedColors().favorite
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = overflowExpanded,
-                        onDismissRequest = { overflowExpanded = false },
-                    ) {
-                        if (onToggleFavoriteClick != null) {
-                            DropdownMenuItem(
-                                text = { Text(text = favoriteCd) },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = if (isFavorite) {
-                                            ChunkFlowIcons.Favorite
-                                        } else {
-                                            ChunkFlowIcons.FavoriteBorder
-                                        },
-                                        contentDescription = null,
-                                        tint = if (isFavorite) {
-                                            chunkFlowExtendedColors().favorite
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        },
-                                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (onToggleFavoriteClick != null) {
+                        IconToggleButton(
+                            checked = isFavorite,
+                            onCheckedChange = { onToggleFavoriteClick() },
+                        ) {
+                            Icon(
+                                imageVector = if (isFavorite) {
+                                    ChunkFlowIcons.Favorite
+                                } else {
+                                    ChunkFlowIcons.FavoriteBorder
                                 },
-                                onClick = {
-                                    overflowExpanded = false
-                                    onToggleFavoriteClick()
+                                contentDescription = favoriteCd,
+                                tint = if (isFavorite) {
+                                    chunkFlowExtendedColors().favorite
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
                                 },
                             )
                         }
-                        DropdownMenuItem(
-                            text = { Text(text = editCd) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = ChunkFlowIcons.Edit,
-                                    contentDescription = null,
-                                )
-                            },
-                            onClick = {
-                                overflowExpanded = false
-                                onEditMetadataClick()
-                            },
-                        )
-                        if (onRemoveFromPlaylistClick != null) {
-                            DropdownMenuItem(
-                                text = { Text(text = removeFromPlaylistCd) },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = ChunkFlowIcons.Close,
-                                        contentDescription = null,
-                                    )
-                                },
-                                onClick = {
-                                    overflowExpanded = false
-                                    onRemoveFromPlaylistClick()
-                                },
+                    }
+                    if (onRemoveFromPlaylistClick != null) {
+                        IconButton(onClick = onRemoveFromPlaylistClick) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.Close,
+                                contentDescription = removeFromPlaylistCd,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
