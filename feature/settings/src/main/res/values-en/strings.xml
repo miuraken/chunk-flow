@@ -3,8 +3,8 @@
     <string name="settings_title">Global Settings</string>
     <string name="settings_back">Back</string>
     <string name="settings_tab_playback">Playback</string>
-    <string name="settings_tab_segmentation">Chunk Segmentation</string>
-    <string name="settings_tab_transcription">Transcription</string>
+    <string name="settings_tab_segmentation">Chunks</string>
+    <string name="settings_tab_transcription">Transcribe</string>
     <string name="settings_section_playback">Playback</string>
     <string name="settings_seek_back_label">Seek back duration</string>
     <string name="settings_seek_forward_label">Seek forward duration</string>

@@ -3,7 +3,7 @@
     <string name="settings_title">全体設定</string>
     <string name="settings_back">戻る</string>
     <string name="settings_tab_playback">再生</string>
-    <string name="settings_tab_segmentation">チャンク分割</string>
+    <string name="settings_tab_segmentation">分割</string>
     <string name="settings_tab_transcription">文字起こし</string>
     <string name="settings_section_playback">再生設定</string>
     <string name="settings_seek_back_label">巻き戻し秒数</string>

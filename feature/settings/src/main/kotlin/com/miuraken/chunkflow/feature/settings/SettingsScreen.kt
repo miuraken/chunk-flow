@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.settings
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -36,7 +37,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -51,6 +51,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -63,11 +64,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -95,11 +98,14 @@ import kotlin.math.roundToInt
 /**
  * 設定画面のタブ種別。
  */
-enum class SettingsTab {
-    PLAYBACK,
-    SEGMENTATION,
-    TRANSCRIPTION,
-    LANGUAGE,
+enum class SettingsTab(
+    /** タブのラベル（固定幅タブに収まる短い名前）。 */
+    @StringRes val labelRes: Int,
+) {
+    PLAYBACK(R.string.settings_tab_playback),
+    SEGMENTATION(R.string.settings_tab_segmentation),
+    TRANSCRIPTION(R.string.settings_tab_transcription),
+    LANGUAGE(R.string.settings_tab_language),
 }
 
 /**
@@ -165,6 +171,9 @@ fun SettingsScreen(
         )
     }
 
+    // 本文がスクロールしても TopAppBar は固定し、スクロール中は色だけを変える（計画書 §4 Phase B）。
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -177,36 +186,32 @@ fun SettingsScreen(
                         )
                     }
                 },
+                scrollBehavior = scrollBehavior,
             )
         },
-        modifier = modifier,
+        modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            PrimaryScrollableTabRow(selectedTabIndex = selectedTab.ordinal, edgePadding = 0.dp) {
-                Tab(
-                    selected = selectedTab == SettingsTab.PLAYBACK,
-                    onClick = { selectedTabOrdinal = SettingsTab.PLAYBACK.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_playback)) },
-                )
-                Tab(
-                    selected = selectedTab == SettingsTab.SEGMENTATION,
-                    onClick = { selectedTabOrdinal = SettingsTab.SEGMENTATION.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_segmentation)) },
-                )
-                Tab(
-                    selected = selectedTab == SettingsTab.TRANSCRIPTION,
-                    onClick = { selectedTabOrdinal = SettingsTab.TRANSCRIPTION.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_transcription)) },
-                )
-                Tab(
-                    selected = selectedTab == SettingsTab.LANGUAGE,
-                    onClick = { selectedTabOrdinal = SettingsTab.LANGUAGE.ordinal },
-                    text = { Text(text = stringResource(R.string.settings_tab_language)) },
-                )
+            // 4 タブを固定幅で並べ、360dp 幅でも全タブが見えるようにする（調査 §3.2 C11）。
+            PrimaryTabRow(selectedTabIndex = selectedTab.ordinal) {
+                SettingsTab.entries.forEach { tab ->
+                    Tab(
+                        selected = selectedTab == tab,
+                        onClick = { selectedTabOrdinal = tab.ordinal },
+                        text = {
+                            Text(
+                                text = stringResource(tab.labelRes),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                            )
+                        },
+                    )
+                }
             }
 
             Column(
