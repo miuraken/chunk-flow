@@ -124,6 +124,7 @@ import java.util.Locale as JavaLocale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -473,8 +474,34 @@ fun TranscriptList(
             }
         }
     }
-    val activeDisplayIndex = remember(activeChunkIndex, displayedChunks) {
-        activeChunkIndex?.let { targetIdx ->
+    var polledActiveChunkIndex by remember(activeChunkIndex, chunks) {
+        mutableStateOf(
+            activeChunkIndex ?: resolveChunkIndexAtPosition(
+                chunks = chunks,
+                positionMs = positionProvider.currentPositionMs(),
+            ),
+        )
+    }
+    if (!isInspectionMode && chunks.isNotEmpty()) {
+        LaunchedEffect(activeChunkIndex, chunks, positionProvider) {
+            if (activeChunkIndex != null) {
+                polledActiveChunkIndex = activeChunkIndex
+            } else {
+                while (true) {
+                    val posMs = positionProvider.currentPositionMs()
+                    val resolved = resolveChunkIndexAtPosition(chunks, posMs)
+                    if (resolved != polledActiveChunkIndex) {
+                        polledActiveChunkIndex = resolved
+                    }
+                    delay(100L)
+                }
+            }
+        }
+    }
+    val effectiveActiveChunkIndex = activeChunkIndex ?: polledActiveChunkIndex
+
+    val activeDisplayIndex = remember(effectiveActiveChunkIndex, displayedChunks) {
+        effectiveActiveChunkIndex?.let { targetIdx ->
             displayedChunks.indexOfFirst { (originalIdx, _) -> originalIdx == targetIdx }.takeIf { it >= 0 }
         }
     }
@@ -601,7 +628,7 @@ fun TranscriptList(
                     items = displayedChunks,
                     key = { (_, chunk) -> chunk.id.value },
                 ) { (index, chunk) ->
-                    val isActive = index == activeChunkIndex
+                    val isActive = index == effectiveActiveChunkIndex
                     val isInLoopRange = chunk.id in loopHighlightedIds ||
                         chunk.isRepeatChecked ||
                         chunk.id == rangeSelectionStartChunkId
@@ -2025,3 +2052,29 @@ internal const val AUTO_FOLLOW_LEADING_CONTEXT_ITEMS: Int = 2
  * 自動追従スクロールで先頭に合わせるべきアイテムのインデックスを返す。
  */
 internal fun resolveAutoFollowScrollTargetIndex(activeDisplayIndex: Int): Int = (activeDisplayIndex - AUTO_FOLLOW_LEADING_CONTEXT_ITEMS).coerceAtLeast(0)
+
+/**
+ * 再生位置 [positionMs] に対応するチャンクのインデックスを二分探索で返す。
+ * チャンク間の無音区間にある場合は、直前に開始したチャンクのインデックスを返す。
+ */
+internal fun resolveChunkIndexAtPosition(chunks: List<ChunkUi>, positionMs: Long): Int? {
+    if (chunks.isEmpty()) return null
+    var low = 0
+    var high = chunks.lastIndex
+    var bestIndex: Int? = null
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        val chunk = chunks[mid]
+        when {
+            positionMs < chunk.startMs -> high = mid - 1
+
+            positionMs >= chunk.endMs -> {
+                bestIndex = mid
+                low = mid + 1
+            }
+
+            else -> return mid
+        }
+    }
+    return bestIndex ?: 0
+}

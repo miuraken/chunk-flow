@@ -346,4 +346,22 @@ class PlayerScreenTest {
             ),
         )
     }
+
+    @Test
+    fun `resolveChunkIndexAtPosition_再生位置に対応するチャンクまたは直前チャンクのインデックスを返す`() {
+        val chunks = listOf(
+            ChunkUi(id = ChunkId(1L), startMs = 500L, endMs = 1_500L, text = null, language = null),
+            ChunkUi(id = ChunkId(2L), startMs = 2_000L, endMs = 3_000L, text = null, language = null),
+            ChunkUi(id = ChunkId(3L), startMs = 3_500L, endMs = 4_500L, text = null, language = null),
+        )
+
+        assertNull(resolveChunkIndexAtPosition(emptyList(), 1_000L))
+        assertEquals(0, resolveChunkIndexAtPosition(chunks, 0L))
+        assertEquals(0, resolveChunkIndexAtPosition(chunks, 1_000L))
+        assertEquals(0, resolveChunkIndexAtPosition(chunks, 1_750L))
+        assertEquals(1, resolveChunkIndexAtPosition(chunks, 2_000L))
+        assertEquals(1, resolveChunkIndexAtPosition(chunks, 3_200L))
+        assertEquals(2, resolveChunkIndexAtPosition(chunks, 4_000L))
+        assertEquals(2, resolveChunkIndexAtPosition(chunks, 6_000L))
+    }
 }

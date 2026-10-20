@@ -2,13 +2,14 @@ package com.miuraken.chunkflow.core.designsystem.component.expressive
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
@@ -19,14 +20,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -55,7 +60,7 @@ val ChunkFlowPlayPauseButtonDefaultSize: Dp = 80.dp
  * @param size ボタンの一辺。48dp 以上を渡す。既定 [ChunkFlowPlayPauseButtonDefaultSize]。
  * @param enabled 操作できるかどうか。
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChunkFlowPlayPauseButton(
     isPlaying: Boolean,
@@ -79,37 +84,54 @@ fun ChunkFlowPlayPauseButton(
     )
     val shape = remember(progress) { MorphShape(morph, progress) }
     val haptic = LocalHapticFeedback.current
-    val longClickModifier = if (onLongClick != null && enabled) {
-        Modifier.pointerInput(onLongClick) {
-            detectTapGestures(
-                onLongPress = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick()
-                },
-            )
-        }
-    } else {
-        Modifier
-    }
-    val contentDescription = if (isPlaying) {
+    val contentDescriptionText = if (isPlaying) {
         stringResource(R.string.designsystem_pause)
     } else {
         stringResource(R.string.designsystem_play)
     }
+    val containerColor = if (enabled) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    }
+    val contentColor = if (enabled) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+    }
 
-    FilledIconButton(
-        onClick = onClick,
+    Surface(
+        shape = shape,
+        color = containerColor,
+        contentColor = contentColor,
         modifier = modifier
             .size(size)
-            .then(longClickModifier),
-        enabled = enabled,
-        shape = shape,
+            .clip(shape)
+            .combinedClickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+                onLongClick = if (onLongClick != null) {
+                    {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onLongClick()
+                    }
+                } else {
+                    null
+                },
+            )
+            .semantics {
+                role = Role.Button
+                contentDescription = contentDescriptionText
+            },
     ) {
-        Icon(
-            imageVector = if (isPlaying) ChunkFlowIcons.Pause else ChunkFlowIcons.Play,
-            contentDescription = contentDescription,
-            modifier = Modifier.size(size * ICON_RATIO),
-        )
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (isPlaying) ChunkFlowIcons.Pause else ChunkFlowIcons.Play,
+                contentDescription = null,
+                modifier = Modifier.size(size * ICON_RATIO),
+            )
+        }
     }
 }
 

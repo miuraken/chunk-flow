@@ -1,24 +1,34 @@
 package com.miuraken.chunkflow.core.designsystem.component.expressive
 
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -35,7 +45,7 @@ val ChunkFlowTransportButtonDefaultSize: Dp = 56.dp
  * `FilledTonalIconButton`（48dp 以上）に、任意の `labelSmall` ラベル（例: `-3s`、`prev`）を下に添える。
  * プレイヤーの `TransportTonalButton` とライブラリの `BookmarkSeekStepButton` を置き換える。
  * 秒数などの意味は [contentDescription] に含め、ラベルは読み上げから外す（重複を避ける）。
- * 長押しメニュー（[onLongClick]）は補助的な近道として残し、説明は呼び出し側が `TooltipBox` で添える。
+ * 長押しメニュー（[onLongClick]）は補助的な近道として残す。
  *
  * @param icon アイコン。
  * @param contentDescription 読み上げ文言（必須。例: 「3 秒戻す」）。
@@ -46,6 +56,7 @@ val ChunkFlowTransportButtonDefaultSize: Dp = 56.dp
  * @param enabled 操作できるかどうか。
  * @param size ボタンの一辺。48dp 以上を渡す。既定 [ChunkFlowTransportButtonDefaultSize]。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChunkFlowTransportButton(
     icon: ImageVector,
@@ -58,35 +69,45 @@ fun ChunkFlowTransportButton(
     size: Dp = ChunkFlowTransportButtonDefaultSize,
 ) {
     val haptic = LocalHapticFeedback.current
-    val longClickModifier = if (onLongClick != null && enabled) {
-        Modifier.pointerInput(onLongClick) {
-            detectTapGestures(
-                onLongPress = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick()
-                },
-            )
-        }
-    } else {
-        Modifier
-    }
+    val colors = IconButtonDefaults.filledTonalIconButtonColors()
+    val containerColor = if (enabled) colors.containerColor else colors.disabledContainerColor
+    val contentColor = if (enabled) colors.contentColor else colors.disabledContentColor
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        FilledTonalIconButton(
-            onClick = onClick,
-            enabled = enabled,
+        Box(
             modifier = Modifier
                 .size(size)
-                .then(longClickModifier),
+                .clip(CircleShape)
+                .background(color = containerColor)
+                .combinedClickable(
+                    enabled = enabled,
+                    role = Role.Button,
+                    onClick = onClick,
+                    onLongClick = if (onLongClick != null) {
+                        {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongClick()
+                        }
+                    } else {
+                        null
+                    },
+                )
+                .semantics {
+                    role = Role.Button
+                    this.contentDescription = contentDescription
+                },
+            contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                modifier = Modifier.size(size * ICON_RATIO),
-            )
+            CompositionLocalProvider(LocalContentColor provides contentColor) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(size * ICON_RATIO),
+                )
+            }
         }
         if (label != null) {
             Text(
