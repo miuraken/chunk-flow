@@ -9,10 +9,22 @@
     <string name="designsystem_playback_whole_file_repeat_no">No</string>
     <string name="designsystem_playback_chip_skip_silence">無音スキップ</string>
     <string name="designsystem_playback_chip_playback_settings">再生設定</string>
+    <string name="designsystem_playback_speed_tooltip">長押しまたは ▼ で速度を設定</string>
+    <string name="designsystem_playback_speed_menu_cd">再生速度の設定を開く</string>
+    <string name="designsystem_playback_repeat_tooltip">長押しまたは ▼ でファイル全体をリピート</string>
+    <string name="designsystem_playback_repeat_menu_cd">リピートのメニュー</string>
 
     <!-- 再生速度シート（SpeedSheetContent） -->
     <string name="designsystem_playback_speed_section_title">再生速度</string>
     <string name="designsystem_playback_speed_decrease_cd">再生速度を 0.05 倍下げる</string>
     <string name="designsystem_playback_speed_increase_cd">再生速度を 0.05 倍上げる</string>
     <string name="designsystem_playback_speed_slider_cd">再生速度スライダー</string>
+
+    <!-- Expressive ラッパー（component/expressive） -->
+    <string name="designsystem_play">再生</string>
+    <string name="designsystem_pause">一時停止</string>
+    <string name="designsystem_state_on">オン</string>
+    <string name="designsystem_state_off">オフ</string>
+    <string name="designsystem_split_button_menu_cd">%1$s のメニュー</string>
+    <string name="designsystem_snackbar_dismiss_cd">閉じる</string>
 </resources>
