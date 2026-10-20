@@ -17,6 +17,7 @@ import com.miuraken.chunkflow.core.designsystem.theme.colorutil.MathUtils
  * @property target 学習言語（対象言語）の色相。
  * @property completed 既習（聴き終えた教材）・成功・文字起こし完了を表す緑系の色相。
  * @property favorite お気に入りを表す琥珀系の色相。
+ * @property autoPause 自動ポーズ区間の波形を表す茶色系の色相。
  * @property primaryChroma `primary` の彩度。無彩色に近い `primary`（調和を行わない）の判定に使う。
  */
 internal data class ChunkFlowHues(
@@ -24,6 +25,7 @@ internal data class ChunkFlowHues(
     val target: Double,
     val completed: Double,
     val favorite: Double,
+    val autoPause: Double,
     val primaryChroma: Double,
 ) {
     companion object {
@@ -38,6 +40,9 @@ internal data class ChunkFlowHues(
 
         /** お気に入りの基準色相（琥珀）。 */
         const val FAVORITE_HUE: Double = 45.0
+
+        /** 自動ポーズ波形の基準色相（茶色）。 */
+        const val AUTO_PAUSE_HUE: Double = 55.0
 
         /** 学習言語と `primary` の色相差の下限（度）。 */
         const val MIN_TARGET_PRIMARY_DISTANCE: Double = 30.0
@@ -62,6 +67,7 @@ internal data class ChunkFlowHues(
                     target = TARGET_HUE,
                     completed = COMPLETED_HUE,
                     favorite = FAVORITE_HUE,
+                    autoPause = AUTO_PAUSE_HUE,
                     primaryChroma = primaryChroma,
                 )
             }
@@ -76,6 +82,7 @@ internal data class ChunkFlowHues(
                 target = target,
                 completed = Blend.harmonizeHue(COMPLETED_HUE, primaryHue),
                 favorite = Blend.harmonizeHue(FAVORITE_HUE, primaryHue),
+                autoPause = Blend.harmonizeHue(AUTO_PAUSE_HUE, primaryHue),
                 primaryChroma = primaryChroma,
             )
         }

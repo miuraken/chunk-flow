@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.toArgb
  * @property onWholeFileRepeat [wholeFileRepeat] の上に置く文字の色。
  * @property transcriptCompleted 全チャンクの文字起こしが完了したことを示すバッジの背景色。緑系（[success] より深い）。
  * @property onTranscriptCompleted [transcriptCompleted] の上に置くアイコンの色。
+ * @property autoPauseWaveform 自動ポーズ区間の拡大波形バーの色。茶色系。
  */
 @Immutable
 data class ChunkFlowExtendedColors(
@@ -36,12 +37,14 @@ data class ChunkFlowExtendedColors(
     val onWholeFileRepeat: Color,
     val transcriptCompleted: Color,
     val onTranscriptCompleted: Color,
+    val autoPauseWaveform: Color,
 )
 
 /** 拡張色の各ロールのトーン（ライト / ダーク）と彩度。 */
 internal object ExtendedColorTones {
     const val ACCENT_CHROMA: Double = 48.0
     const val FAVORITE_CHROMA: Double = 80.0
+    const val AUTO_PAUSE_WAVEFORM_CHROMA: Double = 32.0
 
     const val LIGHT_FAVORITE: Double = 75.0
     const val LIGHT_ON_FAVORITE: Double = 10.0
@@ -50,6 +53,7 @@ internal object ExtendedColorTones {
     const val LIGHT_CONTAINER: Double = 90.0
     const val LIGHT_ON_CONTAINER: Double = 10.0
     const val LIGHT_TRANSCRIPT_COMPLETED: Double = 35.0
+    const val LIGHT_AUTO_PAUSE_WAVEFORM: Double = 48.0
 
     const val DARK_FAVORITE: Double = 80.0
     const val DARK_ON_FAVORITE: Double = 20.0
@@ -58,6 +62,7 @@ internal object ExtendedColorTones {
     const val DARK_CONTAINER: Double = 30.0
     const val DARK_ON_CONTAINER: Double = 90.0
     const val DARK_TRANSCRIPT_COMPLETED: Double = 80.0
+    const val DARK_AUTO_PAUSE_WAVEFORM: Double = 72.0
 }
 
 /**
@@ -81,6 +86,7 @@ internal fun extendedColorsFor(hues: ChunkFlowHues, darkTheme: Boolean): ChunkFl
             onWholeFileRepeat = hctColor(hues.base, ACCENT_CHROMA, DARK_ON_ACCENT),
             transcriptCompleted = hctColor(hues.completed, ACCENT_CHROMA, DARK_TRANSCRIPT_COMPLETED),
             onTranscriptCompleted = hctColor(hues.completed, ACCENT_CHROMA, DARK_ON_ACCENT),
+            autoPauseWaveform = hctColor(hues.autoPause, AUTO_PAUSE_WAVEFORM_CHROMA, DARK_AUTO_PAUSE_WAVEFORM),
         )
     } else {
         ChunkFlowExtendedColors(
@@ -94,6 +100,7 @@ internal fun extendedColorsFor(hues: ChunkFlowHues, darkTheme: Boolean): ChunkFl
             onWholeFileRepeat = hctColor(hues.base, ACCENT_CHROMA, LIGHT_ON_ACCENT),
             transcriptCompleted = hctColor(hues.completed, ACCENT_CHROMA, LIGHT_TRANSCRIPT_COMPLETED),
             onTranscriptCompleted = hctColor(hues.completed, ACCENT_CHROMA, LIGHT_ON_ACCENT),
+            autoPauseWaveform = hctColor(hues.autoPause, AUTO_PAUSE_WAVEFORM_CHROMA, LIGHT_AUTO_PAUSE_WAVEFORM),
         )
     }
 }
