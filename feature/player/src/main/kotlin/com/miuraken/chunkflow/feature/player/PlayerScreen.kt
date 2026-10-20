@@ -922,6 +922,16 @@ private fun PlayerWaveform(
         onSeekBack = { onEvent(PlayerEvent.SeekBack) },
         lookaheadStatus = state.lookaheadStatus,
         isTranscriptionRunning = state.isTranscriptionRunning,
+        baseChunks = state.baseWaveformChunks,
+        isOverviewWaveformRenderComplete = state.isOverviewWaveformRenderComplete,
+        isZoomedWaveformRenderComplete = state.isZoomedWaveformRenderComplete,
+        renderGeneration = state.waveformRenderGeneration,
+        onOverviewWaveformRenderComplete = {
+            onEvent(PlayerEvent.MarkOverviewWaveformRenderComplete)
+        },
+        onZoomedWaveformRenderComplete = {
+            onEvent(PlayerEvent.MarkZoomedWaveformRenderComplete)
+        },
         modifier = modifier,
     )
 }

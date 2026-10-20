@@ -84,4 +84,16 @@ class ZoomedWaveformRenderTest {
         val barSkippedSpread = maxOf(barSkipped.red, barSkipped.green, barSkipped.blue) - minOf(barSkipped.red, barSkipped.green, barSkipped.blue)
         assertTrue(barSkippedSpread < barOriginalSpread)
     }
+
+    @Test
+    fun `computeProgressiveRevealCutoffMs_左から右へ0から1の割合で境界時刻を計算する`() {
+        assertEquals(0L, computeProgressiveRevealCutoffMs(startMs = 0L, endMs = 10_000L, revealFraction = 0f))
+        assertEquals(2_500L, computeProgressiveRevealCutoffMs(startMs = 0L, endMs = 10_000L, revealFraction = 0.25f))
+        assertEquals(5_000L, computeProgressiveRevealCutoffMs(startMs = 0L, endMs = 10_000L, revealFraction = 0.5f))
+        assertEquals(10_000L, computeProgressiveRevealCutoffMs(startMs = 0L, endMs = 10_000L, revealFraction = 1f))
+        // 拡大波形の表示窓のように負の開始時刻を含む範囲でも線形補間される
+        assertEquals(-5_000L, computeProgressiveRevealCutoffMs(startMs = -5_000L, endMs = 25_000L, revealFraction = 0f))
+        assertEquals(10_000L, computeProgressiveRevealCutoffMs(startMs = -5_000L, endMs = 25_000L, revealFraction = 0.5f))
+        assertEquals(25_000L, computeProgressiveRevealCutoffMs(startMs = -5_000L, endMs = 25_000L, revealFraction = 1f))
+    }
 }

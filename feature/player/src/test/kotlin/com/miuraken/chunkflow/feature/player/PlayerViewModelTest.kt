@@ -2790,4 +2790,73 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.ClearWaveformRangeToCenter)
         assertTrue(viewModel.uiState.value.autoFollowResetToken > lastToken)
     }
+
+    @Test
+    fun `波形レンダリング完成フラグと再表示更新_バックグラウンド文字起こし中に再生画面へ入ると文字起こしが維持され未完成の波形が再更新される`() = runTest(testDispatcher) {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample)
+            // 初回は文字起こし未完了（全チャンク言語・テキスト未取得）とする
+            update(item.id) { entry ->
+                entry.copy(transcripts = emptyMap())
+            }
+        }
+        val itemSttOverrideRepository = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(libraryRepo, analysisRepo, playback, settingsRepo, itemSttOverrideRepository)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. 初回オープン時は全体波形・拡大波形ともにレンダリング未完成 (false)
+        viewModel.open(item.id)
+        val gen1 = viewModel.uiState.value.waveformRenderGeneration
+        assertFalse(viewModel.uiState.value.isOverviewWaveformRenderComplete)
+        assertFalse(viewModel.uiState.value.isZoomedWaveformRenderComplete)
+        assertFalse(viewModel.uiState.value.isWaveformRenderComplete)
+
+        // 全体波形・拡大波形のレンダリング完了通知で完成フラグが true になる
+        viewModel.onEvent(PlayerEvent.MarkOverviewWaveformRenderComplete)
+        assertTrue(viewModel.uiState.value.isOverviewWaveformRenderComplete)
+        assertFalse(viewModel.uiState.value.isZoomedWaveformRenderComplete)
+        assertFalse(viewModel.uiState.value.isWaveformRenderComplete)
+
+        viewModel.onEvent(PlayerEvent.MarkZoomedWaveformRenderComplete)
+        assertTrue(viewModel.uiState.value.isOverviewWaveformRenderComplete)
+        assertTrue(viewModel.uiState.value.isZoomedWaveformRenderComplete)
+        assertTrue(viewModel.uiState.value.isWaveformRenderComplete)
+
+        // 2. プレイヤー画面を閉じてバックグラウンド文字起こしが進行・更新された状態を作る
+        viewModel.close(item.id)
+        analysisRepo.update(item.id) { entry ->
+            entry.copy(
+                transcripts = sample.transcripts,
+                lookaheadStatus = LookaheadTranscriptionStatus(
+                    enabled = true,
+                    backgroundEnabled = true,
+                    engineAvailable = true,
+                    completedCount = sample.chunks.size,
+                    totalTargetCount = sample.chunks.size,
+                ),
+            )
+        }
+
+        // 3. 再び再生画面に入ると、バックグラウンド文字起こしの enabled が解除されずに維持され、
+        //    前回の未文字起こし波形 (baseWaveformChunks) を保持したまま完成フラグが false になり世代番号が更新される
+        viewModel.open(item.id)
+        val reenteredState = viewModel.uiState.value
+        assertTrue(reenteredState.lookaheadStatus.enabled)
+        assertFalse(reenteredState.isOverviewWaveformRenderComplete)
+        assertFalse(reenteredState.isZoomedWaveformRenderComplete)
+        assertFalse(reenteredState.isWaveformRenderComplete)
+        assertTrue(reenteredState.waveformRenderGeneration > gen1)
+        assertTrue(reenteredState.baseWaveformChunks.all { it.text == null && it.language == null })
+        assertTrue(reenteredState.chunks.all { !it.text.isNullOrBlank() && it.language != null })
+
+        // 4. 左から右への漸次更新が完了すると完成フラグが再び true になる
+        viewModel.onEvent(PlayerEvent.MarkOverviewWaveformRenderComplete)
+        viewModel.onEvent(PlayerEvent.MarkZoomedWaveformRenderComplete)
+        assertTrue(viewModel.uiState.value.isWaveformRenderComplete)
+    }
 }

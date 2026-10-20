@@ -738,7 +738,15 @@ data class PlayerUiState(
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLanguageFilterFallbackHighlighted: Boolean = false,
     val autoFollowResetToken: Long = 0L,
+    val isOverviewWaveformRenderComplete: Boolean = false,
+    val isZoomedWaveformRenderComplete: Boolean = false,
+    val baseWaveformChunks: List<ChunkUi> = emptyList(),
+    val waveformRenderGeneration: Long = 0L,
 ) {
+    /** 全体波形・拡大波形の両方のレンダリングが完成しているかどうか。 */
+    val isWaveformRenderComplete: Boolean
+        get() = isOverviewWaveformRenderComplete && isZoomedWaveformRenderComplete
+
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
         get() = chunks.any { !it.text.isNullOrBlank() }
@@ -1179,6 +1187,12 @@ sealed interface PlayerEvent {
 
     /** 同じフォルダ（コース）内の次の教材ファイルを開いて再生する。 */
     data object OpenNextMediaItem : PlayerEvent
+
+    /** 全体波形のプログレッシブ更新レンダリングが完了したことを記録する。 */
+    data object MarkOverviewWaveformRenderComplete : PlayerEvent
+
+    /** 拡大波形のプログレッシブ更新レンダリングが完了したことを記録する。 */
+    data object MarkZoomedWaveformRenderComplete : PlayerEvent
 }
 
 /** 端末内音声認識モデルの問題が残っている間、ダウンロードの完了を OS に問い合わせる間隔。 */
@@ -1189,6 +1203,21 @@ internal const val LANGUAGE_TOGGLE_COMMIT_DELAY_MS: Long = 1_000L
 
 /** 「☑ のみ」からすべてのチェックが外れて「両方」へ自動復帰したときに言語フィルタバッジを強調表示する時間（ミリ秒）。 */
 internal const val LANGUAGE_FILTER_FALLBACK_HIGHLIGHT_MS: Long = 3_000L
+
+internal data class ChunkVisualKey(
+    val id: ChunkId,
+    val startMs: Long,
+    val endMs: Long,
+    val language: String?,
+    val isSkipped: Boolean,
+    val isTranscribed: Boolean,
+)
+
+internal data class WaveformRenderSignature(
+    val binCount: Int,
+    val durationMs: Long,
+    val chunkKeys: List<ChunkVisualKey>,
+)
 
 private data class AnalysisSnapshot(
     val status: Map<AnalysisStage, StageStatus> = emptyMap(),
@@ -1224,6 +1253,10 @@ private data class LocalUiSnapshot(
     val isLookaheadEnabled: Boolean = false,
     val isLanguageFilterFallbackHighlighted: Boolean = false,
     val autoFollowResetToken: Long = 0L,
+    val completedOverviewSignature: WaveformRenderSignature? = null,
+    val completedZoomedSignature: WaveformRenderSignature? = null,
+    val baseWaveformChunks: List<ChunkUi> = emptyList(),
+    val waveformRenderGeneration: Long = 0L,
 )
 
 /**
@@ -1260,6 +1293,10 @@ class PlayerViewModel @Inject constructor(
     private val perMediaLookaheadEnabled = MutableStateFlow<Map<MediaId, Boolean>>(emptyMap())
     private val prioritizedMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private var lastOpenedMediaId: MediaId? = null
+    private val completedOverviewSignaturesByMedia = mutableMapOf<MediaId, WaveformRenderSignature>()
+    private val completedZoomedSignaturesByMedia = mutableMapOf<MediaId, WaveformRenderSignature>()
+    private val lastRenderedChunksByMedia = mutableMapOf<MediaId, List<ChunkUi>>()
+    private var nextWaveformRenderGeneration: Long = 1L
 
     /** 言語バッジのトグル後、文字起こしのやり直しを待っているチャンクごとのジョブ（最後のトグルから 1 秒後に実行）。 */
     private val pendingLanguageCommitJobs = mutableMapOf<ChunkId, Job>()
@@ -1389,19 +1426,27 @@ class PlayerViewModel @Inject constructor(
     )
 
     init {
-        // ファイル単位の「文字起こし」トグル（既定は OFF）と開いている教材・チャンク読み込みを同期する
+        // ファイル単位の「文字起こし」トグル（既定は OFF、ただしバックグラウンド文字起こし等で既に有効な場合は引き継ぐ）と開いている教材・チャンク読み込みを同期する
         viewModelScope.launch {
             combine(
                 currentMediaId,
                 perMediaLookaheadEnabled,
                 currentAnalysisSnapshot
-                    .map { it.chunks.firstOrNull()?.id }
+                    .map { (it.chunks.firstOrNull()?.id) to it.lookaheadStatus.enabled }
                     .distinctUntilChanged(),
-            ) { mediaId, enabledMap, firstChunkId ->
-                val enabled = if (mediaId != null) enabledMap[mediaId] ?: false else false
-                Triple(mediaId, enabled, if (enabled) firstChunkId else null)
-            }.distinctUntilChanged().collect { (mediaId, enabled, _) ->
-                if (mediaId != null) {
+            ) { mediaId, enabledMap, (firstChunkId, repoEnabled) ->
+                val explicit = if (mediaId != null) enabledMap[mediaId] else null
+                val enabled = explicit ?: repoEnabled
+                val shouldSync = explicit != null || repoEnabled
+                Quad(mediaId, shouldSync, enabled, if (enabled) firstChunkId else null)
+            }.distinctUntilChanged().collect { (mediaId, shouldSync, enabled, _) ->
+                if (mediaId != null && shouldSync) {
+                    if (enabled && perMediaLookaheadEnabled.value[mediaId] != true) {
+                        perMediaLookaheadEnabled.update { it + (mediaId to true) }
+                        if (lastOpenedMediaId == mediaId) {
+                            localUiState.update { it.copy(isLookaheadEnabled = true) }
+                        }
+                    }
                     syncLookaheadState(mediaId, enabled)
                 }
             }
@@ -1598,14 +1643,59 @@ class PlayerViewModel @Inject constructor(
     fun open(mediaId: MediaId, initialChunkId: ChunkId? = null) {
         val previousId = lastOpenedMediaId
         if (previousId != null && previousId != mediaId) {
+            val prevState = uiState.value
+            if (prevState.mediaId == previousId && prevState.chunks.isNotEmpty()) {
+                if (prevState.isWaveformRenderComplete || !lastRenderedChunksByMedia.containsKey(previousId)) {
+                    lastRenderedChunksByMedia[previousId] = prevState.chunks
+                }
+                if (!prevState.isWaveformRenderComplete) {
+                    completedOverviewSignaturesByMedia.remove(previousId)
+                    completedZoomedSignaturesByMedia.remove(previousId)
+                }
+            }
             analysisRepository.setMediaTranscriptionSessionOpen(previousId, false)
         }
         analysisRepository.setMediaTranscriptionSessionOpen(mediaId, true)
         currentMediaId.value = mediaId
         if (previousId == mediaId && initialChunkId == null) {
-            if (lookaheadLoopJob == null) {
-                val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
-                syncLookaheadState(mediaId, enabled)
+            val currentState = uiState.value
+            val currentSig = computeWaveformRenderSignature(currentState.waveform, currentState.chunks)
+            val savedOverviewSig = completedOverviewSignaturesByMedia[mediaId]
+            val savedZoomedSig = completedZoomedSignaturesByMedia[mediaId]
+            if (
+                !currentState.isWaveformRenderComplete ||
+                savedOverviewSig == null ||
+                savedZoomedSig == null ||
+                savedOverviewSig != currentSig ||
+                savedZoomedSig != currentSig
+            ) {
+                val nextGen = nextWaveformRenderGeneration++
+                localUiState.update { state ->
+                    state.copy(
+                        completedOverviewSignature = savedOverviewSig,
+                        completedZoomedSignature = savedZoomedSig,
+                        baseWaveformChunks = lastRenderedChunksByMedia[mediaId].orEmpty(),
+                        waveformRenderGeneration = nextGen,
+                    )
+                }
+            }
+            if (lookaheadLoopJob?.isActive != true) {
+                val explicit = perMediaLookaheadEnabled.value[mediaId]
+                val enabled = explicit ?: currentState.lookaheadStatus.enabled
+                if (explicit != null || enabled) {
+                    if (enabled && explicit != true) {
+                        perMediaLookaheadEnabled.update { it + (mediaId to true) }
+                        localUiState.update { it.copy(isLookaheadEnabled = true) }
+                    }
+                    syncLookaheadState(mediaId, enabled)
+                }
+            }
+            viewModelScope.launch {
+                try {
+                    analysisRepository.prioritizeOpenedMediaAnalysis(mediaId)
+                } finally {
+                    prioritizedMediaIds.update { it + mediaId }
+                }
             }
             return
         }
@@ -1625,9 +1715,18 @@ class PlayerViewModel @Inject constructor(
         languageFilterHighlightJob?.cancel()
         languageFilterHighlightJob = null
         prioritizedMediaIds.update { it - mediaId }
-        val enabled = perMediaLookaheadEnabled.value[mediaId] ?: false
-        localUiState.value = LocalUiSnapshot(isLookaheadEnabled = enabled)
-        syncLookaheadState(mediaId, enabled)
+        val explicitEnabled = perMediaLookaheadEnabled.value[mediaId]
+        val nextGen = nextWaveformRenderGeneration++
+        localUiState.value = LocalUiSnapshot(
+            isLookaheadEnabled = explicitEnabled ?: false,
+            completedOverviewSignature = completedOverviewSignaturesByMedia[mediaId],
+            completedZoomedSignature = completedZoomedSignaturesByMedia[mediaId],
+            baseWaveformChunks = lastRenderedChunksByMedia[mediaId].orEmpty(),
+            waveformRenderGeneration = nextGen,
+        )
+        if (explicitEnabled != null) {
+            syncLookaheadState(mediaId, explicitEnabled)
+        }
         viewModelScope.launch {
             val savedState = libraryRepository.observeItemState(mediaId).firstOrNull()
             val initialSpeed = savedState?.speed ?: 1.0f
@@ -1689,6 +1788,16 @@ class PlayerViewModel @Inject constructor(
      */
     fun close(mediaId: MediaId? = currentMediaId.value) {
         val targetId = mediaId ?: lastOpenedMediaId ?: currentMediaId.value
+        val currentState = uiState.value
+        if (targetId != null && currentState.mediaId == targetId && currentState.chunks.isNotEmpty()) {
+            if (currentState.isWaveformRenderComplete || !lastRenderedChunksByMedia.containsKey(targetId)) {
+                lastRenderedChunksByMedia[targetId] = currentState.chunks
+            }
+            if (!currentState.isWaveformRenderComplete) {
+                completedOverviewSignaturesByMedia.remove(targetId)
+                completedZoomedSignaturesByMedia.remove(targetId)
+            }
+        }
         lookaheadLoopJob?.cancel()
         lookaheadLoopJob = null
         stopTranslationLoop()
@@ -3140,6 +3249,40 @@ class PlayerViewModel @Inject constructor(
                 open(nextId)
             }
 
+            PlayerEvent.MarkOverviewWaveformRenderComplete -> {
+                val state = uiState.value
+                val id = state.mediaId ?: currentMediaId.value ?: return
+                val sig = computeWaveformRenderSignature(state.waveform, state.chunks) ?: return
+                completedOverviewSignaturesByMedia[id] = sig
+                if (completedZoomedSignaturesByMedia[id] == sig && state.chunks.isNotEmpty()) {
+                    lastRenderedChunksByMedia[id] = state.chunks
+                }
+                localUiState.update { current ->
+                    val bothDone = current.completedZoomedSignature == sig
+                    current.copy(
+                        completedOverviewSignature = sig,
+                        baseWaveformChunks = if (bothDone) state.chunks else current.baseWaveformChunks,
+                    )
+                }
+            }
+
+            PlayerEvent.MarkZoomedWaveformRenderComplete -> {
+                val state = uiState.value
+                val id = state.mediaId ?: currentMediaId.value ?: return
+                val sig = computeWaveformRenderSignature(state.waveform, state.chunks) ?: return
+                completedZoomedSignaturesByMedia[id] = sig
+                if (completedOverviewSignaturesByMedia[id] == sig && state.chunks.isNotEmpty()) {
+                    lastRenderedChunksByMedia[id] = state.chunks
+                }
+                localUiState.update { current ->
+                    val bothDone = current.completedOverviewSignature == sig
+                    current.copy(
+                        completedZoomedSignature = sig,
+                        baseWaveformChunks = if (bothDone) state.chunks else current.baseWaveformChunks,
+                    )
+                }
+            }
+
             PlayerEvent.Back -> close()
         }
     }
@@ -3851,8 +3994,13 @@ class PlayerViewModel @Inject constructor(
             ?: ChunkOrigin.AUTO
         val effectiveQueuedIds = (analysis.lookaheadStatus.queuedChunkIds + local.clearingChunkIds) -
             setOfNotNull(analysis.lookaheadStatus.inFlightChunkId)
+        val effectiveLookaheadEnabled = if (mediaId != null && perMediaLookaheadEnabled.value.containsKey(mediaId)) {
+            local.isLookaheadEnabled && analysis.lookaheadStatus.enabled
+        } else {
+            analysis.lookaheadStatus.enabled
+        }
         val effectiveLookaheadStatus = analysis.lookaheadStatus.copy(
-            enabled = local.isLookaheadEnabled && analysis.lookaheadStatus.enabled,
+            enabled = effectiveLookaheadEnabled,
             queuedChunkIds = effectiveQueuedIds,
             skippedEmptyChunkIds = analysis.lookaheadStatus.skippedEmptyChunkIds - local.manuallyClearedChunkIds,
             recognitionModelIssues = analysis.lookaheadStatus.recognitionModelIssues.filterKeys { language ->
@@ -3876,8 +4024,32 @@ class PlayerViewModel @Inject constructor(
             local.customSegmentationParams ?: persistedCustomSeg ?: settings.defaultSegmentationParams
         }
 
+        val resolvedMediaId = mediaId ?: status.mediaId ?: item?.id
+        val currentWaveformSignature = computeWaveformRenderSignature(analysis.waveform, chunkUis)
+        val isWaveformBuilding = analysis.status[AnalysisStage.FEATURES] is StageStatus.Running ||
+            analysis.status[AnalysisStage.SEGMENTATION] is StageStatus.Running ||
+            effectiveLookaheadStatus.isLanguageDetectionRunning
+        val isOverviewWaveformRenderComplete = currentWaveformSignature != null &&
+            !isWaveformBuilding &&
+            local.completedOverviewSignature == currentWaveformSignature
+        val isZoomedWaveformRenderComplete = currentWaveformSignature != null &&
+            !isWaveformBuilding &&
+            local.completedZoomedSignature == currentWaveformSignature
+        val candidateBaseChunks = local.baseWaveformChunks.ifEmpty {
+            resolvedMediaId?.let { lastRenderedChunksByMedia[it] }.orEmpty()
+        }
+        val candidateBaseSignature = computeWaveformRenderSignature(analysis.waveform, candidateBaseChunks)
+        val resolvedBaseWaveformChunks = if (
+            candidateBaseChunks.isNotEmpty() &&
+            candidateBaseSignature != currentWaveformSignature
+        ) {
+            candidateBaseChunks
+        } else {
+            chunkUis.map { it.copy(language = null, text = null) }
+        }
+
         return PlayerUiState(
-            mediaId = mediaId ?: status.mediaId ?: item?.id,
+            mediaId = resolvedMediaId,
             title = item?.title.orEmpty(),
             course = item?.course,
             languagePair = item?.languagePair,
@@ -3925,6 +4097,31 @@ class PlayerViewModel @Inject constructor(
             backgroundSpeechRecognizerWarning = local.backgroundSpeechRecognizerWarning,
             isLanguageFilterFallbackHighlighted = local.isLanguageFilterFallbackHighlighted,
             autoFollowResetToken = local.autoFollowResetToken,
+            isOverviewWaveformRenderComplete = isOverviewWaveformRenderComplete,
+            isZoomedWaveformRenderComplete = isZoomedWaveformRenderComplete,
+            baseWaveformChunks = resolvedBaseWaveformChunks,
+            waveformRenderGeneration = local.waveformRenderGeneration,
+        )
+    }
+
+    private fun computeWaveformRenderSignature(
+        waveform: Waveform?,
+        chunks: List<ChunkUi>,
+    ): WaveformRenderSignature? {
+        if (waveform == null || chunks.isEmpty()) return null
+        return WaveformRenderSignature(
+            binCount = waveform.peak.size,
+            durationMs = waveform.durationMs,
+            chunkKeys = chunks.map { chunk ->
+                ChunkVisualKey(
+                    id = chunk.id,
+                    startMs = chunk.startMs,
+                    endMs = chunk.endMs,
+                    language = chunk.language?.value?.trim()?.lowercase(Locale.ROOT),
+                    isSkipped = chunk.isSkipped,
+                    isTranscribed = !chunk.text.isNullOrBlank(),
+                )
+            },
         )
     }
 

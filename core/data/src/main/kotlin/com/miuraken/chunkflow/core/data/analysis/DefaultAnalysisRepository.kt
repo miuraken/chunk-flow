@@ -343,7 +343,11 @@ class DefaultAnalysisRepository(
 
     override fun observeWaveform(id: MediaId): Flow<Waveform?> {
         val statusTrigger = analysisStateDao.observeByMediaId(id.value)
-            .map { list -> list.firstOrNull { it.stage == AnalysisStage.FEATURES.name }?.status }
+            .map { list ->
+                list.firstOrNull { it.stage == AnalysisStage.FEATURES.name }?.let {
+                    Triple(it.status, it.progress, it.updatedAt)
+                }
+            }
             .distinctUntilChanged()
         val manualTrigger = waveformRefreshEvents
             .filter { it == id }
@@ -547,6 +551,45 @@ class DefaultAnalysisRepository(
                 .mapNotNull { it.toStageAndStatus() }
                 .toMap()
             if (requestedStages.all { existingByStage[it] is StageStatus.Done }) {
+                activePipelinedLidJobs.remove(mediaId)?.complete(Unit)
+                notifyWaveformUpdated(mediaId)
+                val item = mediaItemForSource ?: mediaItemDao.getById(mediaId.value)
+                var launchedLid = false
+                if (
+                    AnalysisStage.SEGMENTATION in requestedStages &&
+                    item != null &&
+                    item.targetLang.isNotBlank() &&
+                    !item.baseLang.isNullOrBlank() &&
+                    !item.targetLang.equals(item.baseLang, ignoreCase = true) &&
+                    onDeviceChunkTranscriber !== NoOpOnDeviceChunkTranscriber
+                ) {
+                    val allChunks = chunkDao.getByMediaIdAndOrigin(mediaId.value, ChunkOrigin.AUTO.name)
+                    if (allChunks.isNotEmpty()) {
+                        val transcriptsByChunkId = transcriptDao.getByChunkIds(allChunks.map { it.id }).associateBy { it.chunkId }
+                        val hasMissingLid = allChunks.any { chunk ->
+                            val existing = transcriptsByChunkId[chunk.id]
+                            existing == null ||
+                                (
+                                    existing.text.isBlank() &&
+                                        (existing.language.isNullOrBlank() || existing.language.equals("und", ignoreCase = true)) &&
+                                        !(existing.userEdited && existing.language == null)
+                                    )
+                        }
+                        if (hasMissingLid) {
+                            launchedLid = true
+                            startLanguageDetectionInternal(mediaId, onlyMissingLanguage = true)
+                        }
+                    }
+                }
+                val resumeStartIndex = resumeLookaheadStartIndexOrNull(mediaId)
+                if (
+                    !launchedLid &&
+                    resumeStartIndex != null &&
+                    lookaheadStateFor(mediaId).value.enabled &&
+                    canContinueTranscriptionForMedia(mediaId)
+                ) {
+                    triggerLookaheadAt(mediaId, resumeStartIndex)
+                }
                 return
             }
         }
@@ -1102,20 +1145,19 @@ class DefaultAnalysisRepository(
                                 ConcurrentHashMap.newKeySet()
                             }.addAll(evaluatedAutoIds)
 
+                            val resumeStartIndex = resumeLookaheadStartIndexOrNull(mediaId)
                             if (missingLidChunkIds.isNotEmpty()) {
                                 startLanguageDetectionInternal(mediaId, onlyMissingLanguage = true)
-                            }
-
-                            val resumeStartIndex = latestLookaheadChunkIndex[mediaId]
-                            if (
+                            } else if (
                                 resumeStartIndex != null &&
                                 stateFlow.value.enabled &&
                                 canContinueTranscriptionForMedia(mediaId)
                             ) {
-                                triggerLookaheadAt(mediaId, resumeStartIndex.coerceAtLeast(0))
+                                triggerLookaheadAt(mediaId, resumeStartIndex)
                             }
                         } else {
                             activePipelinedLidJobs.remove(mediaId)?.complete(Unit)
+                            val resumeStartIndex = resumeLookaheadStartIndexOrNull(mediaId)
                             if (
                                 mediaItem != null &&
                                 mediaItem.targetLang.isNotBlank() &&
@@ -1124,6 +1166,12 @@ class DefaultAnalysisRepository(
                                 onDeviceChunkTranscriber !== NoOpOnDeviceChunkTranscriber
                             ) {
                                 startLanguageDetectionInternal(mediaId, onlyMissingLanguage = false)
+                            } else if (
+                                resumeStartIndex != null &&
+                                stateFlow.value.enabled &&
+                                canContinueTranscriptionForMedia(mediaId)
+                            ) {
+                                triggerLookaheadAt(mediaId, resumeStartIndex)
                             }
                         }
                     } else {
@@ -1424,9 +1472,9 @@ class DefaultAnalysisRepository(
             }
 
             // 第1段階（一括言語判定）の完了後、先読み文字起こしセッションが進行中であれば第2段階（文字起こし）へ自動移行する
-            val resumeStartIndex = latestLookaheadChunkIndex[id]
+            val resumeStartIndex = resumeLookaheadStartIndexOrNull(id)
             if (resumeStartIndex != null && stateFlow.value.enabled && canContinueTranscriptionForMedia(id)) {
-                triggerLookaheadAt(id, resumeStartIndex.coerceAtLeast(0))
+                triggerLookaheadAt(id, resumeStartIndex)
             }
         }
         activeLanguageDetectionJobs[id] = job
@@ -2051,6 +2099,7 @@ class DefaultAnalysisRepository(
             activeOpenMediaIds.clear()
             activeOpenMediaIds.add(id)
             pipelineGate.setMediaOpen(id, true)
+            notifyWaveformUpdated(id)
             for (otherId in previouslyOpen) {
                 if (otherId != id) {
                     pipelineGate.setMediaOpen(otherId, false)
@@ -2086,6 +2135,7 @@ class DefaultAnalysisRepository(
 
     override suspend fun prioritizeOpenedMediaAnalysis(id: MediaId) {
         withContext(ioDispatcher) {
+            notifyWaveformUpdated(id)
             val mediaItem = mediaItemDao.getById(id.value) ?: return@withContext
             val existingState = itemStateDao.getByMediaId(id.value)
             val accessedAt = maxOf(clock(), mediaItem.importedAt + 1L)
@@ -2203,6 +2253,9 @@ class DefaultAnalysisRepository(
         return featuresActiveOrDone && segActiveOrDone
     }
 
+    private fun resumeLookaheadStartIndexOrNull(id: MediaId): Int? = latestLookaheadChunkIndex[id]?.coerceAtLeast(0)
+        ?: if (id in backgroundTranscriptionMediaIds) 0 else null
+
     override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
         if (!canContinueTranscriptionForMedia(id)) {
             lookaheadStateFor(id).update { it.copy(queuedChunkIds = emptySet()) }
@@ -2212,7 +2265,10 @@ class DefaultAnalysisRepository(
             val allChunks = chunkDao.observeByMediaId(id.value).first()
             val itemState = itemStateDao.getByMediaId(id.value)
             val activeChunks = selectActiveChunkEntities(itemState, allChunks)
-            if (activeChunks.isEmpty()) return@withContext
+            if (activeChunks.isEmpty()) {
+                latestLookaheadChunkIndex.putIfAbsent(id, 0)
+                return@withContext
+            }
             val targetIndex = if (currentChunkId == null) {
                 0
             } else {
