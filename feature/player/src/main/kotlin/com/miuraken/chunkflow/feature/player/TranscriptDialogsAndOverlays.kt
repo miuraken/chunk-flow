@@ -241,7 +241,7 @@ internal fun DetailedChunkTranscriptionDialog(
                 }
             }
 
-            // 2. 文字起こしエンジン（ML Kit, SpeechRecognizer, sherpa-onnx の順、自動なし）
+            // 2. 文字起こしエンジン（ML Kit, SpeechRecognizer, sherpa-onnx ほか、自動なし）
             Text(
                 text = stringResource(R.string.player_detailed_transcribe_engine_label),
                 style = MaterialTheme.typography.labelLarge,
@@ -251,7 +251,19 @@ internal fun DetailedChunkTranscriptionDialog(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                val coreEngines = setOf(
+                    OnDeviceTranscriptionEngine.ML_KIT,
+                    OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
+                    OnDeviceTranscriptionEngine.SHERPA_ONNX,
+                )
                 for (engine in DetailedTranscriptionDialogState.ENGINE_OPTIONS) {
+                    val status = dialogState.engineStatus(selectedLanguage, engine)
+                    val isEngineEnabled = dialogState.isEngineEnabled(selectedLanguage, engine)
+                    val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
+                    // 基本 3 エンジンは常に表示し、追加エンジンは対応言語・利用可能（または選択中）のとき表示する。
+                    if (engine !in coreEngines && !isEngineEnabled && !isDownloading && selectedEngine != engine) {
+                        continue
+                    }
                     val labelRes = when (engine) {
                         OnDeviceTranscriptionEngine.ML_KIT,
                         OnDeviceTranscriptionEngine.AUTO,
@@ -262,10 +274,31 @@ internal fun DetailedChunkTranscriptionDialog(
 
                         OnDeviceTranscriptionEngine.SHERPA_ONNX ->
                             R.string.player_detailed_transcribe_engine_sherpa
+
+                        OnDeviceTranscriptionEngine.SHERPA_ONNX_SENSE_VOICE ->
+                            R.string.player_detailed_transcribe_engine_sherpa_sense_voice
+
+                        OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_BASE ->
+                            R.string.player_detailed_transcribe_engine_sherpa_whisper_base
+
+                        OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_SMALL ->
+                            R.string.player_detailed_transcribe_engine_sherpa_whisper_small
+
+                        OnDeviceTranscriptionEngine.MOONSHINE_TINY ->
+                            R.string.player_detailed_transcribe_engine_moonshine_tiny
+
+                        OnDeviceTranscriptionEngine.MOONSHINE_BASE ->
+                            R.string.player_detailed_transcribe_engine_moonshine_base
+
+                        OnDeviceTranscriptionEngine.OPENAI_API ->
+                            R.string.player_detailed_transcribe_engine_openai_api
+
+                        OnDeviceTranscriptionEngine.GROQ_API ->
+                            R.string.player_detailed_transcribe_engine_groq_api
+
+                        OnDeviceTranscriptionEngine.GEMINI_API ->
+                            R.string.player_detailed_transcribe_engine_gemini_api
                     }
-                    val status = dialogState.engineStatus(selectedLanguage, engine)
-                    val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
-                    val isEngineEnabled = dialogState.isEngineEnabled(selectedLanguage, engine)
                     val baseLabel = stringResource(labelRes)
                     val chipLabel = when (status) {
                         OnDeviceLanguageModelStatus.INSTALLED,
@@ -413,6 +446,14 @@ internal fun DetailedChunkTranscriptionDialog(
                     "mlkit-genai-speech" -> stringResource(R.string.player_detailed_transcribe_engine_mlkit)
                     "android-on-device-speech", "android-speech-recognizer" -> stringResource(R.string.player_detailed_transcribe_engine_os)
                     "sherpa-onnx-whisper-tiny" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa)
+                    "sherpa-onnx-sense-voice-small" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa_sense_voice)
+                    "sherpa-onnx-whisper-base" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa_whisper_base)
+                    "sherpa-onnx-whisper-small" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa_whisper_small)
+                    "moonshine-onnx-tiny" -> stringResource(R.string.player_detailed_transcribe_engine_moonshine_tiny)
+                    "moonshine-onnx-base" -> stringResource(R.string.player_detailed_transcribe_engine_moonshine_base)
+                    "openai-compatible-stt" -> stringResource(R.string.player_detailed_transcribe_engine_openai_api)
+                    "groq-stt" -> stringResource(R.string.player_detailed_transcribe_engine_groq_api)
+                    "gemini-stt" -> stringResource(R.string.player_detailed_transcribe_engine_gemini_api)
                     else -> dialogState.recognizedEngineId
                 }
                 Text(

@@ -552,4 +552,85 @@ class SettingsViewModelTest {
         assertFalse(isSttEngineSelectableInSettings(eoInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
         assertFalse(isSttEngineSelectableInSettings(eoInfo, null))
     }
+
+    @Test
+    fun `モデルのダウンロードとパージおよびクラウドAPIキー設定が反映される`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val analysisRepo = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository()
+        val viewModel = SettingsViewModel(repo, analysisRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 初期状態では全 6 個のオンデバイスモデルが NOT_INSTALLED で並んでいる
+        assertEquals(
+            com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.size,
+            viewModel.uiState.value.downloadableModels.size,
+        )
+        val senseVoiceBefore = viewModel.uiState.value.downloadableModels.first {
+            it.model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL
+        }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            senseVoiceBefore.status,
+        )
+
+        // SenseVoice Small をダウンロードすると INSTALLED になり、言語別エンジンの選択肢としても有効になる
+        viewModel.onEvent(
+            SettingsEvent.DownloadSttModel(
+                com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL,
+            ),
+        )
+        assertEquals(
+            listOf(com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL),
+            analysisRepo.downloadedSttModels,
+        )
+        val senseVoiceAfterDownload = viewModel.uiState.value.downloadableModels.first {
+            it.model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL
+        }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            senseVoiceAfterDownload.status,
+        )
+
+        viewModel.onEvent(
+            SettingsEvent.SetSttEngineForLanguage(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE,
+            ),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE,
+            viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")],
+        )
+
+        // パージすると NOT_INSTALLED に戻り、選択していた言語設定も自動 (null) にリセットされる
+        viewModel.onEvent(
+            SettingsEvent.PurgeSttModel(
+                com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL,
+            ),
+        )
+        assertEquals(
+            listOf(com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL),
+            analysisRepo.purgedSttModels,
+        )
+        val senseVoiceAfterPurge = viewModel.uiState.value.downloadableModels.first {
+            it.model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL
+        }
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            senseVoiceAfterPurge.status,
+        )
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
+
+        // OpenAI / Groq / Gemini API キーを設定できる
+        viewModel.onEvent(SettingsEvent.SetOpenAiApiKey("sk-openai-test"))
+        viewModel.onEvent(SettingsEvent.SetGroqApiKey("gsk-groq-test"))
+        viewModel.onEvent(SettingsEvent.SetGeminiApiKey("AIza-gemini-test"))
+
+        assertEquals("sk-openai-test", viewModel.uiState.value.openAiApiKey)
+        assertEquals("gsk-groq-test", viewModel.uiState.value.groqApiKey)
+        assertEquals("AIza-gemini-test", viewModel.uiState.value.geminiApiKey)
+        assertEquals("sk-openai-test", repo.state.value.openAiApiKey)
+        assertEquals("gsk-groq-test", repo.state.value.groqApiKey)
+        assertEquals("AIza-gemini-test", repo.state.value.geminiApiKey)
+    }
 }

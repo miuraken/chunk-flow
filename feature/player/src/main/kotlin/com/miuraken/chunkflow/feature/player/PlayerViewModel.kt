@@ -546,6 +546,8 @@ data class DetailedTranscriptionDialogState(
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> info.status
 
             OnDeviceTranscriptionEngine.SHERPA_ONNX -> info.sherpaModelStatus
+
+            else -> info.statusOf(toSttEngine(targetEngine))
         }
     }
 
@@ -554,13 +556,17 @@ data class DetailedTranscriptionDialogState(
      *
      * いずれのエンジンも、端末・言語で対応が確認されている（[OnDeviceLanguageModelStatus.UNSUPPORTED] でも
      * [OnDeviceLanguageModelStatus.CHECKING] でもない）ときだけ有効にする。
-     * 未ダウンロードのエンジンを選択した場合は、ダイアログ内の警告カードからモデルをダウンロードできる。
+     * クラウド API は API キーが設定済み（[OnDeviceLanguageModelStatus.INSTALLED]）のときだけ有効にする。
      */
     fun isEngineEnabled(
         language: LanguageTag?,
         targetEngine: OnDeviceTranscriptionEngine,
     ): Boolean {
         val status = engineStatus(language, targetEngine)
+        val sttEngine = toSttEngine(targetEngine)
+        if (sttEngine.isCloudApi) {
+            return status == OnDeviceLanguageModelStatus.INSTALLED
+        }
         return status != OnDeviceLanguageModelStatus.UNSUPPORTED &&
             status != OnDeviceLanguageModelStatus.CHECKING
     }
@@ -583,11 +589,19 @@ data class DetailedTranscriptionDialogState(
     }
 
     companion object {
-        /** 詳細文字起こしで選択可能なエンジンの並び順（ML Kit → SpeechRecognizer → sherpa-onnx）。 */
+        /** 詳細文字起こしで選択可能なエンジンの並び順。 */
         val ENGINE_OPTIONS: List<OnDeviceTranscriptionEngine> = listOf(
             OnDeviceTranscriptionEngine.ML_KIT,
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
             OnDeviceTranscriptionEngine.SHERPA_ONNX,
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_SENSE_VOICE,
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_BASE,
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_SMALL,
+            OnDeviceTranscriptionEngine.MOONSHINE_TINY,
+            OnDeviceTranscriptionEngine.MOONSHINE_BASE,
+            OnDeviceTranscriptionEngine.OPENAI_API,
+            OnDeviceTranscriptionEngine.GROQ_API,
+            OnDeviceTranscriptionEngine.GEMINI_API,
         )
 
         /** STT へ入力およびチャンク試聴する音声の速度倍率の選択肢。 */
@@ -602,6 +616,22 @@ data class DetailedTranscriptionDialogState(
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> SttEngine.SPEECH_RECOGNIZER
 
             OnDeviceTranscriptionEngine.SHERPA_ONNX -> SttEngine.SHERPA_ONNX
+
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_SENSE_VOICE -> SttEngine.SHERPA_ONNX_SENSE_VOICE
+
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_BASE -> SttEngine.SHERPA_ONNX_WHISPER_BASE
+
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_SMALL -> SttEngine.SHERPA_ONNX_WHISPER_SMALL
+
+            OnDeviceTranscriptionEngine.MOONSHINE_TINY -> SttEngine.MOONSHINE_TINY
+
+            OnDeviceTranscriptionEngine.MOONSHINE_BASE -> SttEngine.MOONSHINE_BASE
+
+            OnDeviceTranscriptionEngine.OPENAI_API -> SttEngine.OPENAI_API
+
+            OnDeviceTranscriptionEngine.GROQ_API -> SttEngine.GROQ_API
+
+            OnDeviceTranscriptionEngine.GEMINI_API -> SttEngine.GEMINI_API
         }
 
         internal fun enrichWithCatalog(
@@ -663,11 +693,20 @@ internal fun OnDeviceLanguageModelInfo.effectiveEngine(
                     preferredStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
                     preferredStatus == OnDeviceLanguageModelStatus.DOWNLOADING
 
-            SttEngine.SHERPA_ONNX ->
-                preferredStatus == OnDeviceLanguageModelStatus.INSTALLED
-
             SttEngine.SPEECH_RECOGNIZER ->
                 preferredStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
+
+            SttEngine.SHERPA_ONNX,
+            SttEngine.SHERPA_ONNX_SENSE_VOICE,
+            SttEngine.SHERPA_ONNX_WHISPER_BASE,
+            SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+            SttEngine.MOONSHINE_TINY,
+            SttEngine.MOONSHINE_BASE,
+            SttEngine.OPENAI_API,
+            SttEngine.GROQ_API,
+            SttEngine.GEMINI_API,
+            ->
+                preferredStatus == OnDeviceLanguageModelStatus.INSTALLED
         }
         if (isPreferredUsable) {
             return preferred
@@ -3396,6 +3435,7 @@ class PlayerViewModel @Inject constructor(
         SttEngine.ML_KIT -> info.copy(mlKitStatus = status)
         SttEngine.SPEECH_RECOGNIZER -> info.copy(status = status)
         SttEngine.SHERPA_ONNX -> info.copy(sherpaModelStatus = status)
+        else -> info.copy(extraEngineStatuses = info.extraEngineStatuses + (engine to status))
     }
 
     private suspend fun isEngineOverrideSelectableForLanguage(
@@ -3439,6 +3479,20 @@ class PlayerViewModel @Inject constructor(
 
             SttEngine.SHERPA_ONNX ->
                 enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED
+
+            SttEngine.SHERPA_ONNX_SENSE_VOICE,
+            SttEngine.SHERPA_ONNX_WHISPER_BASE,
+            SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+            SttEngine.MOONSHINE_TINY,
+            SttEngine.MOONSHINE_BASE,
+            ->
+                enriched.statusOf(engine) != OnDeviceLanguageModelStatus.UNSUPPORTED
+
+            SttEngine.OPENAI_API,
+            SttEngine.GROQ_API,
+            SttEngine.GEMINI_API,
+            ->
+                enriched.statusOf(engine) == OnDeviceLanguageModelStatus.INSTALLED
         }
     }
 

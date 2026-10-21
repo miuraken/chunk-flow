@@ -78,4 +78,13 @@ interface UserSettingsRepository {
 
     /** 初回起動時の言語選択ダイアログの表示・確認が完了したことを記録する。 */
     suspend fun completeLanguageOnboarding() = Unit
+
+    /** OpenAI Audio Transcriptions API 用の API キーを更新する（空文字でクリア）。 */
+    suspend fun setOpenAiApiKey(apiKey: String) = Unit
+
+    /** Groq Audio Transcriptions API（OpenAI 互換）用の API キーを更新する（空文字でクリア）。 */
+    suspend fun setGroqApiKey(apiKey: String) = Unit
+
+    /** Google Gemini API 用の API キーを更新する（空文字でクリア）。 */
+    suspend fun setGeminiApiKey(apiKey: String) = Unit
 }

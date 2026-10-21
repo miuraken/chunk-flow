@@ -1999,6 +1999,36 @@ class DefaultAnalysisRepository(
         }
     }
 
+    override suspend fun queryDownloadableModelStates(): List<com.miuraken.chunkflow.core.model.DownloadableSttModelState> = try {
+        onDeviceChunkTranscriber.queryDownloadableModelStates()
+    } catch (ce: CancellationException) {
+        throw ce
+    } catch (_: Exception) {
+        com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.map {
+            com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = it)
+        }
+    }
+
+    override suspend fun downloadSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean = withContext(ioDispatcher) {
+        try {
+            onDeviceChunkTranscriber.downloadSttModel(model)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override suspend fun purgeSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean = withContext(ioDispatcher) {
+        try {
+            onDeviceChunkTranscriber.purgeSttModel(model)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = try {
         onDeviceChunkTranscriber.queryLanguageModelInfos(languages)
     } catch (ce: CancellationException) {

@@ -118,4 +118,16 @@ class FakeUserSettingsRepository(
             current.copy(sttEngineByLanguage = next)
         }
     }
+
+    override suspend fun setOpenAiApiKey(apiKey: String) {
+        state.update { it.copy(openAiApiKey = apiKey.trim()) }
+    }
+
+    override suspend fun setGroqApiKey(apiKey: String) {
+        state.update { it.copy(groqApiKey = apiKey.trim()) }
+    }
+
+    override suspend fun setGeminiApiKey(apiKey: String) {
+        state.update { it.copy(geminiApiKey = apiKey.trim()) }
+    }
 }

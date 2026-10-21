@@ -137,6 +137,23 @@ interface AnalysisRepository {
     suspend fun refreshRecognitionModelIssues() = Unit
 
     /**
+     * ダウンロード可能な全ローカル音声認識モデル（[com.miuraken.chunkflow.core.model.DownloadableSttModel]）の状態一覧を返す。
+     */
+    suspend fun queryDownloadableModelStates(): List<com.miuraken.chunkflow.core.model.DownloadableSttModelState> = com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.map {
+        com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = it)
+    }
+
+    /**
+     * 指定された [model] をグローバルにダウンロード・検証する。
+     */
+    suspend fun downloadSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean = false
+
+    /**
+     * 指定された [model] のローカルファイル一式を削除（パージ）する。
+     */
+    suspend fun purgeSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean = false
+
+    /**
      * 指定された言語一覧 [languages] について、端末内音声認識モデルの利用可能状態と
      * 解決された BCP-47 ロケールタグ、および `sherpa-onnx` ローカルモデルの状態を問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
      */

@@ -195,6 +195,14 @@
     <string name="player_detailed_transcribe_engine_os">SpeechRecognizer</string>
     <string name="player_detailed_transcribe_engine_sherpa">sherpa-onnx</string>
     <string name="player_detailed_transcribe_engine_mlkit">ML Kit</string>
+    <string name="player_detailed_transcribe_engine_sherpa_sense_voice">SenseVoice Small</string>
+    <string name="player_detailed_transcribe_engine_sherpa_whisper_base">Whisper Base</string>
+    <string name="player_detailed_transcribe_engine_sherpa_whisper_small">Whisper Small</string>
+    <string name="player_detailed_transcribe_engine_moonshine_tiny">Moonshine Tiny</string>
+    <string name="player_detailed_transcribe_engine_moonshine_base">Moonshine Base</string>
+    <string name="player_detailed_transcribe_engine_openai_api">OpenAI API</string>
+    <string name="player_detailed_transcribe_engine_groq_api">Groq API</string>
+    <string name="player_detailed_transcribe_engine_gemini_api">Gemini API</string>
     <string name="player_detailed_transcribe_lang_label">Recognition language</string>
     <string name="player_detailed_transcribe_lang_target">Target (%1$s)</string>
     <string name="player_detailed_transcribe_lang_base">Base (%1$s)</string>

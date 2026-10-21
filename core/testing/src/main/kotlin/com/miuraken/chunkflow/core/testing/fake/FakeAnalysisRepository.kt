@@ -324,6 +324,20 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [requestSttModelDownload] の呼び出し履歴（呼ばれた順）。 */
     val requestedSttModelDownloads: MutableList<Pair<LanguageTag, SttEngine>> = mutableListOf()
 
+    /** [downloadSttModel] の呼び出し履歴（呼ばれた順）。 */
+    val downloadedSttModels: MutableList<com.miuraken.chunkflow.core.model.DownloadableSttModel> = mutableListOf()
+
+    /** [purgeSttModel] の呼び出し履歴（呼ばれた順）。 */
+    val purgedSttModels: MutableList<com.miuraken.chunkflow.core.model.DownloadableSttModel> = mutableListOf()
+
+    /** [queryDownloadableModelStates] が返すダウンロード可能モデルの状態マップ。 */
+    val downloadableModelStates: MutableMap<
+        com.miuraken.chunkflow.core.model.DownloadableSttModel,
+        com.miuraken.chunkflow.core.model.DownloadableSttModelState,
+        > = com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.associateWith {
+        com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = it)
+    }.toMutableMap()
+
     override suspend fun requestSttModelDownload(language: LanguageTag, engine: SttEngine): Boolean {
         requestedSttModelDownloads += language to engine
         return when (engine) {
@@ -340,14 +354,103 @@ class FakeAnalysisRepository : AnalysisRepository {
                 languageModelInfos[language] = existing.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
                 true
             }
+
+            SttEngine.SHERPA_ONNX_SENSE_VOICE,
+            SttEngine.SHERPA_ONNX_WHISPER_BASE,
+            SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+            SttEngine.MOONSHINE_TINY,
+            SttEngine.MOONSHINE_BASE,
+            -> {
+                val model = engine.downloadableModel ?: return false
+                downloadSttModel(model)
+            }
+
+            SttEngine.OPENAI_API,
+            SttEngine.GROQ_API,
+            SttEngine.GEMINI_API,
+            -> false
         }
+    }
+
+    override suspend fun queryDownloadableModelStates(): List<com.miuraken.chunkflow.core.model.DownloadableSttModelState> = com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.map { model ->
+        downloadableModelStates[model] ?: com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = model)
+    }
+
+    override suspend fun downloadSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean {
+        downloadedSttModels += model
+        downloadableModelStates[model] = com.miuraken.chunkflow.core.model.DownloadableSttModelState(
+            model = model,
+            status = OnDeviceLanguageModelStatus.INSTALLED,
+            sizeBytes = model.estimatedSizeBytes,
+            canPurge = true,
+        )
+        for ((lang, existing) in languageModelInfos.entries) {
+            if (model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY) {
+                languageModelInfos[lang] = existing.copy(
+                    sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
+                    canDeleteSherpaModel = true,
+                )
+            } else {
+                languageModelInfos[lang] = existing.copy(
+                    extraEngineStatuses = existing.extraEngineStatuses + (model.sttEngine to OnDeviceLanguageModelStatus.INSTALLED),
+                )
+            }
+        }
+        return true
+    }
+
+    override suspend fun purgeSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean {
+        purgedSttModels += model
+        downloadableModelStates[model] = com.miuraken.chunkflow.core.model.DownloadableSttModelState(
+            model = model,
+            status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            sizeBytes = model.estimatedSizeBytes,
+            canPurge = false,
+        )
+        for ((lang, existing) in languageModelInfos.entries) {
+            if (model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY) {
+                languageModelInfos[lang] = existing.copy(
+                    sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                    canDeleteSherpaModel = false,
+                )
+            } else {
+                languageModelInfos[lang] = existing.copy(
+                    extraEngineStatuses = existing.extraEngineStatuses + (model.sttEngine to OnDeviceLanguageModelStatus.NOT_INSTALLED),
+                )
+            }
+        }
+        return true
     }
 
     override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> {
         val requestedSet = languages.toSet()
         val extraLanguages = languageModelInfos.keys.filter { it !in requestedSet }
         return (languages + extraLanguages).map { lang ->
-            languageModelInfos[lang] ?: OnDeviceLanguageModelInfo(language = lang)
+            val base = languageModelInfos[lang] ?: OnDeviceLanguageModelInfo(language = lang)
+            val mergedExtras = base.extraEngineStatuses.toMutableMap()
+            var sherpaStatus = base.sherpaModelStatus
+            var canDeleteSherpa = base.canDeleteSherpaModel
+            for ((model, state) in downloadableModelStates) {
+                if (!model.isLanguageSupported(lang)) {
+                    if (model != com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY) {
+                        mergedExtras[model.sttEngine] = OnDeviceLanguageModelStatus.UNSUPPORTED
+                    }
+                    continue
+                }
+                if (model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY) {
+                    if (state.status == OnDeviceLanguageModelStatus.INSTALLED) {
+                        sherpaStatus = OnDeviceLanguageModelStatus.INSTALLED
+                        canDeleteSherpa = true
+                    }
+                } else if (!base.extraEngineStatuses.containsKey(model.sttEngine)) {
+                    mergedExtras[model.sttEngine] = state.status
+                }
+            }
+            base.copy(
+                sherpaModelStatus = sherpaStatus,
+                canDeleteSherpaModel = canDeleteSherpa,
+                extraEngineStatuses = mergedExtras,
+            )
         }
     }
 

@@ -1145,6 +1145,11 @@ object SupportedLanguageCatalog {
     }
 
     /**
+     * 言語タグ [rawTag] から主要言語サブタグ（`zh-cn`/`zh-tw` は `zh`、`yue-HK` は `yue` など）を返す。
+     */
+    fun primarySubtag(rawTag: String): String = normalizeToModelManagementCode(rawTag)
+
+    /**
      * 指定した言語コードの日本語表示名を返す（見つからない場合は `null`）。
      */
     fun japaneseDisplayName(rawCode: String): String? = findByCode(rawCode)?.japaneseName

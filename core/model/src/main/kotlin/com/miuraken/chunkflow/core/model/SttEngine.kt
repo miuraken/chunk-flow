@@ -10,9 +10,41 @@ enum class SttEngine {
     /** Android 標準の `SpeechRecognizer`（端末内の音声認識）。 */
     SPEECH_RECOGNIZER,
 
-    /** `sherpa-onnx` の Whisper モデル（ONNX Runtime で動かす。言語ごとにモデルのダウンロードが必要）。 */
+    /** `sherpa-onnx` の Whisper Tiny モデル（ONNX Runtime で動かす。99 言語対応、約 99 MB）。 */
     SHERPA_ONNX,
+
+    /** `sherpa-onnx` の SenseVoice Small モデル（ONNX Runtime で動かす。日・英・中・広東・韓の 5 言語対応、約 228 MB）。 */
+    SHERPA_ONNX_SENSE_VOICE,
+
+    /** `sherpa-onnx` の Whisper Base モデル（ONNX Runtime で動かす。99 言語対応、約 153 MB）。 */
+    SHERPA_ONNX_WHISPER_BASE,
+
+    /** `sherpa-onnx` の Whisper Small モデル（ONNX Runtime で動かす。99 言語対応、約 358 MB）。 */
+    SHERPA_ONNX_WHISPER_SMALL,
+
+    /** Moonshine ONNX Tiny モデル（ONNX Runtime で動かす。英語 `en` 専用、約 118 MB）。 */
+    MOONSHINE_TINY,
+
+    /** Moonshine ONNX Base モデル（ONNX Runtime で動かす。英語 `en` 専用、約 274 MB）。 */
+    MOONSHINE_BASE,
+
+    /** OpenAI Audio Transcriptions API（`gpt-4o-mini-transcribe` / `whisper-1`、要 API キー設定）。 */
+    OPENAI_API,
+
+    /** Groq Audio Transcriptions API（OpenAI 互換・`whisper-large-v3-turbo`、要 API キー設定）。 */
+    GROQ_API,
+
+    /** Google Gemini API 音声文字起こし（`gemini-2.5-flash`、要 API キー設定）。 */
+    GEMINI_API,
     ;
+
+    /** クラウド API キーを要するエンジンかどうか。 */
+    val isCloudApi: Boolean
+        get() = this == OPENAI_API || this == GROQ_API || this == GEMINI_API
+
+    /** 対応するダウンロード可能なローカル ONNX モデル（ない場合は `null`）。 */
+    val downloadableModel: DownloadableSttModel?
+        get() = DownloadableSttModel.fromEngineOrNull(this)
 
     companion object {
         /** 自動のときに試す順番（ADR-0011 §2.2）。sherpa-onnx はモデルがあるときだけ使う。 */
@@ -33,6 +65,125 @@ enum class SttEngine {
         fun fromNameOrNull(name: String?): SttEngine? = name?.let { raw -> entries.firstOrNull { it.name == raw } }
     }
 }
+
+/**
+ * 全体設定の「文字起こし」タブでダウンロード・削除（パージ）を管理するオンデバイス ONNX 音声認識モデル。
+ *
+ * @property sttEngine 対応する [SttEngine]。
+ * @property modelId ディレクトリ名および [EngineId] に使うモデル識別子。
+ * @property displayName UI 表示名。
+ * @property approxSizeMb 目安サイズ（MB）。
+ */
+enum class DownloadableSttModel(
+    val sttEngine: SttEngine,
+    val modelId: String,
+    val displayName: String,
+    val approxSizeMb: Int,
+) {
+    /** `sherpa-onnx` Whisper Tiny int8（99 言語対応・約 99 MB）。 */
+    SHERPA_WHISPER_TINY(
+        sttEngine = SttEngine.SHERPA_ONNX,
+        modelId = "sherpa-onnx-whisper-tiny",
+        displayName = "sherpa-onnx Whisper Tiny",
+        approxSizeMb = 99,
+    ),
+
+    /** `sherpa-onnx` SenseVoice Small int8（日・英・中・広東・韓の 5 言語対応・約 228 MB）。 */
+    SHERPA_SENSE_VOICE_SMALL(
+        sttEngine = SttEngine.SHERPA_ONNX_SENSE_VOICE,
+        modelId = "sherpa-onnx-sense-voice-small",
+        displayName = "sherpa-onnx SenseVoice Small",
+        approxSizeMb = 228,
+    ),
+
+    /** `sherpa-onnx` Whisper Base int8（99 言語対応・約 153 MB）。 */
+    SHERPA_WHISPER_BASE(
+        sttEngine = SttEngine.SHERPA_ONNX_WHISPER_BASE,
+        modelId = "sherpa-onnx-whisper-base",
+        displayName = "sherpa-onnx Whisper Base",
+        approxSizeMb = 153,
+    ),
+
+    /** `sherpa-onnx` Whisper Small int8（99 言語対応・約 358 MB）。 */
+    SHERPA_WHISPER_SMALL(
+        sttEngine = SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+        modelId = "sherpa-onnx-whisper-small",
+        displayName = "sherpa-onnx Whisper Small",
+        approxSizeMb = 358,
+    ),
+
+    /** Moonshine ONNX Tiny int8（英語 `en` 専用・約 118 MB）。 */
+    MOONSHINE_TINY(
+        sttEngine = SttEngine.MOONSHINE_TINY,
+        modelId = "sherpa-onnx-moonshine-tiny-en-int8",
+        displayName = "Moonshine ONNX Tiny",
+        approxSizeMb = 118,
+    ),
+
+    /** Moonshine ONNX Base int8（英語 `en` 専用・約 274 MB）。 */
+    MOONSHINE_BASE(
+        sttEngine = SttEngine.MOONSHINE_BASE,
+        modelId = "sherpa-onnx-moonshine-base-en-int8",
+        displayName = "Moonshine ONNX Base",
+        approxSizeMb = 274,
+    ),
+    ;
+
+    /** 目安サイズ（MB）。 */
+    val estimatedSizeMb: Int
+        get() = approxSizeMb
+
+    /** 目安サイズ（バイト）。 */
+    val estimatedSizeBytes: Long
+        get() = approxSizeMb * 1_024L * 1_024L
+
+    /** 指定した言語 [language] にこのモデルが対応しているかどうか。 */
+    fun isLanguageSupported(language: LanguageTag): Boolean {
+        val entry = SupportedLanguageCatalog.findByCode(language.value)
+        val whisperCode = entry?.whisperCode ?: language.value.trim().lowercase().substringBefore('-')
+        return when (this) {
+            SHERPA_WHISPER_TINY,
+            SHERPA_WHISPER_BASE,
+            SHERPA_WHISPER_SMALL,
+            -> entry?.whisperCode != null
+
+            SHERPA_SENSE_VOICE_SMALL -> whisperCode in SENSE_VOICE_SUPPORTED_CODES
+
+            MOONSHINE_TINY,
+            MOONSHINE_BASE,
+            -> whisperCode == "en"
+        }
+    }
+
+    /** 指定した言語 [language] にこのモデルが対応しているかどうか。 */
+    fun supportsLanguage(language: LanguageTag): Boolean = isLanguageSupported(language)
+
+    /** 指定した言語コード [languageCode] にこのモデルが対応しているかどうか。 */
+    fun supportsLanguage(languageCode: String): Boolean = isLanguageSupported(LanguageTag(languageCode))
+
+    companion object {
+        /** SenseVoice Small がサポートする言語コード（日本語・英語・中国語・広東語・韓国語）。 */
+        val SENSE_VOICE_SUPPORTED_CODES: Set<String> = setOf("ja", "en", "zh", "yue", "ko")
+
+        /** [SttEngine] に対応する [DownloadableSttModel] を返す。対応するローカル ONNX モデルがなければ `null`。 */
+        fun fromEngineOrNull(engine: SttEngine): DownloadableSttModel? = entries.firstOrNull { it.sttEngine == engine }
+    }
+}
+
+/**
+ * 全体設定の「文字起こし」タブで表示するダウンロード可能な ONNX モデル 1 件の状態。
+ *
+ * @property model 対象のモデル種別。
+ * @property status モデルのダウンロード・インストール状態（`INSTALLED` / `NOT_INSTALLED` / `DOWNLOADING` / `DOWNLOAD_FAILED`）。
+ * @property sizeBytes ディスク上の合計サイズ（バイト、目安）。
+ * @property canPurge パージ（削除）ボタンを有効にするかどうか。
+ */
+data class DownloadableSttModelState(
+    val model: DownloadableSttModel,
+    val status: OnDeviceLanguageModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+    val sizeBytes: Long = model.approxSizeMb * 1_024L * 1_024L,
+    val canPurge: Boolean = status == OnDeviceLanguageModelStatus.INSTALLED,
+)
 
 /**
  * ファイル（教材）ごとの文字起こしエンジンの上書き（ADR-0011 §2.3）。

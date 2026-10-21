@@ -60,6 +60,8 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -76,6 +78,8 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.util.formatSpeed
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
+import com.miuraken.chunkflow.core.model.DownloadableSttModel
+import com.miuraken.chunkflow.core.model.DownloadableSttModelState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -132,6 +136,14 @@ private fun sttEngineDisplayName(engine: SttEngine): String = when (engine) {
     SttEngine.ML_KIT -> stringResource(R.string.settings_engine_ml_kit)
     SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.settings_stt_engine_speech_recognizer)
     SttEngine.SHERPA_ONNX -> stringResource(R.string.settings_stt_engine_sherpa_onnx)
+    SttEngine.SHERPA_ONNX_SENSE_VOICE -> stringResource(R.string.settings_stt_engine_sherpa_sense_voice)
+    SttEngine.SHERPA_ONNX_WHISPER_BASE -> stringResource(R.string.settings_stt_engine_sherpa_whisper_base)
+    SttEngine.SHERPA_ONNX_WHISPER_SMALL -> stringResource(R.string.settings_stt_engine_sherpa_whisper_small)
+    SttEngine.MOONSHINE_TINY -> stringResource(R.string.settings_stt_engine_moonshine_tiny)
+    SttEngine.MOONSHINE_BASE -> stringResource(R.string.settings_stt_engine_moonshine_base)
+    SttEngine.OPENAI_API -> stringResource(R.string.settings_stt_engine_openai_api)
+    SttEngine.GROQ_API -> stringResource(R.string.settings_stt_engine_groq_api)
+    SttEngine.GEMINI_API -> stringResource(R.string.settings_stt_engine_gemini_api)
 }
 
 /**
@@ -239,6 +251,10 @@ fun SettingsScreen(
                             autoStartTranscriptionOnOpen = state.autoStartTranscriptionOnOpen,
                             backgroundTranscriptionEnabled = state.backgroundTranscriptionEnabled,
                             languageModels = state.languageModels,
+                            downloadableModels = state.downloadableModels,
+                            openAiApiKey = state.openAiApiKey,
+                            groqApiKey = state.groqApiKey,
+                            geminiApiKey = state.geminiApiKey,
                             enabledLanguages = state.enabledLanguages,
                             sttEngineByLanguage = state.sttEngineByLanguage,
                             onEvent = onEvent,
@@ -663,6 +679,10 @@ private fun TranscriptionSettingsSection(
     autoStartTranscriptionOnOpen: Boolean,
     backgroundTranscriptionEnabled: Boolean,
     languageModels: List<OnDeviceLanguageModelInfo>,
+    downloadableModels: List<DownloadableSttModelState>,
+    openAiApiKey: String,
+    groqApiKey: String,
+    geminiApiKey: String,
     enabledLanguages: Set<LanguageTag>,
     sttEngineByLanguage: Map<LanguageTag, SttEngine>,
     onEvent: (SettingsEvent) -> Unit,
@@ -688,6 +708,16 @@ private fun TranscriptionSettingsSection(
             },
         )
     }
+
+    SettingsSectionDivider()
+
+    ModelDownloadsAndApiKeysSection(
+        downloadableModels = downloadableModels,
+        openAiApiKey = openAiApiKey,
+        groqApiKey = groqApiKey,
+        geminiApiKey = geminiApiKey,
+        onEvent = onEvent,
+    )
 
     SettingsSectionDivider()
 
@@ -720,9 +750,291 @@ private fun TranscriptionSettingsSection(
                 onDeleteSherpaModel = {
                     onEvent(SettingsEvent.DeleteSherpaModel(rawInfo.language))
                 },
+                onPurgeDownloadableModel = { model ->
+                    onEvent(SettingsEvent.PurgeSttModel(model))
+                },
                 initialExpanded = (expandFirstAccordion && index == 0) ||
                     initialExpandedLanguages.contains(langTag),
             )
+        }
+    }
+}
+
+@Composable
+private fun ModelDownloadsAndApiKeysSection(
+    downloadableModels: List<DownloadableSttModelState>,
+    openAiApiKey: String,
+    groqApiKey: String,
+    geminiApiKey: String,
+    onEvent: (SettingsEvent) -> Unit,
+) {
+    SettingsSection(title = stringResource(R.string.settings_section_model_downloads)) {
+        Text(
+            text = stringResource(R.string.settings_model_downloads_description),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        downloadableModels.forEachIndexed { index, modelState ->
+            if (index > 0) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                )
+            }
+            DownloadableSttModelRow(
+                modelState = modelState,
+                onDownload = { onEvent(SettingsEvent.DownloadSttModel(modelState.model)) },
+                onPurge = { onEvent(SettingsEvent.PurgeSttModel(modelState.model)) },
+            )
+        }
+
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 4.dp),
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+
+        Text(
+            text = stringResource(R.string.settings_cloud_api_keys_subtitle),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+
+        ApiKeyInputField(
+            label = stringResource(R.string.settings_openai_api_key_label),
+            placeholder = stringResource(R.string.settings_openai_api_key_placeholder),
+            currentKey = openAiApiKey,
+            onSave = { onEvent(SettingsEvent.SetOpenAiApiKey(it)) },
+        )
+
+        ApiKeyInputField(
+            label = stringResource(R.string.settings_groq_api_key_label),
+            placeholder = stringResource(R.string.settings_groq_api_key_placeholder),
+            currentKey = groqApiKey,
+            onSave = { onEvent(SettingsEvent.SetGroqApiKey(it)) },
+        )
+
+        ApiKeyInputField(
+            label = stringResource(R.string.settings_gemini_api_key_label),
+            placeholder = stringResource(R.string.settings_gemini_api_key_placeholder),
+            currentKey = geminiApiKey,
+            onSave = { onEvent(SettingsEvent.SetGeminiApiKey(it)) },
+        )
+    }
+}
+
+@Composable
+private fun downloadableSttModelDisplayName(model: DownloadableSttModel): String = when (model) {
+    DownloadableSttModel.SHERPA_WHISPER_TINY -> stringResource(R.string.settings_model_sherpa_whisper_tiny)
+    DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL -> stringResource(R.string.settings_model_sherpa_sense_voice_small)
+    DownloadableSttModel.SHERPA_WHISPER_BASE -> stringResource(R.string.settings_model_sherpa_whisper_base)
+    DownloadableSttModel.SHERPA_WHISPER_SMALL -> stringResource(R.string.settings_model_sherpa_whisper_small)
+    DownloadableSttModel.MOONSHINE_TINY -> stringResource(R.string.settings_model_moonshine_tiny)
+    DownloadableSttModel.MOONSHINE_BASE -> stringResource(R.string.settings_model_moonshine_base)
+}
+
+@Composable
+private fun downloadableSttModelDescription(model: DownloadableSttModel, sizeMb: Int): String = when (model) {
+    DownloadableSttModel.SHERPA_WHISPER_TINY -> stringResource(R.string.settings_model_sherpa_whisper_tiny_desc, sizeMb)
+    DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL -> stringResource(R.string.settings_model_sherpa_sense_voice_small_desc, sizeMb)
+    DownloadableSttModel.SHERPA_WHISPER_BASE -> stringResource(R.string.settings_model_sherpa_whisper_base_desc, sizeMb)
+    DownloadableSttModel.SHERPA_WHISPER_SMALL -> stringResource(R.string.settings_model_sherpa_whisper_small_desc, sizeMb)
+    DownloadableSttModel.MOONSHINE_TINY -> stringResource(R.string.settings_model_moonshine_tiny_desc, sizeMb)
+    DownloadableSttModel.MOONSHINE_BASE -> stringResource(R.string.settings_model_moonshine_base_desc, sizeMb)
+}
+
+@Composable
+private fun DownloadableSttModelRow(
+    modelState: DownloadableSttModelState,
+    onDownload: () -> Unit,
+    onPurge: () -> Unit,
+) {
+    val sizeMb = ((modelState.sizeBytes / (1024L * 1024L)).toInt()).takeIf { it > 0 }
+        ?: modelState.model.estimatedSizeMb
+    val isInstalled = modelState.status == OnDeviceLanguageModelStatus.INSTALLED
+    val isDownloading = modelState.status == OnDeviceLanguageModelStatus.DOWNLOADING
+    val statusText = when (modelState.status) {
+        OnDeviceLanguageModelStatus.INSTALLED -> stringResource(R.string.settings_speech_model_status_installed)
+        OnDeviceLanguageModelStatus.DOWNLOADING -> stringResource(R.string.settings_speech_model_status_downloading)
+        OnDeviceLanguageModelStatus.DOWNLOAD_FAILED -> stringResource(R.string.settings_speech_model_status_download_failed)
+        OnDeviceLanguageModelStatus.CHECKING -> stringResource(R.string.settings_speech_model_status_checking)
+        else -> stringResource(R.string.settings_speech_model_status_not_installed)
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = downloadableSttModelDisplayName(modelState.model),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = downloadableSttModelDescription(modelState.model, sizeMb),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isInstalled) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+
+        when {
+            isDownloading -> {
+                ChunkFlowLoadingIndicator(modifier = Modifier.size(32.dp))
+            }
+
+            isInstalled || modelState.canPurge -> {
+                OutlinedButton(
+                    onClick = onPurge,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Delete,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.settings_model_action_purge),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+
+            else -> {
+                Button(
+                    onClick = onDownload,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Download,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.settings_model_action_download),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApiKeyInputField(
+    label: String,
+    placeholder: String,
+    currentKey: String,
+    onSave: (String) -> Unit,
+) {
+    var draftKey by rememberSaveable(currentKey) { mutableStateOf(currentKey) }
+    var visible by rememberSaveable { mutableStateOf(false) }
+    val isConfigured = currentKey.isNotBlank()
+    val hasChanges = draftKey.trim() != currentKey.trim()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = if (isConfigured) {
+                    stringResource(R.string.settings_api_key_status_configured)
+                } else {
+                    stringResource(R.string.settings_api_key_status_not_configured)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isConfigured) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = draftKey,
+                onValueChange = { draftKey = it },
+                placeholder = { Text(text = placeholder) },
+                singleLine = true,
+                visualTransformation = if (visible) {
+                    VisualTransformation.None
+                } else {
+                    PasswordVisualTransformation()
+                },
+                trailingIcon = {
+                    IconButton(onClick = { visible = !visible }) {
+                        Icon(
+                            imageVector = if (visible) ChunkFlowIcons.VisibilityOff else ChunkFlowIcons.Visibility,
+                            contentDescription = stringResource(
+                                if (visible) R.string.settings_api_key_hide else R.string.settings_api_key_show,
+                            ),
+                        )
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            )
+
+            Button(
+                onClick = { onSave(draftKey.trim()) },
+                enabled = hasChanges,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_api_key_save),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+
+            if (isConfigured || draftKey.isNotBlank()) {
+                TextButton(
+                    onClick = {
+                        draftKey = ""
+                        onSave("")
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_api_key_clear),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
         }
     }
 }
@@ -1000,6 +1312,7 @@ private fun SttEngineAccordion(
     preferredEngine: SttEngine?,
     onPreferredEngineChange: (SttEngine?) -> Unit,
     onDeleteSherpaModel: () -> Unit,
+    onPurgeDownloadableModel: (DownloadableSttModel) -> Unit = {},
     initialExpanded: Boolean = false,
 ) {
     val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
@@ -1020,30 +1333,6 @@ private fun SttEngineAccordion(
         !anyEngineSupported -> stringResource(R.string.settings_stt_engine_unsupported)
         effectivePreferred == null -> autoLabel
         else -> sttEngineDisplayName(effectivePreferred)
-    }
-    val sizeMb = SherpaDownloadDialogState.resolveSizeMb(enrichedInfo.sherpaModelSizeBytes)
-    val isSherpaInstalled = enrichedInfo.sherpaModelStatus == OnDeviceLanguageModelStatus.INSTALLED
-
-    val mlKitLabel = formatEngineOptionWithStatus(
-        baseName = stringResource(R.string.settings_stt_engine_mlkit_radio),
-        status = enrichedInfo.mlKitStatus,
-    )
-    val speechRecognizerLabel = formatEngineOptionWithStatus(
-        baseName = stringResource(R.string.settings_stt_engine_speech_recognizer),
-        status = enrichedInfo.status,
-    )
-    val sherpaLabel = when (enrichedInfo.sherpaModelStatus) {
-        OnDeviceLanguageModelStatus.INSTALLED ->
-            stringResource(R.string.settings_stt_engine_sherpa_downloaded, sizeMb)
-
-        OnDeviceLanguageModelStatus.NOT_INSTALLED ->
-            stringResource(R.string.settings_stt_engine_sherpa_not_downloaded, sizeMb)
-
-        else ->
-            formatEngineOptionWithStatus(
-                baseName = stringResource(R.string.settings_stt_engine_sherpa_onnx),
-                status = enrichedInfo.sherpaModelStatus,
-            )
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1091,16 +1380,21 @@ private fun SttEngineAccordion(
                     modifier = Modifier.padding(bottom = 4.dp),
                 )
 
-                val options: List<Pair<SttEngine?, String>> = listOf(
-                    null to autoLabel,
-                    SttEngine.ML_KIT to mlKitLabel,
-                    SttEngine.SPEECH_RECOGNIZER to speechRecognizerLabel,
-                    SttEngine.SHERPA_ONNX to sherpaLabel,
-                )
+                val options: List<Pair<SttEngine?, String>> = buildList {
+                    add(null to autoLabel)
+                    for (engine in SttEngine.entries) {
+                        add(engine to formatSttEngineOptionLabel(enrichedInfo, engine))
+                    }
+                }
 
                 options.forEach { (engine, label) ->
                     val isOptionEnabled = isSttEngineSelectableInSettings(enrichedInfo, engine)
                     val isSelected = anyEngineSupported && effectivePreferred == engine
+                    val engineStatus = engine?.let { enrichedInfo.statusOf(it) }
+                    val downloadableModel = engine?.downloadableModel
+                    val isDownloadableModelInstalled =
+                        downloadableModel != null && engineStatus == OnDeviceLanguageModelStatus.INSTALLED
+
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1132,9 +1426,15 @@ private fun SttEngineAccordion(
                             },
                             modifier = Modifier.padding(start = 8.dp),
                         )
-                        if (engine == SttEngine.SHERPA_ONNX && isSherpaInstalled) {
+                        if (downloadableModel != null && isDownloadableModelInstalled) {
                             IconButton(
-                                onClick = onDeleteSherpaModel,
+                                onClick = {
+                                    if (engine == SttEngine.SHERPA_ONNX) {
+                                        onDeleteSherpaModel()
+                                    } else {
+                                        onPurgeDownloadableModel(downloadableModel)
+                                    }
+                                },
                                 modifier = Modifier
                                     .padding(start = 4.dp)
                                     .size(32.dp),
@@ -1151,6 +1451,78 @@ private fun SttEngineAccordion(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun formatSttEngineOptionLabel(
+    enrichedInfo: OnDeviceLanguageModelInfo,
+    engine: SttEngine,
+): String {
+    val status = enrichedInfo.statusOf(engine)
+    return when (engine) {
+        SttEngine.ML_KIT -> formatEngineOptionWithStatus(
+            baseName = stringResource(R.string.settings_stt_engine_mlkit_radio),
+            status = status,
+        )
+
+        SttEngine.SPEECH_RECOGNIZER -> formatEngineOptionWithStatus(
+            baseName = stringResource(R.string.settings_stt_engine_speech_recognizer),
+            status = status,
+        )
+
+        SttEngine.SHERPA_ONNX -> {
+            val sizeMb = SherpaDownloadDialogState.resolveSizeMb(enrichedInfo.sherpaModelSizeBytes)
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.settings_stt_engine_sherpa_downloaded, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+                    stringResource(R.string.settings_stt_engine_sherpa_not_downloaded, sizeMb)
+
+                else -> formatEngineOptionWithStatus(
+                    baseName = stringResource(R.string.settings_stt_engine_sherpa_onnx),
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.SHERPA_ONNX_SENSE_VOICE,
+        SttEngine.SHERPA_ONNX_WHISPER_BASE,
+        SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+        SttEngine.MOONSHINE_TINY,
+        SttEngine.MOONSHINE_BASE,
+        -> {
+            val baseName = sttEngineDisplayName(engine)
+            val sizeMb = engine.downloadableModel?.estimatedSizeMb ?: 100
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.settings_stt_engine_model_downloaded_format, baseName, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+                    stringResource(R.string.settings_stt_engine_model_not_downloaded_format, baseName, sizeMb)
+
+                else -> formatEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.OPENAI_API,
+        SttEngine.GROQ_API,
+        SttEngine.GEMINI_API,
+        -> {
+            val baseName = sttEngineDisplayName(engine)
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED -> baseName
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+                    "$baseName (${stringResource(R.string.settings_api_key_status_not_configured)})"
+
+                else -> formatEngineOptionWithStatus(baseName = baseName, status = status)
             }
         }
     }

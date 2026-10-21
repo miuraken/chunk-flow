@@ -230,6 +230,39 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setOpenAiApiKey(apiKey: String) {
+        val trimmed = apiKey.trim()
+        dataStore.edit { prefs ->
+            if (trimmed.isEmpty()) {
+                prefs.remove(KEY_OPENAI_API_KEY)
+            } else {
+                prefs[KEY_OPENAI_API_KEY] = trimmed
+            }
+        }
+    }
+
+    override suspend fun setGroqApiKey(apiKey: String) {
+        val trimmed = apiKey.trim()
+        dataStore.edit { prefs ->
+            if (trimmed.isEmpty()) {
+                prefs.remove(KEY_GROQ_API_KEY)
+            } else {
+                prefs[KEY_GROQ_API_KEY] = trimmed
+            }
+        }
+    }
+
+    override suspend fun setGeminiApiKey(apiKey: String) {
+        val trimmed = apiKey.trim()
+        dataStore.edit { prefs ->
+            if (trimmed.isEmpty()) {
+                prefs.remove(KEY_GEMINI_API_KEY)
+            } else {
+                prefs[KEY_GEMINI_API_KEY] = trimmed
+            }
+        }
+    }
+
     private fun Preferences.toUserSettings(): UserSettings {
         val defaults = UserSettings()
         val defaultSeg = defaults.defaultSegmentationParams
@@ -332,6 +365,9 @@ class DataStoreUserSettingsRepository @Inject constructor(
             transcriptionEngine = transcriptionEngine,
             sttEngineByLanguage = sttEngineByLanguage,
             hasCompletedLanguageOnboarding = hasCompletedLanguageOnboarding,
+            openAiApiKey = this[KEY_OPENAI_API_KEY]?.trim().orEmpty(),
+            groqApiKey = this[KEY_GROQ_API_KEY]?.trim().orEmpty(),
+            geminiApiKey = this[KEY_GEMINI_API_KEY]?.trim().orEmpty(),
         )
     }
 
@@ -373,6 +409,11 @@ class DataStoreUserSettingsRepository @Inject constructor(
 
         /** 言語ごとに優先する文字起こしエンジン（`code=ENGINE` のカンマ区切り。ADR-0011 §2.2）。 */
         val KEY_STT_ENGINE_BY_LANGUAGE = stringPreferencesKey("stt_engine_by_language")
+
+        /** クラウド文字起こしエンジン用の API キー。 */
+        val KEY_OPENAI_API_KEY = stringPreferencesKey("stt_openai_api_key")
+        val KEY_GROQ_API_KEY = stringPreferencesKey("stt_groq_api_key")
+        val KEY_GEMINI_API_KEY = stringPreferencesKey("stt_gemini_api_key")
 
         /** 言語ごとのエンジンを `code=ENGINE` のカンマ区切りにする（言語コード順で、保存の内容を安定させる）。 */
         fun encodeEngineByLanguage(engineByLanguage: Map<LanguageTag, SttEngine>): String = engineByLanguage.entries

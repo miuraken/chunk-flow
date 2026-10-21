@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.util.Log
+import com.miuraken.chunkflow.core.model.DownloadableSttModel
 import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguageTag
 import java.io.ByteArrayOutputStream
@@ -17,7 +18,7 @@ import kotlin.math.exp
 import kotlin.math.ln
 
 /**
- * `sherpa-onnx` 形式の Whisper Tiny int8 ONNX モデル（`tiny-encoder.int8.onnx` / `tiny-decoder.int8.onnx` / `tiny-tokens.txt`）を
+ * `sherpa-onnx` 形式の Whisper Tiny / Base / Small int8 ONNX モデルを
  * ONNX Runtime で直接実行し、16kHz モノラル PCM チャンクのオフライン音声認識を行うクラス（Stage 2、F6.2）。
  *
  * - Android 標準の `SpeechRecognizer`（SODA）が非対応の言語（Pixel 上の広東語 `yue`・ギリシャ語 `el` 等）や、
@@ -72,20 +73,33 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
     }
 
     /**
-     * 指定した言語 [language] で `sherpa-onnx` ローカルモデルによる認識が可能かどうか。
+     * 指定した言語 [language] で `sherpa-onnx` ローカルモデル（[model]）による認識が可能かどうか。
      */
-    fun isReadyForLanguage(language: LanguageTag): Boolean = modelManager.isInstalledForLanguage(language)
+    fun isReadyForLanguage(
+        language: LanguageTag,
+        model: DownloadableSttModel = DownloadableSttModel.SHERPA_WHISPER_TINY,
+    ): Boolean = modelManager.isInstalledForLanguage(model, language)
+
+    /**
+     * 指定した言語コード [languageCode] で `sherpa-onnx` ローカルモデル（[model]）による認識が可能かどうか。
+     */
+    fun isReadyForLanguage(
+        languageCode: String,
+        model: DownloadableSttModel = DownloadableSttModel.SHERPA_WHISPER_TINY,
+    ): Boolean = modelManager.isInstalledForLanguage(model, LanguageTag(languageCode))
 
     /**
      * 16kHz モノラル 16-bit リトルエンディアン PCM（[pcm16LeBytes]）を指定言語 [language] で音声認識する。
      *
      * @param ignoreLanguageMarker `true` の場合は言語ごとの `.ready` マーカー有無を問わず、共通モデルファイルが存在すれば推論を実行する。
+     * @param model 使用する Whisper モデル（Tiny / Base / Small）。
      */
     fun transcribePcm16Le(
         pcm16LeBytes: ByteArray,
         sampleRateHz: Int = OnDeviceChunkTranscriber.DEFAULT_SAMPLE_RATE_HZ,
         language: LanguageTag,
         ignoreLanguageMarker: Boolean = false,
+        model: com.miuraken.chunkflow.core.model.DownloadableSttModel = com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY,
     ): OnDeviceChunkTranscriptionResult? {
         if (pcm16LeBytes.isEmpty() || sampleRateHz <= 0) return null
         val shorts = ChunkPcmExtractor.pcm16LeBytesToShorts(pcm16LeBytes)
@@ -98,6 +112,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
             pcm16kMono = resampled,
             language = language,
             ignoreLanguageMarker = ignoreLanguageMarker,
+            model = model,
         )
     }
 
@@ -108,15 +123,16 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         pcm16kMono: ShortArray,
         language: LanguageTag,
         ignoreLanguageMarker: Boolean = false,
+        model: com.miuraken.chunkflow.core.model.DownloadableSttModel = com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY,
     ): OnDeviceChunkTranscriptionResult? {
         if (pcm16kMono.isEmpty()) return null
-        if (!ignoreLanguageMarker && !modelManager.isInstalledForLanguage(language)) {
+        if (!ignoreLanguageMarker && !modelManager.isInstalledForLanguage(model, language)) {
             return null
         }
         val mel = languageDetector.computeMelSpectrogram80x3000(pcm16kMono) ?: return null
 
         synchronized(sessionLock) {
-            val bundle = ensureLoadedBundleLocked() ?: return null
+            val bundle = ensureLoadedBundleLocked(model) ?: return null
             val langToken = bundle.config.resolveLanguageToken(language) ?: return null
             return try {
                 runGreedyDecodeLocked(
@@ -124,9 +140,10 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                     mel80x3000 = mel,
                     language = language,
                     languageToken = langToken,
+                    engineId = EngineId(model.modelId),
                 )
             } catch (e: Exception) {
-                logInfo("sherpa-onnx inference failed lang=${language.value} error=${e.javaClass.simpleName}")
+                logInfo("sherpa-onnx inference failed model=${model.modelId} lang=${language.value} error=${e.javaClass.simpleName}")
                 null
             }
         }
@@ -137,6 +154,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         mel80x3000: FloatArray,
         language: LanguageTag,
         languageToken: Long,
+        engineId: EngineId = SHERPA_ONNX_ENGINE_ID,
     ): OnDeviceChunkTranscriptionResult? {
         val env = bundle.env
         val config = bundle.config
@@ -279,7 +297,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                         text = decodedText,
                         language = language,
                         confidence = confidence,
-                        engineId = SHERPA_ONNX_ENGINE_ID,
+                        engineId = engineId,
                     )
                 } finally {
                     runCatching { activeDecoderResult?.close() }
@@ -374,8 +392,10 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         return false
     }
 
-    private fun ensureLoadedBundleLocked(): LoadedModelBundle? {
-        val paths = modelManager.resolveInstalledModelPaths() ?: run {
+    private fun ensureLoadedBundleLocked(
+        model: DownloadableSttModel = DownloadableSttModel.SHERPA_WHISPER_TINY,
+    ): LoadedModelBundle? {
+        val paths = modelManager.resolveWhisperModelPaths(model) ?: run {
             loadedBundle?.close()
             loadedBundle = null
             return null
@@ -494,6 +514,8 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
 
     companion object {
         val SHERPA_ONNX_ENGINE_ID: EngineId = EngineId(SherpaOnnxModelManager.MODEL_ID)
+        val SHERPA_ONNX_BASE_ENGINE_ID: EngineId = EngineId(DownloadableSttModel.SHERPA_WHISPER_BASE.modelId)
+        val SHERPA_ONNX_SMALL_ENGINE_ID: EngineId = EngineId(DownloadableSttModel.SHERPA_WHISPER_SMALL.modelId)
 
         private const val INPUT_MEL: String = "mel"
         private const val OUTPUT_CROSS_K: String = "n_layer_cross_k"

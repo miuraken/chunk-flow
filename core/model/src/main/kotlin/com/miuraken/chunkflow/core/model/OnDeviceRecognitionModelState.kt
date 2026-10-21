@@ -66,6 +66,30 @@ enum class OnDeviceTranscriptionEngine {
      * 非対応の場合は [AUTO] と同様に OS 標準または `sherpa-onnx` へフォールバックする。
      */
     ML_KIT,
+
+    /** `sherpa-onnx` SenseVoice Small（日・英・中・広東・韓の 5 言語対応）。 */
+    SHERPA_ONNX_SENSE_VOICE,
+
+    /** `sherpa-onnx` Whisper Base（99 言語対応）。 */
+    SHERPA_ONNX_WHISPER_BASE,
+
+    /** `sherpa-onnx` Whisper Small（99 言語対応）。 */
+    SHERPA_ONNX_WHISPER_SMALL,
+
+    /** Moonshine ONNX Tiny（英語 `en` 専用）。 */
+    MOONSHINE_TINY,
+
+    /** Moonshine ONNX Base（英語 `en` 専用）。 */
+    MOONSHINE_BASE,
+
+    /** OpenAI Audio Transcriptions API（要 API キー設定）。 */
+    OPENAI_API,
+
+    /** Groq Audio Transcriptions API（OpenAI 互換・要 API キー設定）。 */
+    GROQ_API,
+
+    /** Google Gemini API 音声文字起こし（要 API キー設定）。 */
+    GEMINI_API,
 }
 
 /**
@@ -87,13 +111,15 @@ enum class MlKitRecognitionMode {
  * @property language 言語タグ（`ja`、`en`、`zh` など）。
  * @property status Android 標準音声認識（`SpeechRecognizer`）モデルの利用可能状態。
  * @property resolvedBcp47Tag 端末で解決・選択された BCP-47 ロケールタグ（例: `cmn-Hans-CN`、`ja-JP`）。
- * @property sherpaModelStatus ローカル `sherpa-onnx` モデルの利用可能状態。
+ * @property sherpaModelStatus ローカル `sherpa-onnx`（Whisper Tiny）モデルの利用可能状態。
  * @property sherpaModelId この言語で使用する `sherpa-onnx` のモデル識別子（例: `sherpa-onnx-whisper-tiny`）。
  * @property sherpaModelSizeBytes `sherpa-onnx` モデルの合計バイトサイズ（目安）。
  * @property canDeleteSherpaModel ローカルにダウンロード済みの `sherpa-onnx` モデルを削除可能かどうか。
  * @property mlKitStatus ML Kit GenAI Speech Recognition の利用可能状態（ADR-0011）。モデルは OS が管理するので、
  *   アプリからは取得の要求だけができる（削除はできない）。
  * @property mlKitMode ML Kit で使う認識モード。使えないとき・未確認のときは `null`。
+ * @property extraEngineStatuses 追加エンジン（SenseVoice / Whisper Base / Whisper Small / Moonshine / OpenAI / Groq / Gemini）の
+ *   利用可能状態マップ。
  */
 data class OnDeviceLanguageModelInfo(
     val language: LanguageTag,
@@ -105,12 +131,25 @@ data class OnDeviceLanguageModelInfo(
     val canDeleteSherpaModel: Boolean = false,
     val mlKitStatus: OnDeviceLanguageModelStatus = OnDeviceLanguageModelStatus.CHECKING,
     val mlKitMode: MlKitRecognitionMode? = null,
+    val extraEngineStatuses: Map<SttEngine, OnDeviceLanguageModelStatus> = emptyMap(),
 ) {
     /** エンジン [engine] のモデルの利用可能状態を返す。 */
     fun statusOf(engine: SttEngine): OnDeviceLanguageModelStatus = when (engine) {
         SttEngine.ML_KIT -> mlKitStatus
+
         SttEngine.SPEECH_RECOGNIZER -> status
+
         SttEngine.SHERPA_ONNX -> sherpaModelStatus
+
+        SttEngine.SHERPA_ONNX_SENSE_VOICE,
+        SttEngine.SHERPA_ONNX_WHISPER_BASE,
+        SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+        SttEngine.MOONSHINE_TINY,
+        SttEngine.MOONSHINE_BASE,
+        SttEngine.OPENAI_API,
+        SttEngine.GROQ_API,
+        SttEngine.GEMINI_API,
+        -> extraEngineStatuses[engine] ?: defaultExtraEngineStatus(engine, language)
     }
 
     /**
@@ -119,6 +158,25 @@ data class OnDeviceLanguageModelInfo(
      */
     fun enrichedWithCatalog(languageOverride: LanguageTag = language): OnDeviceLanguageModelInfo {
         val entry = SupportedLanguageCatalog.findByCode(languageOverride.value) ?: return this
+        val updatedExtras = extraEngineStatuses.toMutableMap()
+        val extraEngines = listOf(
+            SttEngine.SHERPA_ONNX_SENSE_VOICE,
+            SttEngine.SHERPA_ONNX_WHISPER_BASE,
+            SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+            SttEngine.MOONSHINE_TINY,
+            SttEngine.MOONSHINE_BASE,
+            SttEngine.OPENAI_API,
+            SttEngine.GROQ_API,
+            SttEngine.GEMINI_API,
+        )
+        for (engine in extraEngines) {
+            val defaultStatus = defaultExtraEngineStatus(engine, languageOverride)
+            if (defaultStatus == OnDeviceLanguageModelStatus.UNSUPPORTED) {
+                updatedExtras[engine] = OnDeviceLanguageModelStatus.UNSUPPORTED
+            } else if (!updatedExtras.containsKey(engine)) {
+                updatedExtras[engine] = defaultStatus
+            }
+        }
         return copy(
             mlKitStatus = if (!entry.mlKitSupported || !entry.speechRecognizerSupported) {
                 OnDeviceLanguageModelStatus.UNSUPPORTED
@@ -135,7 +193,39 @@ data class OnDeviceLanguageModelInfo(
             } else {
                 sherpaModelStatus
             },
+            extraEngineStatuses = updatedExtras,
         )
+    }
+
+    companion object {
+        /** 追加エンジン [engine] の言語 [language] におけるカタログ対応・既定状態を返す。 */
+        fun defaultExtraEngineStatus(
+            engine: SttEngine,
+            language: LanguageTag,
+        ): OnDeviceLanguageModelStatus {
+            val downloadable = DownloadableSttModel.fromEngineOrNull(engine)
+            if (downloadable != null) {
+                return if (downloadable.isLanguageSupported(language)) {
+                    OnDeviceLanguageModelStatus.NOT_INSTALLED
+                } else {
+                    OnDeviceLanguageModelStatus.UNSUPPORTED
+                }
+            }
+            val entry = SupportedLanguageCatalog.findByCode(language.value)
+            return when (engine) {
+                SttEngine.OPENAI_API,
+                SttEngine.GROQ_API,
+                -> if (entry == null || entry.whisperCode != null) {
+                    OnDeviceLanguageModelStatus.NOT_INSTALLED
+                } else {
+                    OnDeviceLanguageModelStatus.UNSUPPORTED
+                }
+
+                SttEngine.GEMINI_API -> OnDeviceLanguageModelStatus.NOT_INSTALLED
+
+                else -> OnDeviceLanguageModelStatus.NOT_INSTALLED
+            }
+        }
     }
 }
 

@@ -188,6 +188,23 @@ interface OnDeviceChunkTranscriber {
     fun releaseIdleResources() = Unit
 
     /**
+     * ダウンロード可能な全ローカル音声認識モデル（[com.miuraken.chunkflow.core.model.DownloadableSttModel]）の状態一覧を返す。
+     */
+    suspend fun queryDownloadableModelStates(): List<com.miuraken.chunkflow.core.model.DownloadableSttModelState> = com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.map {
+        com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = it)
+    }
+
+    /**
+     * 指定された [model] をグローバルにダウンロード・検証する。
+     */
+    suspend fun downloadSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean = false
+
+    /**
+     * 指定された [model] のローカルファイル一式を削除（パージ）する。
+     */
+    suspend fun purgeSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean = false
+
+    /**
      * [language] の端末内音声認識モデルのダウンロードを要求する。
      *
      * OS の `SpeechRecognizer` が対応している言語は OS にダウンロードを要求し、
@@ -1798,6 +1815,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
      * 複数のスレッドから呼ばれることがある。
      */
     private val languageOnlyPcmObserver: ((index: Int, pcm: ShortArray) -> Unit)? = null,
+    private val sherpaWhisperTranscriberInstance: SherpaOnnxWhisperTranscriber? = null,
+    private val senseVoiceTranscriberInstance: SherpaOnnxSenseVoiceTranscriber? = null,
+    private val moonshineTranscriberInstance: MoonshineOnnxTranscriber? = null,
+    private val cloudSpeechTranscriberInstance: CloudSpeechTranscriber? = null,
 ) : OnDeviceChunkTranscriber {
 
     @Inject
@@ -1807,6 +1828,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         whisperTinyLanguageDetector: WhisperTinyLanguageDetector,
         sherpaOnnxModelManager: SherpaOnnxModelManager,
         sherpaOnnxWhisperTranscriber: SherpaOnnxWhisperTranscriber,
+        sherpaOnnxSenseVoiceTranscriber: SherpaOnnxSenseVoiceTranscriber,
+        moonshineOnnxTranscriber: MoonshineOnnxTranscriber,
+        cloudSpeechTranscriber: CloudSpeechTranscriber,
         mlKitGenAiSpeechTranscriber: MlKitGenAiSpeechTranscriber,
         userSettingsRepository: UserSettingsRepository,
     ) : this(
@@ -1840,6 +1864,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             whisperTinyLanguageDetector.analyzeLanguagePair(pcm, target, base)
         },
         languageDetectionStats = { whisperTinyLanguageDetector.inferenceStats() },
+        sherpaWhisperTranscriberInstance = sherpaOnnxWhisperTranscriber,
+        senseVoiceTranscriberInstance = sherpaOnnxSenseVoiceTranscriber,
+        moonshineTranscriberInstance = moonshineOnnxTranscriber,
+        cloudSpeechTranscriberInstance = cloudSpeechTranscriber,
     )
 
     internal constructor(
@@ -2053,7 +2081,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         standardAvailabilityChecker() ||
         sherpaModelManager?.areCoreModelFilesPresent() == true ||
         sherpaTranscriber != null ||
-        mlKitGateway?.isDevicePotentiallySupported() == true
+        mlKitGateway?.isDevicePotentiallySupported() == true ||
+        cloudSpeechTranscriberInstance != null
 
     private fun isMlKitPotentiallyAvailable(): Boolean = mlKitGateway?.isDevicePotentiallySupported() == true
 
@@ -2071,6 +2100,29 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         synchronized(sttCacheLock) {
             fullChunkSttCache.clear()
         }
+    }
+
+    override suspend fun queryDownloadableModelStates(): List<com.miuraken.chunkflow.core.model.DownloadableSttModelState> {
+        val manager = sherpaModelManager ?: return super.queryDownloadableModelStates()
+        return manager.queryAllDownloadableModelStates()
+    }
+
+    override suspend fun downloadSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean {
+        val manager = sherpaModelManager ?: return false
+        val ok = manager.downloadModel(model)
+        if (ok) {
+            clearAllSttCache()
+        }
+        return ok
+    }
+
+    override suspend fun purgeSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean {
+        val manager = sherpaModelManager ?: return false
+        val ok = manager.purgeModel(model)
+        if (ok) {
+            clearAllSttCache()
+        }
+        return ok
     }
 
     override suspend fun downloadSherpaModel(language: LanguageTag): Boolean {
@@ -2124,6 +2176,27 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX -> {
                 downloadSherpaModel(language)
             }
+
+            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE,
+            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE,
+            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+            com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE,
+            -> {
+                val model = engine.downloadableModel ?: return false
+                val manager = sherpaModelManager ?: return false
+                val ok = manager.downloadModelForLanguage(language, model)
+                if (ok) {
+                    clearModelIssue(language)
+                    clearAllSttCache()
+                }
+                ok
+            }
+
+            com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API,
+            com.miuraken.chunkflow.core.model.SttEngine.GROQ_API,
+            com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API,
+            -> false
         }
     }
 
@@ -2319,6 +2392,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> {
         if (languages.isEmpty()) return emptyList()
         val mlKitAvailable = isMlKitPotentiallyAvailable()
+        val extraStatusesByLang = buildExtraEngineStatusesByLanguage(languages)
         if (!onDeviceAvailabilityChecker() && !mlKitAvailable) {
             return languages.map { lang ->
                 withSherpaAndMlKitModelFields(
@@ -2326,6 +2400,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     osStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
                     resolvedBcp47Tag = candidateBcp47TagsFor(lang.value).firstOrNull(),
                     mlKitSupport = Pair(OnDeviceLanguageModelStatus.UNSUPPORTED, null),
+                    extraStatuses = extraStatusesByLang[lang].orEmpty(),
                 )
             }
         }
@@ -2376,6 +2451,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
 
         val allLanguages = languages + discoveredLanguages
+        val allExtraStatuses = if (discoveredLanguages.isEmpty()) {
+            extraStatusesByLang
+        } else {
+            buildExtraEngineStatusesByLanguage(allLanguages)
+        }
         val candidatesByLanguage = allLanguages.associateWith { lang ->
             val baseCandidates = requestedCandidatesByLanguage[lang] ?: candidateBcp47TagsFor(lang.value)
             val extra = discoveredBcp47ByLanguage[lang].orEmpty()
@@ -2458,7 +2538,40 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 osStatus = osStatusAndTag.first,
                 resolvedBcp47Tag = osStatusAndTag.second,
                 mlKitSupport = Pair(mlKitStatus, mlKitMode),
+                extraStatuses = allExtraStatuses[language].orEmpty(),
             )
+        }
+    }
+
+    private suspend fun buildExtraEngineStatusesByLanguage(
+        languages: List<LanguageTag>,
+    ): Map<LanguageTag, Map<com.miuraken.chunkflow.core.model.SttEngine, OnDeviceLanguageModelStatus>> {
+        val manager = sherpaModelManager
+        val cloud = cloudSpeechTranscriberInstance
+        val openAiConfigured = cloud?.isEngineConfigured(com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API) == true
+        val groqConfigured = cloud?.isEngineConfigured(com.miuraken.chunkflow.core.model.SttEngine.GROQ_API) == true
+        val geminiConfigured = cloud?.isEngineConfigured(com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API) == true
+
+        return languages.associateWith { lang ->
+            val map = LinkedHashMap<com.miuraken.chunkflow.core.model.SttEngine, OnDeviceLanguageModelStatus>()
+            val localEngines = listOf(
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE,
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE,
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE,
+            )
+            for (engine in localEngines) {
+                val model = engine.downloadableModel ?: continue
+                map[engine] = manager?.getLanguageModelStatus(lang, model) ?: OnDeviceLanguageModelStatus.UNSUPPORTED
+            }
+            map[com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API] =
+                if (openAiConfigured) OnDeviceLanguageModelStatus.INSTALLED else OnDeviceLanguageModelStatus.NOT_INSTALLED
+            map[com.miuraken.chunkflow.core.model.SttEngine.GROQ_API] =
+                if (groqConfigured) OnDeviceLanguageModelStatus.INSTALLED else OnDeviceLanguageModelStatus.NOT_INSTALLED
+            map[com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API] =
+                if (geminiConfigured) OnDeviceLanguageModelStatus.INSTALLED else OnDeviceLanguageModelStatus.NOT_INSTALLED
+            map
         }
     }
 
@@ -2467,6 +2580,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         osStatus: OnDeviceLanguageModelStatus,
         resolvedBcp47Tag: String?,
         mlKitSupport: Pair<OnDeviceLanguageModelStatus, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>?,
+        extraStatuses: Map<com.miuraken.chunkflow.core.model.SttEngine, OnDeviceLanguageModelStatus> = emptyMap(),
     ): OnDeviceLanguageModelInfo {
         val manager = sherpaModelManager
         val mlKitStatusVal = mlKitSupport?.first ?: OnDeviceLanguageModelStatus.UNSUPPORTED
@@ -2482,6 +2596,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 canDeleteSherpaModel = false,
                 mlKitStatus = mlKitStatusVal,
                 mlKitMode = mlKitModeVal,
+                extraEngineStatuses = extraStatuses,
             )
         } else {
             val sherpaStatus = manager.getLanguageModelStatus(language)
@@ -2496,6 +2611,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 canDeleteSherpaModel = installed,
                 mlKitStatus = mlKitStatusVal,
                 mlKitMode = mlKitModeVal,
+                extraEngineStatuses = extraStatuses,
             )
         }
         return rawInfo.enrichedWithCatalog(language)
@@ -4592,9 +4708,20 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
         engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
     ): List<com.miuraken.chunkflow.core.model.SttEngine> {
-        if (selectedEngine == OnDeviceTranscriptionEngine.SHERPA_ONNX) return listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX)
-        if (selectedEngine == OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER) return listOf(com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER)
-        if (selectedEngine == OnDeviceTranscriptionEngine.ML_KIT) return com.miuraken.chunkflow.core.model.SttEngine.tryOrder(com.miuraken.chunkflow.core.model.SttEngine.ML_KIT)
+        when (selectedEngine) {
+            OnDeviceTranscriptionEngine.SHERPA_ONNX -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX)
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_SENSE_VOICE -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE)
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_BASE -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE)
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_SMALL -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_SMALL)
+            OnDeviceTranscriptionEngine.MOONSHINE_TINY -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY)
+            OnDeviceTranscriptionEngine.MOONSHINE_BASE -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE)
+            OnDeviceTranscriptionEngine.OPENAI_API -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API)
+            OnDeviceTranscriptionEngine.GROQ_API -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.GROQ_API)
+            OnDeviceTranscriptionEngine.GEMINI_API -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API)
+            OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> return listOf(com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER)
+            OnDeviceTranscriptionEngine.ML_KIT -> return com.miuraken.chunkflow.core.model.SttEngine.tryOrder(com.miuraken.chunkflow.core.model.SttEngine.ML_KIT)
+            OnDeviceTranscriptionEngine.AUTO -> Unit
+        }
         if (language == null) return com.miuraken.chunkflow.core.model.SttEngine.AUTO_ORDER
         return com.miuraken.chunkflow.core.model.SttEngineSelection.tryOrder(
             language = language,
@@ -4621,6 +4748,14 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             OnDeviceTranscriptionEngine.AUTO -> com.miuraken.chunkflow.core.model.SttEngine.AUTO_ORDER
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER)
             OnDeviceTranscriptionEngine.SHERPA_ONNX -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX)
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_SENSE_VOICE -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE)
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_BASE -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE)
+            OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_SMALL -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_SMALL)
+            OnDeviceTranscriptionEngine.MOONSHINE_TINY -> listOf(com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY)
+            OnDeviceTranscriptionEngine.MOONSHINE_BASE -> listOf(com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE)
+            OnDeviceTranscriptionEngine.OPENAI_API -> listOf(com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API)
+            OnDeviceTranscriptionEngine.GROQ_API -> listOf(com.miuraken.chunkflow.core.model.SttEngine.GROQ_API)
+            OnDeviceTranscriptionEngine.GEMINI_API -> listOf(com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API)
             OnDeviceTranscriptionEngine.ML_KIT -> listOf(com.miuraken.chunkflow.core.model.SttEngine.ML_KIT)
             null -> tryOrder
         }
@@ -4635,7 +4770,15 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         val engineLabel = when (engine) {
                             com.miuraken.chunkflow.core.model.SttEngine.ML_KIT -> "ML Kit GenAI"
                             com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER -> "SpeechRecognizer"
-                            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX -> "sherpa-onnx"
+                            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX -> "sherpa-onnx Whisper Tiny"
+                            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE -> "sherpa-onnx SenseVoice Small"
+                            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE -> "sherpa-onnx Whisper Base"
+                            com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_SMALL -> "sherpa-onnx Whisper Small"
+                            com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY -> "Moonshine ONNX Tiny"
+                            com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE -> "Moonshine ONNX Base"
+                            com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API -> "OpenAI API"
+                            com.miuraken.chunkflow.core.model.SttEngine.GROQ_API -> "Groq API"
+                            com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API -> "Gemini API"
                         }
                         current.copy(detail = "$langLabel ($engineLabel)")
                     } else {
@@ -4803,6 +4946,190 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             } else {
                                 recordExternalDiagnostic("fallback", "Fallback from SHERPA_ONNX: SHERPA_ONNX inference failed or unsupported", true)
                             }
+                        }
+                    }
+                }
+
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE,
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+                -> {
+                    if (language != null) {
+                        val model = engine.downloadableModel ?: continue
+                        val engineId = if (engine == com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE) {
+                            SherpaOnnxWhisperTranscriber.SHERPA_ONNX_BASE_ENGINE_ID
+                        } else {
+                            SherpaOnnxWhisperTranscriber.SHERPA_ONNX_SMALL_ENGINE_ID
+                        }
+                        if (catalogEntry != null && catalogEntry.whisperCode == null) {
+                            lastAttempt = SpeechRecognitionAttemptResult(
+                                text = "",
+                                errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                                engineId = engineId,
+                            )
+                            recordExternalDiagnostic("fallback", "Fallback from ${engine.name}: unsupported for ${language.value}", true)
+                        } else {
+                            val whisperTranscriber = sherpaWhisperTranscriberInstance
+                            if (whisperTranscriber != null && whisperTranscriber.isReadyForLanguage(language.value, model)) {
+                                val res = runCatching {
+                                    whisperTranscriber.transcribePcm16Le(
+                                        pcm16LeBytes = pcm16LeBytes,
+                                        sampleRateHz = sampleRateHz,
+                                        language = language,
+                                        model = model,
+                                    )
+                                }.getOrNull()
+                                if (res != null && res.text.isNotBlank()) {
+                                    clearModelIssue(language)
+                                    return SpeechRecognitionAttemptResult(
+                                        text = res.text.trim(),
+                                        confidence = res.confidence,
+                                        errorCode = null,
+                                        engineId = res.engineId,
+                                    )
+                                }
+                            } else {
+                                lastAttempt = SpeechRecognitionAttemptResult(
+                                    text = "",
+                                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                                    engineId = engineId,
+                                )
+                                recordExternalDiagnostic("fallback", "Fallback from ${engine.name}: model not downloaded", true)
+                            }
+                        }
+                    }
+                }
+
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE -> {
+                    if (language != null) {
+                        val senseVoice = senseVoiceTranscriberInstance
+                        val model = com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL
+                        if (!model.supportsLanguage(language.value)) {
+                            lastAttempt = SpeechRecognitionAttemptResult(
+                                text = "",
+                                errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                                engineId = SherpaOnnxSenseVoiceTranscriber.SENSE_VOICE_ENGINE_ID,
+                            )
+                            recordExternalDiagnostic("fallback", "Fallback from SENSE_VOICE: unsupported for ${language.value}", true)
+                        } else if (senseVoice != null && senseVoice.isReadyForLanguage(language.value)) {
+                            val res = runCatching {
+                                senseVoice.transcribePcm16Le(
+                                    pcm16LeBytes = pcm16LeBytes,
+                                    sampleRateHz = sampleRateHz,
+                                    channelCount = 1,
+                                    language = language,
+                                )
+                            }.getOrNull()
+                            if (res != null && res.text.isNotBlank()) {
+                                clearModelIssue(language)
+                                return SpeechRecognitionAttemptResult(
+                                    text = res.text.trim(),
+                                    confidence = res.confidence,
+                                    errorCode = null,
+                                    engineId = res.engineId,
+                                )
+                            }
+                        } else {
+                            lastAttempt = SpeechRecognitionAttemptResult(
+                                text = "",
+                                errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                                engineId = SherpaOnnxSenseVoiceTranscriber.SENSE_VOICE_ENGINE_ID,
+                            )
+                            recordExternalDiagnostic("fallback", "Fallback from SENSE_VOICE: model not downloaded", true)
+                        }
+                    }
+                }
+
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE,
+                -> {
+                    if (language != null) {
+                        val model = engine.downloadableModel ?: continue
+                        val engineId = if (engine == com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE) {
+                            MoonshineOnnxTranscriber.MOONSHINE_BASE_ENGINE_ID
+                        } else {
+                            MoonshineOnnxTranscriber.MOONSHINE_TINY_ENGINE_ID
+                        }
+                        if (!model.supportsLanguage(language.value)) {
+                            lastAttempt = SpeechRecognitionAttemptResult(
+                                text = "",
+                                errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                                engineId = engineId,
+                            )
+                            recordExternalDiagnostic("fallback", "Fallback from ${engine.name}: only English supported", true)
+                        } else {
+                            val moonshine = moonshineTranscriberInstance
+                            if (moonshine != null && moonshine.isReadyForLanguage(language.value, model)) {
+                                val res = runCatching {
+                                    moonshine.transcribePcm16Le(
+                                        pcm16LeBytes = pcm16LeBytes,
+                                        sampleRateHz = sampleRateHz,
+                                        channelCount = 1,
+                                        language = language,
+                                        model = model,
+                                    )
+                                }.getOrNull()
+                                if (res != null && res.text.isNotBlank()) {
+                                    clearModelIssue(language)
+                                    return SpeechRecognitionAttemptResult(
+                                        text = res.text.trim(),
+                                        confidence = res.confidence,
+                                        errorCode = null,
+                                        engineId = res.engineId,
+                                    )
+                                }
+                            } else {
+                                lastAttempt = SpeechRecognitionAttemptResult(
+                                    text = "",
+                                    errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                                    engineId = engineId,
+                                )
+                                recordExternalDiagnostic("fallback", "Fallback from ${engine.name}: model not downloaded", true)
+                            }
+                        }
+                    }
+                }
+
+                com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API,
+                com.miuraken.chunkflow.core.model.SttEngine.GROQ_API,
+                com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API,
+                -> {
+                    if (language != null) {
+                        val cloud = cloudSpeechTranscriberInstance
+                        val engineId = when (engine) {
+                            com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API -> CloudSpeechTranscriber.OPENAI_ENGINE_ID
+                            com.miuraken.chunkflow.core.model.SttEngine.GROQ_API -> CloudSpeechTranscriber.GROQ_ENGINE_ID
+                            else -> CloudSpeechTranscriber.GEMINI_ENGINE_ID
+                        }
+                        if (cloud != null && cloud.isEngineConfigured(engine)) {
+                            val res = try {
+                                cloud.transcribePcm16Le(
+                                    engine = engine,
+                                    pcm16LeBytes = pcm16LeBytes,
+                                    sampleRateHz = sampleRateHz,
+                                    channelCount = 1,
+                                    language = language,
+                                )
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (_: Exception) {
+                                null
+                            }
+                            if (res != null && res.text.isNotBlank()) {
+                                clearModelIssue(language)
+                                return SpeechRecognitionAttemptResult(
+                                    text = res.text.trim(),
+                                    confidence = res.confidence,
+                                    errorCode = null,
+                                    engineId = res.engineId,
+                                )
+                            }
+                        } else {
+                            lastAttempt = SpeechRecognitionAttemptResult(
+                                text = "",
+                                errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
+                                engineId = engineId,
+                            )
+                            recordExternalDiagnostic("fallback", "Fallback from ${engine.name}: API key not configured", true)
                         }
                     }
                 }
