@@ -8,7 +8,7 @@ package com.miuraken.chunkflow.core.model
  * @property mediaId 対象の教材。
  * @property positionMs 前回の再生位置（ミリ秒、0 以上）。
  * @property maxPositionMs 過去に到達した最大の再生位置（ミリ秒、0 以上）。
- * @property speed 再生速度（0.5..2.0）。
+ * @property speed 再生速度（0.5..3.0）。
  * @property chunkSource 使用するチャンクの出どころ（文字起こしがあれば [ChunkOrigin.IMPORTED]、なければ [ChunkOrigin.AUTO]）。
  * @property autoPause 自動ポーズの設定。
  * @property autoPauseScope 自動ポーズを入れるチャンクの範囲。
@@ -51,6 +51,6 @@ data class ItemState(
         const val MIN_SPEED: Float = 0.5f
 
         /** 設定可能な最大の再生速度（§2 F3.2）。 */
-        const val MAX_SPEED: Float = 2.0f
+        const val MAX_SPEED: Float = 3.0f
     }
 }

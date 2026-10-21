@@ -931,7 +931,7 @@ data class PlayerUiState(
         const val SPEED_STEP: Float = 0.05f
 
         /** 再生速度のプリセット一覧（F3.2、1.0x を除く）。 */
-        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f)
+        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
 
         /** 巻き戻し秒数のプリセット一覧（ミリ秒）。 */
         val SEEK_BACK_PRESETS_MS: List<Long> = listOf(1_000L, 2_000L, 3_000L, 5_000L, 10_000L)

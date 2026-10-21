@@ -51,7 +51,7 @@ class SettingsViewModelTest {
         viewModel.onEvent(SettingsEvent.SetSeekForwardMs(15_000L))
         assertEquals(15_000L, viewModel.uiState.value.seekForwardMs)
 
-        assertEquals(listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f), SettingsUiState.SPEED_PRESETS)
+        assertEquals(listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f), SettingsUiState.SPEED_PRESETS)
         // settings.defaultSpeed が 1.0f の場合は 1.5f を返す
         repo.state.value = repo.state.value.copy(defaultSpeed = 1.0f)
         assertEquals(1.5f, viewModel.uiState.value.defaultSpeed)
@@ -63,6 +63,8 @@ class SettingsViewModelTest {
         viewModel.onEvent(SettingsEvent.SetDefaultSpeed(0.2f))
         assertEquals(ItemState.MIN_SPEED, viewModel.uiState.value.defaultSpeed)
         viewModel.onEvent(SettingsEvent.SetDefaultSpeed(2.5f))
+        assertEquals(2.5f, viewModel.uiState.value.defaultSpeed)
+        viewModel.onEvent(SettingsEvent.SetDefaultSpeed(3.5f))
         assertEquals(ItemState.MAX_SPEED, viewModel.uiState.value.defaultSpeed)
     }
 

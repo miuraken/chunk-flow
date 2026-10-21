@@ -80,6 +80,7 @@ import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.DownloadableSttModel
 import com.miuraken.chunkflow.core.model.DownloadableSttModelState
+import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
@@ -277,6 +278,12 @@ fun SettingsScreen(
     }
 }
 
+/** 速度のスライダーの段数（0.05 刻み、[ItemState.MIN_SPEED]〜[ItemState.MAX_SPEED]）。 */
+private fun speedSliderSteps(): Int = ((ItemState.MAX_SPEED - ItemState.MIN_SPEED) / SPEED_SLIDER_STEP).roundToInt() - 1
+
+/** 速度のスライダーの刻み。 */
+private const val SPEED_SLIDER_STEP: Float = 0.05f
+
 @Composable
 private fun PlaybackSettingsSection(
     seekBackMs: Long,
@@ -384,8 +391,9 @@ private fun PlaybackSettingsSection(
         SettingsSlider(
             value = defaultSpeed,
             onValueChange = { onEvent(SettingsEvent.SetDefaultSpeed(it)) },
-            valueRange = 0.5f..2.0f,
-            steps = 29,
+            valueRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
+            // 0.05 刻み（0.5〜3.0 で 49 段）
+            steps = speedSliderSteps(),
             modifier = Modifier.fillMaxWidth(),
         )
 

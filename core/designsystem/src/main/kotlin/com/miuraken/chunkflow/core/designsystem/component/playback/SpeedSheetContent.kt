@@ -31,6 +31,7 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.util.formatCompactSpeed
 import com.miuraken.chunkflow.core.model.ItemState
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /** [SpeedSheetContent] の ± ボタンで変える速度の幅（ボタンのラベル `±0.05x` と一致させる）。 */
 private const val SPEED_STEP: Float = 0.05f
@@ -124,7 +125,8 @@ fun SpeedSheetContent(
         val sliderValue = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
         val sliderState = rememberSliderState(
             value = sliderValue,
-            steps = 29,
+            // 0.05 刻み（ItemState.MIN_SPEED〜MAX_SPEED）
+            steps = ((ItemState.MAX_SPEED - ItemState.MIN_SPEED) / SPEED_STEP).roundToInt() - 1,
             trackRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
         )
         LaunchedEffect(sliderState, sliderValue) {
