@@ -231,7 +231,7 @@ class SttBenchActivity : Activity() {
             "manufacturer" to Build.MANUFACTURER,
             "model" to Build.MODEL,
             "device" to Build.DEVICE,
-            "soc" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}" else Build.HARDWARE,
+            "soc" to "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}",
             "sdk" to Build.VERSION.SDK_INT,
             "release" to Build.VERSION.RELEASE,
             "cpus" to Runtime.getRuntime().availableProcessors(),

@@ -4,8 +4,8 @@
 # - エンジンごとに force-stop してから SttBenchActivity を起動する（前のエンジンのモデルがメモリに残らないようにし、
 #   エンジンの読み込みの時間とメモリを毎回同じ条件で測るため。1 つのエンジンが止まってもほかのエンジンは続ける）。
 # - ログが STALL_SEC 秒のあいだ増えなければ、そのエンジンは止まったとみなして次へ進む。
-# - SpeechRecognizer は画面がロックされていると音声を読まないので、計測のあいだ画面を点けたままにする
-#   （USB 接続中は画面を消さない設定 `svc power stayon usb` を使う。終わったら元に戻す）。
+# - 計測の条件をそろえるため、計測のあいだ画面を点けたままにする（画面が消えると CPU の動き方が変わりうる。
+#   USB 接続中は画面を消さない設定 `svc power stayon usb` を使い、終わったら元に戻す）。
 #
 # 使い方: tools/stt-bench/run_all.sh <シリアル> <クリップ一覧.tsv> <タグ> <エンジン...>
 #   例: tools/stt-bench/run_all.sh 3B271FDJG005PQ real.tsv real mtiny mbase sensevoice wtiny wbase mlkit sr wsmall

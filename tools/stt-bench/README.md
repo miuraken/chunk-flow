@@ -57,8 +57,25 @@ python3 tools/stt-bench/consensus.py --results sample_files/stt-bench/real/resul
     --manifest sample_files/stt-bench/real/real.tsv --out sample_files/stt-bench/real/consensus
 #   → consensus/review.txt を見ながら refs_draft.tsv を直して real/refs.tsv にする（採点しない行は text を EXCLUDE に）
 python3 tools/stt-bench/score.py --results sample_files/stt-bench/real/results-real-run-*.jsonl \
-    --refs sample_files/stt-bench/real/refs.tsv --title 実教材 --out sample_files/stt-bench/real/score
+    --refs sample_files/stt-bench/real/refs.tsv --title 実教材 --out sample_files/stt-bench/real/score \
+    --json sample_files/stt-bench/real/score/summary.json
+
+# 6. 合成音声を声で分けて採点する（日本語・中国語・韓国語の 2 人目の Eddy はロボット的な声なので、主な結果から外して別に見る）
+cd sample_files/stt-bench/tts
+awk -F'\t' 'NR==FNR{if(FNR>1)v[$1]=$4; next} FNR==1 || v[$1] !~ /^Eddy/' tts.tsv refs.tsv > refs_natural.tsv
+awk -F'\t' 'NR==FNR{if(FNR>1)v[$1]=$4; next} FNR==1 || v[$1] ~ /^Eddy/' tts.tsv refs.tsv > refs_eddy.tsv
+cd -
+python3 tools/stt-bench/score.py --results sample_files/stt-bench/tts/results-tts-run-*.jsonl \
+    --refs sample_files/stt-bench/tts/refs_natural.tsv --title 合成音声（自然な声） \
+    --out sample_files/stt-bench/tts/score_natural --json sample_files/stt-bench/tts/score_natural/summary.json
+
+# 7. 実教材と合成音声（自然な声）の集計を、言語ごとの 1 つの表にまとめる
+python3 tools/stt-bench/combine.py --real sample_files/stt-bench/real/score/summary.json \
+    --tts sample_files/stt-bench/tts/score_natural/summary.json --out sample_files/stt-bench/combined.md
 ```
+
+- `score.py` は、同じエンジン・クリップの結果が複数あると後のファイルを使います。一部のエンジンだけ測り直したときは、
+  元の結果のあとに測り直した結果のファイルを並べます。
 
 ## 引数（SttBenchActivity）
 

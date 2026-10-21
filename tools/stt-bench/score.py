@@ -5,6 +5,7 @@
 - 精度: 日本語・中国語・広東語・韓国語は CER（文字誤り率。空白を除く）、ほかの言語は WER（単語誤り率）。
   コーパス全体の (置換 + 削除 + 挿入) / 正解の長さ。本文が空の結果は全部削除として数える。
 - 正規化: NFKC、小文字化、句読点・記号の除去。中国語・広東語は簡体字にそろえる（hant2hans.swift）。
+  数字は読みにそろえる（日本語・中国語・広東語は漢数字、英語は英単語）。広東語は口語の字の揺れ（俾/畀など）をそろえる。
   ヒンディー語はヌクタと半月点の揺れ、アラビア語は母音記号とアリフなどの字形の揺れを無視する。
 - 速度: ウォームアップ後の 1 クリップあたりの時間（中央値・90 パーセンタイル）、RTF（処理時間の合計 / 音声の長さの合計）、
   ウォームアップ 1 回目の時間（モデルの読み込みを含む）。
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import subprocess
 import sys
@@ -76,12 +78,120 @@ def to_simplified(texts: list[str]) -> list[str]:
     return lines[: len(texts)] if len(lines) >= len(texts) else texts
 
 
+EN_ONES = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+    "seventeen eighteen nineteen"
+).split()
+EN_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+CJK_DIGITS = "零一二三四五六七八九"
+DEVANAGARI_DIGITS = str.maketrans({chr(0x0966 + i): str(i) for i in range(10)})
+# 広東語の口語の字の揺れ（同じ語の書き分け）。簡体字にそろえたあとに当てる
+YUE_VARIANTS = str.maketrans({"俾": "畀", "既": "嘅", "咩": "乜"})
+# ヒンディー語の数詞（1〜40）を数字にそろえる（「बीस」と「20」の違いを誤りに数えない）。正解と結果の両方に同じように当てる
+HINDI_NUMBER_WORDS = {
+    w: str(n)
+    for n, words in enumerate(
+        [
+            [],
+            ["एक"], ["दो"], ["तीन"], ["चार"], ["पांच", "पाँच"], ["छह", "छः", "छे"], ["सात"], ["आठ"], ["नौ"], ["दस"],
+            ["ग्यारह"], ["बारह"], ["तेरह"], ["चौदह"], ["पंद्रह", "पन्द्रह"], ["सोलह"], ["सत्रह"], ["अठारह"], ["उन्नीस"], ["बीस"],
+            ["इक्कीस"], ["बाईस"], ["तेईस"], ["चौबीस"], ["पच्चीस"], ["छब्बीस"], ["सत्ताईस"], ["अट्ठाईस", "अठ्ठाईस", "अठाईस"],
+            ["उनतीस"], ["तीस"], ["इकतीस"], ["बत्तीस"], ["तैंतीस"], ["चौंतीस"], ["पैंतीस"], ["छत्तीस"], ["सैंतीस"], ["अड़तीस", "अडतीस"],
+            ["उनतालीस"], ["चालीस"],
+        ]
+    )
+    for w in words
+}
+# 韓国語の数字: 「〜시」（時刻）は固有数詞、それ以外は漢数詞の読みにそろえる（「1시」と「한 시」、「2년」と「이 년」）
+KO_NATIVE_HOURS = {1: "한", 2: "두", 3: "세", 4: "네", 5: "다섯", 6: "여섯", 7: "일곱", 8: "여덟", 9: "아홉", 10: "열", 11: "열한", 12: "열두"}
+KO_SINO_DIGITS = "영일이삼사오육칠팔구"
+KO_HOUR = re.compile(r"(\d+)\s*시")
+# 中国語・広東語の間投詞（つなぎの声）。正解に入れるかどうかが揺れるので採点では無視する
+ZH_FILLERS = str.maketrans({"嗯": None})
+# ヒンディー語の口語の書き分け（話すときは同じ語）。「ये」と「यह」、「वो」と「वह」
+HINDI_WORD_VARIANTS = {"ये": "यह", "वो": "वह"}
+NUMBER = re.compile(r"\d+")
+DOLLARS = re.compile(r"\$\s*(\d+)")
+
+
+def en_number_words(n: int) -> str:
+    """0〜9999 の整数を英語の読み（空白区切り）にする。範囲外はそのまま。"""
+    if n < 20:
+        return EN_ONES[n]
+    if n < 100:
+        tens, ones = divmod(n, 10)
+        return EN_TENS[tens] + ("" if ones == 0 else " " + EN_ONES[ones])
+    if n < 1000:
+        hundreds, rest = divmod(n, 100)
+        return EN_ONES[hundreds] + " hundred" + ("" if rest == 0 else " " + en_number_words(rest))
+    if n < 10000:
+        thousands, rest = divmod(n, 1000)
+        return en_number_words(thousands) + " thousand" + ("" if rest == 0 else " " + en_number_words(rest))
+    return str(n)
+
+
+def cjk_number(n: int) -> str:
+    """0〜9999 の整数を漢数字（十・百・千を使う読み）にする。範囲外はそのまま。"""
+    if n < 10:
+        return CJK_DIGITS[n]
+    if n >= 10000:
+        return str(n)
+    out = []
+    zero_pending = False
+    for value, unit in ((1000, "千"), (100, "百"), (10, "十"), (1, "")):
+        digit, n = divmod(n, value)
+        if digit == 0:
+            if out:
+                zero_pending = True
+            continue
+        if zero_pending:
+            out.append("零")
+            zero_pending = False
+        if not (unit == "十" and digit == 1 and not out):
+            out.append(CJK_DIGITS[digit])
+        out.append(unit)
+    return "".join(out)
+
+
+def ko_sino_number(n: int) -> str:
+    """0〜9999 の整数を韓国語の漢数詞（십・백・천を使う読み）にする。範囲外はそのまま。"""
+    if n < 10:
+        return KO_SINO_DIGITS[n]
+    if n >= 10000:
+        return str(n)
+    out = []
+    for value, unit in ((1000, "천"), (100, "백"), (10, "십"), (1, "")):
+        digit, n = divmod(n, value)
+        if digit == 0:
+            continue
+        if not (digit == 1 and unit):
+            out.append(KO_SINO_DIGITS[digit])
+        out.append(unit)
+    return "".join(out)
+
+
 def normalize(text: str, lang: str) -> str:
     t = unicodedata.normalize("NFKC", text or "").lower()
     if lang == "hi":
-        t = t.translate(HINDI_MAP)
+        t = t.translate(HINDI_MAP).translate(DEVANAGARI_DIGITS)
+        t = " ".join(HINDI_WORD_VARIANTS.get(w, HINDI_NUMBER_WORDS.get(w, w)) for w in t.split())
     if lang == "ar":
         t = "".join(ch for ch in t if ch not in ARABIC_DIACRITICS).translate(ARABIC_MAP)
+    # 数字の書き方の違い（「19」と「十九」、「15」と「fifteen」）を誤りに数えないよう、読みにそろえる
+    if lang in ("zh", "yue", "ja"):
+        t = NUMBER.sub(lambda m: cjk_number(int(m.group())), t)
+        if lang in ("zh", "yue"):
+            t = t.replace("+", "加")
+    elif lang == "en":
+        t = DOLLARS.sub(lambda m: m.group(1) + " dollars", t).replace("&", " and ")
+        t = NUMBER.sub(lambda m: " " + en_number_words(int(m.group())) + " ", t)
+    elif lang == "ko":
+        t = KO_HOUR.sub(lambda m: KO_NATIVE_HOURS.get(int(m.group(1)), ko_sino_number(int(m.group(1)))) + "시", t)
+        t = NUMBER.sub(lambda m: ko_sino_number(int(m.group())), t)
+    if lang in ("zh", "yue"):
+        t = t.translate(ZH_FILLERS)
+    if lang == "yue":
+        t = t.translate(YUE_VARIANTS)
     out = []
     for ch in t:
         cat = unicodedata.category(ch)
