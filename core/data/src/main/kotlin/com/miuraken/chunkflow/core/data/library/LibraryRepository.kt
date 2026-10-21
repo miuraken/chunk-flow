@@ -4,8 +4,11 @@ import android.net.Uri
 import com.miuraken.chunkflow.core.model.AudioItem
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.LibraryPlaylist
+import com.miuraken.chunkflow.core.model.LibraryTags
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
@@ -139,6 +142,52 @@ interface LibraryRepository {
         currentCourse: String?,
         newCourse: String? = currentCourse,
         languages: LanguagePair,
+    ) = Unit
+
+    /**
+     * フォルダ [coursePath] の色（[LibraryFolderColors] のパレットの番号）を設定する。
+     *
+     * [colorIndex] が `null` なら対象言語の既定の色に戻す。パレットの範囲外の番号は無視する。
+     * フォルダの設定の行がまだない（ファイルだけから見えている）フォルダは、行を作ってから設定する。
+     */
+    suspend fun setCourseFolderColor(
+        coursePath: String,
+        colorIndex: Int?,
+    ) = Unit
+
+    /**
+     * 対象言語ごとの、フォルダの既定の色の順番を購読する（対象言語が初めてフォルダに使われた順、0 始まり）。
+     *
+     * キーは [LibraryFolderColors.languageKey] でそろえた言語コード。フォルダの色は [LibraryFolderColors.resolveIndex] で決める。
+     */
+    fun observeFolderLanguageColorOrdinals(): Flow<Map<LanguageTag, Int>> = flowOf(emptyMap())
+
+    /** 1 件以上のファイルに付いているタグの名前を、タグが作られた順に購読する。 */
+    fun observeTags(): Flow<List<String>> = flowOf(emptyList())
+
+    /** ファイルごとのタグの名前（タグが作られた順）を購読する。タグのないファイルは含めない。 */
+    fun observeItemTags(): Flow<Map<MediaId, List<String>>> = flowOf(emptyMap())
+
+    /**
+     * ファイル [id] のタグを [tags] にそろえる（ない名前のタグは作り、含まれないタグは外す）。
+     *
+     * 名前は [LibraryTags.normalizeName] でそろえ、大文字・小文字や全角・半角の違いだけのタグは既存のタグにまとめる。
+     * 正しくない名前は捨て、[LibraryTags.MAX_TAGS_PER_ITEM] 個を超える分は付けない。ファイルが削除済みなら何もしない。
+     */
+    suspend fun setItemTags(
+        id: MediaId,
+        tags: List<String>,
+    ) = Unit
+
+    /**
+     * 複数のファイル [ids] に [addTags] のタグを付け、[removeTags] のタグを外す（ライブラリの「タグを編集」）。
+     *
+     * 同じタグが両方にあれば付ける。名前の扱いと上限は [setItemTags] と同じ。削除済みのファイルは飛ばす。
+     */
+    suspend fun updateItemTags(
+        ids: Set<MediaId>,
+        addTags: Set<String>,
+        removeTags: Set<String>,
     ) = Unit
 
     /** 教材の聴取完了フラグ（Listened / 済）と最終アクセス日時を更新する。教材が削除済みなら何もしない。 */

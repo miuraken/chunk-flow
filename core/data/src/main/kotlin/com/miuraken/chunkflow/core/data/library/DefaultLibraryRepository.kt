@@ -17,13 +17,18 @@ import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.PlaylistDao
+import com.miuraken.chunkflow.core.database.dao.TagDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
+import com.miuraken.chunkflow.core.database.entity.LanguageColorEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
+import com.miuraken.chunkflow.core.database.entity.MediaItemTagEntity
+import com.miuraken.chunkflow.core.database.entity.MediaItemTagNameRow
 import com.miuraken.chunkflow.core.database.entity.PlaylistEntity
 import com.miuraken.chunkflow.core.database.entity.PlaylistItemEntity
+import com.miuraken.chunkflow.core.database.entity.TagEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.database.entity.toEntity
 import com.miuraken.chunkflow.core.database.entity.toExternalModel
@@ -38,8 +43,10 @@ import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LibraryPlaylist
+import com.miuraken.chunkflow.core.model.LibraryTags
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.SegmentationParams
@@ -112,6 +119,7 @@ class DefaultLibraryRepository(
     private val transcriptDao: TranscriptDao? = null,
     private val courseFolderDao: CourseFolderDao = NoOpCourseFolderDao,
     private val playlistDao: PlaylistDao = NoOpPlaylistDao,
+    private val tagDao: TagDao = NoOpTagDao,
     private val analysisRepository: AnalysisRepository = NoOpAnalysisRepository,
     private val transcriptParser: TranscriptParser = NoOpTranscriptParser,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -131,6 +139,7 @@ class DefaultLibraryRepository(
         transcriptDao: TranscriptDao,
         courseFolderDao: CourseFolderDao,
         playlistDao: PlaylistDao,
+        tagDao: TagDao,
         userSettingsRepository: UserSettingsRepository,
         analysisRepository: AnalysisRepository,
         transcriptParser: TranscriptParser,
@@ -149,6 +158,7 @@ class DefaultLibraryRepository(
         transcriptDao = transcriptDao,
         courseFolderDao = courseFolderDao,
         playlistDao = playlistDao,
+        tagDao = tagDao,
         analysisRepository = analysisRepository,
         transcriptParser = transcriptParser,
         clock = System::currentTimeMillis,
@@ -925,6 +935,107 @@ class DefaultLibraryRepository(
                     baseLang = languages.base?.value,
                 )
             }
+        }
+    }
+
+    override suspend fun setCourseFolderColor(
+        coursePath: String,
+        colorIndex: Int?,
+    ) {
+        if (colorIndex != null && !LibraryFolderColors.isValidIndex(colorIndex)) return
+        withContext(ioDispatcher) {
+            val normalizedPath = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() } ?: return@withContext
+            if (courseFolderDao.getByPath(normalizedPath) != null) {
+                courseFolderDao.updateColorIndex(normalizedPath, colorIndex)
+                return@withContext
+            }
+            // 設定の行がないフォルダは、既定の色に戻すだけなら何もしない
+            if (colorIndex == null) return@withContext
+            val implicitFolder = buildImplicitCourseFolderEntity(normalizedPath) ?: return@withContext
+            courseFolderDao.upsert(implicitFolder.copy(colorIndex = colorIndex))
+        }
+    }
+
+    /**
+     * 設定の行がなく、ファイル（または子フォルダの行）だけから見えているフォルダ [normalizedPath] の行を組み立てる。
+     *
+     * 言語ペアは配下の最初のファイル（なければ子フォルダ、さらになければ既定の言語ペア）から、種別は配下に端末内の
+     * ファイルを参照する教材か実フォルダの子があれば実フォルダ、なければ仮想フォルダとする。フォルダが見つからなければ `null`。
+     */
+    private suspend fun buildImplicitCourseFolderEntity(normalizedPath: String): CourseFolderEntity? {
+        val prefix = "$normalizedPath/"
+        val treeItems = mediaItemDao.observeAll().first().filter { item ->
+            val itemCourse = sanitizeCoursePath(item.course)
+            itemCourse == normalizedPath || itemCourse.startsWith(prefix)
+        }
+        val childFolders = courseFolderDao.getAll().filter { it.coursePath.startsWith(prefix) }
+        if (treeItems.isEmpty() && childFolders.isEmpty()) return null
+        val firstItem = treeItems.minByOrNull { it.importedAt }
+        val firstChild = childFolders.minByOrNull { it.coursePath.length }
+        val defaultLanguages = userSettingsRepository.settings.first().defaultLanguagePair
+        val targetLang = firstItem?.targetLang?.takeIf { it.isNotBlank() }
+            ?: firstChild?.targetLang?.takeIf { it.isNotBlank() }
+            ?: defaultLanguages.target.value
+        val baseLang = when {
+            firstItem != null -> firstItem.baseLang
+            firstChild != null -> firstChild.baseLang
+            else -> defaultLanguages.base?.value
+        }
+        val isRealFolder = treeItems.any { it.storageState == AudioStorageState.LOCAL_REFERENCE.name } ||
+            childFolders.any { it.kind == LibraryFolderKind.LOCAL_DIRECTORY.name }
+        return CourseFolderEntity(
+            coursePath = normalizedPath,
+            kind = if (isRealFolder) LibraryFolderKind.LOCAL_DIRECTORY.name else LibraryFolderKind.VIRTUAL_DIRECTORY.name,
+            targetLang = targetLang,
+            baseLang = baseLang,
+            treeUri = null,
+            lastScannedAt = clock(),
+        )
+    }
+
+    override fun observeFolderLanguageColorOrdinals(): Flow<Map<LanguageTag, Int>> = courseFolderDao.observeLanguageColors().map { rows ->
+        rows.associate { row -> LanguageTag(row.language) to row.ordinal }
+    }
+
+    override fun observeTags(): Flow<List<String>> = tagDao.observeUsedTags().map { tags ->
+        tags.map(TagEntity::name)
+    }
+
+    override fun observeItemTags(): Flow<Map<MediaId, List<String>>> = tagDao.observeItemTagNames().map { rows ->
+        rows.groupBy(
+            keySelector = { row -> MediaId(row.mediaId) },
+            valueTransform = MediaItemTagNameRow::tagName,
+        )
+    }
+
+    override suspend fun setItemTags(
+        id: MediaId,
+        tags: List<String>,
+    ) {
+        val names = LibraryTags.normalizeNames(tags).take(LibraryTags.MAX_TAGS_PER_ITEM)
+        withContext(ioDispatcher) {
+            // 削除済みの教材には書かない（外部キー違反で落ちないように DAO が確かめる）
+            tagDao.replaceTagsForItem(mediaId = id.value, names = names, createdAt = clock())
+        }
+    }
+
+    override suspend fun updateItemTags(
+        ids: Set<MediaId>,
+        addTags: Set<String>,
+        removeTags: Set<String>,
+    ) {
+        if (ids.isEmpty()) return
+        val addNames = LibraryTags.normalizeNames(addTags)
+        val removeNames = LibraryTags.normalizeNames(removeTags)
+        if (addNames.isEmpty() && removeNames.isEmpty()) return
+        withContext(ioDispatcher) {
+            tagDao.updateTagsForItems(
+                mediaIds = ids.map(MediaId::value),
+                addNames = addNames,
+                removeNames = removeNames,
+                maxTagsPerItem = LibraryTags.MAX_TAGS_PER_ITEM,
+                createdAt = clock(),
+            )
         }
     }
 
@@ -2705,7 +2816,25 @@ class DefaultLibraryRepository(
         override suspend fun getByPath(coursePath: String): CourseFolderEntity? = null
         override suspend fun getByTreeUri(treeUri: String): CourseFolderEntity? = null
         override suspend fun upsert(folder: CourseFolderEntity) = Unit
+        override suspend fun upsertRow(folder: CourseFolderEntity) = Unit
         override suspend fun deleteByPath(coursePath: String) = Unit
+        override suspend fun updateColorIndex(coursePath: String, colorIndex: Int?): Int = 0
+        override fun observeLanguageColors(): Flow<List<LanguageColorEntity>> = flowOf(emptyList())
+        override suspend fun getLanguageColor(language: String): LanguageColorEntity? = null
+        override suspend fun getMaxLanguageColorOrdinal(): Int? = null
+        override suspend fun insertLanguageColor(entity: LanguageColorEntity): Long = -1L
+    }
+
+    private object NoOpTagDao : TagDao {
+        override fun observeUsedTags(): Flow<List<TagEntity>> = flowOf(emptyList())
+        override fun observeItemTagNames(): Flow<List<MediaItemTagNameRow>> = flowOf(emptyList())
+        override suspend fun getByKey(nameKey: String): TagEntity? = null
+        override suspend fun insertTag(tag: TagEntity): Long = -1L
+        override suspend fun getTagIdsForItem(mediaId: String): List<Long> = emptyList()
+        override suspend fun insertItemTags(rows: List<MediaItemTagEntity>) = Unit
+        override suspend fun deleteItemTags(mediaId: String, tagIds: List<Long>) = Unit
+        override suspend fun getExistingMediaIds(mediaIds: List<String>): List<String> = emptyList()
+        override suspend fun deleteUnusedTags(): Int = 0
     }
 
     private object NoOpPlaylistDao : PlaylistDao {
