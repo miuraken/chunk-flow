@@ -11,8 +11,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -156,6 +161,40 @@ class LibraryTagAndFolderColorDaoTest {
         assertEquals(1, dao.deleteUnusedTags())
     }
 
+    @Test
+    fun `observeItemTagNamesとobserveUsedTags_購読中にファイルを消すと一覧が更新される`() = runBlocking<Unit> {
+        insertMediaItem(MEDIA_A, "a")
+        val dao = db.tagDao()
+        dao.replaceTagsForItem(MEDIA_A, listOf("English"), createdAt = 10L)
+
+        val itemTagEmissions = Channel<List<MediaItemTagNameRow>>(Channel.UNLIMITED)
+        val usedTagEmissions = Channel<List<String>>(Channel.UNLIMITED)
+        val itemTagJob = launch(Dispatchers.Default) { dao.observeItemTagNames().collect { itemTagEmissions.send(it) } }
+        val usedTagJob = launch(Dispatchers.Default) { dao.observeUsedTags().collect { tags -> usedTagEmissions.send(tags.map { it.name }) } }
+        try {
+            withTimeout(OBSERVE_TIMEOUT_MS) {
+                itemTagEmissions.receiveUntil { it.isNotEmpty() }
+                usedTagEmissions.receiveUntil { it == listOf("English") }
+            }
+            db.mediaItemDao().deleteById(MEDIA_A)
+            withTimeout(OBSERVE_TIMEOUT_MS) {
+                itemTagEmissions.receiveUntil { it.isEmpty() }
+                usedTagEmissions.receiveUntil { it.isEmpty() }
+            }
+        } finally {
+            itemTagJob.cancel()
+            usedTagJob.cancel()
+        }
+    }
+
+    /** [predicate] を満たす値が届くまで受け取り、その値を返す。 */
+    private suspend fun <T> Channel<T>.receiveUntil(predicate: (T) -> Boolean): T {
+        while (true) {
+            val value = receive()
+            if (predicate(value)) return value
+        }
+    }
+
     private fun folder(path: String, targetLang: String, lastScannedAt: Long = 0L): CourseFolderEntity = CourseFolderEntity(
         coursePath = path,
         kind = "VIRTUAL_DIRECTORY",
@@ -184,5 +223,6 @@ class LibraryTagAndFolderColorDaoTest {
     private companion object {
         const val MEDIA_A = "00000000-0000-4000-8000-000000000091"
         const val MEDIA_B = "00000000-0000-4000-8000-000000000092"
+        const val OBSERVE_TIMEOUT_MS = 10_000L
     }
 }

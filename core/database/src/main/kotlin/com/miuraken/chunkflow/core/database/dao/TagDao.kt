@@ -17,17 +17,29 @@ private const val MAX_IDS_PER_QUERY: Int = 500
 /** `tag` と `media_item_tag` テーブルの DAO（ファイルに付けるタグ）。 */
 @Dao
 interface TagDao {
-    /** 1 件以上のファイルに付いているタグを作成順に購読する（どのファイルにも付いていないタグは含めない）。 */
+    /**
+     * 1 件以上のファイルに付いているタグを作成順に購読する（どのファイルにも付いていないタグは含めない）。
+     *
+     * `media_item` も結合して、ファイルの削除（`ON DELETE CASCADE`）でも購読中の一覧が更新されるようにする。
+     */
     @Query(
-        "SELECT * FROM tag WHERE EXISTS (SELECT 1 FROM media_item_tag WHERE media_item_tag.tag_id = tag.id) " +
+        "SELECT * FROM tag WHERE EXISTS (" +
+            "SELECT 1 FROM media_item_tag INNER JOIN media_item ON media_item.id = media_item_tag.media_id " +
+            "WHERE media_item_tag.tag_id = tag.id) " +
             "ORDER BY created_at ASC, id ASC",
     )
     fun observeUsedTags(): Flow<List<TagEntity>>
 
-    /** ファイルとタグ名の対応をすべて、タグの作成順に購読する。 */
+    /**
+     * ファイルとタグ名の対応をすべて、タグの作成順に購読する。
+     *
+     * `media_item` も結合して、ファイルの削除（`ON DELETE CASCADE`）でも購読中の一覧が更新されるようにする。
+     */
     @Query(
         "SELECT media_item_tag.media_id AS media_id, tag.name AS name FROM media_item_tag " +
-            "INNER JOIN tag ON tag.id = media_item_tag.tag_id ORDER BY tag.created_at ASC, tag.id ASC",
+            "INNER JOIN tag ON tag.id = media_item_tag.tag_id " +
+            "INNER JOIN media_item ON media_item.id = media_item_tag.media_id " +
+            "ORDER BY tag.created_at ASC, tag.id ASC",
     )
     fun observeItemTagNames(): Flow<List<MediaItemTagNameRow>>
 
