@@ -14,6 +14,15 @@
             android:launchMode="singleTop"
             android:permission="android.permission.DUMP"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
+        <!-- 端末内の音声認識エンジンの速度と本文の実機計測ツール（SttBenchActivity の KDoc、tools/stt-bench/）。起動の条件は上と同じ。 -->
+        <activity
+            android:name="com.miuraken.chunkflow.core.media.bench.SttBenchActivity"
+            android:configChanges="density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:permission="android.permission.DUMP"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
     </application>
 
 </manifest>

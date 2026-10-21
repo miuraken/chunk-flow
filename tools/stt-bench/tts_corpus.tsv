@@ -1,0 +1,123 @@
+# 音声認識ベンチマークの合成音声（macOS の say）用の文。tools/stt-bench/make_tts_clips.py が読む。
+# 10 言語で同じ内容の 12 文（語学教材でよく出る場面）。数字は書き方の揺れ（「2」と「二」など）で精度がぶれるので入れない。
+# 列: id<TAB>lang<TAB>text
+en_01	en	Good morning. How are you today?
+en_02	en	Excuse me, where is the nearest train station?
+en_03	en	I would like a cup of coffee, please.
+en_04	en	It is very cold today, so please wear a warm coat.
+en_05	en	My younger sister is studying medicine at university.
+en_06	en	How much is this bag? It is a little expensive.
+en_07	en	Let us meet in front of the library tomorrow afternoon.
+en_08	en	I have been learning this language since last spring.
+en_09	en	Could you speak a little more slowly, please?
+en_10	en	The restaurant next to the hotel is famous for its noodles.
+en_11	en	Thank you very much for your help.
+en_12	en	On weekends, I usually go hiking in the mountains with my friends.
+ja_01	ja	おはようございます。今日はお元気ですか。
+ja_02	ja	すみません、一番近い駅はどこですか。
+ja_03	ja	コーヒーを一杯お願いします。
+ja_04	ja	今日はとても寒いので、暖かいコートを着てください。
+ja_05	ja	妹は大学で医学を勉強しています。
+ja_06	ja	このかばんはいくらですか。少し高いですね。
+ja_07	ja	明日の午後、図書館の前で会いましょう。
+ja_08	ja	去年の春からこの言語を勉強しています。
+ja_09	ja	もう少しゆっくり話していただけますか。
+ja_10	ja	ホテルの隣のレストランは麺料理で有名です。
+ja_11	ja	手伝ってくださって、本当にありがとうございます。
+ja_12	ja	週末はたいてい友達と山へハイキングに行きます。
+zh_01	zh	早上好，你今天好吗？
+zh_02	zh	请问，最近的火车站在哪里？
+zh_03	zh	我想要一杯咖啡，谢谢。
+zh_04	zh	今天非常冷，请穿一件暖和的外套。
+zh_05	zh	我妹妹在大学学习医学。
+zh_06	zh	这个包多少钱？有点儿贵。
+zh_07	zh	我们明天下午在图书馆前面见面吧。
+zh_08	zh	我从去年春天开始学习这门语言。
+zh_09	zh	请你说得稍微慢一点，好吗？
+zh_10	zh	酒店旁边的那家餐厅以面条出名。
+zh_11	zh	非常感谢你的帮助。
+zh_12	zh	周末我通常和朋友们去山里远足。
+yue_01	yue	早晨，你今日好嗎？
+yue_02	yue	唔該，最近嘅火車站喺邊度？
+yue_03	yue	我想要一杯咖啡，唔該。
+yue_04	yue	今日好凍，記得着件暖啲嘅褸。
+yue_05	yue	我細妹喺大學讀醫。
+yue_06	yue	呢個袋幾多錢？有啲貴。
+yue_07	yue	我哋聽日下晝喺圖書館門口等啦。
+yue_08	yue	我由舊年春天開始學呢種語言。
+yue_09	yue	你可唔可以講慢少少？
+yue_10	yue	酒店隔籬嗰間餐廳啲麵好出名。
+yue_11	yue	多謝你幫忙。
+yue_12	yue	週末我通常同朋友去行山。
+ko_01	ko	좋은 아침이에요. 오늘 기분 어떠세요?
+ko_02	ko	실례합니다, 가장 가까운 기차역이 어디에 있어요?
+ko_03	ko	따뜻한 커피 주세요.
+ko_04	ko	오늘은 아주 추우니까 따뜻한 코트를 입으세요.
+ko_05	ko	제 여동생은 대학교에서 의학을 공부하고 있어요.
+ko_06	ko	이 가방은 얼마예요? 조금 비싸네요.
+ko_07	ko	내일 오후에 도서관 앞에서 만나요.
+ko_08	ko	작년 봄부터 이 언어를 배우고 있어요.
+ko_09	ko	조금 더 천천히 말씀해 주시겠어요?
+ko_10	ko	호텔 옆에 있는 식당은 국수로 유명해요.
+ko_11	ko	도와주셔서 정말 감사합니다.
+ko_12	ko	주말에는 보통 친구들과 함께 산에 하이킹을 가요.
+hi_01	hi	सुप्रभात, आज आप कैसे हैं?
+hi_02	hi	माफ़ कीजिए, सबसे नज़दीकी रेलवे स्टेशन कहाँ है?
+hi_03	hi	मुझे एक कप कॉफ़ी चाहिए।
+hi_04	hi	आज बहुत ठंड है, इसलिए कृपया गरम कोट पहनिए।
+hi_05	hi	मेरी छोटी बहन विश्वविद्यालय में चिकित्सा की पढ़ाई कर रही है।
+hi_06	hi	यह बैग कितने का है? थोड़ा महँगा है।
+hi_07	hi	चलिए कल दोपहर पुस्तकालय के सामने मिलते हैं।
+hi_08	hi	मैं पिछले वसंत से यह भाषा सीख रहा हूँ।
+hi_09	hi	क्या आप थोड़ा धीरे बोल सकते हैं?
+hi_10	hi	होटल के बगल वाला रेस्टोरेंट अपने नूडल्स के लिए मशहूर है।
+hi_11	hi	आपकी मदद के लिए बहुत धन्यवाद।
+hi_12	hi	सप्ताहांत में मैं आमतौर पर अपने दोस्तों के साथ पहाड़ों में घूमने जाता हूँ।
+es_01	es	Buenos días, ¿cómo estás hoy?
+es_02	es	Disculpe, ¿dónde está la estación de tren más cercana?
+es_03	es	Quisiera un café, por favor.
+es_04	es	Hoy hace mucho frío, así que ponte un abrigo caliente.
+es_05	es	Mi hermana menor estudia medicina en la universidad.
+es_06	es	¿Cuánto cuesta este bolso? Es un poco caro.
+es_07	es	Nos vemos mañana por la tarde delante de la biblioteca.
+es_08	es	Estoy aprendiendo este idioma desde la primavera pasada.
+es_09	es	¿Podría hablar un poco más despacio, por favor?
+es_10	es	El restaurante que está al lado del hotel es famoso por sus fideos.
+es_11	es	Muchas gracias por tu ayuda.
+es_12	es	Los fines de semana normalmente voy de excursión a la montaña con mis amigos.
+ar_01	ar	صباح الخير، كيف حالك اليوم؟
+ar_02	ar	عفواً، أين أقرب محطة قطار؟
+ar_03	ar	أريد فنجان قهوة من فضلك.
+ar_04	ar	الجو بارد جداً اليوم، لذلك ارتدِ معطفاً دافئاً.
+ar_05	ar	أختي الصغرى تدرس الطب في الجامعة.
+ar_06	ar	كم سعر هذه الحقيبة؟ إنها غالية قليلاً.
+ar_07	ar	لنلتقِ غداً بعد الظهر أمام المكتبة.
+ar_08	ar	أتعلم هذه اللغة منذ الربيع الماضي.
+ar_09	ar	هل يمكنك أن تتكلم ببطء أكثر من فضلك؟
+ar_10	ar	المطعم المجاور للفندق مشهور بالمعكرونة.
+ar_11	ar	شكراً جزيلاً على مساعدتك.
+ar_12	ar	في عطلة نهاية الأسبوع أذهب عادةً للتنزه في الجبال مع أصدقائي.
+uk_01	uk	Доброго ранку, як ти сьогодні?
+uk_02	uk	Перепрошую, де найближчий залізничний вокзал?
+uk_03	uk	Я хотів би чашку кави, будь ласка.
+uk_04	uk	Сьогодні дуже холодно, тому одягни тепле пальто.
+uk_05	uk	Моя молодша сестра вивчає медицину в університеті.
+uk_06	uk	Скільки коштує ця сумка? Вона трохи дорога.
+uk_07	uk	Зустріньмося завтра після обіду біля бібліотеки.
+uk_08	uk	Я вивчаю цю мову з минулої весни.
+uk_09	uk	Чи не могли б ви говорити трохи повільніше?
+uk_10	uk	Ресторан біля готелю славиться своєю локшиною.
+uk_11	uk	Щиро дякую за вашу допомогу.
+uk_12	uk	На вихідних я зазвичай ходжу в гори з друзями.
+vi_01	vi	Chào buổi sáng, hôm nay bạn có khỏe không?
+vi_02	vi	Xin lỗi, ga tàu gần nhất ở đâu?
+vi_03	vi	Cho tôi một ly cà phê.
+vi_04	vi	Hôm nay trời rất lạnh, vì vậy hãy mặc áo khoác ấm.
+vi_05	vi	Em gái tôi đang học y ở trường đại học.
+vi_06	vi	Cái túi này bao nhiêu tiền? Hơi đắt một chút.
+vi_07	vi	Chiều mai chúng ta gặp nhau trước thư viện nhé.
+vi_08	vi	Tôi đã học ngôn ngữ này từ mùa xuân năm ngoái.
+vi_09	vi	Bạn có thể nói chậm hơn một chút được không?
+vi_10	vi	Nhà hàng bên cạnh khách sạn nổi tiếng với món mì.
+vi_11	vi	Cảm ơn bạn rất nhiều vì đã giúp đỡ.
+vi_12	vi	Cuối tuần tôi thường đi leo núi với bạn bè.
