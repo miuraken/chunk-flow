@@ -6,10 +6,15 @@ import androidx.room.PrimaryKey
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 
 /**
  * ライブラリに登録されたフォルダ（コース・仮想ディレクトリ）の設定情報（`course_folder` テーブル）。
+ *
+ * [colorIndex] はユーザーが指定したフォルダの色（[LibraryFolderColors] のパレットの番号）。`null` なら対象言語の
+ * 既定の色を使う。行を書き直しても色を失わないように、通常は [com.miuraken.chunkflow.core.database.dao.CourseFolderDao.upsert]
+ * で書き込む（`null` を渡すと既存の色を保つ）。
  */
 @Entity(tableName = "course_folder")
 data class CourseFolderEntity(
@@ -26,6 +31,8 @@ data class CourseFolderEntity(
     val treeUri: String? = null,
     @ColumnInfo(name = "last_scanned_at", defaultValue = "0")
     val lastScannedAt: Long = 0L,
+    @ColumnInfo(name = "color_index")
+    val colorIndex: Int? = null,
 )
 
 /** [CourseFolderEntity] をドメインモデルの [LibraryCourseFolder] に変換する。 */
@@ -38,6 +45,7 @@ fun CourseFolderEntity.toExternalModel(): LibraryCourseFolder = LibraryCourseFol
     ),
     treeUri = treeUri,
     lastScannedAtEpochMs = lastScannedAt,
+    colorIndex = colorIndex?.takeIf(LibraryFolderColors::isValidIndex),
 )
 
 /** ドメインモデルの [LibraryCourseFolder] を [CourseFolderEntity] に変換する。 */
@@ -48,4 +56,5 @@ fun LibraryCourseFolder.toEntity(): CourseFolderEntity = CourseFolderEntity(
     baseLang = languagePair.base?.value,
     treeUri = treeUri,
     lastScannedAt = lastScannedAtEpochMs,
+    colorIndex = colorIndex,
 )

@@ -12,6 +12,7 @@ import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.PlaylistDao
+import com.miuraken.chunkflow.core.database.dao.TagDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import com.miuraken.chunkflow.core.database.entity.AnalysisStateEntity
 import com.miuraken.chunkflow.core.database.entity.BookmarkEntity
@@ -19,10 +20,14 @@ import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
 import com.miuraken.chunkflow.core.database.entity.ItemSttOverrideEntity
+import com.miuraken.chunkflow.core.database.entity.LanguageColorEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
+import com.miuraken.chunkflow.core.database.entity.MediaItemTagEntity
 import com.miuraken.chunkflow.core.database.entity.PlaylistEntity
 import com.miuraken.chunkflow.core.database.entity.PlaylistItemEntity
+import com.miuraken.chunkflow.core.database.entity.TagEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 
 /**
  * Chunk Flow の Room データベース（§6.4）。
@@ -41,8 +46,11 @@ import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
         CourseFolderEntity::class,
         PlaylistEntity::class,
         PlaylistItemEntity::class,
+        LanguageColorEntity::class,
+        TagEntity::class,
+        MediaItemTagEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -67,11 +75,14 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
     /** `item_stt_override` テーブルの DAO（ADR-0011 §2.3）。 */
     abstract fun itemSttOverrideDao(): ItemSttOverrideDao
 
-    /** `course_folder` テーブルの DAO。 */
+    /** `course_folder` / `language_color` テーブルの DAO。 */
     abstract fun courseFolderDao(): CourseFolderDao
 
     /** `library_playlist` / `library_playlist_item` テーブルの DAO。 */
     abstract fun playlistDao(): PlaylistDao
+
+    /** `tag` / `media_item_tag` テーブルの DAO。 */
+    abstract fun tagDao(): TagDao
 
     companion object {
         /** データベースファイル名（`data_extraction_rules.xml` の `database` ドメイン対象）。 */
@@ -178,6 +189,37 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * バージョン 7 から 8 へのマイグレーション（ファイルのタグ `tag` / `media_item_tag`、フォルダの色の指定
+         * `course_folder.color_index`、対象言語ごとの色の順番 `language_color` を追加）。
+         *
+         * 既存のフォルダとファイルの対象言語には、フォルダが作られた順 → ファイルが取り込まれた順に色の順番を割り当てる。
+         */
+        val MIGRATION_7_8: Migration = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `course_folder` ADD COLUMN `color_index` INTEGER")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `language_color` (" +
+                        "`language` TEXT NOT NULL, `ordinal` INTEGER NOT NULL, PRIMARY KEY(`language`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `tag` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`name_key` TEXT NOT NULL, `created_at` INTEGER NOT NULL DEFAULT 0)",
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_tag_name_key` ON `tag` (`name_key`)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `media_item_tag` (" +
+                        "`media_id` TEXT NOT NULL, `tag_id` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`media_id`, `tag_id`), " +
+                        "FOREIGN KEY(`media_id`) REFERENCES `media_item`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , " +
+                        "FOREIGN KEY(`tag_id`) REFERENCES `tag`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_media_item_tag_tag_id` ON `media_item_tag` (`tag_id`)")
+                seedLanguageColors(db)
+            }
+        }
+
         /** アプリで使うすべてのマイグレーション（古い順）。データベースを開くときに渡す。 */
         val ALL_MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2,
@@ -186,6 +228,35 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             MIGRATION_4_5,
             MIGRATION_5_6,
             MIGRATION_6_7,
+            MIGRATION_7_8,
         )
+
+        /**
+         * 既存のフォルダとファイルの対象言語に、色の順番（0 始まり）を割り当てる。
+         *
+         * フォルダが作られた順（`course_folder` の rowid 順）→ ファイルが取り込まれた順（`imported_at` 順）に、
+         * 初めて出てきた対象言語から順番を付ける。キーは [LibraryFolderColors.languageKey] でそろえる。
+         */
+        private fun seedLanguageColors(db: SupportSQLiteDatabase) {
+            val languageKeys = LinkedHashSet<String>()
+            val queries = listOf(
+                "SELECT `target_lang` FROM `course_folder` ORDER BY rowid ASC",
+                "SELECT `target_lang` FROM `media_item` ORDER BY `imported_at` ASC, rowid ASC",
+            )
+            for (query in queries) {
+                db.query(query).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val rawLanguage = if (cursor.isNull(0)) null else cursor.getString(0)
+                        rawLanguage?.let(LibraryFolderColors::languageKey)?.let(languageKeys::add)
+                    }
+                }
+            }
+            languageKeys.forEachIndexed { ordinal, key ->
+                db.execSQL(
+                    "INSERT OR IGNORE INTO `language_color` (`language`, `ordinal`) VALUES (?, ?)",
+                    arrayOf<Any?>(key, ordinal),
+                )
+            }
+        }
     }
 }
