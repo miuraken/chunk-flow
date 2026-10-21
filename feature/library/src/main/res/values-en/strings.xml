@@ -8,7 +8,7 @@
     <string name="library_import_transcript_button">Add transcript</string>
     <string name="library_directory_item_count">%1$d items</string>
     <string name="library_directory_listened_count">Listened %1$d/%2$d</string>
-    <string name="library_edit_directory_metadata_cd">Edit folder course and language pair</string>
+    <string name="library_edit_directory_metadata_cd">Folder settings</string>
     <string name="library_empty">No materials yet.</string>
     <string name="library_empty_hint">Select a study folder (directory) or choose audio and transcript (.chunkflow.json) files to start learning.</string>
     <string name="library_empty_import_directory_action">Select folder (directory)</string>
@@ -56,6 +56,7 @@
     <string name="library_mini_player_open">Open player: %1$s</string>
     <!-- M3: Course/language metadata editing -->
     <string name="library_edit_metadata_cd">Edit course and language pair</string>
+    <string name="library_item_settings_cd">File settings</string>
     <string name="library_edit_course_label">Course (folder) name</string>
     <string name="library_edit_target_lang_label">Target language</string>
     <string name="library_edit_base_lang_label">Base language</string>
@@ -143,7 +144,7 @@
     <string name="library_files_sort_desc">Desc</string>
     <string name="library_files_sort_option_format">%1$s (%2$s)</string>
     <string name="library_folder_kind_real">Real folder</string>
-    <string name="library_folder_kind_virtual">Virtual folder</string>
+    <string name="library_folder_kind_virtual">Virtual</string>
     <string name="library_import_config_folder_label">Folder</string>
     <string name="library_import_config_new_virtual_folder_option">New virtual folder</string>
     <string name="library_import_config_new_virtual_folder_dialog_title">Create new virtual folder</string>

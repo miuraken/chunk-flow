@@ -395,27 +395,39 @@ internal fun LibraryItemRow(
             }
         }
 
-        if (!isSelectionMode && (onToggleFavoriteClick != null || onRemoveFromPlaylistClick != null)) {
+        if (!isSelectionMode) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (onToggleFavoriteClick != null) {
-                    IconToggleButton(
-                        checked = isFavorite,
-                        onCheckedChange = { onToggleFavoriteClick() },
-                    ) {
+                // ☆（お気に入り）の下に、ファイル設定を開く Tune アイコンを置く
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (onToggleFavoriteClick != null) {
+                        IconToggleButton(
+                            checked = isFavorite,
+                            onCheckedChange = { onToggleFavoriteClick() },
+                        ) {
+                            Icon(
+                                imageVector = if (isFavorite) {
+                                    ChunkFlowIcons.Favorite
+                                } else {
+                                    ChunkFlowIcons.FavoriteBorder
+                                },
+                                contentDescription = favoriteCd,
+                                tint = if (isFavorite) {
+                                    chunkFlowExtendedColors().favorite
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                    }
+                    IconButton(onClick = onEditMetadataClick) {
                         Icon(
-                            imageVector = if (isFavorite) {
-                                ChunkFlowIcons.Favorite
-                            } else {
-                                ChunkFlowIcons.FavoriteBorder
-                            },
-                            contentDescription = favoriteCd,
-                            tint = if (isFavorite) {
-                                chunkFlowExtendedColors().favorite
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
+                            imageVector = ChunkFlowIcons.Tune,
+                            contentDescription = stringResource(R.string.library_item_settings_cd),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }

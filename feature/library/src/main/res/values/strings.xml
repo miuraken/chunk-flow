@@ -8,7 +8,7 @@
     <string name="library_import_transcript_button">文字起こしを追加</string>
     <string name="library_directory_item_count">%1$d 件</string>
     <string name="library_directory_listened_count">済 %1$d/%2$d</string>
-    <string name="library_edit_directory_metadata_cd">フォルダのコース名と言語ペアを一括設定</string>
+    <string name="library_edit_directory_metadata_cd">フォルダの設定</string>
     <string name="library_empty">教材がまだありません。</string>
     <string name="library_empty_hint">学習フォルダ（ディレクトリ）を指定するか、音声ファイルと文字起こし（.chunkflow.json）を選んで取り込みます。</string>
     <string name="library_empty_import_directory_action">フォルダ（ディレクトリ）を指定</string>
@@ -56,6 +56,7 @@
     <string name="library_mini_player_open">プレイヤー画面を開く: %1$s</string>
     <!-- M3: コース/言語ペア編集 -->
     <string name="library_edit_metadata_cd">コース名と言語ペアを編集</string>
+    <string name="library_item_settings_cd">ファイルの設定</string>
     <string name="library_edit_course_label">コース名（フォルダ名）</string>
     <string name="library_edit_target_lang_label">学習対象言語</string>
     <string name="library_edit_base_lang_label">ベース言語</string>
@@ -143,7 +144,7 @@
     <string name="library_files_sort_desc">降順</string>
     <string name="library_files_sort_option_format">%1$s（%2$s）</string>
     <string name="library_folder_kind_real">実フォルダ</string>
-    <string name="library_folder_kind_virtual">仮想フォルダ</string>
+    <string name="library_folder_kind_virtual">仮想</string>
     <string name="library_import_config_folder_label">格納先フォルダ</string>
     <string name="library_import_config_new_virtual_folder_option">新規仮想フォルダ</string>
     <string name="library_import_config_new_virtual_folder_dialog_title">新しい仮想フォルダを作成</string>
