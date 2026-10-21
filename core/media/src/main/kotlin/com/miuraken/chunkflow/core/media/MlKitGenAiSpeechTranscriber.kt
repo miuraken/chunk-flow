@@ -330,14 +330,18 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
                 val writerJob = launch {
                     if (!listeningStarted.await()) return@launch
                     runCatching {
+                        // 1 回の書き込みを PIPE_BUF 以下にする（POLLOUT のあとならブロックしない）
                         val frameBytes = ((sampleRateHz * 2 * PIPE_FRAME_DURATION_MS) / 1_000)
-                            .coerceAtLeast(MIN_PIPE_FRAME_BYTES)
+                            .coerceIn(MIN_PIPE_FRAME_BYTES, PipeWriteGuard.PIPE_BUF_BYTES)
                         val trailingSilenceBytes = ((sampleRateHz * trailingSilenceMs) / 1_000) * 2
                         val trailingStartOffset = (paddedBytes.size - trailingSilenceBytes).coerceAtLeast(0)
 
                         ParcelFileDescriptor.AutoCloseOutputStream(writeSide).use { output ->
+                            val writeFd = writeSide.fileDescriptor
                             var offset = 0
                             while (offset < paddedBytes.size) {
+                                // 読み手が読まないと write が永久にブロックするので、ブロックせずに書けることを確かめてから書く
+                                if (!PipeWriteGuard.awaitPipeWritable(writeFd)) break
                                 val len = min(frameBytes, paddedBytes.size - offset)
                                 output.write(paddedBytes, offset, len)
                                 offset += len
