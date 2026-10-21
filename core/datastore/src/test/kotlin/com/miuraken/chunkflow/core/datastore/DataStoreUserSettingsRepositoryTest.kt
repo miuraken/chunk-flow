@@ -257,6 +257,23 @@ class DataStoreUserSettingsRepositoryTest {
     }
 
     @Test
+    fun `ベース言語のみ別の速度の設定を更新でき_範囲外の速度は書けない`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, _) = createRepository(this)
+        val initial = repository.settings.first()
+        assertEquals(false, initial.baseLanguageSpeedEnabled)
+        assertEquals(1.0f, initial.baseLanguageSpeed)
+
+        repository.setBaseLanguageSpeedEnabled(true)
+        repository.setBaseLanguageSpeed(2.5f)
+        val updated = repository.settings.first()
+        assertEquals(true, updated.baseLanguageSpeedEnabled)
+        assertEquals(2.5f, updated.baseLanguageSpeed)
+
+        assertFailsWith<IllegalArgumentException> { repository.setBaseLanguageSpeed(3.5f) }
+        assertEquals(2.5f, repository.settings.first().baseLanguageSpeed)
+    }
+
+    @Test
     fun `初回起動の言語選択完了フラグはcompleteLanguageOnboardingでのみ完了になり言語変更だけでは閉じない`() = runTest(UnconfinedTestDispatcher()) {
         val (repository, _) = createRepository(this)
         assertEquals(false, repository.settings.first().hasCompletedLanguageOnboarding)

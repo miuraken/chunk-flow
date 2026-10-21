@@ -68,6 +68,14 @@ class FakeUserSettingsRepository(
         state.update { it.copy(skipOriginalSilence = enabled) }
     }
 
+    override suspend fun setBaseLanguageSpeedEnabled(enabled: Boolean) {
+        state.update { it.copy(baseLanguageSpeedEnabled = enabled) }
+    }
+
+    override suspend fun setBaseLanguageSpeed(speed: Float) {
+        state.update { it.copy(baseLanguageSpeed = speed) }
+    }
+
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
         state.update { it.copy(defaultSegmentationParams = params) }
     }

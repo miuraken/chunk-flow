@@ -118,6 +118,9 @@ class MediaControllerPlaybackController(
     private var isCurrentItemMarkedListened: Boolean = false
     private var learningPlayerInstance: LearningPlayer? = null
     private var rawPlayerInstance: Player? = null
+
+    /** 全体設定「ベース言語のみ別の速度で再生する」の速度（オフなら `null`）。[ChunkScheduler] を作ったときにも渡す。 */
+    private var latestBaseLanguageSpeed: Float? = null
     internal var chunkScheduler: ChunkScheduler? = null
         private set
 
@@ -141,6 +144,10 @@ class MediaControllerPlaybackController(
                     seekBackIncrementMs = settings.seekBackMs.coerceAtLeast(1_000L)
                     seekForwardIncrementMs = settings.seekForwardMs.coerceAtLeast(1_000L)
                 }
+                latestBaseLanguageSpeed = settings.baseLanguageSpeed
+                    .takeIf { settings.baseLanguageSpeedEnabled }
+                    ?.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+                chunkScheduler?.setBaseLanguageSpeed(latestBaseLanguageSpeed)
                 practiceController.update {
                     it.copy(
                         autoPause = settings.defaultAutoPause,
@@ -198,8 +205,16 @@ class MediaControllerPlaybackController(
                 },
             )
             chunkScheduler = scheduler
+            scheduler.setBaseLanguageSpeed(latestBaseLanguageSpeed)
             learning.onUserPlayWhenReadyCommand = { playWhenReady ->
                 scheduler.onUserPlayPauseCommand(playWhenReady)
+            }
+            learning.onUserPlaybackSpeedCommand = { speed ->
+                // アプリ内 UI・通知・MediaSession からの速度の変更は、利用者が選んだ速度として扱う。
+                // ベース言語のチャンクの再生中は ExoPlayer の速度が変わらず、リスナーが呼ばれないため、表示する速度もここで更新する
+                val coerced = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+                scheduler.setUserSpeed(coerced)
+                _status.update { it.copy(speed = coerced) }
             }
         }
 
@@ -364,7 +379,7 @@ class MediaControllerPlaybackController(
 
         val mediaItem = buildMediaItem(item, playableUri)
         lp.setMediaItem(mediaItem, initialPositionMs)
-        lp.setPlaybackSpeed(initialSpeed)
+        applyUserSpeed(initialSpeed)
         lp.prepare()
 
         observeActiveMediaChunks(mediaId, item.languagePair)
@@ -430,10 +445,22 @@ class MediaControllerPlaybackController(
         }
     }
 
+    /**
+     * 利用者が選んだ再生速度を当てる。[ChunkScheduler] があるときはそこに渡し、ベース言語のチャンクの速度との切り替えを任せる。
+     */
+    private fun applyUserSpeed(speed: Float) {
+        val scheduler = chunkScheduler
+        if (scheduler != null) {
+            scheduler.setUserSpeed(speed)
+        } else {
+            learningPlayerInstance?.setPlaybackSpeed(speed)
+        }
+    }
+
     override fun setSpeed(speed: Float) {
         val coerced = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
         scope.launch {
-            learningPlayerInstance?.setPlaybackSpeed(coerced)
+            applyUserSpeed(coerced)
             _status.update { it.copy(speed = coerced) }
             val currentMediaId = _status.value.mediaId ?: return@launch
             val currentPos = learningPlayerInstance?.currentPosition?.coerceAtLeast(0L) ?: 0L
@@ -546,7 +573,7 @@ class MediaControllerPlaybackController(
 
         val lp = getOrCreateLearningPlayer()
         lp.knownDurationMs = resumeItem.durationMs
-        lp.setPlaybackSpeed(resumeSpeed)
+        applyUserSpeed(resumeSpeed)
 
         val initialChunks = analysisRepository.observeChunks(resumeItem.id).first().sortedBy { it.startMs }
         currentChunks = initialChunks
@@ -820,7 +847,8 @@ class MediaControllerPlaybackController(
         }
 
         override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
-            _status.update { it.copy(speed = playbackParameters.speed) }
+            // 表示・保存する速度は、利用者が選んだ速度にする（ベース言語のチャンクだけの速度を当てても変えない）
+            _status.update { it.copy(speed = chunkScheduler?.userSpeed ?: playbackParameters.speed) }
         }
 
         override fun onPlayerError(error: PlaybackException) {

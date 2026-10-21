@@ -136,6 +136,21 @@ class DataStoreUserSettingsRepository @Inject constructor(
         }
     }
 
+    override suspend fun setBaseLanguageSpeedEnabled(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[KEY_BASE_LANGUAGE_SPEED_ENABLED] = enabled
+        }
+    }
+
+    override suspend fun setBaseLanguageSpeed(speed: Float) {
+        require(speed in ItemState.MIN_SPEED..ItemState.MAX_SPEED) {
+            "speed must be in ${ItemState.MIN_SPEED}..${ItemState.MAX_SPEED}: $speed"
+        }
+        dataStore.edit { prefs ->
+            prefs[KEY_BASE_LANGUAGE_SPEED] = speed
+        }
+    }
+
     override suspend fun setDefaultSegmentationParams(params: SegmentationParams) {
         require(params.minSilenceMs > 0) { "minSilenceMs must be > 0: ${params.minSilenceMs}" }
         require(params.minSpeechMs > 0) { "minSpeechMs must be > 0: ${params.minSpeechMs}" }
@@ -299,6 +314,11 @@ class DataStoreUserSettingsRepository @Inject constructor(
             ?: defaults.defaultAutoPauseScope
         val skipOriginalSilence = this[KEY_SKIP_ORIGINAL_SILENCE]
             ?: defaults.skipOriginalSilence
+        val baseLanguageSpeedEnabled = this[KEY_BASE_LANGUAGE_SPEED_ENABLED]
+            ?: defaults.baseLanguageSpeedEnabled
+        val baseLanguageSpeed = this[KEY_BASE_LANGUAGE_SPEED]
+            ?.takeIf { it in ItemState.MIN_SPEED..ItemState.MAX_SPEED }
+            ?: defaults.baseLanguageSpeed
 
         val minSilenceMs = this[KEY_SEG_MIN_SILENCE_MS]
             ?.takeIf { it > 0 }
@@ -346,6 +366,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
             defaultAutoPause = defaultAutoPause,
             defaultAutoPauseScope = defaultAutoPauseScope,
             skipOriginalSilence = skipOriginalSilence,
+            baseLanguageSpeedEnabled = baseLanguageSpeedEnabled,
+            baseLanguageSpeed = baseLanguageSpeed,
             defaultSegmentationParams = SegmentationParams(
                 minSilenceMs = minSilenceMs,
                 minSpeechMs = minSpeechMs,
@@ -387,6 +409,8 @@ class DataStoreUserSettingsRepository @Inject constructor(
         val KEY_DEFAULT_AUTO_PAUSE = stringPreferencesKey("default_auto_pause")
         val KEY_DEFAULT_AUTO_PAUSE_SCOPE = stringPreferencesKey("default_auto_pause_scope")
         val KEY_SKIP_ORIGINAL_SILENCE = booleanPreferencesKey("skip_original_silence")
+        val KEY_BASE_LANGUAGE_SPEED_ENABLED = booleanPreferencesKey("base_language_speed_enabled")
+        val KEY_BASE_LANGUAGE_SPEED = floatPreferencesKey("base_language_speed")
         val KEY_SEG_MIN_SILENCE_MS = intPreferencesKey("seg_min_silence_ms")
         val KEY_SEG_MIN_SPEECH_MS = intPreferencesKey("seg_min_speech_ms")
         val KEY_SEG_MERGE_GAP_MS = intPreferencesKey("seg_merge_gap_ms")

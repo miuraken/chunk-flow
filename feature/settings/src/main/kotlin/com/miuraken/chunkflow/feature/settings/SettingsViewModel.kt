@@ -111,9 +111,17 @@ data class SettingsUiState(
     val targetPhoneticGuideKind: PhoneticGuideKind?
         get() = PhoneticGuideKind.forLanguage(defaultLanguagePair.target)
 
-    /** 既定の再生速度（0.5..2.0、1.0x の場合は既定の指定速度 1.5x を返す）。 */
+    /** 既定の再生速度（0.5..3.0、1.0x の場合は既定の指定速度 1.5x を返す）。 */
     val defaultSpeed: Float
         get() = if (kotlin.math.abs(settings.defaultSpeed - 1.0f) < 0.01f) 1.5f else settings.defaultSpeed
+
+    /** ベース言語のチャンクだけを別の速度（[baseLanguageSpeed]）で再生するかどうか。 */
+    val baseLanguageSpeedEnabled: Boolean
+        get() = settings.baseLanguageSpeedEnabled
+
+    /** ベース言語のチャンクの再生速度（0.5..3.0）。[baseLanguageSpeedEnabled] が `false` のときも値は保つ。 */
+    val baseLanguageSpeed: Float
+        get() = settings.baseLanguageSpeed
 
     /** 巻き戻しミリ秒数。 */
     val seekBackMs: Long
@@ -355,6 +363,12 @@ sealed interface SettingsEvent {
     /** 既定の再生速度を変更する。 */
     data class SetDefaultSpeed(val speed: Float) : SettingsEvent
 
+    /** 「ベース言語のみ別の速度で再生する」の ON / OFF を変更する。 */
+    data class SetBaseLanguageSpeedEnabled(val enabled: Boolean) : SettingsEvent
+
+    /** ベース言語のチャンクの再生速度を変更する。 */
+    data class SetBaseLanguageSpeed(val speed: Float) : SettingsEvent
+
     /** 既定の自動ポーズを変更する。 */
     data class SetDefaultAutoPause(val autoPause: AutoPause) : SettingsEvent
 
@@ -520,11 +534,22 @@ class SettingsViewModel @Inject constructor(
             }
 
             is SettingsEvent.SetDefaultSpeed -> {
-                val clamped = event.speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
-                val rounded = ((clamped * 20f).roundToInt() / 20f)
-                    .coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+                val rounded = roundSpeedToSliderStep(event.speed)
                 viewModelScope.launch {
                     userSettingsRepository.setDefaultSpeed(rounded)
+                }
+            }
+
+            is SettingsEvent.SetBaseLanguageSpeedEnabled -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setBaseLanguageSpeedEnabled(event.enabled)
+                }
+            }
+
+            is SettingsEvent.SetBaseLanguageSpeed -> {
+                val rounded = roundSpeedToSliderStep(event.speed)
+                viewModelScope.launch {
+                    userSettingsRepository.setBaseLanguageSpeed(rounded)
                 }
             }
 
@@ -1101,4 +1126,13 @@ internal fun isSttEngineSelectableInSettings(
     }
     return status != OnDeviceLanguageModelStatus.UNSUPPORTED &&
         status != OnDeviceLanguageModelStatus.CHECKING
+}
+
+/**
+ * 速度を設定画面のスライダーと同じ 0.05 刻みに丸め、[ItemState.MIN_SPEED]〜[ItemState.MAX_SPEED] に収める
+ * （もうひとつの再生速度とベース言語の速度で共通）。
+ */
+internal fun roundSpeedToSliderStep(speed: Float): Float {
+    val clamped = speed.coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
+    return ((clamped * 20f).roundToInt() / 20f).coerceIn(ItemState.MIN_SPEED, ItemState.MAX_SPEED)
 }

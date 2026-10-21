@@ -9,6 +9,7 @@
     <string name="settings_seek_back_label">巻き戻し秒数</string>
     <string name="settings_seek_forward_label">早送り秒数</string>
     <string name="settings_seconds_format">%1$d秒</string>
+    <string name="settings_base_language_speed_label">ベース言語のみ別の速度で再生する</string>
     <string name="settings_default_speed_label">もうひとつの再生速度</string>
     <string name="settings_default_auto_pause_label">自動ポーズ機能</string>
     <string name="settings_auto_pause_off">OFF</string>

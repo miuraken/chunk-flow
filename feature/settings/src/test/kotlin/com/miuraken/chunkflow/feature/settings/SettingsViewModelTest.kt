@@ -69,6 +69,31 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `ベース言語のみ別の速度_オンオフと速度を変更でき速度は0_05刻みに丸めて範囲に収める`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val viewModel = SettingsViewModel(repo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        assertEquals(false, viewModel.uiState.value.baseLanguageSpeedEnabled)
+        assertEquals(1.0f, viewModel.uiState.value.baseLanguageSpeed)
+
+        viewModel.onEvent(SettingsEvent.SetBaseLanguageSpeedEnabled(true))
+        assertEquals(true, viewModel.uiState.value.baseLanguageSpeedEnabled)
+
+        viewModel.onEvent(SettingsEvent.SetBaseLanguageSpeed(1.73f))
+        assertEquals(1.75f, viewModel.uiState.value.baseLanguageSpeed)
+        viewModel.onEvent(SettingsEvent.SetBaseLanguageSpeed(0.1f))
+        assertEquals(ItemState.MIN_SPEED, viewModel.uiState.value.baseLanguageSpeed)
+        viewModel.onEvent(SettingsEvent.SetBaseLanguageSpeed(5.0f))
+        assertEquals(ItemState.MAX_SPEED, viewModel.uiState.value.baseLanguageSpeed)
+
+        // オフにしても速度の値は残る
+        viewModel.onEvent(SettingsEvent.SetBaseLanguageSpeedEnabled(false))
+        assertEquals(false, viewModel.uiState.value.baseLanguageSpeedEnabled)
+        assertEquals(ItemState.MAX_SPEED, viewModel.uiState.value.baseLanguageSpeed)
+    }
+
+    @Test
     fun `既定の自動ポーズと自動チャンク分割パラメータの変更およびリセットが機能する`() = runTest {
         val repo = FakeUserSettingsRepository()
         val viewModel = SettingsViewModel(repo)

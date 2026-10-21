@@ -22,6 +22,7 @@ import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.Transcript
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToLong
@@ -48,6 +49,8 @@ import kotlinx.coroutines.launch
  *   [AutoPause] はリピートや言語フィルタのシークを実行する前にチャンク終端で適用する（§7.2.4）。
  * - 自動ポーズ中は画面オフでの CPU スリープによる再開遅延を防ぐため、`actualPauseMs + 5_000ms` のタイムアウト付き
  *   [PowerManager.PARTIAL_WAKE_LOCK] を保持し、再開またはユーザ操作によるキャンセル時に解放する（§7.2.4）。
+ * - 全体設定「ベース言語のみ別の速度で再生する」が有効なときは、ベース言語のチャンクに入ったら速度をその速度に切り替え、
+ *   ほかのチャンクでは利用者が選んだ速度（[userSpeed]）に戻す。
  */
 @OptIn(UnstableApi::class)
 class ChunkScheduler(
@@ -79,6 +82,20 @@ class ChunkScheduler(
     private var bookmarks: List<Bookmark> = emptyList()
     private var languagePair: LanguagePair? = null
     private var practiceSettings: PracticeSettings = practiceController.settings.value
+
+    /**
+     * 利用者が選んだ再生速度（1x・もうひとつの再生速度）。ベース言語以外のチャンクはこの速度で再生する。
+     * ベース言語の速度を当てているあいだも、UI に出す速度や保存する速度にはこの値を使う。
+     */
+    var userSpeed: Float = exoPlayer.playbackParameters.speed
+        private set
+
+    /** ベース言語のチャンクだけに使う速度（全体設定「ベース言語のみ別の速度で再生する」）。`null` なら使わない。 */
+    private var baseLanguageSpeed: Float? = null
+
+    /** いまベース言語の速度を当てているかどうか。`true` のあいだ、ExoPlayer の速度は [userSpeed] と違うことがある。 */
+    var isBaseLanguageSpeedApplied: Boolean = false
+        private set
 
     private var pendingMessage: PlayerMessage? = null
     private var pendingMessagePayload: BoundaryPayload? = null
@@ -151,6 +168,8 @@ class ChunkScheduler(
         transcripts = emptyMap()
         bookmarks = emptyList()
         cancelPendingMessage()
+        // 前の教材のチャンクの言語でベース言語の速度が残らないよう、利用者の速度に戻す
+        applyEffectiveSpeed()
 
         if (mediaId == null) {
             updateState(chunkId = null, autoPauseEndsAt = null)
@@ -207,6 +226,7 @@ class ChunkScheduler(
     fun setTranscripts(newTranscripts: Map<ChunkId, Transcript>) {
         if (transcripts == newTranscripts) return
         transcripts = newTranscripts
+        applyEffectiveSpeed()
         if (practiceSettings.languageFilter != LanguageFilter.ALL &&
             practiceSettings.languageFilter != LanguageFilter.CHECKED_ONLY
         ) {
@@ -230,6 +250,28 @@ class ChunkScheduler(
         if (languagePair == newLanguagePair) return
         languagePair = newLanguagePair
         reschedule()
+        applyEffectiveSpeed()
+    }
+
+    /**
+     * 利用者が選んだ再生速度を設定する。ベース言語の速度を当てているチャンクの再生中は、そのチャンクが終わるまで
+     * ベース言語の速度のままにする。
+     *
+     * 速度の変更は、すべてこの関数（または [LearningPlayer] の速度のコマンド）を通すこと。内側の [ExoPlayer] の速度を
+     * 直接変えると、次のチャンクの境界で [userSpeed] に戻される。
+     */
+    fun setUserSpeed(speed: Float) {
+        userSpeed = speed
+        applyEffectiveSpeed(userSpeedChanged = true)
+    }
+
+    /**
+     * ベース言語（言語ペアの `base`）のチャンクだけに使う速度を設定する。`null` ならベース言語のチャンクも利用者の速度で再生する。
+     */
+    fun setBaseLanguageSpeed(speed: Float?) {
+        if (baseLanguageSpeed == speed) return
+        baseLanguageSpeed = speed
+        applyEffectiveSpeed()
     }
 
     /**
@@ -1814,12 +1856,47 @@ class ChunkScheduler(
         ?: chunks.lastOrNull { it.startMs <= positionMs }
 
     private fun updateState(chunkId: ChunkId?, autoPauseEndsAt: Long?) {
-        val changed = _currentChunkId.value != chunkId || _autoPauseEndsAtMs.value != autoPauseEndsAt
+        val chunkChanged = _currentChunkId.value != chunkId
+        val changed = chunkChanged || _autoPauseEndsAtMs.value != autoPauseEndsAt
         _currentChunkId.value = chunkId
         _autoPauseEndsAtMs.value = autoPauseEndsAt
+        if (chunkChanged) {
+            // チャンクが変わったら、ベース言語のチャンクかどうかで速度を切り替える
+            applyEffectiveSpeed()
+        }
         if (changed) {
             onStateChanged(chunkId, autoPauseEndsAt)
         }
+    }
+
+    /**
+     * いまのチャンクに合った速度を ExoPlayer に当てる。ベース言語の速度が設定されていて、いまのチャンクがベース言語なら
+     * [baseLanguageSpeed]、それ以外は [userSpeed]。
+     *
+     * ExoPlayer の速度を変えるのは、ベース言語の速度を当てる・戻すとき、または利用者が速度を変えたとき（[userSpeedChanged]）
+     * だけにする。この機能を使っていないときは、チャンクが変わっても速度に手を出さない。
+     */
+    private fun applyEffectiveSpeed(userSpeedChanged: Boolean = false) {
+        val chunkId = _currentChunkId.value
+        val override = baseLanguageSpeed?.takeIf { chunkId != null && isBaseLanguageChunk(chunkId) }
+        val wasApplied = isBaseLanguageSpeedApplied
+        isBaseLanguageSpeedApplied = override != null
+        if (override == null && !wasApplied && !userSpeedChanged) return
+        val desired = override ?: userSpeed
+        if (abs(exoPlayer.playbackParameters.speed - desired) < SPEED_EPSILON) return
+        exoPlayer.setPlaybackSpeed(desired)
+    }
+
+    /**
+     * [chunkId] のチャンクがベース言語（言語ペアの `base`）で話されているか。言語がまだわからないチャンクや、
+     * 学習言語とベース言語が同じ言語のときは `false`。
+     */
+    private fun isBaseLanguageChunk(chunkId: ChunkId): Boolean {
+        val pair = languagePair ?: return false
+        val base = pair.base ?: return false
+        if (isSameOrCompatibleLanguage(base, pair.target)) return false
+        val chunkLang = transcripts[chunkId]?.language ?: return false
+        return isSameOrCompatibleLanguage(chunkLang, base)
     }
 
     private sealed interface BoundaryPayload {
@@ -1885,6 +1962,9 @@ class ChunkScheduler(
         private const val END_OF_CHUNK_MARGIN_MS: Long = 100L
         private const val MISSED_BOUNDARY_THRESHOLD_MS: Long = 50L
         private const val WAKE_LOCK_TAG: String = "ChunkFlow:AutoPauseWakeLock"
+
+        /** 速度が同じとみなす差。 */
+        private const val SPEED_EPSILON: Float = 0.001f
 
         /**
          * 2 つの [LanguageTag] が同一または互換の言語を表すかを判定する。

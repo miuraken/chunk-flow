@@ -3,6 +3,7 @@ package com.miuraken.chunkflow.core.playback
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingSimpleBasePlayer
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.common.util.Util
@@ -41,6 +42,13 @@ class LearningPlayer(
      * 自動ポーズ中の手動操作によるタイマー解除（§7.2.4）および非選択チャンク位置からの開始時シーク先行実行に使用する。
      */
     var onUserPlayWhenReadyCommand: ((playWhenReady: Boolean) -> Unit)? = null
+
+    /**
+     * ユーザ（UI または MediaSession）から再生速度のコマンドが発行されたときに呼ばれるコールバック。
+     * 設定されているときは内側の Player の速度を直接変えず、このコールバックに任せる（ベース言語のチャンクだけ別の速度で
+     * 再生するため、実際の速度は [ChunkScheduler] が決める）。`null` なら内側の Player の速度をそのまま変える。
+     */
+    var onUserPlaybackSpeedCommand: ((speed: Float) -> Unit)? = null
 
     /**
      * DB（`AudioItem.durationMs`）から判明している教材の長さ（ミリ秒）。
@@ -119,6 +127,12 @@ class LearningPlayer(
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
         onUserPlayWhenReadyCommand?.invoke(playWhenReady)
         return super.handleSetPlayWhenReady(playWhenReady)
+    }
+
+    override fun handleSetPlaybackParameters(playbackParameters: PlaybackParameters): ListenableFuture<*> {
+        val callback = onUserPlaybackSpeedCommand ?: return super.handleSetPlaybackParameters(playbackParameters)
+        callback(playbackParameters.speed)
+        return Futures.immediateVoidFuture()
     }
 
     override fun handleSeek(

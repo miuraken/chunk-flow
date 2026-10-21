@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,6 +22,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +61,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -233,6 +238,8 @@ fun SettingsScreen(
                             seekBackMs = state.seekBackMs,
                             seekForwardMs = state.seekForwardMs,
                             defaultSpeed = state.defaultSpeed,
+                            baseLanguageSpeedEnabled = state.baseLanguageSpeedEnabled,
+                            baseLanguageSpeed = state.baseLanguageSpeed,
                             defaultAutoPause = state.defaultAutoPause,
                             defaultAutoPauseScope = state.defaultAutoPauseScope,
                             skipOriginalSilence = state.skipOriginalSilence,
@@ -289,6 +296,8 @@ private fun PlaybackSettingsSection(
     seekBackMs: Long,
     seekForwardMs: Long,
     defaultSpeed: Float,
+    baseLanguageSpeedEnabled: Boolean,
+    baseLanguageSpeed: Float,
     defaultAutoPause: AutoPause,
     defaultAutoPauseScope: AutoPauseScope,
     skipOriginalSilence: Boolean,
@@ -383,8 +392,34 @@ private fun PlaybackSettingsSection(
 
         Spacer(modifier = Modifier.height(4.dp))
 
+        val baseLanguageSpeedLabel = stringResource(R.string.settings_base_language_speed_label)
+        SettingsCheckboxHeader(
+            label = baseLanguageSpeedLabel,
+            checked = baseLanguageSpeedEnabled,
+            onCheckedChange = { onEvent(SettingsEvent.SetBaseLanguageSpeedEnabled(it)) },
+            value = formatSpeed(baseLanguageSpeed),
+        )
+
+        SettingsSlider(
+            value = baseLanguageSpeed,
+            onValueChange = { onEvent(SettingsEvent.SetBaseLanguageSpeed(it)) },
+            valueRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
+            // 0.05 刻み（0.5〜3.0 で 49 段）。チェックボックスがオフのあいだは操作できない
+            steps = speedSliderSteps(),
+            enabled = baseLanguageSpeedEnabled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = baseLanguageSpeedLabel
+                    stateDescription = formatSpeed(baseLanguageSpeed)
+                },
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        val defaultSpeedLabel = stringResource(R.string.settings_default_speed_label)
         SettingsItemHeader(
-            label = stringResource(R.string.settings_default_speed_label),
+            label = defaultSpeedLabel,
             value = formatSpeed(defaultSpeed),
         )
 
@@ -394,7 +429,12 @@ private fun PlaybackSettingsSection(
             valueRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
             // 0.05 刻み（0.5〜3.0 で 49 段）
             steps = speedSliderSteps(),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = defaultSpeedLabel
+                    stateDescription = formatSpeed(defaultSpeed)
+                },
         )
 
         ChunkFlowToggleButtonGroup(
@@ -1133,6 +1173,7 @@ private fun speechModelLanguageDisplayName(language: LanguageTag): String {
  * @param onValueChange ドラッグ・タップで値が変わるたびに呼ぶ。
  * @param valueRange 値の範囲。
  * @param steps 範囲の内側に置く目盛りの数（`Slider` と同じ意味）。
+ * @param enabled `false` のときは操作できない（見た目も無効の色になる）。
  */
 @Composable
 private fun SettingsSlider(
@@ -1141,6 +1182,7 @@ private fun SettingsSlider(
     valueRange: ClosedFloatingPointRange<Float>,
     steps: Int,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val state: SliderState = rememberSliderState(
         value = value,
@@ -1159,6 +1201,7 @@ private fun SettingsSlider(
             onValueChange(newValue)
         },
         modifier = modifier,
+        enabled = enabled,
     )
 }
 
@@ -1290,21 +1333,89 @@ private fun SettingsItemHeader(
                 .padding(end = 8.dp),
         )
         if (value != null) {
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = MaterialTheme.shapes.small,
-            ) {
-                Text(
-                    text = value,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    maxLines = 1,
-                    softWrap = false,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                )
-            }
+            SettingsValueBadge(value = value)
         }
+    }
+}
+
+/**
+ * チェックボックス付きの見出し行（左にチェックボックスと項目名、右に現在の値）。
+ *
+ * 行全体が `Role.Checkbox` としてタップでき（48dp 以上の高さ）、チェックボックス自体はクリックを受け取らない
+ * （読み上げが二重にならない）。オフのあいだ、値のバッジは無効の色で表示する。
+ *
+ * @param label 項目名。
+ * @param checked 現在の値。
+ * @param onCheckedChange 新しい値を受け取る。
+ * @param modifier 一番外側の `Row` に適用する Modifier。
+ * @param value 現在の値の表示（省略可）。
+ */
+@Composable
+private fun SettingsCheckboxHeader(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    value: String? = null,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .toggleable(
+                value = checked,
+                onValueChange = onCheckedChange,
+                role = Role.Checkbox,
+            ),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+        if (value != null) {
+            SettingsValueBadge(value = value, enabled = checked)
+        }
+    }
+}
+
+/**
+ * 設定項目の現在の値を示す小さなバッジ（[SettingsItemHeader]・[SettingsCheckboxHeader] の右端）。
+ *
+ * @param value 表示する値。
+ * @param enabled `false` のときは無効の色（M3 の無効状態の不透明度）で表示する。
+ */
+@Composable
+private fun SettingsValueBadge(
+    value: String,
+    enabled: Boolean = true,
+) {
+    val containerColor = if (enabled) {
+        MaterialTheme.colorScheme.secondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+    }
+    val contentColor = if (enabled) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+    }
+    Surface(
+        color = containerColor,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = contentColor,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
     }
 }
 

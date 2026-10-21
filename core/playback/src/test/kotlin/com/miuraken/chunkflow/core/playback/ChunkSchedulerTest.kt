@@ -1635,6 +1635,96 @@ class ChunkSchedulerTest {
         assertEquals(c3.startMs, exoPlayer.currentPosition)
     }
 
+    @Test
+    fun `ベース言語の速度_ベース言語のチャンクだけ指定の速度で再生し抜けると利用者の速度に戻る`() {
+        setUpEnJaTranscripts()
+        scheduler.setUserSpeed(1.5f)
+        scheduler.setBaseLanguageSpeed(2.5f)
+        pumpLoopers()
+        // chunk1（学習言語）では利用者の速度
+        assertEquals(1.5f, exoPlayer.playbackParameters.speed)
+        assertFalse(scheduler.isBaseLanguageSpeedApplied)
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk2.id }
+        pumpLoopers()
+        // chunk2（ベース言語）ではベース言語の速度。利用者の速度は変わらない
+        assertEquals(2.5f, exoPlayer.playbackParameters.speed)
+        assertTrue(scheduler.isBaseLanguageSpeedApplied)
+        assertEquals(1.5f, scheduler.userSpeed)
+
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+        // chunk3（学習言語）で利用者の速度に戻る
+        assertEquals(1.5f, exoPlayer.playbackParameters.speed)
+        assertFalse(scheduler.isBaseLanguageSpeedApplied)
+    }
+
+    @Test
+    fun `ベース言語の速度_ベース言語のチャンクの再生中にLearningPlayerで速度を変えてもチャンクを抜けるまでベース言語の速度のまま`() {
+        setUpEnJaTranscripts()
+        val learningPlayer = LearningPlayer(exoPlayer).apply {
+            onUserPlaybackSpeedCommand = { speed -> scheduler.setUserSpeed(speed) }
+        }
+        scheduler.setUserSpeed(1.0f)
+        scheduler.setBaseLanguageSpeed(0.75f)
+        exoPlayer.seekTo(chunk2.startMs + 100L)
+        pumpLoopers()
+        assertEquals(chunk2.id, scheduler.currentChunkId.value)
+        assertEquals(0.75f, exoPlayer.playbackParameters.speed)
+
+        // 通知やアプリ内 UI からの速度の変更は、利用者の速度として覚えるが、ベース言語のチャンクの速度は変えない
+        learningPlayer.setPlaybackSpeed(2.0f)
+        pumpLoopers()
+        assertEquals(2.0f, scheduler.userSpeed)
+        assertEquals(0.75f, exoPlayer.playbackParameters.speed)
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+        assertEquals(2.0f, exoPlayer.playbackParameters.speed)
+    }
+
+    @Test
+    fun `ベース言語の速度_設定をオフにするとベース言語のチャンクの再生中でもすぐに利用者の速度に戻る`() {
+        setUpEnJaTranscripts()
+        scheduler.setUserSpeed(1.25f)
+        scheduler.setBaseLanguageSpeed(3.0f)
+        exoPlayer.seekTo(chunk2.startMs + 100L)
+        pumpLoopers()
+        assertEquals(3.0f, exoPlayer.playbackParameters.speed)
+
+        scheduler.setBaseLanguageSpeed(null)
+        pumpLoopers()
+        assertEquals(1.25f, exoPlayer.playbackParameters.speed)
+        assertFalse(scheduler.isBaseLanguageSpeedApplied)
+    }
+
+    @Test
+    fun `ベース言語の速度_設定がオフならチャンクが変わってもExoPlayerの速度に手を出さない`() {
+        setUpEnJaTranscripts()
+        exoPlayer.playbackParameters = PlaybackParameters(2.0f)
+        pumpLoopers()
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk2.id }
+        pumpLoopers()
+        assertEquals(2.0f, exoPlayer.playbackParameters.speed)
+    }
+
+    /** chunk1・chunk3 が学習言語（en）、chunk2 がベース言語（ja）の教材にする。 */
+    private fun setUpEnJaTranscripts() {
+        scheduler.setChunks(sampleChunks)
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                chunk1.id to sampleTranscript(chunk1.id, "Hello", "en"),
+                chunk2.id to sampleTranscript(chunk2.id, "こんにちは", "ja"),
+                chunk3.id to sampleTranscript(chunk3.id, "World", "en"),
+            ),
+        )
+    }
+
     private fun sampleTranscript(
         chunkId: ChunkId,
         text: String,

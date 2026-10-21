@@ -47,6 +47,12 @@ interface UserSettingsRepository {
     /** チャンク間の無音（元音声の空白区間）をスキップするかどうかを更新する。 */
     suspend fun setSkipOriginalSilence(enabled: Boolean) {}
 
+    /** ベース言語のチャンクだけを別の速度（[UserSettings.baseLanguageSpeed]）で再生するかどうかを更新する。 */
+    suspend fun setBaseLanguageSpeedEnabled(enabled: Boolean) {}
+
+    /** ベース言語のチャンクの再生速度（`ItemState.MIN_SPEED`..`ItemState.MAX_SPEED`）を更新する。 */
+    suspend fun setBaseLanguageSpeed(speed: Float) {}
+
     /** 端末内の自動チャンク分割の既定パラメータを更新する（§7.3.3、F5.2、F9.1）。 */
     suspend fun setDefaultSegmentationParams(params: SegmentationParams) {}
 
