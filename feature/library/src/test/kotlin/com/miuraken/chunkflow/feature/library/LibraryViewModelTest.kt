@@ -131,6 +131,35 @@ class LibraryViewModelTest {
     }
 
     @Test
+    fun `CancelImport_取り込み中に中断すると取り込みのフローを止めて中断の状態にする`() = runTest {
+        val repo = FakeLibraryRepository()
+        val playback = FakePlaybackController()
+        val viewModel = LibraryViewModel(repo, playback)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        var importFlowCancelled = false
+        repo.importResult = {
+            kotlinx.coroutines.flow.flow {
+                emit(ImportProgress.Copying(0.25f))
+                try {
+                    kotlinx.coroutines.awaitCancellation()
+                } finally {
+                    importFlowCancelled = true
+                }
+            }
+        }
+        val selectedPair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja"))
+        viewModel.onEvent(LibraryEvent.ImportUris(listOf(StubUri.create())))
+        viewModel.onEvent(LibraryEvent.ConfirmImportConfig(course = "初級韓国語", languages = selectedPair))
+        assertEquals(LibraryImportUiState.Copying(0.25f), viewModel.uiState.value.importState)
+
+        viewModel.onEvent(LibraryEvent.CancelImport)
+
+        assertEquals(LibraryImportUiState.Error(ImportError.CANCELLED), viewModel.uiState.value.importState)
+        assertTrue(importFlowCancelled)
+    }
+
+    @Test
     fun `TranscriptExportViewModel_形式切替でプレビューを更新し単一ファイルとフォルダ出力を実行する`() = runTest {
         val sampleKo = SampleMaterials.jaKo
         val sampleZh = SampleMaterials.jaZh

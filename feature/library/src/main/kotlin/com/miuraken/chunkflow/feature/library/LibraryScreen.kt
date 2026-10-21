@@ -468,7 +468,10 @@ fun LibraryScreen(
                     .fillMaxSize()
                     .padding(innerPadding),
             ) {
-                ImportStatusBanner(importState = state.importState)
+                ImportStatusBanner(
+                    importState = state.importState,
+                    onCancel = { onEvent(LibraryEvent.CancelImport) },
+                )
 
                 if (state.isLoading) {
                     // 初回ロード中は「教材がまだありません」を表示しない（空の領域を確保）

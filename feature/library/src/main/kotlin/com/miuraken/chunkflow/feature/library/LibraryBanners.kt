@@ -2,6 +2,7 @@ package com.miuraken.chunkflow.feature.library
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,11 +39,14 @@ import com.miuraken.chunkflow.core.model.MediaId
 /**
  * 取り込みの進捗バナー。コピー中（[LibraryImportUiState.Copying]）だけを持続的なバナーとして描く。
  * 完了・失敗の一時的な通知は [ImportStatusSnackbarEffect] が Snackbar で出す（調査 C8、計画書 Phase B）。
+ *
+ * @param onCancel 右端の中断ボタンが押されたときに呼ぶ。`null` ならボタンを出さない。
  */
 @Composable
 internal fun ImportStatusBanner(
     importState: LibraryImportUiState,
     modifier: Modifier = Modifier,
+    onCancel: (() -> Unit)? = null,
 ) {
     if (importState !is LibraryImportUiState.Copying) return
     Surface(
@@ -49,21 +54,38 @@ internal fun ImportStatusBanner(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
     ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text(
-                text = stringResource(R.string.library_importing),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            val fraction = importState.fraction
-            if (fraction != null) {
-                ChunkFlowWavyLinearProgress(
-                    progress = { fraction },
-                    modifier = Modifier.fillMaxWidth(),
+        Row(
+            modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.library_importing),
+                    style = MaterialTheme.typography.bodyMedium,
                 )
-            } else {
-                // TODO(designsystem): 不確定の波形バーのラッパーが入ったら置き換える。
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Spacer(modifier = Modifier.height(8.dp))
+                val fraction = importState.fraction
+                if (fraction != null) {
+                    ChunkFlowWavyLinearProgress(
+                        progress = { fraction },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    // TODO(designsystem): 不確定の波形バーのラッパーが入ったら置き換える。
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+            }
+            if (onCancel != null) {
+                IconButton(onClick = onCancel) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Close,
+                        contentDescription = stringResource(R.string.library_import_cancel_cd),
+                    )
+                }
             }
         }
     }
@@ -201,7 +223,8 @@ private fun importStatusSnackbarContent(
             ImportError.IO -> stringResource(R.string.library_import_error_io)
             ImportError.CANCELLED -> stringResource(R.string.library_import_error_cancelled)
         },
-        duration = SnackbarDuration.Long,
+        // 利用者が中断したとき（CANCELLED）は失敗ではないので短く出す
+        duration = if (importState.error == ImportError.CANCELLED) SnackbarDuration.Short else SnackbarDuration.Long,
     )
 }
 

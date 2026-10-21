@@ -14,13 +14,14 @@
     <string name="library_empty_import_directory_action">フォルダ（ディレクトリ）を指定</string>
     <string name="library_empty_import_action">音声・文字起こしファイルを選択</string>
     <string name="library_importing">ファイルを取り込み中…</string>
+    <string name="library_import_cancel_cd">読み込みを中断</string>
     <string name="library_import_done">%1$d 件を取り込みました（重複 %2$d 件）</string>
     <string name="library_import_done_with_transcripts">%1$d 件を取り込みました（重複 %2$d 件・文字起こし %3$d 件を紐付け）</string>
     <string name="library_import_error_unsupported">対応していないファイル形式です（MP3 / M4A / Ogg / FLAC / WAV / JSON に対応）。</string>
     <string name="library_import_error_too_large">ファイルサイズが上限を超えています。</string>
     <string name="library_import_error_no_space">端末の空き容量が不足しています。</string>
     <string name="library_import_error_io">ファイルの読み込みに失敗しました。</string>
-    <string name="library_import_error_cancelled">取り込みをキャンセルしました。</string>
+    <string name="library_import_error_cancelled">読み込みを中断しました。それまでに読み込んだファイルはライブラリに残っています。</string>
     <string name="library_transcript_attached">文字起こしを紐付けました（%1$d チャンク）</string>
     <string name="library_transcript_attached_mismatch">文字起こしを紐付けました（%1$d チャンク・音声の長さと差があります）</string>
     <string name="library_transcript_no_matching_audio">対応する音声がまだ取り込まれていません（%1$s）。先に音声ファイルを取り込んでください。</string>

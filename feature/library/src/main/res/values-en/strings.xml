@@ -14,13 +14,14 @@
     <string name="library_empty_import_directory_action">Select folder (directory)</string>
     <string name="library_empty_import_action">Select audio / transcript files</string>
     <string name="library_importing">Importing files…</string>
+    <string name="library_import_cancel_cd">Stop importing</string>
     <string name="library_import_done">Imported: %1$d (skipped duplicates: %2$d)</string>
     <string name="library_import_done_with_transcripts">Imported: %1$d (duplicates: %2$d, transcripts attached: %3$d)</string>
     <string name="library_import_error_unsupported">Unsupported file format (supports MP3, M4A, Ogg, FLAC, WAV, JSON).</string>
     <string name="library_import_error_too_large">The file exceeds the maximum allowed size.</string>
     <string name="library_import_error_no_space">Not enough storage space on the device.</string>
     <string name="library_import_error_io">Failed to read the selected file.</string>
-    <string name="library_import_error_cancelled">Import was cancelled.</string>
+    <string name="library_import_error_cancelled">Import stopped. Files imported before stopping remain in your library.</string>
     <string name="library_transcript_attached">Attached transcript (%1$d chunks)</string>
     <string name="library_transcript_attached_mismatch">Attached transcript (%1$d chunks; audio duration differs)</string>
     <string name="library_transcript_no_matching_audio">Matching audio is not imported yet (%1$s). Import the audio file first.</string>
