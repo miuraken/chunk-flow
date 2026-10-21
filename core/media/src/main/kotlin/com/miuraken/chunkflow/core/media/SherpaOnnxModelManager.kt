@@ -1027,21 +1027,22 @@ class SherpaOnnxModelManager internal constructor(
                 decoderBytes = 20_376_763L,
                 decoderSha256 = "c3d7481beb40f0880155195a12c619e035fd67249b8d0315d90f7f32dca4d380",
             ),
+            // uk・vi の結合デコーダは約 117 MB（Hugging Face API で確かめた大きさと SHA-256。2026-10-22）
             "uk" to onnxCommunityMoonshineArtifacts(
                 onnxRepoSlug = "moonshine-tiny-uk-ONNX",
                 tokensRepoSlug = "sherpa-onnx-moonshine-base-uk-quantized-2026-02-27",
                 encoderBytes = 8_099_966L,
                 encoderSha256 = "d90eb3b0da03985227e0854a394df8702f5cc07f6796c14589b47031a11b438d",
-                decoderBytes = 30_024_627L,
-                decoderSha256 = "4563f11f74c5b25cf0f758dc439fc89e8c3399a31b46be4d9d9e543eb7606dc6",
+                decoderBytes = 116_662_327L,
+                decoderSha256 = "0a645345cad019c8d28f91f1d034b727f597a24d30715eed56ee3afff7a4bd45",
             ),
             "vi" to onnxCommunityMoonshineArtifacts(
                 onnxRepoSlug = "moonshine-tiny-vi-ONNX",
                 tokensRepoSlug = "sherpa-onnx-moonshine-base-vi-quantized-2026-02-27",
                 encoderBytes = 8_099_966L,
                 encoderSha256 = "6c1faa27cade57ed598e464b7c6040e6af5e145818f5730f1b6cf34fe2b7d93b",
-                decoderBytes = 30_024_628L,
-                decoderSha256 = "4c185d5bd4cb7b8d55bb737bd5b2f89ef451a892123217c4c97abbc902fb231d",
+                decoderBytes = 116_662_327L,
+                decoderSha256 = "3d88a78ed14618a131debf8d422a5ee5ae8e9d8a8ea7a56684d8e00f65dc8096",
             ),
         )
 

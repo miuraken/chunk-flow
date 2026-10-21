@@ -114,7 +114,7 @@ enum class DownloadableSttModel(
         approxSizeMb = 358,
     ),
 
-    /** Moonshine ONNX Tiny int8（8 言語対応・言語別モデル・約 27〜118 MB）。 */
+    /** Moonshine ONNX Tiny int8（8 言語対応・言語別モデル・約 27〜120 MB）。 */
     MOONSHINE_TINY(
         sttEngine = SttEngine.MOONSHINE_TINY,
         modelId = "sherpa-onnx-moonshine-tiny-en-int8",
@@ -163,8 +163,8 @@ enum class DownloadableSttModel(
                 "ko" -> 69
                 "es" -> 62
                 "ar" -> 28
-                "uk" -> 37
-                "vi" -> 37
+                "uk" -> 120
+                "vi" -> 120
                 else -> approxSizeMb
             }
 
