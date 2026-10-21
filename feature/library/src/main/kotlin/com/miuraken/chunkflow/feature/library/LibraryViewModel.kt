@@ -21,6 +21,7 @@ import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LibraryPlaylist
 import com.miuraken.chunkflow.core.model.LoopMode
@@ -123,6 +124,7 @@ enum class LibraryTranscriptStatus {
  * @property queuedAtEpochMs 「次に再生するキュー」に追加された時刻（ミリ秒、未登録なら `0L`）。
  * @property accessCount 教材を開いた累計アクセス回数（0 以上）。
  * @property fileSortOrder 「ファイル」タブでのカスタム並び順（未設定なら `null`）。
+ * @property tags ファイルに付いているタグの名前（タグが作られた順。ADR 0013）。
  */
 data class LibraryItemUiModel(
     val item: AudioItem,
@@ -147,6 +149,7 @@ data class LibraryItemUiModel(
     val queuedAtEpochMs: Long = 0L,
     val accessCount: Int = 0,
     val fileSortOrder: Int? = null,
+    val tags: List<String> = emptyList(),
 ) {
     /** 前回の再生位置（ミリ秒）。 */
     val lastPositionMs: Long
@@ -193,6 +196,7 @@ typealias LibraryItemUi = LibraryItemUiModel
  * @property items このディレクトリ（サブディレクトリを含む）内の教材一覧（ファイル名昇順）。
  * @property isExpanded 展開中かどうか。
  * @property displayName 現在の階層で表示するディレクトリ名（末尾セグメント）。
+ * @property colorIndex フォルダの色（フォルダの色分けのパレットの番号。ADR 0013）。色がなければ `null`。
  */
 data class LibraryDirectoryUiModel(
     val name: String?,
@@ -200,6 +204,7 @@ data class LibraryDirectoryUiModel(
     val isExpanded: Boolean = true,
     val displayName: String? = name?.substringAfterLast('/'),
     val isRealFolder: Boolean = false,
+    val colorIndex: Int? = null,
 ) {
     /** ディレクトリ配下の `transcription/` サブフォルダの対応パス案内。 */
     val transcriptionPathHint: String
@@ -331,13 +336,41 @@ data class PendingImportConfig(
  *
  * @property currentCourse 現在のディレクトリ（コース）名（未分類の場合は `null`）。
  * @property initialLanguages 初期表示する言語ペア。
+ * @property colorIndex フォルダに指定している色（パレットの番号。ADR 0013）。`null` なら対象言語の既定の色。
  */
 data class PendingDirectoryEdit(
     val currentCourse: String?,
     val initialLanguages: LanguagePair,
     val initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     val isRealFolder: Boolean = false,
+    val colorIndex: Int? = null,
 )
+
+/**
+ * フォルダの設定のシートで選んだ色（ADR 0013）。
+ */
+sealed interface LibraryFolderColorChoice {
+    /** 色を変えない。 */
+    data object Unchanged : LibraryFolderColorChoice
+
+    /** 指定を外し、対象言語の既定の色に戻す（「デフォルトに戻す」）。 */
+    data object LanguageDefault : LibraryFolderColorChoice
+
+    /** パレットの番号 [index] の色にする。 */
+    data class Palette(val index: Int) : LibraryFolderColorChoice
+
+    companion object {
+        /**
+         * シートを開いたときの色 [initial] と、保存するときの色 [selected] から選択を作る
+         * （どちらもパレットの番号。`null` は対象言語の既定の色）。
+         */
+        fun of(initial: Int?, selected: Int?): LibraryFolderColorChoice = when {
+            initial == selected -> Unchanged
+            selected == null -> LanguageDefault
+            else -> Palette(selected)
+        }
+    }
+}
 
 /**
  * ライブラリ画面の上部タブ。
@@ -466,6 +499,8 @@ data class LibraryBookmarkedFileUiModel(
  * ライブラリ画面の状態（F1.1〜F2.4、F7.1、§7.5.1）。
  *
  * @property items 教材の一覧（レジューム位置・速度・チャンク数・音声有無・聴取完了・最終アクセス日時を含む）。
+ * @property allTags 1 件以上のファイルに付いているタグの名前（タグが作られた順。ADR 0013）。
+ * @property folderLanguageColorOrdinals 対象言語ごとの、フォルダの既定の色の順番（ADR 0013）。
  * @property importState 音声・フォルダ取り込みの進捗・エラー状態。
  * @property miniPlayer 現在開いている教材のミニプレイヤー表示（開いていなければ `null`）。
  * @property pendingDeleteItem 削除確認ダイアログで対象になっている単一教材（表示中でなければ `null`）。
@@ -485,6 +520,7 @@ data class LibraryBookmarkedFileUiModel(
  * @property selectedTab 現在選択されているビュータブ（フォルダ / ファイル / 再生リスト / ブックマーク）。
  * @property fileSearchQuery ファイルビュータブのファイル名検索キーワード。
  * @property fileTargetLanguageFilter ファイルビュータブの対象言語フィルタ（`null` なら全言語）。
+ * @property fileTagFilter ファイルビュータブのタグの絞り込み（選んだタグをすべて持つファイルだけを出す。空なら絞り込まない。ADR 0013）。
  * @property fileSortOption ファイルビュータブのソート種別（名称順 / アクセス日時 / 追加日時 / 完了度）。
  * @property fileSortAscending ファイルビュータブのソートが昇順かどうか（`true`: 昇順、`false`: 降順）。
  * @property selectedPlaylistId 再生リストビュータブで展開中のプレイリスト ID（一覧表示時は `null`）。
@@ -503,6 +539,8 @@ data class LibraryBookmarkedFileUiModel(
 data class LibraryUiState(
     val items: List<LibraryItemUiModel> = emptyList(),
     val courseFolders: List<LibraryCourseFolder> = emptyList(),
+    val allTags: List<String> = emptyList(),
+    val folderLanguageColorOrdinals: Map<LanguageTag, Int> = emptyMap(),
     val importState: LibraryImportUiState = LibraryImportUiState.Idle,
     val miniPlayer: MiniPlayerUiState? = null,
     val pendingDeleteItem: AudioItem? = null,
@@ -524,6 +562,7 @@ data class LibraryUiState(
     val selectedTab: LibraryViewTab = LibraryViewTab.FOLDERS,
     val fileSearchQuery: String = "",
     val fileTargetLanguageFilter: LanguageTag? = null,
+    val fileTagFilter: Set<String> = emptySet(),
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val fileSortAscending: Boolean = true,
     val selectedPlaylistId: PlaylistId? = null,
@@ -577,7 +616,7 @@ data class LibraryUiState(
             .sortedBy { it.value }
 
     /**
-     * ファイルビュータブでファイル名キーワードと対象言語でフィルタし、[fileSortOption] と [fileSortAscending] に応じて並べた全ファイル一覧。
+     * ファイルビュータブでファイル名キーワード・対象言語・タグ（選んだタグをすべて持つもの）でフィルタし、[fileSortOption] と [fileSortAscending] に応じて並べた全ファイル一覧。
      */
     val filteredAllFiles: List<LibraryItemUiModel>
         get() {
@@ -589,7 +628,9 @@ data class LibraryUiState(
                     (model.item.course?.contains(normalizedQuery, ignoreCase = true) == true)
                 val matchesLang = targetFilter == null ||
                     model.item.languagePair.target.value.lowercase() == targetFilter
-                matchesQuery && matchesLang
+                // タグは AND（選んだタグをすべて持つファイルだけ）。名前はリポジトリがそろえた表記なのでそのまま比べる
+                val matchesTags = fileTagFilter.isEmpty() || model.tags.containsAll(fileTagFilter)
+                matchesQuery && matchesLang && matchesTags
             }
             return when (fileSortOption) {
                 LibraryFileSortOption.NAME -> filtered.sortedWith { a, b ->
@@ -664,6 +705,53 @@ data class LibraryUiState(
                 }
             }
         }
+
+    /**
+     * ファイルビュータブの一覧が、タグの絞り込みだけが原因で空になっているかどうか（ADR 0013）。
+     *
+     * `true` のときは「選んだタグがすべて付いたファイルはありません」と、タグの選択を解除する操作を出す。
+     */
+    val isFileListEmptyBecauseOfTagFilter: Boolean
+        get() = fileTagFilter.isNotEmpty() &&
+            filteredAllFiles.isEmpty() &&
+            copy(fileTagFilter = emptySet()).filteredAllFiles.isNotEmpty()
+
+    /**
+     * 複数選択の対象のファイル（[selectedTargetItemIds]）について、タグごとの、そのタグが付いているファイルの数（ADR 0013）。
+     *
+     * 「タグを編集」のダイアログで、すべて / 一部 / なし のチェックの初期状態に使う。
+     */
+    val selectedTargetTagCounts: Map<String, Int>
+        get() {
+            val targetIds = selectedTargetItemIds.toSet()
+            if (targetIds.isEmpty()) return emptyMap()
+            val counts = LinkedHashMap<String, Int>()
+            for (model in items) {
+                if (model.item.id !in targetIds) continue
+                for (tag in model.tags) {
+                    counts[tag] = (counts[tag] ?: 0) + 1
+                }
+            }
+            return counts
+        }
+
+    /**
+     * フォルダ [dirPath] の色（フォルダの色分けのパレットの番号。ADR 0013）。
+     *
+     * フォルダに指定した色があればそれを、なければフォルダの対象言語（フォルダの設定、なければフォルダの中の
+     * 最初のファイル）の既定の色を使う。色を指定しておらず対象言語もわからなければ `null`。
+     */
+    fun folderColorIndexFor(dirPath: String?): Int? {
+        val normalized = dirPath?.trim('/')?.takeIf { it.isNotBlank() } ?: return null
+        val folder = courseFolders.firstOrNull { it.coursePath.trim('/') == normalized }
+        val targetLanguage = folder?.languagePair?.target
+            ?: itemsInDirectoryTree(normalized).firstOrNull()?.item?.languagePair?.target
+        return LibraryFolderColors.resolveIndex(
+            colorIndex = folder?.colorIndex,
+            targetLanguage = targetLanguage,
+            languageOrdinals = folderLanguageColorOrdinals,
+        )
+    }
 
     /**
      * カスタム順序 [customOrderIds] が指定されていればそれを優先し、未指定の残りのアイテムは元の順序で後ろに並べる。
@@ -1123,6 +1211,7 @@ data class LibraryUiState(
                         isExpanded = dirFullPath !in collapsedDirectories,
                         displayName = dirFullPath.substringAfterLast('/'),
                         isRealFolder = isRealFolder(dirFullPath),
+                        colorIndex = folderColorIndexFor(dirFullPath),
                     )
                 }
         }
@@ -1356,12 +1445,17 @@ sealed interface LibraryEvent {
     /** 教材のコース名・言語ペア編集ダイアログを開く（F2.3）。 */
     data class RequestEditMetadata(val item: AudioItem) : LibraryEvent
 
-    /** 教材のコース名・言語ペアの編集を確定して保存する（F2.3）。 */
+    /**
+     * 教材のコース名・言語ペア・タグの編集を確定して保存する（F2.3、ADR 0013）。
+     *
+     * [tags] はファイルに付けるタグの一覧（`null` ならタグは変えない）。
+     */
     data class ConfirmEditMetadata(
         val id: MediaId,
         val course: String?,
         val languages: LanguagePair,
         val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
+        val tags: List<String>? = null,
     ) : LibraryEvent
 
     /** 教材のコース名・言語ペア編集ダイアログをキャンセルする。 */
@@ -1370,12 +1464,17 @@ sealed interface LibraryEvent {
     /** ディレクトリ（コース）単位のコース名・言語ペア一括編集ダイアログを開く。 */
     data class RequestEditDirectoryMetadata(val directoryName: String?) : LibraryEvent
 
-    /** ディレクトリ（コース）単位のコース名・言語ペア一括編集を確定して保存する。 */
+    /**
+     * ディレクトリ（コース）単位のコース名・言語ペア・色の一括編集を確定して保存する（色は ADR 0013）。
+     *
+     * [colorChoice] はフォルダの色の変更（既定は変えない）。
+     */
     data class ConfirmEditDirectoryMetadata(
         val currentCourse: String?,
         val newCourse: String?,
         val languages: LanguagePair,
         val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
+        val colorChoice: LibraryFolderColorChoice = LibraryFolderColorChoice.Unchanged,
     ) : LibraryEvent
 
     /** ディレクトリ（コース）単位の編集ダイアログをキャンセルする。 */
@@ -1430,6 +1529,12 @@ sealed interface LibraryEvent {
     /** ファイルビューの対象言語フィルタを切り替える（`null` ですべて表示）。 */
     data class SelectFileTargetLanguageFilter(val language: LanguageTag?) : LibraryEvent
 
+    /** ファイルビューのタグの絞り込みで、タグ [tag] の選択を切り替える（選んだタグをすべて持つファイルに絞る。ADR 0013）。 */
+    data class ToggleFileTagFilter(val tag: String) : LibraryEvent
+
+    /** ファイルビューのタグの絞り込みをすべて解除する。 */
+    data object ClearFileTagFilter : LibraryEvent
+
     /** ファイルビューのソート順を切り替える。 */
     data class SelectFileSortOption(
         val sortOption: LibraryFileSortOption,
@@ -1474,6 +1579,15 @@ sealed interface LibraryEvent {
 
     /** 複数選択されている教材のお気に入り状態を一括で切り替える（すべてお気に入りなら解除、それ以外はすべて追加）。 */
     data object ToggleFavoriteSelected : LibraryEvent
+
+    /**
+     * 複数選択されているファイル（選んだフォルダの中のファイルを含む）に、タグ [addTags] を付け、[removeTags] を外す
+     * （「タグを編集」。ADR 0013）。変更があれば適用して選択モードを終了する。
+     */
+    data class UpdateTagsForSelected(
+        val addTags: Set<String>,
+        val removeTags: Set<String>,
+    ) : LibraryEvent
 
     /** 教材 [id] の「次に再生するキュー」への登録状態を切り替える。 */
     data class ToggleQueueItem(val id: MediaId) : LibraryEvent
@@ -1550,6 +1664,24 @@ private data class LibraryRepositorySnapshot(
     val seekBackMs: Long = 3_000L,
     val seekForwardMs: Long = 5_000L,
     val defaultSpeed: Float = 1.0f,
+    val tags: List<String> = emptyList(),
+    val itemTags: Map<MediaId, List<String>> = emptyMap(),
+    val folderLanguageColorOrdinals: Map<LanguageTag, Int> = emptyMap(),
+)
+
+/** タグとフォルダの色の購読結果（ADR 0013）。 */
+private data class LibraryTagAndFolderColorSnapshot(
+    val tags: List<String> = emptyList(),
+    val itemTags: Map<MediaId, List<String>> = emptyMap(),
+    val folderLanguageColorOrdinals: Map<LanguageTag, Int> = emptyMap(),
+)
+
+/** 教材・フォルダ・プレイリストと、タグ・フォルダの色の購読結果。 */
+private data class LibraryListsSnapshot(
+    val items: List<AudioItem>,
+    val courseFolders: List<LibraryCourseFolder>,
+    val playlists: List<LibraryPlaylist>,
+    val tagAndFolderColor: LibraryTagAndFolderColorSnapshot,
 )
 
 private data class DialogAndImportSnapshot(
@@ -1575,6 +1707,7 @@ private data class NavigationAndSelectionSnapshot(
     val fileTargetLanguageFilter: LanguageTag? = null,
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val fileSortAscending: Boolean = true,
+    val fileTagFilter: Set<String> = emptySet(),
     val selectedPlaylistId: PlaylistId? = null,
     val expandedBookmarkMediaIds: Set<MediaId> = emptySet(),
     val customSpeedOverride: Float? = null,
@@ -1644,6 +1777,7 @@ class LibraryViewModel @Inject constructor(
     private val fileTargetLanguageFilter = MutableStateFlow<LanguageTag?>(null)
     private val fileSortOption = MutableStateFlow(LibraryFileSortOption.NAME)
     private val fileSortAscending = MutableStateFlow(true)
+    private val fileTagFilter = MutableStateFlow<Set<String>>(emptySet())
     private val selectedPlaylistId = MutableStateFlow<PlaylistId?>(null)
     private val expandedBookmarkMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private val customSpeedOverride = MutableStateFlow<Float?>(null)
@@ -1765,6 +1899,18 @@ class LibraryViewModel @Inject constructor(
             }
         }
 
+    private val tagAndFolderColorFlow: Flow<LibraryTagAndFolderColorSnapshot> = combine(
+        libraryRepository.observeTags(),
+        libraryRepository.observeItemTags(),
+        libraryRepository.observeFolderLanguageColorOrdinals(),
+    ) { tags, itemTags, ordinals ->
+        LibraryTagAndFolderColorSnapshot(
+            tags = tags,
+            itemTags = itemTags,
+            folderLanguageColorOrdinals = ordinals,
+        )
+    }
+
     private val dialogAndImportFlow: Flow<DialogAndImportSnapshot> = combine(
         importState,
         combine(
@@ -1817,9 +1963,9 @@ class LibraryViewModel @Inject constructor(
             selectedTab,
             fileSearchQuery,
             fileTargetLanguageFilter,
-            combine(fileSortOption, fileSortAscending) { opt, asc -> opt to asc },
+            combine(fileSortOption, fileSortAscending, fileTagFilter) { opt, asc, tags -> Triple(opt, asc, tags) },
             selectedPlaylistId,
-        ) { tab, query, langFilter, (sortOption, sortAscending), playlistId ->
+        ) { tab, query, langFilter, (sortOption, sortAscending, tagFilter), playlistId ->
             NavigationTabAndFilterSnapshot(
                 selectedTab = tab,
                 fileSearchQuery = query,
@@ -1827,6 +1973,7 @@ class LibraryViewModel @Inject constructor(
                 fileSortOption = sortOption,
                 fileSortAscending = sortAscending,
                 selectedPlaylistId = playlistId,
+                fileTagFilter = tagFilter,
             )
         },
         expandedBookmarkMediaIds,
@@ -1838,6 +1985,7 @@ class LibraryViewModel @Inject constructor(
             fileTargetLanguageFilter = tabAndFilter.fileTargetLanguageFilter,
             fileSortOption = tabAndFilter.fileSortOption,
             fileSortAscending = tabAndFilter.fileSortAscending,
+            fileTagFilter = tabAndFilter.fileTagFilter,
             selectedPlaylistId = tabAndFilter.selectedPlaylistId,
             expandedBookmarkMediaIds = expandedBookmarks,
             customSpeedOverride = speedOverride,
@@ -1851,12 +1999,15 @@ class LibraryViewModel @Inject constructor(
                 libraryRepository.observeItems(),
                 libraryRepository.observeCourseFolders(),
                 libraryRepository.observePlaylists(),
-            ) { items, courseFolders, playlists -> Triple(items, courseFolders, playlists) },
+                tagAndFolderColorFlow,
+            ) { items, courseFolders, playlists, tagAndFolderColor ->
+                LibraryListsSnapshot(items, courseFolders, playlists, tagAndFolderColor)
+            },
             libraryRepository.observeItemStates(),
             analysisSummaries,
             libraryRepository.observeMissingAudioIds().onStart { emit(emptySet()) },
             userSettingsRepository.settings,
-        ) { (items, courseFolders, playlists), itemStates, summaries, missingAudioIds, userSettings ->
+        ) { (items, courseFolders, playlists, tagAndFolderColor), itemStates, summaries, missingAudioIds, userSettings ->
             LibraryRepositorySnapshot(
                 items = items,
                 courseFolders = courseFolders,
@@ -1870,6 +2021,9 @@ class LibraryViewModel @Inject constructor(
                 seekBackMs = userSettings.seekBackMs,
                 seekForwardMs = userSettings.seekForwardMs,
                 defaultSpeed = userSettings.defaultSpeed,
+                tags = tagAndFolderColor.tags,
+                itemTags = tagAndFolderColor.itemTags,
+                folderLanguageColorOrdinals = tagAndFolderColor.folderLanguageColorOrdinals,
             )
         },
         playbackController.status,
@@ -1890,6 +2044,9 @@ class LibraryViewModel @Inject constructor(
             seekBackMs = repoSnapshot.seekBackMs,
             seekForwardMs = repoSnapshot.seekForwardMs,
             defaultSpeed = repoSnapshot.defaultSpeed,
+            tags = repoSnapshot.tags,
+            itemTags = repoSnapshot.itemTags,
+            folderLanguageColorOrdinals = repoSnapshot.folderLanguageColorOrdinals,
             playbackStatus = playbackStatus,
             practice = practice,
             dialogAndImport = dialogAndImport,
@@ -2076,6 +2233,16 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            is LibraryEvent.ToggleFileTagFilter -> {
+                fileTagFilter.update { current ->
+                    if (event.tag in current) current - event.tag else current + event.tag
+                }
+            }
+
+            LibraryEvent.ClearFileTagFilter -> {
+                fileTagFilter.value = emptySet()
+            }
+
             is LibraryEvent.SelectFileSortOption -> {
                 fileSortOption.value = event.sortOption
                 fileSortAscending.value = event.ascending ?: (event.sortOption == LibraryFileSortOption.NAME)
@@ -2254,6 +2421,24 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            is LibraryEvent.UpdateTagsForSelected -> {
+                if (event.addTags.isEmpty() && event.removeTags.isEmpty()) return
+                val stateSnapshot = uiState.value
+                val dirSnapshot = selectedDirectoryPaths.value
+                val itemSnapshot = selectedItemIds.value
+                if (dirSnapshot.isEmpty() && itemSnapshot.isEmpty()) return
+                clearSelectionInternal()
+                viewModelScope.launch {
+                    val targetIds = resolveTargetMediaIds(stateSnapshot, dirSnapshot, itemSnapshot)
+                    if (targetIds.isEmpty()) return@launch
+                    libraryRepository.updateItemTags(
+                        ids = targetIds.toSet(),
+                        addTags = event.addTags,
+                        removeTags = event.removeTags,
+                    )
+                }
+            }
+
             is LibraryEvent.ToggleQueueItem -> {
                 viewModelScope.launch {
                     libraryRepository.toggleQueueItem(event.id)
@@ -2299,6 +2484,8 @@ class LibraryViewModel @Inject constructor(
                 val newTarget = LanguageTag(normalizedTarget)
                 val targetLangChanged = previousItem != null &&
                     !previousItem.languagePair.target.value.equals(newTarget.value, ignoreCase = true)
+                val requestedTags = event.tags
+                val currentTags = uiState.value.items.firstOrNull { it.item.id == event.id }?.tags.orEmpty()
                 viewModelScope.launch {
                     libraryRepository.updateItemMetadata(
                         id = event.id,
@@ -2308,6 +2495,9 @@ class LibraryViewModel @Inject constructor(
                             base = normalizedBase?.let { LanguageTag(it) },
                         ),
                     )
+                    if (requestedTags != null && requestedTags != currentTags) {
+                        libraryRepository.setItemTags(event.id, requestedTags)
+                    }
                     itemSttOverrideRepository.set(event.id, ItemSttOverride.NONE)
                     if (targetLangChanged) {
                         libraryRepository.resetTranscriptsAndDeleteFiles(event.id)
@@ -2328,9 +2518,10 @@ class LibraryViewModel @Inject constructor(
                 } else {
                     uiState.value.items.filter { uiState.value.effectivePathOf(it) == null }
                 }
-                val folderPair = uiState.value.courseFolders.firstOrNull {
+                val folderRow = uiState.value.courseFolders.firstOrNull {
                     it.coursePath.trim('/') == dirPath
-                }?.languagePair
+                }
+                val folderPair = folderRow?.languagePair
                 val initialPair = matchingItems.firstOrNull()?.item?.languagePair
                     ?: folderPair
                     ?: defaultLanguagePair
@@ -2340,6 +2531,7 @@ class LibraryViewModel @Inject constructor(
                     initialLanguages = initialPair,
                     initialSttOverride = ItemSttOverride.NONE,
                     isRealFolder = dirPath != null && uiState.value.isRealFolder(dirPath),
+                    colorIndex = folderRow?.colorIndex,
                 )
                 if (firstItemId != null) {
                     viewModelScope.launch {
@@ -2401,12 +2593,25 @@ class LibraryViewModel @Inject constructor(
                         }
                     }
                 }
+                // 名前を変えたフォルダは新しいパスで色を設定する（名前を消して解散したフォルダには設定しない）
+                val colorTargetPath = if (currentPath != null) resolvedNewCourse else null
                 viewModelScope.launch {
                     libraryRepository.updateDirectoryMetadata(
                         currentCourse = currentPath,
                         newCourse = resolvedNewCourse,
                         languages = normalizedLanguages,
                     )
+                    if (colorTargetPath != null) {
+                        when (val choice = event.colorChoice) {
+                            LibraryFolderColorChoice.Unchanged -> Unit
+
+                            LibraryFolderColorChoice.LanguageDefault ->
+                                libraryRepository.setCourseFolderColor(colorTargetPath, null)
+
+                            is LibraryFolderColorChoice.Palette ->
+                                libraryRepository.setCourseFolderColor(colorTargetPath, choice.index)
+                        }
+                    }
                     for (model in targetItems) {
                         itemSttOverrideRepository.set(model.item.id, ItemSttOverride.NONE)
                         val itemTargetChanged = folderLevelTargetChanged ||
@@ -2873,7 +3078,7 @@ class LibraryViewModel @Inject constructor(
         state: LibraryUiState,
         reorderedFilteredIds: List<MediaId>,
     ): List<MediaId> {
-        val fullSorted = state.copy(fileSearchQuery = "", fileTargetLanguageFilter = null)
+        val fullSorted = state.copy(fileSearchQuery = "", fileTargetLanguageFilter = null, fileTagFilter = emptySet())
             .filteredAllFiles
             .map { it.item.id }
         val filteredSet = reorderedFilteredIds.toSet()
@@ -3095,6 +3300,9 @@ class LibraryViewModel @Inject constructor(
         seekBackMs: Long,
         seekForwardMs: Long,
         defaultSpeed: Float,
+        tags: List<String>,
+        itemTags: Map<MediaId, List<String>>,
+        folderLanguageColorOrdinals: Map<LanguageTag, Int>,
         playbackStatus: PlaybackStatus,
         practice: PracticeSettings,
         dialogAndImport: DialogAndImportSnapshot,
@@ -3128,6 +3336,7 @@ class LibraryViewModel @Inject constructor(
                 queuedAtEpochMs = state?.queuedAtEpochMs ?: 0L,
                 accessCount = state?.accessCount ?: 0,
                 fileSortOrder = state?.fileSortOrder,
+                tags = itemTags[audioItem.id].orEmpty(),
             )
         }
         val activeMediaId = playbackStatus.mediaId
@@ -3191,10 +3400,15 @@ class LibraryViewModel @Inject constructor(
             ?: defaultSpeed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
             ?: playbackStatus.speed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
             ?: 1.5f
+        // どのファイルにも付いていないタグ（消えたタグ）は、絞り込みから外して扱う
+        val tagNames = tags.toHashSet()
+        val effectiveTagFilter = navAndSelection.fileTagFilter.filterTo(LinkedHashSet()) { it in tagNames }
 
         return LibraryUiState(
             items = uiItems,
             courseFolders = courseFolders,
+            allTags = tags,
+            folderLanguageColorOrdinals = folderLanguageColorOrdinals,
             importState = dialogAndImport.importState,
             miniPlayer = miniPlayer,
             pendingDeleteItem = dialogAndImport.pendingDeleteItem,
@@ -3216,6 +3430,7 @@ class LibraryViewModel @Inject constructor(
             selectedTab = navAndSelection.selectedTab,
             fileSearchQuery = navAndSelection.fileSearchQuery,
             fileTargetLanguageFilter = navAndSelection.fileTargetLanguageFilter,
+            fileTagFilter = effectiveTagFilter,
             fileSortOption = navAndSelection.fileSortOption,
             fileSortAscending = navAndSelection.fileSortAscending,
             selectedPlaylistId = navAndSelection.selectedPlaylistId,
@@ -3243,4 +3458,5 @@ private data class NavigationTabAndFilterSnapshot(
     val fileSortOption: LibraryFileSortOption = LibraryFileSortOption.NAME,
     val fileSortAscending: Boolean = true,
     val selectedPlaylistId: PlaylistId? = null,
+    val fileTagFilter: Set<String> = emptySet(),
 )
