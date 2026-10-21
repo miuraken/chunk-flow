@@ -64,9 +64,16 @@ import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.MediaId
 
+/**
+ * システムのファイル選択画面（DocumentsUI）の上部に出す案内文の extra（`DocumentsContract.EXTRA_PROMPT`。SDK では非公開）。
+ * 対応していない版では無視されるだけなので、案内はトースト（[showPickerPromptToast]）でも出す。
+ */
+private const val EXTRA_PICKER_PROMPT = "android.provider.extra.PROMPT"
+
 internal class OpenMultipleAudioDocumentsInput(
     val mimeTypes: Array<String>,
     val initialDirectoryUri: Uri? = null,
+    val prompt: String? = null,
 )
 
 internal object OpenMultipleAudioDocumentsContract :
@@ -77,9 +84,39 @@ internal object OpenMultipleAudioDocumentsContract :
         if (input.initialDirectoryUri != null) {
             putExtra(DocumentsContract.EXTRA_INITIAL_URI, input.initialDirectoryUri)
         }
+        if (input.prompt != null) {
+            putExtra(EXTRA_PICKER_PROMPT, input.prompt)
+        }
     }
 
     override fun parseResult(resultCode: Int, intent: Intent?): List<Uri> = delegate.parseResult(resultCode, intent)
+}
+
+/** フォルダ選択（`ACTION_OPEN_DOCUMENT_TREE`）に案内文（[prompt]）を付けて開く入力。 */
+internal class OpenDocumentTreeWithPromptInput(
+    val prompt: String? = null,
+)
+
+/** フォルダ選択の画面を、案内文の extra を付けて開く契約。結果は [ActivityResultContracts.OpenDocumentTree] と同じ。 */
+internal object OpenDocumentTreeWithPromptContract :
+    ActivityResultContract<OpenDocumentTreeWithPromptInput, Uri?>() {
+    private val delegate = ActivityResultContracts.OpenDocumentTree()
+
+    override fun createIntent(context: Context, input: OpenDocumentTreeWithPromptInput): Intent = delegate.createIntent(context, null).apply {
+        if (input.prompt != null) {
+            putExtra(EXTRA_PICKER_PROMPT, input.prompt)
+        }
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? = delegate.parseResult(resultCode, intent)
+}
+
+/**
+ * フォルダ選択とファイル選択のシステム画面は見た目がほぼ同じなので、どちらを選ぶ場面かを開く直前にトーストで知らせる
+ * （テキストのトーストはシステムの画面の上にも出る）。
+ */
+private fun showPickerPromptToast(context: Context, message: String) {
+    android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
 }
 
 /**
@@ -99,7 +136,7 @@ fun LibraryRoute(
     val context = LocalContext.current
 
     val directoryPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree(),
+        contract = OpenDocumentTreeWithPromptContract,
     ) { treeUri ->
         if (treeUri != null) {
             runCatching {
@@ -146,16 +183,23 @@ fun LibraryRoute(
         state = state,
         onEvent = { event ->
             when (event) {
-                LibraryEvent.RequestImportDirectory -> directoryPickerLauncher.launch(null)
+                LibraryEvent.RequestImportDirectory -> {
+                    val prompt = context.getString(R.string.library_picker_prompt_folder)
+                    showPickerPromptToast(context, prompt)
+                    directoryPickerLauncher.launch(OpenDocumentTreeWithPromptInput(prompt = prompt))
+                }
 
                 LibraryEvent.RequestImport -> {
                     val initialDirUri = runCatching {
                         state.resolveInitialImportDirectoryUriString().toUri()
                     }.getOrNull()
+                    val prompt = context.getString(R.string.library_picker_prompt_files)
+                    showPickerPromptToast(context, prompt)
                     filePickerLauncher.launch(
                         OpenMultipleAudioDocumentsInput(
                             mimeTypes = arrayOf("audio/*"),
                             initialDirectoryUri = initialDirUri,
+                            prompt = prompt,
                         ),
                     )
                 }

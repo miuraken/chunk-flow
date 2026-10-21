@@ -90,6 +90,8 @@
     <string name="library_refresh_cd">フォルダを再スキャン・更新</string>
     <string name="library_add_folder_cd">フォルダを追加</string>
     <string name="library_add_file_cd">ファイルを追加</string>
+    <string name="library_picker_prompt_folder">フォルダを選択してください（中の音声をまとめて読み込みます）</string>
+    <string name="library_picker_prompt_files">ファイルを選択してください（複数選べます）</string>
     <string name="library_tab_folders">フォルダ</string>
     <string name="library_tab_files">ファイル</string>
     <string name="library_tab_playlists">プレイリスト</string>

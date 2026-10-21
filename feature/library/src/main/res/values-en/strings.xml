@@ -90,6 +90,8 @@
     <string name="library_refresh_cd">Rescan and refresh folders</string>
     <string name="library_add_folder_cd">Add folder</string>
     <string name="library_add_file_cd">Add files</string>
+    <string name="library_picker_prompt_folder">Choose a folder (all audio files in it are imported)</string>
+    <string name="library_picker_prompt_files">Choose files (you can select several)</string>
     <string name="library_tab_folders">Folders</string>
     <string name="library_tab_files">Files</string>
     <string name="library_tab_playlists">Playlists</string>
