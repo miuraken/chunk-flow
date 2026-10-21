@@ -31,6 +31,7 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowExtendedColors
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowFolderPalette
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.theme.extendedColorsFor
 import com.miuraken.chunkflow.core.designsystem.theme.languagePaletteFor
@@ -38,7 +39,7 @@ import com.miuraken.chunkflow.core.designsystem.theme.languagePaletteFor
 /*
  * テーマのカタログ（デザインシステムの確認用プレビュー。Phase A）。
  *
- * 画面ではなく、カラーロール・言語パレット・拡張色・Typography・Shapes を一覧するための Composable。
+ * 画面ではなく、カラーロール・言語パレット・拡張色・フォルダのパレット・Typography・Shapes を一覧するための Composable。
  * スクリーンショットテスト（`src/screenshotTest/`）から `@PreviewTest` で参照する。
  */
 
@@ -211,6 +212,51 @@ internal fun LanguagePaletteCatalog(darkTheme: Boolean, modifier: Modifier = Mod
     }
 }
 
+/**
+ * フォルダのパレット（ADR 0013）の一覧。番号ごとに、通常の行と選択中の行の背景に
+ * `onSurface`（フォルダ名）と `onSurfaceVariant`（件数）の文字を重ねて描く。
+ */
+@Composable
+internal fun FolderPaletteCatalog(modifier: Modifier = Modifier) {
+    val palette = chunkFlowFolderPalette()
+    Column(modifier = modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(text = "Folder palette", style = MaterialTheme.typography.titleMedium)
+        palette.containers.zip(palette.selectedContainers).forEachIndexed { index, (container, selected) ->
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                FolderRowSample(label = "色 ${index + 1}", container = container, modifier = Modifier.weight(1f))
+                FolderRowSample(label = "選択中", container = selected, modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** フォルダの行の見本（背景色の上にフォルダ名と件数を描く）。 */
+@Composable
+private fun FolderRowSample(label: String, container: Color, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .height(40.dp)
+            .clip(MaterialTheme.shapes.medium)
+            .background(container)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
+        Text(
+            text = "12 件",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+    }
+}
+
 /** Typography の 15 スタイル一覧。 */
 @Composable
 internal fun TypographyCatalog(modifier: Modifier = Modifier) {
@@ -283,6 +329,14 @@ internal fun ColorRolesCatalogPreview() {
 internal fun LanguagePaletteCatalogPreview() {
     ChunkFlowTheme {
         Surface(modifier = Modifier.fillMaxWidth()) { LanguagePaletteCatalog(darkTheme = isSystemInDarkTheme()) }
+    }
+}
+
+@PreviewLightDark
+@Composable
+internal fun FolderPaletteCatalogPreview() {
+    ChunkFlowTheme {
+        Surface(modifier = Modifier.fillMaxWidth()) { FolderPaletteCatalog() }
     }
 }
 

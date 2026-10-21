@@ -16,6 +16,7 @@ import com.miuraken.chunkflow.core.designsystem.component.playback.PlaybackContr
 import com.miuraken.chunkflow.core.designsystem.component.playback.SpeedSheetContentPreview
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.preview.ColorRolesCatalogPreview
+import com.miuraken.chunkflow.core.designsystem.preview.FolderPaletteCatalogPreview
 import com.miuraken.chunkflow.core.designsystem.preview.LanguagePaletteCatalogPreview
 import com.miuraken.chunkflow.core.designsystem.preview.ShapesCatalogPreview
 import com.miuraken.chunkflow.core.designsystem.preview.TypographyCatalogPreview
@@ -34,6 +35,11 @@ fun ThemeColorRolesScreenshot() = ColorRolesCatalogPreview()
 @PreviewLightDark
 @Composable
 fun ThemeLanguagePaletteScreenshot() = LanguagePaletteCatalogPreview()
+
+@PreviewTest
+@PreviewLightDark
+@Composable
+fun ThemeFolderPaletteScreenshot() = FolderPaletteCatalogPreview()
 
 @PreviewTest
 @PreviewLightDark
