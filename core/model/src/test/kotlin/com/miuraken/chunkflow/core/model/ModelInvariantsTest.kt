@@ -59,7 +59,7 @@ class ModelInvariantsTest {
         val id = MediaId("00000000-0000-4000-8000-000000000001")
         assertFailsWith<IllegalArgumentException> { ItemState(mediaId = id, positionMs = -1L) }
         assertFailsWith<IllegalArgumentException> { ItemState(mediaId = id, speed = 0.49f) }
-        assertFailsWith<IllegalArgumentException> { ItemState(mediaId = id, speed = 2.01f) }
+        assertFailsWith<IllegalArgumentException> { ItemState(mediaId = id, speed = 3.01f) }
     }
 
     @Test
@@ -80,7 +80,7 @@ class ModelInvariantsTest {
     @Test
     fun `UserSettings_速度が範囲外またはスキップ秒数が0以下なら作れない`() {
         assertFailsWith<IllegalArgumentException> { UserSettings(defaultSpeed = 0.4f) }
-        assertFailsWith<IllegalArgumentException> { UserSettings(defaultSpeed = 2.5f) }
+        assertFailsWith<IllegalArgumentException> { UserSettings(defaultSpeed = 3.5f) }
         assertFailsWith<IllegalArgumentException> { UserSettings(seekBackMs = 0L) }
         assertFailsWith<IllegalArgumentException> { UserSettings(seekBackMs = -100L) }
         assertFailsWith<IllegalArgumentException> { UserSettings(seekForwardMs = 0L) }

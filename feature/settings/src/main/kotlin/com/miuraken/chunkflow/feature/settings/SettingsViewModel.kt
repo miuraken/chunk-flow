@@ -202,7 +202,7 @@ data class SettingsUiState(
         val SEEK_FORWARD_OPTIONS_MS: List<Long> = listOf(3_000L, 5_000L, 10_000L, 15_000L, 30_000L)
 
         /** 既定の再生速度のプリセット一覧（1.0x を除く）。 */
-        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f)
+        val SPEED_PRESETS: List<Float> = listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
 
         /** 固定自動ポーズ秒数の既定値（ミリ秒: 1.0 秒）。 */
         const val DEFAULT_AUTO_PAUSE_FIXED_MS: Long = 1_000L

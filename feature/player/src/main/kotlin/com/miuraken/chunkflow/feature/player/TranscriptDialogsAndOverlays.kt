@@ -46,13 +46,17 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
@@ -84,7 +88,14 @@ internal fun EditChunkTextDialog(
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var textValue by remember(chunkNumber, initialText) { mutableStateOf(initialText) }
+    // 開いたらすぐ上書きできるよう、全体を選択した状態でテキスト欄にフォーカスを当てる
+    var textValue by remember(chunkNumber, initialText) {
+        mutableStateOf(TextFieldValue(text = initialText, selection = TextRange(0, initialText.length)))
+    }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(chunkNumber, initialText) {
+        focusRequester.requestFocus()
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -96,11 +107,13 @@ internal fun EditChunkTextDialog(
                 value = textValue,
                 onValueChange = { textValue = it },
                 label = { Text(text = stringResource(R.string.player_chunk_edit_text_label)) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester),
             )
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(textValue) }) {
+            TextButton(onClick = { onConfirm(textValue.text) }) {
                 Text(text = stringResource(R.string.player_chunk_edit_save))
             }
         },

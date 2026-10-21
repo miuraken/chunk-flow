@@ -425,14 +425,6 @@ class DefaultLibraryRepository(
         if (isNewRootFolder) {
             assignTopSortOrderForNewRootFolder(topSegment)
         }
-        if (rootDocId != null) {
-            writeCourseJsonToSafDir(
-                treeUri = treeUri,
-                dirDocId = rootDocId,
-                coursePath = resolvedRootCourse,
-                languages = effectiveLanguages,
-            )
-        }
 
         val discoveredDirs = mutableListOf<DiscoveredDirectory>()
         val rawCandidates = if (isTreeUriSafe(treeUri)) {
@@ -457,12 +449,6 @@ class DefaultLibraryRepository(
                     treeUri = treeUri.toString(),
                     lastScannedAt = nowMs,
                 ),
-            )
-            writeCourseJsonToSafDir(
-                treeUri = treeUri,
-                dirDocId = dir.docId,
-                coursePath = dir.coursePath,
-                languages = subLanguages,
             )
         }
 
@@ -907,12 +893,6 @@ class DefaultLibraryRepository(
                                 baseLang = languages.base?.value,
                             ),
                         )
-                        folder.treeUri?.let(Uri::parse)?.let { treeUri ->
-                            val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
-                            if (rootDocId != null && folder.coursePath == currentCourse) {
-                                writeCourseJsonToSafDir(treeUri, rootDocId, updatedPath, languages)
-                            }
-                        }
                     }
                 }
                 if (!currentCourse.contains('/')) {
@@ -2712,13 +2692,14 @@ class DefaultLibraryRepository(
         null
     }.getOrNull()
 
+    /**
+     * 登録したフォルダの読み取りの権限を永続化する。
+     *
+     * 利用者のフォルダには何も書き込まない方針（メタデータはアプリの DB だけに持つ）なので、書き込みの権限は取らない。
+     */
     private fun takePersistableFolderPermission(treeUri: Uri) {
-        val resolver = context.contentResolver
-        val readWriteFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        if (runCatching { resolver.takePersistableUriPermission(treeUri, readWriteFlags) }.isFailure) {
-            runCatching {
-                resolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }
 
@@ -2727,6 +2708,9 @@ class DefaultLibraryRepository(
         val languages: LanguagePair?,
     )
 
+    /**
+     * 以前の版が利用者のフォルダに作った `.chunkflow/course.json`（コース名と言語ペア）があれば読む（互換のため。読むだけで、作らない・書かない）。
+     */
     private fun readCourseJsonFromSafDir(
         treeUri: Uri,
         dirDocId: String,
@@ -2756,59 +2740,6 @@ class DefaultLibraryRepository(
         }
         if (courseName == null && languages == null) null else CourseJsonMeta(courseName, languages)
     }.getOrNull()
-
-    private fun writeCourseJsonToSafDir(
-        treeUri: Uri,
-        dirDocId: String,
-        coursePath: String,
-        languages: LanguagePair,
-    ): Boolean = runCatching {
-        if (!isTreeUriSafe(treeUri)) return false
-        val dirDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, dirDocId) ?: return false
-        val chunkflowDirDocId = findChildDocumentIdByName(
-            treeUri = treeUri,
-            parentDocId = dirDocId,
-            targetName = CHUNKFLOW_DIR_NAME,
-            requireDirectory = true,
-        ) ?: run {
-            val createdDirUri = DocumentsContract.createDocument(
-                context.contentResolver,
-                dirDocUri,
-                DocumentsContract.Document.MIME_TYPE_DIR,
-                CHUNKFLOW_DIR_NAME,
-            ) ?: return false
-            DocumentsContract.getDocumentId(createdDirUri)
-        }
-
-        val existingFileDocId = findChildDocumentIdByName(
-            treeUri = treeUri,
-            parentDocId = chunkflowDirDocId,
-            targetName = COURSE_JSON_FILE_NAME,
-            requireDirectory = false,
-        )
-        val targetDocUri = if (existingFileDocId != null) {
-            DocumentsContract.buildDocumentUriUsingTree(treeUri, existingFileDocId)
-        } else {
-            val chunkflowDirUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, chunkflowDirDocId)
-            DocumentsContract.createDocument(
-                context.contentResolver,
-                chunkflowDirUri,
-                "application/json",
-                COURSE_JSON_FILE_NAME,
-            )
-        } ?: return false
-
-        val baseField = languages.base?.value?.let { ",\"baseLang\":${jsonString(it)}" }.orEmpty()
-        val json = "{\"courseName\":${jsonString(coursePath)},\"targetLang\":${jsonString(languages.target.value)}$baseField}"
-        val outStream = context.contentResolver.openOutputStream(targetDocUri, "wt")
-            ?: context.contentResolver.openOutputStream(targetDocUri)
-            ?: return false
-        outStream.use { out ->
-            out.write(json.toByteArray(Charsets.UTF_8))
-            out.flush()
-        }
-        true
-    }.getOrDefault(false)
 
     private object NoOpCourseFolderDao : CourseFolderDao {
         override fun observeAll(): Flow<List<CourseFolderEntity>> = flowOf(emptyList())

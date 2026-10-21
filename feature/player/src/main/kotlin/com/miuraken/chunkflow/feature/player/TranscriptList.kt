@@ -62,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -74,6 +75,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -756,6 +758,16 @@ fun TranscriptList(
         }
 
         if (isAutoFollowPaused && activeDisplayIndex != null && activeDisplayIndex in displayedChunks.indices) {
+            // 矢印の向き: 現在位置が表示より上なら ↓、下なら ↑（戻るときにリストが動く向き。利用者の指定）
+            val isArrowDownward by remember(activeDisplayIndex) {
+                derivedStateOf {
+                    isReturnToCurrentArrowDownward(
+                        firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                        firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+                        activeDisplayIndex = activeDisplayIndex,
+                    )
+                }
+            }
             AssistChip(
                 onClick = {
                     isAutoFollowPaused = false
@@ -773,7 +785,9 @@ fun TranscriptList(
                     Icon(
                         imageVector = ChunkFlowIcons.ArrowDownward,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier
+                            .size(18.dp)
+                            .rotate(if (isArrowDownward) 0f else 180f),
                     )
                 },
                 colors = AssistChipDefaults.assistChipColors(
@@ -2102,6 +2116,22 @@ internal const val AUTO_FOLLOW_LEADING_CONTEXT_ITEMS: Int = 2
  * 自動追従スクロールで先頭に合わせるべきアイテムのインデックスを返す。
  */
 internal fun resolveAutoFollowScrollTargetIndex(activeDisplayIndex: Int): Int = (activeDisplayIndex - AUTO_FOLLOW_LEADING_CONTEXT_ITEMS).coerceAtLeast(0)
+
+/**
+ * 「現在位置へ戻る」の矢印を下向き（↓）にするかどうか。
+ *
+ * 現在位置が今の表示より上にある（自動追従の位置よりも下までスクロールしている）ときは `true`（↓）、
+ * 下にあるときは `false`（↑）。戻るときにリストが動く向きを示す（利用者の指定）。
+ */
+internal fun isReturnToCurrentArrowDownward(
+    firstVisibleItemIndex: Int,
+    firstVisibleItemScrollOffset: Int,
+    activeDisplayIndex: Int,
+): Boolean {
+    val targetIndex = resolveAutoFollowScrollTargetIndex(activeDisplayIndex)
+    return firstVisibleItemIndex > targetIndex ||
+        (firstVisibleItemIndex == targetIndex && firstVisibleItemScrollOffset > 0)
+}
 
 /**
  * 再生位置 [positionMs] に対応するチャンクのインデックスを二分探索で返す。

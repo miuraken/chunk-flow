@@ -403,7 +403,7 @@ private fun LibraryDirectoryRow(
                         modifier = Modifier.size(36.dp),
                     ) {
                         Icon(
-                            imageVector = ChunkFlowIcons.Edit,
+                            imageVector = ChunkFlowIcons.Tune,
                             contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp),

@@ -132,7 +132,7 @@ class PlayerViewModelTest {
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
         viewModel.open(item.id)
 
-        assertEquals(listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f), PlayerUiState.SPEED_PRESETS)
+        assertEquals(listOf(0.5f, 0.75f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f), PlayerUiState.SPEED_PRESETS)
         assertEquals(1.0f, viewModel.uiState.value.speed)
         assertEquals(PlayerUiState.DEFAULT_CUSTOM_SPEED, viewModel.uiState.value.customSpeed)
 
@@ -167,7 +167,7 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.SetSpeed(0.1f))
         assertEquals(ItemState.MIN_SPEED, viewModel.uiState.value.speed)
 
-        viewModel.onEvent(PlayerEvent.SetSpeed(3.0f))
+        viewModel.onEvent(PlayerEvent.SetSpeed(3.5f))
         assertEquals(ItemState.MAX_SPEED, viewModel.uiState.value.speed)
     }
 

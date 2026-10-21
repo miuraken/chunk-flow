@@ -1314,6 +1314,12 @@ sealed interface LibraryEvent {
     /** 取り込みの完了・エラーバナーを閉じる。 */
     data object DismissImportStatus : LibraryEvent
 
+    /**
+     * 進行中の取り込みを中断する。読み込み中のファイル（一時ファイル）は破棄し、
+     * それまでに読み込み終えたファイルはライブラリに残す。
+     */
+    data object CancelImport : LibraryEvent
+
     /** ディレクトリ（フォルダ）セクションの展開・折りたたみを切り替える。 */
     data class ToggleDirectory(val directoryName: String?) : LibraryEvent
 
@@ -2007,6 +2013,15 @@ class LibraryViewModel @Inject constructor(
 
             LibraryEvent.DismissImportStatus -> {
                 importState.value = LibraryImportUiState.Idle
+            }
+
+            LibraryEvent.CancelImport -> {
+                if (importState.value !is LibraryImportUiState.Copying) return
+                // 取り込みのコルーチンを止める。リポジトリは 1 ファイルずつ確定しており、キャンセルされると
+                // 読み込み中のファイルの一時ファイルを消す（読み込み終えたファイルは残る）
+                importJob?.cancel()
+                importJob = null
+                importState.value = LibraryImportUiState.Error(ImportError.CANCELLED)
             }
 
             is LibraryEvent.ToggleDirectory -> {

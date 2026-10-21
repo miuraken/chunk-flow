@@ -620,6 +620,7 @@ internal fun EditItemMetadataDialog(
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
     onOpenLanguageSettings: () -> Unit = {},
+    onDelete: (() -> Unit)? = null,
 ) {
     var courseText by remember(item) { mutableStateOf(item.course.orEmpty()) }
     var targetLangText by remember(item) {
@@ -681,6 +682,14 @@ internal fun EditItemMetadataDialog(
                     Text(text = stringResource(R.string.library_edit_save))
                 }
             }
+
+            if (onDelete != null) {
+                HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+                DeleteFromLibraryButton(
+                    label = stringResource(R.string.library_delete_file_button),
+                    onClick = onDelete,
+                )
+            }
         }
     }
 
@@ -700,6 +709,36 @@ internal fun EditItemMetadataDialog(
     }
 }
 
+/**
+ * 設定のシートの下部に置く「ライブラリから削除」のボタン（ファイル・フォルダ共通）。押すと確認ダイアログを出す。
+ */
+@Composable
+private fun DeleteFromLibraryButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.error,
+        ),
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.error.copy(alpha = 0.6f),
+        ),
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.Delete,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(text = label)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun EditDirectoryMetadataDialog(
@@ -710,6 +749,7 @@ internal fun EditDirectoryMetadataDialog(
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
     onOpenLanguageSettings: () -> Unit = {},
+    onDelete: (() -> Unit)? = null,
 ) {
     var courseText by remember(directoryEdit) {
         mutableStateOf(directoryEdit.currentCourse?.substringAfterLast('/').orEmpty())
@@ -787,6 +827,14 @@ internal fun EditDirectoryMetadataDialog(
                     Text(text = stringResource(R.string.library_edit_save))
                 }
             }
+
+            if (onDelete != null && directoryEdit.currentCourse != null) {
+                HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+                DeleteFromLibraryButton(
+                    label = stringResource(R.string.library_delete_folder_button),
+                    onClick = onDelete,
+                )
+            }
         }
     }
 
@@ -822,6 +870,7 @@ private fun EditDirectoryMetadataDialogPreview() {
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
                 onConfirm = { _, _, _ -> },
                 onDismiss = {},
+                onDelete = {},
             )
         }
     }
@@ -850,6 +899,7 @@ private fun EditItemMetadataDialogPreview() {
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
                 onConfirm = { _, _, _ -> },
                 onDismiss = {},
+                onDelete = {},
             )
         }
     }
