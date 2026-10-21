@@ -139,18 +139,12 @@ fun LibraryRoute(
         contract = OpenDocumentTreeWithPromptContract,
     ) { treeUri ->
         if (treeUri != null) {
+            // 利用者のフォルダには書き込まない方針なので、読み取りの権限だけを永続化する
             runCatching {
                 context.contentResolver.takePersistableUriPermission(
                     treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
-            }.onFailure {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        treeUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                    )
-                }
             }
             val scanned = scanDocumentTree(context.contentResolver, treeUri)
             val targetUris = scanned.documentUris.ifEmpty { listOf(treeUri) }
