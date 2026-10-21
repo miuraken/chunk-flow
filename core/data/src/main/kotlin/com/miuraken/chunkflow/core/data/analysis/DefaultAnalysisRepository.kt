@@ -2270,10 +2270,16 @@ class DefaultAnalysisRepository(
             backgroundJobs.remove(id)?.cancel()
             backgroundDeferredEmptyChunkIds.remove(id)
             val previouslyOpen = activeOpenMediaIds.toList()
+            val hadOtherBackgroundJobs = backgroundJobs.keys.any { it != id }
             activeOpenMediaIds.clear()
             activeOpenMediaIds.add(id)
             pipelineGate.setMediaOpen(id, true)
             notifyWaveformUpdated(id)
+            if (hadOtherBackgroundJobs || previouslyOpen.any { it != id }) {
+                runCatching {
+                    onDeviceChunkTranscriber.cancelActiveTranscription(onlyLowPriority = true)
+                }
+            }
             for (otherId in previouslyOpen) {
                 if (otherId != id) {
                     pipelineGate.setMediaOpen(otherId, false)
@@ -2434,7 +2440,7 @@ class DefaultAnalysisRepository(
     }
 
     private fun resumeLookaheadStartIndexOrNull(id: MediaId): Int? = latestLookaheadChunkIndex[id]?.coerceAtLeast(0)
-        ?: if (id in backgroundTranscriptionMediaIds) 0 else null
+        ?: if (id in activeOpenMediaIds || id in backgroundTranscriptionMediaIds) 0 else null
 
     override suspend fun triggerLookaheadAt(id: MediaId, currentChunkId: ChunkId?) {
         if (!canContinueTranscriptionForMedia(id)) {
@@ -3037,6 +3043,13 @@ class DefaultAnalysisRepository(
     }
 
     private suspend fun isOpenMediaAnalysisRunning(openId: MediaId): Boolean {
+        if (
+            lookaheadStateFor(openId).value.isLanguageDetectionRunning ||
+            activeLanguageDetectionJobs[openId]?.isActive == true ||
+            activePipelinedLidJobs[openId]?.isActive == true
+        ) {
+            return true
+        }
         val stages = analysisStateDao.getByMediaId(openId.value)
             .mapNotNull { it.toStageAndStatus() }
             .toMap()

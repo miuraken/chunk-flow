@@ -287,7 +287,7 @@ class SherpaOnnxModelManager internal constructor(
         ) {
             return OnDeviceLanguageModelStatus.DOWNLOADING
         }
-        if (isInstalledForLanguage(model, language)) {
+        if (isInstalledForLanguage(model, language) || isModelDownloaded(model)) {
             statusByLanguageKey.remove(langKey)
             return OnDeviceLanguageModelStatus.INSTALLED
         }

@@ -2088,7 +2088,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
     private fun isSherpaInstalledFor(language: LanguageTag?): Boolean {
         if (language == null) return false
-        return sherpaModelManager?.isInstalledForLanguage(language) == true
+        return sherpaModelManager?.getLanguageModelStatus(language) == OnDeviceLanguageModelStatus.INSTALLED
     }
 
     private fun isSherpaSupportedFor(language: LanguageTag?): Boolean {
@@ -2410,13 +2410,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         var osSupport: Map<String, RecognitionModelSupport> = emptyMap()
         var mlKitSupportRaw: Map<String, Pair<RecognitionModelSupport, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>> = emptyMap()
 
-        recognitionLock.withLock(highPriority = false) {
-            if (onDeviceAvailabilityChecker()) {
-                osSupport = runCatching { recognitionModelGateway.checkSupport(bcp47Tags) }.getOrDefault(emptyMap())
-            }
-            if (mlKitAvailable) {
-                mlKitSupportRaw = runCatching { mlKitGateway?.checkMlKitSupport(bcp47Tags).orEmpty() }.getOrDefault(emptyMap())
-            }
+        if (onDeviceAvailabilityChecker()) {
+            osSupport = runCatching { recognitionModelGateway.checkSupport(bcp47Tags) }.getOrDefault(emptyMap())
+        }
+        if (mlKitAvailable) {
+            mlKitSupportRaw = runCatching { mlKitGateway?.checkMlKitSupport(bcp47Tags).orEmpty() }.getOrDefault(emptyMap())
         }
 
         val existingSet = languages.mapTo(mutableSetOf()) {
@@ -4617,7 +4615,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     ): SpeechRecognitionAttemptResult? {
         if (language == null) return null
         val runner = sherpaTranscriber ?: return null
-        if (sherpaModelManager != null && !sherpaModelManager.isInstalledForLanguage(language)) {
+        if (sherpaModelManager != null &&
+            sherpaModelManager.getLanguageModelStatus(language) != OnDeviceLanguageModelStatus.INSTALLED
+        ) {
             return null
         }
         val result = runCatching {

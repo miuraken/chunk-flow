@@ -136,7 +136,7 @@ internal fun DetailedChunkTranscriptionDialog(
     var selectedLanguage by remember(dialogState.chunkId, dialogState.languageOverride) {
         mutableStateOf(defaultLang)
     }
-    var selectedEngine by remember(dialogState.chunkId, dialogState.engine) {
+    var selectedEngine by remember(dialogState.chunkId, dialogState.languageOverride, dialogState.engine) {
         mutableStateOf(dialogState.engine)
     }
     var selectedSpeed by remember(dialogState.chunkId) {

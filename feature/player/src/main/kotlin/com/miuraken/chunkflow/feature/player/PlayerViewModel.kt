@@ -1706,29 +1706,48 @@ class PlayerViewModel @Inject constructor(
                 currentAnalysisSnapshot,
             ) { mediaId, perMediaMap, prioritizedSet, autoStartOnOpen, snapshot ->
                 if (mediaId == null) return@combine null
-                if (perMediaMap.containsKey(mediaId)) return@combine null
-                if (!autoStartOnOpen) return@combine null
+                val explicitSetting = perMediaMap[mediaId]
+                if (explicitSetting == false) return@combine null
+                if (explicitSetting == null && !autoStartOnOpen) return@combine null
                 if (mediaId !in prioritizedSet) return@combine null
                 if (snapshot.chunks.isEmpty()) return@combine null
                 if (snapshot.status[AnalysisStage.FEATURES] is StageStatus.Running) return@combine null
                 if (snapshot.status[AnalysisStage.SEGMENTATION] is StageStatus.Running) return@combine null
                 if (snapshot.lookaheadStatus.isLanguageDetectionRunning) return@combine null
+                if (
+                    explicitSetting == true &&
+                    (
+                        snapshot.lookaheadStatus.inFlightChunkId != null ||
+                            snapshot.lookaheadStatus.queuedChunkIds.isNotEmpty()
+                        )
+                ) {
+                    return@combine null
+                }
                 val hasUntranscribedChunk = snapshot.chunks.any { chunk ->
                     !chunk.isSkipped &&
                         chunk.id !in snapshot.lookaheadStatus.skippedEmptyChunkIds &&
                         snapshot.transcripts[chunk.id]?.text.isNullOrBlank()
                 }
                 if (!hasUntranscribedChunk) return@combine null
-                mediaId
+                mediaId to (explicitSetting == true)
             }
                 .distinctUntilChanged()
-                .collect { readyMediaId ->
-                    if (readyMediaId != null && !perMediaLookaheadEnabled.value.containsKey(readyMediaId)) {
+                .collect { readyPair ->
+                    val readyMediaId = readyPair?.first ?: return@collect
+                    val alreadyExplicit = readyPair.second
+                    if (!alreadyExplicit && !perMediaLookaheadEnabled.value.containsKey(readyMediaId)) {
                         perMediaLookaheadEnabled.update { it + (readyMediaId to true) }
                         if (lastOpenedMediaId == readyMediaId) {
                             localUiState.update { it.copy(isLookaheadEnabled = true) }
                             syncLookaheadState(readyMediaId, true)
                         }
+                    } else if (
+                        alreadyExplicit &&
+                        lastOpenedMediaId == readyMediaId &&
+                        lookaheadLoopJob?.isActive != true
+                    ) {
+                        localUiState.update { it.copy(isLookaheadEnabled = true) }
+                        syncLookaheadState(readyMediaId, true)
                     }
                 }
         }
@@ -1815,8 +1834,11 @@ class PlayerViewModel @Inject constructor(
         prioritizedMediaIds.update { it - mediaId }
         val explicitEnabled = perMediaLookaheadEnabled.value[mediaId]
         val nextGen = nextWaveformRenderGeneration++
+        val prevSnapshot = localUiState.value
         localUiState.value = LocalUiSnapshot(
             isLookaheadEnabled = explicitEnabled ?: false,
+            languageModelInfos = prevSnapshot.languageModelInfos,
+            hasRecordAudioPermission = prevSnapshot.hasRecordAudioPermission,
             completedOverviewSignature = completedOverviewSignaturesByMedia[mediaId],
             completedZoomedSignature = completedZoomedSignaturesByMedia[mediaId],
             baseWaveformChunks = lastRenderedChunksByMedia[mediaId].orEmpty(),
@@ -1878,6 +1900,18 @@ class PlayerViewModel @Inject constructor(
                         speed = initialSpeed,
                         updatedAtEpochMs = System.currentTimeMillis(),
                     )
+                }
+            }
+        }
+        viewModelScope.launch {
+            val item = libraryRepository.observeItem(mediaId).firstOrNull()
+            val pair = item?.languagePair
+            val queryLangs = buildDetailedQueryLanguages(pair, pair?.target)
+            val queried = runCatching { analysisRepository.queryLanguageModelInfos(queryLangs) }.getOrNull().orEmpty()
+            if (queried.isNotEmpty()) {
+                val infoMap = queried.associateBy { it.language }
+                localUiState.update { state ->
+                    state.copy(languageModelInfos = state.languageModelInfos + infoMap)
                 }
             }
         }
@@ -3785,8 +3819,13 @@ class PlayerViewModel @Inject constructor(
             lookaheadLoopJob = viewModelScope.launch {
                 analysisRepository.setLookaheadEnabled(mediaId, true)
                 val requestedStartIds = mutableSetOf<ChunkId?>()
-                val initialChunks = uiState.value.chunks
-                val initialChunkId = playbackController.status.value.currentChunkId
+                val initialChunks = if (uiState.value.mediaId == mediaId) uiState.value.chunks else emptyList()
+                val statusNow = playbackController.status.value
+                val validCurrentChunkId = statusNow.currentChunkId?.takeIf { candidateId ->
+                    statusNow.mediaId == mediaId &&
+                        (initialChunks.isEmpty() || initialChunks.any { it.id == candidateId })
+                }
+                val initialChunkId = validCurrentChunkId
                     ?: initialChunks.firstOrNull { isChunkUndetected(it) }?.id
                     ?: initialChunks.firstOrNull()?.id
                     ?: run {
@@ -3794,7 +3833,9 @@ class PlayerViewModel @Inject constructor(
                         val repoTranscripts = analysisRepository.observeTranscripts(mediaId).firstOrNull().orEmpty()
                         val repoSkippedEmpty = analysisRepository.observeLookaheadStatus(mediaId)
                             .firstOrNull()?.skippedEmptyChunkIds.orEmpty()
-                        repoChunks.firstOrNull { chunk ->
+                        statusNow.currentChunkId?.takeIf { candidateId ->
+                            repoChunks.any { it.id == candidateId }
+                        } ?: repoChunks.firstOrNull { chunk ->
                             if (chunk.isSkipped || chunk.id in repoSkippedEmpty) {
                                 false
                             } else {
@@ -3813,7 +3854,13 @@ class PlayerViewModel @Inject constructor(
 
                 while (isActive) {
                     val currentState = uiState.value
-                    if (!currentState.lookaheadStatus.enabled || currentState.mediaId != mediaId) {
+                    if (
+                        !currentState.lookaheadStatus.enabled ||
+                        currentState.mediaId != mediaId ||
+                        currentState.lookaheadStatus.isLanguageDetectionRunning ||
+                        currentState.analysis[AnalysisStage.FEATURES] is StageStatus.Running ||
+                        currentState.analysis[AnalysisStage.SEGMENTATION] is StageStatus.Running
+                    ) {
                         break
                     }
                     val chunks = currentState.chunks
@@ -3831,7 +3878,13 @@ class PlayerViewModel @Inject constructor(
 
                     delay(300L)
                     val refreshedState = uiState.value
-                    if (!refreshedState.lookaheadStatus.enabled || refreshedState.mediaId != mediaId) {
+                    if (
+                        !refreshedState.lookaheadStatus.enabled ||
+                        refreshedState.mediaId != mediaId ||
+                        refreshedState.lookaheadStatus.isLanguageDetectionRunning ||
+                        refreshedState.analysis[AnalysisStage.FEATURES] is StageStatus.Running ||
+                        refreshedState.analysis[AnalysisStage.SEGMENTATION] is StageStatus.Running
+                    ) {
                         break
                     }
                     val refreshedChunks = refreshedState.chunks

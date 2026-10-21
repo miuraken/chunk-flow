@@ -31,7 +31,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
 ) : AutoCloseable {
 
     private val sessionLock = Any()
-    private var loadedBundle: LoadedModelBundle? = null
+    private val loadedBundles = LinkedHashMap<DownloadableSttModel, LoadedModelBundle>()
 
     private class LoadedModelBundle(
         val encoderPath: String,
@@ -78,7 +78,8 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
     fun isReadyForLanguage(
         language: LanguageTag,
         model: DownloadableSttModel = DownloadableSttModel.SHERPA_WHISPER_TINY,
-    ): Boolean = modelManager.isInstalledForLanguage(model, language)
+    ): Boolean = modelManager.getLanguageModelStatus(model, language) ==
+        com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED
 
     /**
      * 指定した言語コード [languageCode] で `sherpa-onnx` ローカルモデル（[model]）による認識が可能かどうか。
@@ -86,7 +87,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
     fun isReadyForLanguage(
         languageCode: String,
         model: DownloadableSttModel = DownloadableSttModel.SHERPA_WHISPER_TINY,
-    ): Boolean = modelManager.isInstalledForLanguage(model, LanguageTag(languageCode))
+    ): Boolean = isReadyForLanguage(LanguageTag(languageCode), model)
 
     /**
      * 16kHz モノラル 16-bit リトルエンディアン PCM（[pcm16LeBytes]）を指定言語 [language] で音声認識する。
@@ -126,7 +127,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         model: com.miuraken.chunkflow.core.model.DownloadableSttModel = com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY,
     ): OnDeviceChunkTranscriptionResult? {
         if (pcm16kMono.isEmpty()) return null
-        if (!ignoreLanguageMarker && !modelManager.isInstalledForLanguage(model, language)) {
+        if (!ignoreLanguageMarker && !isReadyForLanguage(language, model)) {
             return null
         }
         val mel = languageDetector.computeMelSpectrogram80x3000(pcm16kMono) ?: return null
@@ -213,13 +214,29 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                                 stepResult.close()
                                 return null
                             }
-                            val picked = selectGreedyNextToken(
+                            var picked = selectGreedyNextToken(
                                 logitsBuffer = logitsTensor.floatBuffer,
                                 seqLength = promptTokens.size,
                                 vocabSize = config.nVocab,
                                 suppressBlank = true,
+                                suppressEot = false,
                                 config = config,
                             )
+                            if (picked.tokenId.toLong() == config.eotToken) {
+                                val nonEotPicked = selectGreedyNextToken(
+                                    logitsBuffer = logitsTensor.floatBuffer,
+                                    seqLength = promptTokens.size,
+                                    vocabSize = config.nVocab,
+                                    suppressBlank = true,
+                                    suppressEot = true,
+                                    config = config,
+                                )
+                                if (nonEotPicked.tokenId.toLong() != config.eotToken &&
+                                    nonEotPicked.logProb >= MIN_INITIAL_NON_EOT_LOG_PROB
+                                ) {
+                                    picked = nonEotPicked
+                                }
+                            }
                             nextToken = picked.tokenId.toLong()
                             if (nextToken != config.eotToken) {
                                 sumLogProb += picked.logProb
@@ -265,6 +282,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                                     seqLength = 1,
                                     vocabSize = config.nVocab,
                                     suppressBlank = false,
+                                    suppressEot = false,
                                     config = config,
                                 )
                                 nextToken = picked.tokenId.toLong()
@@ -318,6 +336,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         seqLength: Int,
         vocabSize: Int,
         suppressBlank: Boolean,
+        suppressEot: Boolean = false,
         config: WhisperModelConfig,
     ): TokenPick {
         val lastTokenOffset = (seqLength - 1) * vocabSize
@@ -333,7 +352,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
             if (rawLogit > maxLogitForSoftmax) {
                 maxLogitForSoftmax = rawLogit
             }
-            if (isSuppressedToken(tokenId, eotId, sotId, suppressBlank, config)) {
+            if (isSuppressedToken(tokenId, eotId, sotId, suppressBlank, suppressEot, config)) {
                 continue
             }
             if (rawLogit > bestLogit) {
@@ -364,9 +383,10 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         eotId: Int,
         sotId: Int,
         suppressBlank: Boolean,
+        suppressEot: Boolean,
         config: WhisperModelConfig,
     ): Boolean {
-        if (tokenId == eotId) return false
+        if (tokenId == eotId) return suppressEot
         if (suppressBlank && tokenId == SPACE_TOKEN_ID) return true
         if (tokenId == config.noSpeechToken.toInt()) return true
         // SOT 以降の特殊トークン（言語トークン・タスク・タイムスタンプ等）は通常の文字生成では抑制する
@@ -378,7 +398,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         generatedCount: Int,
         candidateTokenId: Int,
     ): Boolean {
-        // 同一トークンが 6 回連続した場合はループとみなして打ち切る
+        // 1. 同一トークンが 6 回連続した場合はループとみなして打ち切る
         if (generatedCount >= MAX_IDENTICAL_TOKEN_REPEAT) {
             var allSame = true
             for (i in 1..MAX_IDENTICAL_TOKEN_REPEAT) {
@@ -389,6 +409,24 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
             }
             if (allSame) return true
         }
+        // 2. 2〜8 トークン周期のフレーズ反復（アラビア語等のマルチバイト BPE ループ）が 3 回以上連続した場合も打ち切る
+        val nextLen = generatedCount + 1
+        for (period in 2..MAX_NGRAM_LOOP_PERIOD) {
+            val requiredLen = period * MIN_NGRAM_LOOP_REPEATS
+            if (nextLen < requiredLen) continue
+            var isRepeating = true
+            for (offset in 0 until (requiredLen - period)) {
+                val idxA = nextLen - 1 - offset
+                val idxB = idxA - period
+                val tokenA = if (idxA == generatedCount) candidateTokenId else generatedTokenIds[idxA]
+                val tokenB = generatedTokenIds[idxB]
+                if (tokenA != tokenB) {
+                    isRepeating = false
+                    break
+                }
+            }
+            if (isRepeating) return true
+        }
         return false
     }
 
@@ -396,8 +434,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         model: DownloadableSttModel = DownloadableSttModel.SHERPA_WHISPER_TINY,
     ): LoadedModelBundle? {
         val paths = modelManager.resolveWhisperModelPaths(model) ?: run {
-            loadedBundle?.close()
-            loadedBundle = null
+            loadedBundles.remove(model)?.close()
             return null
         }
 
@@ -405,7 +442,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         val decMod = paths.decoderFile.lastModified()
         val tokMod = paths.tokensFile.lastModified()
 
-        val existing = loadedBundle
+        val existing = loadedBundles[model]
         if (existing != null &&
             existing.encoderPath == paths.encoderFile.absolutePath &&
             existing.encoderLastModified == encMod &&
@@ -418,7 +455,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         }
 
         existing?.close()
-        loadedBundle = null
+        loadedBundles.remove(model)
 
         return try {
             val tokenMap = parseTokensFile(paths.tokensFile)
@@ -456,7 +493,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                 tokenBytesById = tokenMap,
                 config = config,
             ).also {
-                loadedBundle = it
+                loadedBundles[model] = it
             }
         } catch (e: Exception) {
             logInfo("failed to load sherpa-onnx sessions error=${e.javaClass.simpleName}")
@@ -507,8 +544,10 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
 
     override fun close() {
         synchronized(sessionLock) {
-            loadedBundle?.close()
-            loadedBundle = null
+            for (bundle in loadedBundles.values) {
+                bundle.close()
+            }
+            loadedBundles.clear()
         }
     }
 
@@ -546,6 +585,9 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         private const val SPACE_TOKEN_ID: Int = 220
         private const val MAX_DECODE_STEPS: Int = 160
         private const val MAX_IDENTICAL_TOKEN_REPEAT: Int = 6
+        private const val MAX_NGRAM_LOOP_PERIOD: Int = 8
+        private const val MIN_NGRAM_LOOP_REPEATS: Int = 3
+        private const val MIN_INITIAL_NON_EOT_LOG_PROB: Double = -3.0
         private const val LOG_TAG: String = "ChunkFlowSherpa"
 
         /**
