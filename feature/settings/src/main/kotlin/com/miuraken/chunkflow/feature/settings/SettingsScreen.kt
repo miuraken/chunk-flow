@@ -291,6 +291,9 @@ private fun speedSliderSteps(): Int = ((ItemState.MAX_SPEED - ItemState.MIN_SPEE
 /** 速度のスライダーの刻み。 */
 private const val SPEED_SLIDER_STEP: Float = 0.05f
 
+/** 速度のプリセットを 1 段に並べる数（スマートフォンの幅で ⋯ に畳まれない数）。 */
+private const val SPEED_PRESETS_PER_ROW: Int = 4
+
 @Composable
 private fun PlaybackSettingsSection(
     seekBackMs: Long,
@@ -437,18 +440,21 @@ private fun PlaybackSettingsSection(
                 },
         )
 
-        ChunkFlowToggleButtonGroup(
-            items = SettingsUiState.SPEED_PRESETS.map { preset ->
-                ChunkFlowToggleButtonItem(
-                    label = formatSpeed(preset),
-                    checked = abs(defaultSpeed - preset) < 0.01f,
-                    onCheckedChange = { checked ->
-                        if (checked) onEvent(SettingsEvent.SetDefaultSpeed(preset))
-                    },
-                )
-            },
-            compact = true,
-        )
+        // 7 つを 1 段に並べるとスマートフォンの幅では後ろ（x2.5・x3）が ⋯ に畳まれるため、4 つずつの段に分ける
+        SettingsUiState.SPEED_PRESETS.chunked(SPEED_PRESETS_PER_ROW).forEach { rowPresets ->
+            ChunkFlowToggleButtonGroup(
+                items = rowPresets.map { preset ->
+                    ChunkFlowToggleButtonItem(
+                        label = formatSpeed(preset),
+                        checked = abs(defaultSpeed - preset) < 0.01f,
+                        onCheckedChange = { checked ->
+                            if (checked) onEvent(SettingsEvent.SetDefaultSpeed(preset))
+                        },
+                    )
+                },
+                compact = true,
+            )
+        }
     }
 
     SettingsSectionDivider()
