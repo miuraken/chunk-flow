@@ -15,19 +15,16 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -236,6 +233,7 @@ fun LibraryScreen(
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by rememberSaveable { mutableStateOf(false) }
     var showAddToPlaylistDialog by rememberSaveable { mutableStateOf(false) }
+    var showEditTagsDialog by rememberSaveable { mutableStateOf(false) }
 
     val currentDirs = state.currentDirectories
     val currentFiles = state.currentFiles
@@ -362,97 +360,72 @@ fun LibraryScreen(
                                         state.selectedItemIds.isNotEmpty() && state.selectedDirectoryPaths.isEmpty()
                                     val hasSelectedFiles = state.selectedItemIds.isNotEmpty() ||
                                         state.selectedTargetItemIds.isNotEmpty()
-                                    if (showFileOnlySelectionBadges) {
-                                        FilledTonalButton(
-                                            onClick = { showAddToPlaylistDialog = true },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                        ) {
-                                            Icon(
-                                                imageVector = ChunkFlowIcons.PlaylistAdd,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp),
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = stringResource(R.string.library_selection_playlist_badge),
-                                                style = MaterialTheme.typography.labelMedium,
-                                                maxLines = 1,
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        val allFavorite = state.areAllSelectedFavorite
-                                        FilledTonalButton(
-                                            onClick = { onEvent(LibraryEvent.ToggleFavoriteSelected) },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                        ) {
-                                            Icon(
-                                                imageVector = if (allFavorite) {
-                                                    ChunkFlowIcons.Favorite
-                                                } else {
-                                                    ChunkFlowIcons.FavoriteBorder
-                                                },
-                                                contentDescription = null,
-                                                tint = if (allFavorite) {
-                                                    chunkFlowExtendedColors().favorite
-                                                } else {
-                                                    MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
-                                                },
-                                                modifier = Modifier.size(16.dp),
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = stringResource(R.string.library_selection_favorite_badge),
-                                                style = MaterialTheme.typography.labelMedium,
-                                                maxLines = 1,
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(4.dp))
+                                    val allFavorite = state.areAllSelectedFavorite
+                                    val playlistLabel = stringResource(R.string.library_selection_playlist_badge)
+                                    val favoriteLabel = stringResource(R.string.library_selection_favorite_badge)
+                                    val tagsLabel = stringResource(R.string.library_selection_tags_badge)
+                                    val exportLabel = stringResource(R.string.library_selection_export_badge)
+                                    val deleteLabel = stringResource(R.string.library_selection_delete_badge)
+                                    val favoriteTint = if (allFavorite) {
+                                        chunkFlowExtendedColors().favorite
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
                                     }
-                                    if (hasSelectedFiles) {
-                                        FilledTonalButton(
-                                            onClick = {
-                                                val targetIds = state.selectedTargetItemIds
-                                                onEvent(LibraryEvent.ClearSelection)
-                                                if (targetIds.isNotEmpty()) {
-                                                    onOpenTranscriptExport(targetIds)
-                                                }
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                        ) {
-                                            Icon(
-                                                imageVector = ChunkFlowIcons.Download,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp),
+                                    val selectionActions = buildList {
+                                        if (showFileOnlySelectionBadges) {
+                                            add(
+                                                LibrarySelectionAction(
+                                                    icon = ChunkFlowIcons.PlaylistAdd,
+                                                    label = playlistLabel,
+                                                    onClick = { showAddToPlaylistDialog = true },
+                                                ),
                                             )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = stringResource(R.string.library_selection_export_badge),
-                                                style = MaterialTheme.typography.labelMedium,
-                                                maxLines = 1,
+                                            add(
+                                                LibrarySelectionAction(
+                                                    icon = if (allFavorite) {
+                                                        ChunkFlowIcons.Favorite
+                                                    } else {
+                                                        ChunkFlowIcons.FavoriteBorder
+                                                    },
+                                                    label = favoriteLabel,
+                                                    onClick = { onEvent(LibraryEvent.ToggleFavoriteSelected) },
+                                                    iconTint = favoriteTint,
+                                                ),
                                             )
                                         }
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                    }
-                                    FilledTonalButton(
-                                        onClick = { onEvent(LibraryEvent.RequestDeleteSelected) },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                        colors = ButtonDefaults.filledTonalButtonColors(
-                                            containerColor = MaterialTheme.colorScheme.errorContainer,
-                                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                                        ),
-                                    ) {
-                                        Icon(
-                                            imageVector = ChunkFlowIcons.Delete,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp),
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = stringResource(R.string.library_selection_delete_badge),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            maxLines = 1,
+                                        if (hasSelectedFiles) {
+                                            add(
+                                                LibrarySelectionAction(
+                                                    icon = ChunkFlowIcons.Tag,
+                                                    label = tagsLabel,
+                                                    onClick = { showEditTagsDialog = true },
+                                                ),
+                                            )
+                                            add(
+                                                LibrarySelectionAction(
+                                                    icon = ChunkFlowIcons.Download,
+                                                    label = exportLabel,
+                                                    onClick = {
+                                                        val targetIds = state.selectedTargetItemIds
+                                                        onEvent(LibraryEvent.ClearSelection)
+                                                        if (targetIds.isNotEmpty()) {
+                                                            onOpenTranscriptExport(targetIds)
+                                                        }
+                                                    },
+                                                ),
+                                            )
+                                        }
+                                        add(
+                                            LibrarySelectionAction(
+                                                icon = ChunkFlowIcons.Delete,
+                                                label = deleteLabel,
+                                                onClick = { onEvent(LibraryEvent.RequestDeleteSelected) },
+                                                isDestructive = true,
+                                            ),
                                         )
                                     }
+                                    // 幅が足りなければアイコンだけのボタンにする（ADR 0013。5 つ並ぶと文字付きでは収まらない）
+                                    LibrarySelectionActions(actions = selectionActions)
                                     Spacer(modifier = Modifier.width(8.dp))
                                 } else {
                                     IconButton(onClick = { onEvent(LibraryEvent.RequestImportDirectory) }) {
@@ -589,6 +562,30 @@ fun LibraryScreen(
         )
     }
 
+    // 選択モードを抜けたら「タグを編集」のダイアログも閉じる（次に選択したときに開いたままにしない）
+    LaunchedEffect(state.isSelectionMode) {
+        if (!state.isSelectionMode) showEditTagsDialog = false
+    }
+    if (showEditTagsDialog && state.isSelectionMode) {
+        EditTagsForSelectionDialog(
+            allTags = state.allTags,
+            tagCounts = state.selectedTargetTagCounts,
+            targetCount = state.selectedTargetItemIds.size,
+            onConfirm = { changes ->
+                showEditTagsDialog = false
+                if (!changes.isEmpty) {
+                    onEvent(
+                        LibraryEvent.UpdateTagsForSelected(
+                            addTags = changes.addTags,
+                            removeTags = changes.removeTags,
+                        ),
+                    )
+                }
+            },
+            onDismiss = { showEditTagsDialog = false },
+        )
+    }
+
     if (state.showLanguageOnboardingDialog) {
         LanguageSettingsModalDialog(
             enabledLanguages = state.enabledLanguages.toSet(),
@@ -651,17 +648,19 @@ fun LibraryScreen(
     }
 
     state.pendingEditItem?.let { itemToEdit ->
+        val itemTags = state.items.firstOrNull { it.item.id == itemToEdit.id }?.tags.orEmpty()
         EditItemMetadataDialog(
             item = itemToEdit,
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
-            onConfirm = { course, languages, sttOverride ->
+            onConfirm = { course, languages, sttOverride, tags ->
                 onEvent(
                     LibraryEvent.ConfirmEditMetadata(
                         id = itemToEdit.id,
                         course = course,
                         languages = languages,
                         sttOverride = sttOverride,
+                        tags = tags,
                     ),
                 )
             },
@@ -673,6 +672,8 @@ fun LibraryScreen(
                 onEvent(LibraryEvent.CancelEditMetadata)
                 onEvent(LibraryEvent.RequestDelete(itemToEdit))
             },
+            initialTags = itemTags,
+            availableTags = state.allTags,
         )
     }
 
@@ -681,13 +682,14 @@ fun LibraryScreen(
             directoryEdit = directoryToEdit,
             enabledLanguages = state.enabledLanguages,
             onToggleEnabledLanguage = { onEvent(LibraryEvent.ToggleEnabledLanguage(it)) },
-            onConfirm = { newCourse, languages, sttOverride ->
+            onConfirm = { newCourse, languages, sttOverride, colorChoice ->
                 onEvent(
                     LibraryEvent.ConfirmEditDirectoryMetadata(
                         currentCourse = directoryToEdit.currentCourse,
                         newCourse = newCourse,
                         languages = languages,
                         sttOverride = sttOverride,
+                        colorChoice = colorChoice,
                     ),
                 )
             },
@@ -700,6 +702,7 @@ fun LibraryScreen(
                     onEvent(LibraryEvent.RequestDeleteDirectory(path))
                 }
             },
+            languageColorOrdinals = state.folderLanguageColorOrdinals,
         )
     }
 

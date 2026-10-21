@@ -323,6 +323,10 @@ internal fun LibraryItemRow(
                     }
                 }
 
+                if (itemModel.tags.isNotEmpty()) {
+                    LibraryItemTagPills(tags = itemModel.tags)
+                }
+
                 LinearProgressIndicator(
                     progress = { itemModel.maxProgressFraction },
                     modifier = Modifier
