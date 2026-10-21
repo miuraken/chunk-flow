@@ -131,6 +131,9 @@ fun LibraryRoute(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    // 案内文は構成の変更（表示言語の切り替えなど）に追従させるため、コンポーズ中に stringResource で取る
+    val folderPickerPrompt = stringResource(R.string.library_picker_prompt_folder)
+    val filePickerPrompt = stringResource(R.string.library_picker_prompt_files)
 
     val directoryPickerLauncher = rememberLauncherForActivityResult(
         contract = OpenDocumentTreeWithPromptContract,
@@ -175,22 +178,20 @@ fun LibraryRoute(
         onEvent = { event ->
             when (event) {
                 LibraryEvent.RequestImportDirectory -> {
-                    val prompt = context.getString(R.string.library_picker_prompt_folder)
-                    showPickerPromptToast(context, prompt)
-                    directoryPickerLauncher.launch(OpenDocumentTreeWithPromptInput(prompt = prompt))
+                    showPickerPromptToast(context, folderPickerPrompt)
+                    directoryPickerLauncher.launch(OpenDocumentTreeWithPromptInput(prompt = folderPickerPrompt))
                 }
 
                 LibraryEvent.RequestImport -> {
                     val initialDirUri = runCatching {
                         state.resolveInitialImportDirectoryUriString().toUri()
                     }.getOrNull()
-                    val prompt = context.getString(R.string.library_picker_prompt_files)
-                    showPickerPromptToast(context, prompt)
+                    showPickerPromptToast(context, filePickerPrompt)
                     filePickerLauncher.launch(
                         OpenMultipleAudioDocumentsInput(
                             mimeTypes = arrayOf("audio/*"),
                             initialDirectoryUri = initialDirUri,
-                            prompt = prompt,
+                            prompt = filePickerPrompt,
                         ),
                     )
                 }
