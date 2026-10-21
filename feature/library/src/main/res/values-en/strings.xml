@@ -179,9 +179,13 @@
     <string name="transcript_export_preview_section_title">Preview (first lines)</string>
     <string name="transcript_export_preview_file_name">Output file: %1$s</string>
     <string name="transcript_export_preview_empty">No transcript data available</string>
-    <string name="transcript_export_button">Export</string>
+    <string name="transcript_export_button">Export to file</string>
+    <string name="transcript_export_clipboard_button">Export to clipboard</string>
     <string name="transcript_export_done_single">Exported transcript (%1$s)</string>
     <string name="transcript_export_done_multiple">Exported %1$d transcript file(s) to folder (%2$s)</string>
+    <string name="transcript_export_copied_single">Copied the transcript to the clipboard (%1$s)</string>
+    <string name="transcript_export_copied_multiple">Copied %1$d transcripts to the clipboard (%2$s)</string>
+    <string name="transcript_export_clipboard_too_large">The transcript is too long to copy to the clipboard. Use “Export to file” instead.</string>
     <string name="transcript_export_failed">Failed to export transcript</string>
     <string name="library_mini_player_expand_cd">Expand playback controls</string>
     <string name="library_mini_player_collapse_cd">Collapse to mini player</string>

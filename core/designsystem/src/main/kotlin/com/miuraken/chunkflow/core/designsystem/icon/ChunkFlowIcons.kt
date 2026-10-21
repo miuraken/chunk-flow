@@ -619,6 +619,37 @@ object ChunkFlowIcons {
         }
     }
 
+    /** クリップボードへのコピーアイコン（Material の content_copy。文字起こしのエクスポート）。 */
+    val ContentCopy: ImageVector by lazy {
+        materialIcon(name = "ContentCopy") {
+            moveTo(16f, 1f)
+            lineTo(4f, 1f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            verticalLineToRelative(14f)
+            horizontalLineToRelative(2f)
+            lineTo(4f, 3f)
+            horizontalLineToRelative(12f)
+            lineTo(16f, 1f)
+            close()
+            moveTo(19f, 5f)
+            lineTo(8f, 5f)
+            curveToRelative(-1.1f, 0f, -2f, 0.9f, -2f, 2f)
+            verticalLineToRelative(14f)
+            curveToRelative(0f, 1.1f, 0.9f, 2f, 2f, 2f)
+            horizontalLineToRelative(11f)
+            curveToRelative(1.1f, 0f, 2f, -0.9f, 2f, -2f)
+            lineTo(21f, 7f)
+            curveToRelative(0f, -1.1f, -0.9f, -2f, -2f, -2f)
+            close()
+            moveTo(19f, 21f)
+            lineTo(8f, 21f)
+            lineTo(8f, 7f)
+            horizontalLineToRelative(11f)
+            verticalLineToRelative(14f)
+            close()
+        }
+    }
+
     /** 検索アイコン。 */
     val Search: ImageVector by lazy {
         materialIcon(name = "Search") {

@@ -180,12 +180,13 @@ class LibraryViewModelTest {
 
         assertEquals(listOf(sampleKo.item.id, sampleZh.item.id), viewModel.uiState.value.mediaIds)
         assertTrue(viewModel.uiState.value.isMultipleFiles)
-        assertEquals(TranscriptExportFormat.SRT, viewModel.uiState.value.selectedFormat)
-        assertTrue(viewModel.uiState.value.previewText.contains("-->"))
-
-        viewModel.onEvent(TranscriptExportEvent.SelectFormat(TranscriptExportFormat.TSV))
+        // 既定は TSV
         assertEquals(TranscriptExportFormat.TSV, viewModel.uiState.value.selectedFormat)
         assertTrue(viewModel.uiState.value.previewText.startsWith("startMs\tendMs\tlang\ttext"))
+
+        viewModel.onEvent(TranscriptExportEvent.SelectFormat(TranscriptExportFormat.SRT))
+        assertEquals(TranscriptExportFormat.SRT, viewModel.uiState.value.selectedFormat)
+        assertTrue(viewModel.uiState.value.previewText.contains("-->"))
 
         viewModel.onEvent(TranscriptExportEvent.SelectFormat(TranscriptExportFormat.JSON))
         assertEquals(TranscriptExportFormat.JSON, viewModel.uiState.value.selectedFormat)

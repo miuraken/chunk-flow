@@ -9,10 +9,13 @@ import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -41,6 +44,20 @@ sealed interface TranscriptExportResultState {
         val format: TranscriptExportFormat,
     ) : TranscriptExportResultState
 
+    /**
+     * クリップボードにコピーした（Android 12 以下でだけ表示する。Android 13 以上はシステムがコピーを知らせるため出さない）。
+     *
+     * @property count コピーしたファイル数。
+     * @property format コピーしたフォーマット。
+     */
+    data class CopiedToClipboard(
+        val count: Int,
+        val format: TranscriptExportFormat,
+    ) : TranscriptExportResultState
+
+    /** 文字数が多すぎて、クリップボードにコピーできなかった（[TranscriptExportViewModel.MAX_CLIPBOARD_CHARS]）。 */
+    data object ClipboardTooLarge : TranscriptExportResultState
+
     /** エクスポートに失敗した。 */
     data object Failed : TranscriptExportResultState
 }
@@ -50,16 +67,18 @@ sealed interface TranscriptExportResultState {
  *
  * @property mediaIds エクスポート対象の教材 ID 一覧。
  * @property firstItemTitle 先頭教材のファイル名（タイトル）。
- * @property selectedFormat 選択中のエクスポートフォーマット（SRT / LRC / TSV / JSON）。
+ * @property selectedFormat 選択中のエクスポートフォーマット（既定は TSV。並び順は [FORMAT_ORDER]）。
  * @property previewByFormat 各フォーマットにおける先頭教材のプレビュー文字列（先頭数行）。
  * @property exportResult エクスポート実行後の結果通知状態。
+ * @property isCopyingToClipboard クリップボードへのコピーの準備中かどうか（二重に押せないようにする）。
  */
 data class TranscriptExportUiState(
     val mediaIds: List<MediaId> = emptyList(),
     val firstItemTitle: String = "",
-    val selectedFormat: TranscriptExportFormat = TranscriptExportFormat.SRT,
+    val selectedFormat: TranscriptExportFormat = TranscriptExportFormat.TSV,
     val previewByFormat: Map<TranscriptExportFormat, String> = emptyMap(),
     val exportResult: TranscriptExportResultState = TranscriptExportResultState.Idle,
+    val isCopyingToClipboard: Boolean = false,
 ) {
     /** 複数ファイル選択モードかどうか。 */
     val isMultipleFiles: Boolean
@@ -76,6 +95,20 @@ data class TranscriptExportUiState(
     /** エクスポートボタンを押下可能かどうか。 */
     val canExport: Boolean
         get() = mediaIds.isNotEmpty() && (isMultipleFiles || previewText.isNotBlank())
+
+    /** 「クリップボードにエクスポート」を押下可能かどうか。 */
+    val canCopyToClipboard: Boolean
+        get() = canExport && !isCopyingToClipboard
+
+    companion object {
+        /** 画面に並べるフォーマットの順（TSV・SRT・LRC・JSON）。 */
+        val FORMAT_ORDER: List<TranscriptExportFormat> = listOf(
+            TranscriptExportFormat.TSV,
+            TranscriptExportFormat.SRT,
+            TranscriptExportFormat.LRC,
+            TranscriptExportFormat.JSON,
+        )
+    }
 }
 
 /**
@@ -91,11 +124,44 @@ sealed interface TranscriptExportEvent {
     /** 複数ファイルを指定されたフォルダ [treeUri] に書き出す。 */
     data class ExportMultipleFilesToDirectory(val treeUri: Uri) : TranscriptExportEvent
 
+    /**
+     * 選択中のフォーマットの文字起こしをクリップボードにコピーする。複数ファイルのときは、ファイルごとに
+     * 「=== ファイル名 ===」の見出しを付けてつなげる。
+     */
+    data object CopyToClipboard : TranscriptExportEvent
+
+    /**
+     * 画面がクリップボードへの書き込み（[TranscriptExportEffect.WriteToClipboard]）を終えた。
+     *
+     * @property success 書き込めたかどうか。
+     * @property showConfirmation コピーしたことを画面に表示するか（Android 13 以上はシステムが表示するので `false`）。
+     */
+    data class ClipboardWriteFinished(
+        val success: Boolean,
+        val showConfirmation: Boolean,
+    ) : TranscriptExportEvent
+
     /** エクスポート結果通知バナーを閉じる。 */
     data object DismissExportResult : TranscriptExportEvent
 
     /** 前の画面に戻る。 */
     data object Back : TranscriptExportEvent
+}
+
+/**
+ * 文字起こしエクスポート画面への一度きりの指示（画面が受け取って実行する）。
+ */
+sealed interface TranscriptExportEffect {
+    /**
+     * [text] をクリップボードに書き込む。終わったら [TranscriptExportEvent.ClipboardWriteFinished] を送ること。
+     *
+     * @property label `ClipData` のラベル（利用者には基本的に見えない）。
+     * @property text 書き込む文字列。
+     */
+    data class WriteToClipboard(
+        val label: String,
+        val text: String,
+    ) : TranscriptExportEffect
 }
 
 /**
@@ -111,7 +177,15 @@ class TranscriptExportViewModel @Inject constructor(
     /** 画面の UI 状態。 */
     val uiState: StateFlow<TranscriptExportUiState> = _uiState.asStateFlow()
 
+    private val _effects = Channel<TranscriptExportEffect>(Channel.BUFFERED)
+
+    /** 画面への一度きりの指示（クリップボードへの書き込みなど）。 */
+    val effects: Flow<TranscriptExportEffect> = _effects.receiveAsFlow()
+
     private var loadJob: Job? = null
+
+    /** 画面に書き込みを頼んだクリップボードのコピー（結果の表示に使う）。 */
+    private var pendingClipboardCopy: PendingClipboardCopy? = null
 
     /**
      * エクスポート対象の [mediaIds] を設定し、先頭ファイルの各フォーマットのプレビューを読み込む。
@@ -210,6 +284,28 @@ class TranscriptExportViewModel @Inject constructor(
                 }
             }
 
+            TranscriptExportEvent.CopyToClipboard -> copyToClipboard()
+
+            is TranscriptExportEvent.ClipboardWriteFinished -> {
+                val pending = pendingClipboardCopy
+                pendingClipboardCopy = null
+                _uiState.update { current ->
+                    current.copy(
+                        isCopyingToClipboard = false,
+                        exportResult = when {
+                            !event.success -> TranscriptExportResultState.Failed
+
+                            event.showConfirmation && pending != null -> TranscriptExportResultState.CopiedToClipboard(
+                                count = pending.count,
+                                format = pending.format,
+                            )
+
+                            else -> TranscriptExportResultState.Idle
+                        },
+                    )
+                }
+            }
+
             TranscriptExportEvent.DismissExportResult -> {
                 _uiState.update { current ->
                     current.copy(exportResult = TranscriptExportResultState.Idle)
@@ -220,12 +316,112 @@ class TranscriptExportViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 選択中のフォーマットの文字起こしを全文読み込み、画面にクリップボードへの書き込みを頼む。
+     * 文字起こしがない・長すぎるときは、書き込みを頼まずに結果を表示する。
+     */
+    private fun copyToClipboard() {
+        val state = _uiState.value
+        if (state.mediaIds.isEmpty() || state.isCopyingToClipboard) return
+        val format = state.selectedFormat
+        _uiState.update { current ->
+            current.copy(
+                isCopyingToClipboard = true,
+                exportResult = TranscriptExportResultState.Idle,
+            )
+        }
+        viewModelScope.launch {
+            when (val built = buildClipboardText(state.mediaIds, format)) {
+                ClipboardText.Empty -> finishClipboardCopyWithoutWriting(TranscriptExportResultState.Failed)
+
+                ClipboardText.TooLarge -> finishClipboardCopyWithoutWriting(TranscriptExportResultState.ClipboardTooLarge)
+
+                is ClipboardText.Ready -> {
+                    pendingClipboardCopy = PendingClipboardCopy(count = built.fileCount, format = format)
+                    _effects.send(
+                        TranscriptExportEffect.WriteToClipboard(
+                            label = CLIPBOARD_LABEL,
+                            text = built.text,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun finishClipboardCopyWithoutWriting(result: TranscriptExportResultState) {
+        _uiState.update { current ->
+            current.copy(
+                isCopyingToClipboard = false,
+                exportResult = result,
+            )
+        }
+    }
+
+    /**
+     * クリップボードに書き込む文字列を作る。1 ファイルならそのまま、複数ファイルなら「=== ファイル名 ===」の見出しを付けて
+     * 空行でつなげる（文字起こしのないファイルは飛ばす）。[MAX_CLIPBOARD_CHARS] を超えたら、その時点でやめる。
+     */
+    private suspend fun buildClipboardText(
+        ids: List<MediaId>,
+        format: TranscriptExportFormat,
+    ): ClipboardText {
+        if (ids.size == 1) {
+            val text = libraryRepository.exportTranscriptText(ids.first(), format)?.trimEnd().orEmpty()
+            return when {
+                text.isBlank() -> ClipboardText.Empty
+                text.length > MAX_CLIPBOARD_CHARS -> ClipboardText.TooLarge
+                else -> ClipboardText.Ready(text = text, fileCount = 1)
+            }
+        }
+        val titles = libraryRepository.observeItems().firstOrNull().orEmpty().associate { it.id to it.title }
+        val builder = StringBuilder()
+        var fileCount = 0
+        for (id in ids) {
+            val text = libraryRepository.exportTranscriptText(id, format)?.trimEnd()
+            if (text.isNullOrBlank()) continue
+            if (builder.isNotEmpty()) builder.append("\n\n")
+            val title = titles[id]?.takeIf { it.isNotBlank() } ?: id.value
+            builder.append("=== ").append(title).append(" ===\n").append(text)
+            fileCount += 1
+            if (builder.length > MAX_CLIPBOARD_CHARS) return ClipboardText.TooLarge
+        }
+        return if (fileCount == 0) ClipboardText.Empty else ClipboardText.Ready(builder.toString(), fileCount)
+    }
+
+    /** クリップボードに書き込む文字列を作った結果。 */
+    private sealed interface ClipboardText {
+        /** 文字起こしがない。 */
+        data object Empty : ClipboardText
+
+        /** 長すぎる。 */
+        data object TooLarge : ClipboardText
+
+        /** 書き込める。 */
+        data class Ready(val text: String, val fileCount: Int) : ClipboardText
+    }
+
+    /** 画面に書き込みを頼んだクリップボードのコピーの中身（結果の表示用）。 */
+    private data class PendingClipboardCopy(
+        val count: Int,
+        val format: TranscriptExportFormat,
+    )
+
     companion object {
         /** プレビューに表示する最大行数（標準フォーマット）。 */
         internal const val MAX_PREVIEW_LINES = 10
 
         /** JSON プレビューに表示する最大行数（標準フォーマットの 2 倍）。 */
         internal const val MAX_JSON_PREVIEW_LINES = MAX_PREVIEW_LINES * 2
+
+        /**
+         * クリップボードにコピーできる最大の文字数。クリップボードの内容はプロセス間通信（Binder、1 プロセスあたり約 1MB の
+         * バッファ）で渡すため、UTF-16 で約 400KB に収まるよう抑える。
+         */
+        internal const val MAX_CLIPBOARD_CHARS: Int = 200_000
+
+        /** クリップボードに書き込むときの `ClipData` のラベル。 */
+        internal const val CLIPBOARD_LABEL: String = "Chunk Flow transcript"
 
         /** フォーマット [format] に対応するプレビュー最大行数を返す。 */
         internal fun maxPreviewLinesFor(format: TranscriptExportFormat): Int = if (format == TranscriptExportFormat.JSON) MAX_JSON_PREVIEW_LINES else MAX_PREVIEW_LINES

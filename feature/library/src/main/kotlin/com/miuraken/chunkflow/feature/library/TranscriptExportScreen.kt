@@ -1,8 +1,11 @@
 package com.miuraken.chunkflow.feature.library
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +33,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -58,6 +62,7 @@ import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
+import kotlin.coroutines.cancellation.CancellationException
 
 private data class CreateTranscriptDocumentRequest(
     val mimeType: String,
@@ -141,6 +146,43 @@ fun TranscriptExportRoute(
         },
         modifier = modifier,
     )
+
+    LaunchedEffect(viewModel) {
+        viewModel.effects.collect { effect ->
+            when (effect) {
+                is TranscriptExportEffect.WriteToClipboard -> {
+                    val success = writeTextToClipboard(context, effect.label, effect.text)
+                    viewModel.onEvent(
+                        TranscriptExportEvent.ClipboardWriteFinished(
+                            success = success,
+                            // Android 13 以上はシステムがコピーしたことを表示するので、画面では重ねて知らせない
+                            showConfirmation = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * [text] をクリップボードに書き込む。書き込めなかったとき（大きすぎてプロセス間通信に失敗したときなど）は `false`。
+ */
+private fun writeTextToClipboard(
+    context: Context,
+    label: String,
+    text: String,
+): Boolean {
+    val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return false
+    return try {
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: RuntimeException) {
+        // 大きすぎる内容はシステムとのやり取り（Binder）で失敗し、RuntimeException として届く（上限は ViewModel で抑えている）
+        false
+    }
 }
 
 /**
@@ -182,21 +224,39 @@ fun TranscriptExportScreen(
                 tonalElevation = 3.dp,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Button(
-                    onClick = onRequestExport,
-                    enabled = state.canExport,
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Download,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = stringResource(R.string.transcript_export_button))
+                    OutlinedButton(
+                        onClick = { onEvent(TranscriptExportEvent.CopyToClipboard) },
+                        enabled = state.canCopyToClipboard,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.ContentCopy,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = stringResource(R.string.transcript_export_clipboard_button))
+                    }
+                    Button(
+                        onClick = onRequestExport,
+                        enabled = state.canExport,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = stringResource(R.string.transcript_export_button))
+                    }
                 }
             }
         },
@@ -264,7 +324,7 @@ fun TranscriptExportScreen(
                         .selectableGroup(),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    TranscriptExportFormat.entries.forEach { format ->
+                    TranscriptExportUiState.FORMAT_ORDER.forEach { format ->
                         val selected = state.selectedFormat == format
                         val label = formatLabel(format)
                         val description = formatDescription(format)
@@ -385,6 +445,22 @@ private fun TranscriptExportResultBanner(
                 result.count,
                 result.format.name,
             ) to false
+        }
+
+        is TranscriptExportResultState.CopiedToClipboard -> {
+            if (result.count > 1) {
+                stringResource(
+                    R.string.transcript_export_copied_multiple,
+                    result.count,
+                    result.format.name,
+                ) to false
+            } else {
+                stringResource(R.string.transcript_export_copied_single, result.format.name) to false
+            }
+        }
+
+        TranscriptExportResultState.ClipboardTooLarge -> {
+            stringResource(R.string.transcript_export_clipboard_too_large) to true
         }
 
         TranscriptExportResultState.Failed -> {
