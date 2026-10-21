@@ -330,6 +330,9 @@ class FakeAnalysisRepository : AnalysisRepository {
     /** [purgeSttModel] の呼び出し履歴（呼ばれた順）。 */
     val purgedSttModels: MutableList<com.miuraken.chunkflow.core.model.DownloadableSttModel> = mutableListOf()
 
+    /** [deleteSttModelForLanguage] の呼び出し履歴（呼ばれた順）。 */
+    val deletedLanguageSttModels: MutableList<Pair<LanguageTag, com.miuraken.chunkflow.core.model.DownloadableSttModel>> = mutableListOf()
+
     /** [queryDownloadableModelStates] が返すダウンロード可能モデルの状態マップ。 */
     val downloadableModelStates: MutableMap<
         com.miuraken.chunkflow.core.model.DownloadableSttModel,
@@ -355,11 +358,33 @@ class FakeAnalysisRepository : AnalysisRepository {
                 true
             }
 
+            SttEngine.MOONSHINE_TINY,
+            SttEngine.MOONSHINE_BASE,
+            -> {
+                val model = engine.downloadableModel ?: return false
+                if (!model.isLanguageSupported(language)) return false
+                val existingInfo = languageModelInfos[language] ?: OnDeviceLanguageModelInfo(language = language)
+                languageModelInfos[language] = existingInfo.copy(
+                    extraEngineStatuses = existingInfo.extraEngineStatuses + (engine to OnDeviceLanguageModelStatus.INSTALLED),
+                )
+                val currentState = downloadableModelStates[model]
+                    ?: com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = model)
+                val normalizedCode = language.value.trim().lowercase().replace('_', '-').substringBefore('-')
+                val normalizedTag = LanguageTag(if (normalizedCode == "cmn") "zh" else normalizedCode)
+                val updatedDownloaded = (currentState.downloadedLanguages + normalizedTag).distinct()
+                val totalBytes = updatedDownloaded.sumOf { model.approxSizeMbForLanguage(it).toLong() * 1_000_000L }
+                downloadableModelStates[model] = currentState.copy(
+                    status = OnDeviceLanguageModelStatus.INSTALLED,
+                    sizeBytes = totalBytes,
+                    canPurge = true,
+                    downloadedLanguages = updatedDownloaded,
+                )
+                true
+            }
+
             SttEngine.SHERPA_ONNX_SENSE_VOICE,
             SttEngine.SHERPA_ONNX_WHISPER_BASE,
             SttEngine.SHERPA_ONNX_WHISPER_SMALL,
-            SttEngine.MOONSHINE_TINY,
-            SttEngine.MOONSHINE_BASE,
             -> {
                 val model = engine.downloadableModel ?: return false
                 downloadSttModel(model)
@@ -378,11 +403,13 @@ class FakeAnalysisRepository : AnalysisRepository {
 
     override suspend fun downloadSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean {
         downloadedSttModels += model
+        val downloadedLangs = if (model.isPerLanguageModel) listOf(LanguageTag("en")) else emptyList()
         downloadableModelStates[model] = com.miuraken.chunkflow.core.model.DownloadableSttModelState(
             model = model,
             status = OnDeviceLanguageModelStatus.INSTALLED,
             sizeBytes = model.estimatedSizeBytes,
             canPurge = true,
+            downloadedLanguages = downloadedLangs,
         )
         for ((lang, existing) in languageModelInfos.entries) {
             if (model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY) {
@@ -390,7 +417,7 @@ class FakeAnalysisRepository : AnalysisRepository {
                     sherpaModelStatus = OnDeviceLanguageModelStatus.INSTALLED,
                     canDeleteSherpaModel = true,
                 )
-            } else {
+            } else if (!model.isPerLanguageModel || lang.value.startsWith("en", ignoreCase = true)) {
                 languageModelInfos[lang] = existing.copy(
                     extraEngineStatuses = existing.extraEngineStatuses + (model.sttEngine to OnDeviceLanguageModelStatus.INSTALLED),
                 )
@@ -406,6 +433,7 @@ class FakeAnalysisRepository : AnalysisRepository {
             status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
             sizeBytes = model.estimatedSizeBytes,
             canPurge = false,
+            downloadedLanguages = emptyList(),
         )
         for ((lang, existing) in languageModelInfos.entries) {
             if (model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY) {
@@ -419,6 +447,41 @@ class FakeAnalysisRepository : AnalysisRepository {
                 )
             }
         }
+        return true
+    }
+
+    override suspend fun deleteSttModelForLanguage(
+        language: LanguageTag,
+        model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ): Boolean {
+        deletedLanguageSttModels += language to model
+        if (model == com.miuraken.chunkflow.core.model.DownloadableSttModel.SHERPA_WHISPER_TINY) {
+            return deleteSherpaModel(language)
+        }
+        val existingInfo = languageModelInfos[language] ?: OnDeviceLanguageModelInfo(language = language)
+        languageModelInfos[language] = existingInfo.copy(
+            extraEngineStatuses = existingInfo.extraEngineStatuses + (model.sttEngine to OnDeviceLanguageModelStatus.NOT_INSTALLED),
+        )
+        val currentState = downloadableModelStates[model]
+            ?: com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = model)
+        val normalizedCode = language.value.trim().lowercase().replace('_', '-').substringBefore('-')
+        val targetCode = if (normalizedCode == "cmn") "zh" else normalizedCode
+        val remaining = currentState.downloadedLanguages.filterNot {
+            val c = it.value.trim().lowercase().replace('_', '-').substringBefore('-')
+            (if (c == "cmn") "zh" else c) == targetCode
+        }
+        val isStillInstalled = if (model.isPerLanguageModel) remaining.isNotEmpty() else false
+        val totalBytes = if (isStillInstalled) {
+            remaining.sumOf { model.approxSizeMbForLanguage(it).toLong() * 1_000_000L }
+        } else {
+            model.estimatedSizeBytes
+        }
+        downloadableModelStates[model] = currentState.copy(
+            status = if (isStillInstalled) OnDeviceLanguageModelStatus.INSTALLED else OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            sizeBytes = totalBytes,
+            canPurge = isStillInstalled,
+            downloadedLanguages = remaining,
+        )
         return true
     }
 
@@ -443,7 +506,21 @@ class FakeAnalysisRepository : AnalysisRepository {
                         canDeleteSherpa = true
                     }
                 } else if (!base.extraEngineStatuses.containsKey(model.sttEngine)) {
-                    mergedExtras[model.sttEngine] = state.status
+                    if (model.isPerLanguageModel) {
+                        val langCode = lang.value.trim().lowercase().replace('_', '-').substringBefore('-')
+                        val normalizedLangCode = if (langCode == "cmn") "zh" else langCode
+                        val isLangDownloaded = state.downloadedLanguages.any {
+                            val c = it.value.trim().lowercase().replace('_', '-').substringBefore('-')
+                            (if (c == "cmn") "zh" else c) == normalizedLangCode
+                        }
+                        mergedExtras[model.sttEngine] = if (isLangDownloaded) {
+                            OnDeviceLanguageModelStatus.INSTALLED
+                        } else {
+                            OnDeviceLanguageModelStatus.NOT_INSTALLED
+                        }
+                    } else {
+                        mergedExtras[model.sttEngine] = state.status
+                    }
                 }
             }
             base.copy(

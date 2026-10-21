@@ -2029,6 +2029,19 @@ class DefaultAnalysisRepository(
         }
     }
 
+    override suspend fun deleteSttModelForLanguage(
+        language: LanguageTag,
+        model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ): Boolean = withContext(ioDispatcher) {
+        try {
+            onDeviceChunkTranscriber.deleteSttModelForLanguage(language, model)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = try {
         onDeviceChunkTranscriber.queryLanguageModelInfos(languages)
     } catch (ce: CancellationException) {

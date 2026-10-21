@@ -747,8 +747,14 @@ private fun TranscriptionSettingsSection(
                 onPreferredEngineChange = { engine ->
                     onEvent(SettingsEvent.SetSttEngineForLanguage(langTag, engine))
                 },
+                onDownloadLanguageModel = { engine ->
+                    onEvent(SettingsEvent.RequestSttModelDownload(langTag, engine))
+                },
                 onDeleteSherpaModel = {
                     onEvent(SettingsEvent.DeleteSherpaModel(rawInfo.language))
+                },
+                onDeleteLanguageSttModel = { model ->
+                    onEvent(SettingsEvent.DeleteLanguageSttModel(langTag, model))
                 },
                 onPurgeDownloadableModel = { model ->
                     onEvent(SettingsEvent.PurgeSttModel(model))
@@ -839,8 +845,8 @@ private fun downloadableSttModelDescription(model: DownloadableSttModel, sizeMb:
     DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL -> stringResource(R.string.settings_model_sherpa_sense_voice_small_desc, sizeMb)
     DownloadableSttModel.SHERPA_WHISPER_BASE -> stringResource(R.string.settings_model_sherpa_whisper_base_desc, sizeMb)
     DownloadableSttModel.SHERPA_WHISPER_SMALL -> stringResource(R.string.settings_model_sherpa_whisper_small_desc, sizeMb)
-    DownloadableSttModel.MOONSHINE_TINY -> stringResource(R.string.settings_model_moonshine_tiny_desc, sizeMb)
-    DownloadableSttModel.MOONSHINE_BASE -> stringResource(R.string.settings_model_moonshine_base_desc, sizeMb)
+    DownloadableSttModel.MOONSHINE_TINY -> stringResource(R.string.settings_model_moonshine_tiny_desc)
+    DownloadableSttModel.MOONSHINE_BASE -> stringResource(R.string.settings_model_moonshine_base_desc)
 }
 
 @Composable
@@ -851,7 +857,13 @@ private fun DownloadableSttModelRow(
 ) {
     val sizeMb = ((modelState.sizeBytes / (1024L * 1024L)).toInt()).takeIf { it > 0 }
         ?: modelState.model.estimatedSizeMb
-    val isInstalled = modelState.status == OnDeviceLanguageModelStatus.INSTALLED
+    val isPerLanguage = modelState.model.isPerLanguageModel
+    val hasDownloadedLanguages = modelState.downloadedLanguages.isNotEmpty()
+    val isInstalled = if (isPerLanguage) {
+        hasDownloadedLanguages || modelState.status == OnDeviceLanguageModelStatus.INSTALLED
+    } else {
+        modelState.status == OnDeviceLanguageModelStatus.INSTALLED
+    }
     val isDownloading = modelState.status == OnDeviceLanguageModelStatus.DOWNLOADING
     val statusText = when (modelState.status) {
         OnDeviceLanguageModelStatus.INSTALLED -> stringResource(R.string.settings_speech_model_status_installed)
@@ -884,15 +896,42 @@ private fun DownloadableSttModelRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                text = statusText,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isInstalled) {
-                    MaterialTheme.colorScheme.primary
+            if (isPerLanguage) {
+                val availableLangsText = modelState.availableLanguages
+                    .map { speechModelLanguageDisplayName(it) }
+                    .joinToString("、")
+                Text(
+                    text = stringResource(R.string.settings_model_available_languages, availableLangsText),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (hasDownloadedLanguages) {
+                    val downloadedLangsText = modelState.downloadedLanguages
+                        .map { speechModelLanguageDisplayName(it) }
+                        .joinToString("、")
+                    Text(
+                        text = stringResource(R.string.settings_model_downloaded_languages, downloadedLangsText),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isInstalled) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
         }
 
         when {
@@ -918,7 +957,7 @@ private fun DownloadableSttModelRow(
                 }
             }
 
-            else -> {
+            !isPerLanguage -> {
                 Button(
                     onClick = onDownload,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -1312,6 +1351,8 @@ private fun SttEngineAccordion(
     preferredEngine: SttEngine?,
     onPreferredEngineChange: (SttEngine?) -> Unit,
     onDeleteSherpaModel: () -> Unit,
+    onDownloadLanguageModel: (SttEngine) -> Unit = {},
+    onDeleteLanguageSttModel: (DownloadableSttModel) -> Unit = {},
     onPurgeDownloadableModel: (DownloadableSttModel) -> Unit = {},
     initialExpanded: Boolean = false,
 ) {
@@ -1394,6 +1435,10 @@ private fun SttEngineAccordion(
                     val downloadableModel = engine?.downloadableModel
                     val isDownloadableModelInstalled =
                         downloadableModel != null && engineStatus == OnDeviceLanguageModelStatus.INSTALLED
+                    val isPerLanguageModelSupported =
+                        downloadableModel != null &&
+                            downloadableModel.isPerLanguageModel &&
+                            downloadableModel.isLanguageSupported(enrichedInfo.language)
 
                     Row(
                         modifier = Modifier
@@ -1424,29 +1469,65 @@ private fun SttEngineAccordion(
                             } else {
                                 MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                             },
-                            modifier = Modifier.padding(start = 8.dp),
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(start = 8.dp),
                         )
-                        if (downloadableModel != null && isDownloadableModelInstalled) {
-                            IconButton(
-                                onClick = {
-                                    if (engine == SttEngine.SHERPA_ONNX) {
-                                        onDeleteSherpaModel()
-                                    } else {
-                                        onPurgeDownloadableModel(downloadableModel)
-                                    }
-                                },
-                                modifier = Modifier
-                                    .padding(start = 4.dp)
-                                    .size(32.dp),
-                            ) {
-                                Icon(
-                                    imageVector = ChunkFlowIcons.Delete,
-                                    contentDescription = stringResource(
-                                        R.string.settings_speech_model_action_sherpa_delete,
-                                    ),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
+                        when {
+                            isPerLanguageModelSupported &&
+                                (
+                                    engineStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                                        engineStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                                    ) -> {
+                                val langSizeMb = downloadableModel.approxSizeMbForLanguage(enrichedInfo.language)
+                                OutlinedButton(
+                                    onClick = { onDownloadLanguageModel(engine) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .height(28.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.settings_speech_model_action_download_with_size,
+                                            langSizeMb,
+                                        ),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+
+                            isPerLanguageModelSupported &&
+                                engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
+                                ChunkFlowLoadingIndicator(
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .size(20.dp),
                                 )
+                            }
+
+                            downloadableModel != null && isDownloadableModelInstalled -> {
+                                IconButton(
+                                    onClick = {
+                                        when {
+                                            engine == SttEngine.SHERPA_ONNX -> onDeleteSherpaModel()
+                                            downloadableModel.isPerLanguageModel -> onDeleteLanguageSttModel(downloadableModel)
+                                            else -> onPurgeDownloadableModel(downloadableModel)
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .padding(start = 4.dp)
+                                        .size(32.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = ChunkFlowIcons.Delete,
+                                        contentDescription = stringResource(
+                                            R.string.settings_speech_model_action_sherpa_delete,
+                                        ),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                             }
                         }
                     }
@@ -1489,11 +1570,25 @@ private fun formatSttEngineOptionLabel(
             }
         }
 
+        SttEngine.MOONSHINE_TINY,
+        SttEngine.MOONSHINE_BASE,
+        -> {
+            val baseName = sttEngineDisplayName(engine)
+            val sizeMb = engine.downloadableModel?.approxSizeMbForLanguage(enrichedInfo.language) ?: 100
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.settings_stt_engine_model_downloaded_format, baseName, sizeMb)
+
+                else -> formatEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
         SttEngine.SHERPA_ONNX_SENSE_VOICE,
         SttEngine.SHERPA_ONNX_WHISPER_BASE,
         SttEngine.SHERPA_ONNX_WHISPER_SMALL,
-        SttEngine.MOONSHINE_TINY,
-        SttEngine.MOONSHINE_BASE,
         -> {
             val baseName = sttEngineDisplayName(engine)
             val sizeMb = engine.downloadableModel?.estimatedSizeMb ?: 100
@@ -1629,6 +1724,24 @@ internal fun SettingsScreenTranscriptionTabPreview() {
                         LanguageTag("ko") to SttEngine.SHERPA_ONNX,
                     ),
                 ),
+                downloadableModels = DownloadableSttModel.entries.map { model ->
+                    when (model) {
+                        DownloadableSttModel.SHERPA_WHISPER_TINY -> DownloadableSttModelState(
+                            model = model,
+                            status = OnDeviceLanguageModelStatus.INSTALLED,
+                            canPurge = true,
+                        )
+
+                        DownloadableSttModel.MOONSHINE_TINY -> DownloadableSttModelState(
+                            model = model,
+                            status = OnDeviceLanguageModelStatus.INSTALLED,
+                            canPurge = true,
+                            downloadedLanguages = listOf(LanguageTag("en"), LanguageTag("ja")),
+                        )
+
+                        else -> DownloadableSttModelState(model = model)
+                    }
+                },
                 languageModels = listOf(
                     OnDeviceLanguageModelInfo(
                         language = LanguageTag("en"),
@@ -1636,6 +1749,10 @@ internal fun SettingsScreenTranscriptionTabPreview() {
                         sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
                         mlKitStatus = OnDeviceLanguageModelStatus.INSTALLED,
                         sherpaModelSizeBytes = 98L * 1024L * 1024L,
+                        extraEngineStatuses = mapOf(
+                            SttEngine.MOONSHINE_TINY to OnDeviceLanguageModelStatus.INSTALLED,
+                            SttEngine.MOONSHINE_BASE to OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        ),
                     ),
                     OnDeviceLanguageModelInfo(
                         language = LanguageTag("ja"),
@@ -1644,6 +1761,10 @@ internal fun SettingsScreenTranscriptionTabPreview() {
                         mlKitStatus = OnDeviceLanguageModelStatus.INSTALLED,
                         mlKitMode = com.miuraken.chunkflow.core.model.MlKitRecognitionMode.ADVANCED,
                         sherpaModelSizeBytes = 98L * 1024L * 1024L,
+                        extraEngineStatuses = mapOf(
+                            SttEngine.MOONSHINE_TINY to OnDeviceLanguageModelStatus.INSTALLED,
+                            SttEngine.MOONSHINE_BASE to OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                        ),
                     ),
                     OnDeviceLanguageModelInfo(
                         language = LanguageTag("ko"),

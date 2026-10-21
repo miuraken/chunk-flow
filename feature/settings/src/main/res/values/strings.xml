@@ -109,7 +109,7 @@
     <string name="settings_sherpa_download_confirm_button">ダウンロード</string>
     <string name="settings_sherpa_download_cancel_button">キャンセル</string>
     <string name="settings_section_model_downloads">モデルのダウンロード</string>
-    <string name="settings_model_downloads_description">端末内で動作する音声認識モデル（ONNX）の個別ダウンロード・パージ（削除）と、クラウド文字起こし API キーを設定します。</string>
+    <string name="settings_model_downloads_description">端末内で動作する音声認識モデル（ONNX）の個別ダウンロード・削除と、クラウド文字起こし API キーを設定します。</string>
     <string name="settings_model_sherpa_whisper_tiny">sherpa-onnx Whisper Tiny</string>
     <string name="settings_model_sherpa_whisper_tiny_desc">99言語対応・軽量（約 %1$d MB）</string>
     <string name="settings_model_sherpa_sense_voice_small">sherpa-onnx SenseVoice Small</string>
@@ -119,11 +119,14 @@
     <string name="settings_model_sherpa_whisper_small">sherpa-onnx Whisper Small</string>
     <string name="settings_model_sherpa_whisper_small_desc">99言語対応・高精度（約 %1$d MB）</string>
     <string name="settings_model_moonshine_tiny">Moonshine ONNX Tiny</string>
-    <string name="settings_model_moonshine_tiny_desc">英語専用・超高速（約 %1$d MB）</string>
+    <string name="settings_model_moonshine_tiny_desc">8言語対応・超高速（言語別 27〜118 MB）</string>
     <string name="settings_model_moonshine_base">Moonshine ONNX Base</string>
-    <string name="settings_model_moonshine_base_desc">英語専用・高精度（約 %1$d MB）</string>
+    <string name="settings_model_moonshine_base_desc">8言語対応・高精度（言語別 61〜274 MB）</string>
+    <string name="settings_model_available_languages">利用可能な言語: %1$s</string>
+    <string name="settings_model_downloaded_languages">ダウンロード済み: %1$s</string>
+    <string name="settings_speech_model_action_download_with_size">ダウンロード(%1$d MB)</string>
     <string name="settings_model_action_download">ダウンロード</string>
-    <string name="settings_model_action_purge">パージ</string>
+    <string name="settings_model_action_purge">削除</string>
     <string name="settings_cloud_api_keys_subtitle">クラウド文字起こし API キー</string>
     <string name="settings_openai_api_key_label">OpenAI 互換 API キー</string>
     <string name="settings_openai_api_key_placeholder">sk-...</string>

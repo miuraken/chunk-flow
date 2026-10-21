@@ -2697,4 +2697,78 @@ class OnDeviceSpeechTranscriberTest {
         assertEquals(com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED, koInfo.status)
         assertEquals(com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.UNSUPPORTED, koInfo.mlKitStatus)
     }
+
+    @Test
+    fun `SherpaOnnxModelManager_Moonshineモデルの言語別ダウンロードと個別削除および一括削除が機能する`() = runTest {
+        val fakeDownloader = object : ModelArtifactDownloader {
+            override suspend fun downloadVerifiedFile(
+                url: String,
+                destFile: File,
+                expectedSizeBytes: Long?,
+                expectedSha256Hex: String?,
+                maxSizeBytes: Long,
+            ): ModelArtifactDownloadResult {
+                destFile.parentFile?.mkdirs()
+                val targetLen = expectedSizeBytes?.takeIf { it > 0L } ?: 16L
+                java.io.RandomAccessFile(destFile, "rw").use { raf ->
+                    raf.setLength(targetLen)
+                }
+                return ModelArtifactDownloadResult.Success(
+                    bytesWritten = targetLen,
+                    sha256Hex = expectedSha256Hex ?: "0".repeat(64),
+                )
+            }
+        }
+        val manager = SherpaOnnxModelManager(
+            modelsRootDir = tempFolder.newFolder("moonshine_per_lang"),
+            downloader = fakeDownloader,
+        )
+        val tiny = com.miuraken.chunkflow.core.model.DownloadableSttModel.MOONSHINE_TINY
+        val ja = LanguageTag("ja")
+        val en = LanguageTag("en")
+
+        assertTrue(manager.downloadedLanguagesFor(tiny).isEmpty())
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            manager.getLanguageModelStatus(tiny, ja),
+        )
+
+        // 日本語と英語をダウンロード
+        assertTrue(manager.downloadModelForLanguage(tiny, ja))
+        assertTrue(manager.downloadModelForLanguage(tiny, en))
+        assertEquals(listOf(en, ja), manager.downloadedLanguagesFor(tiny))
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            manager.getLanguageModelStatus(tiny, ja),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            manager.getLanguageModelStatus(tiny, en),
+        )
+
+        // 日本語 (v2 merged モデル) のパスが解決できる
+        assertNotNull(manager.resolveMoonshineMergedModelPaths(tiny, ja))
+        // 英語 (v1 4ファイルモデル) のパスが解決できる
+        assertNotNull(manager.resolveMoonshineModelPaths(tiny, en))
+
+        // 日本語のみ削除 -> 英語は残る
+        assertTrue(manager.deleteModelForLanguage(tiny, ja))
+        assertEquals(listOf(en), manager.downloadedLanguagesFor(tiny))
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            manager.getLanguageModelStatus(tiny, ja),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED,
+            manager.getLanguageModelStatus(tiny, en),
+        )
+
+        // 一括パージ -> すべての言語が削除される
+        assertTrue(manager.purgeModel(tiny))
+        assertTrue(manager.downloadedLanguagesFor(tiny).isEmpty())
+        assertEquals(
+            com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.NOT_INSTALLED,
+            manager.getLanguageModelStatus(tiny, en),
+        )
+    }
 }

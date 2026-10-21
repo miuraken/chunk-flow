@@ -418,6 +418,12 @@ sealed interface SettingsEvent {
     /** 指定した言語の `sherpa-onnx` ローカルモデルを削除する（Stage 2）。 */
     data class DeleteSherpaModel(val language: LanguageTag) : SettingsEvent
 
+    /** 指定した言語に対するローカルモデル [model]（Moonshine などの言語別モデル）を削除する。 */
+    data class DeleteLanguageSttModel(
+        val language: LanguageTag,
+        val model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ) : SettingsEvent
+
     /** ダウンロード可能なローカルモデル [model] をグローバルにダウンロードする。 */
     data class DownloadSttModel(val model: com.miuraken.chunkflow.core.model.DownloadableSttModel) : SettingsEvent
 
@@ -689,7 +695,7 @@ class SettingsViewModel @Inject constructor(
                         val sizeMb = if (targetEngine == SttEngine.SHERPA_ONNX && modelInfo.sherpaModelSizeBytes > 0L) {
                             SherpaDownloadDialogState.resolveSizeMb(modelInfo.sherpaModelSizeBytes)
                         } else {
-                            downloadableModel.approxSizeMb.takeIf { it > 0 }
+                            downloadableModel.approxSizeMbForLanguage(event.language).takeIf { it > 0 }
                                 ?: SherpaDownloadDialogState.resolveSizeMb(modelInfo.sherpaModelSizeBytes)
                         }
                         sherpaDownloadDialogState.value = SherpaDownloadDialogState(
@@ -878,6 +884,42 @@ class SettingsViewModel @Inject constructor(
                             if (!isStillInstalled) {
                                 userSettingsRepository.setSttEngineForLanguage(lang, null)
                             }
+                        }
+                    }
+                }
+            }
+
+            is SettingsEvent.DeleteLanguageSttModel -> {
+                val mgmtCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                    event.language.value,
+                )
+                viewModelScope.launch {
+                    analysisRepository.deleteSttModelForLanguage(event.language, event.model)
+                    refreshDownloadableModels()
+                    languageModelsState.update { current ->
+                        current.map { info ->
+                            if (info.language == event.language ||
+                                com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                                    info.language.value,
+                                ) == mgmtCode
+                            ) {
+                                info.copy(
+                                    extraEngineStatuses = info.extraEngineStatuses +
+                                        (event.model.sttEngine to OnDeviceLanguageModelStatus.NOT_INSTALLED),
+                                )
+                            } else {
+                                info
+                            }
+                        }
+                    }
+                    queryAndMergeLanguageModels(listOf(LanguageTag(mgmtCode)))
+                    val currentEngines = userSettingsRepository.settings.first().sttEngineByLanguage
+                    for ((lang, engine) in currentEngines) {
+                        val langMgmt = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
+                            lang.value,
+                        )
+                        if (engine == event.model.sttEngine && langMgmt == mgmtCode) {
+                            userSettingsRepository.setSttEngineForLanguage(lang, null)
                         }
                     }
                 }

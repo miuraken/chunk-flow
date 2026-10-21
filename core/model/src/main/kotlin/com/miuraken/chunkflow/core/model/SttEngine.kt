@@ -22,10 +22,10 @@ enum class SttEngine {
     /** `sherpa-onnx` の Whisper Small モデル（ONNX Runtime で動かす。99 言語対応、約 358 MB）。 */
     SHERPA_ONNX_WHISPER_SMALL,
 
-    /** Moonshine ONNX Tiny モデル（ONNX Runtime で動かす。英語 `en` 専用、約 118 MB）。 */
+    /** Moonshine ONNX Tiny モデル（ONNX Runtime で動かす。英・日・中・韓・西・アラビア・ウクライナ・ベトナムの 8 言語対応、言語別モデル）。 */
     MOONSHINE_TINY,
 
-    /** Moonshine ONNX Base モデル（ONNX Runtime で動かす。英語 `en` 専用、約 274 MB）。 */
+    /** Moonshine ONNX Base モデル（ONNX Runtime で動かす。英・日・中・韓・西・アラビア・ウクライナ・ベトナムの 8 言語対応、言語別モデル）。 */
     MOONSHINE_BASE,
 
     /** OpenAI Audio Transcriptions API（`gpt-4o-mini-transcribe` / `whisper-1`、要 API キー設定）。 */
@@ -73,12 +73,14 @@ enum class SttEngine {
  * @property modelId ディレクトリ名および [EngineId] に使うモデル識別子。
  * @property displayName UI 表示名。
  * @property approxSizeMb 目安サイズ（MB）。
+ * @property isPerLanguageModel 言語ごとに別々のモデルファイルをダウンロードする形式かどうか（Moonshine ONNX Tiny/Base は `true`）。
  */
 enum class DownloadableSttModel(
     val sttEngine: SttEngine,
     val modelId: String,
     val displayName: String,
     val approxSizeMb: Int,
+    val isPerLanguageModel: Boolean = false,
 ) {
     /** `sherpa-onnx` Whisper Tiny int8（99 言語対応・約 99 MB）。 */
     SHERPA_WHISPER_TINY(
@@ -112,20 +114,22 @@ enum class DownloadableSttModel(
         approxSizeMb = 358,
     ),
 
-    /** Moonshine ONNX Tiny int8（英語 `en` 専用・約 118 MB）。 */
+    /** Moonshine ONNX Tiny int8（8 言語対応・言語別モデル・約 27〜118 MB）。 */
     MOONSHINE_TINY(
         sttEngine = SttEngine.MOONSHINE_TINY,
         modelId = "sherpa-onnx-moonshine-tiny-en-int8",
         displayName = "Moonshine ONNX Tiny",
         approxSizeMb = 118,
+        isPerLanguageModel = true,
     ),
 
-    /** Moonshine ONNX Base int8（英語 `en` 専用・約 274 MB）。 */
+    /** Moonshine ONNX Base int8（8 言語対応・言語別モデル・約 61〜274 MB）。 */
     MOONSHINE_BASE(
         sttEngine = SttEngine.MOONSHINE_BASE,
         modelId = "sherpa-onnx-moonshine-base-en-int8",
         displayName = "Moonshine ONNX Base",
         approxSizeMb = 274,
+        isPerLanguageModel = true,
     ),
     ;
 
@@ -136,6 +140,49 @@ enum class DownloadableSttModel(
     /** 目安サイズ（バイト）。 */
     val estimatedSizeBytes: Long
         get() = approxSizeMb * 1_024L * 1_024L
+
+    /** 言語別モデルの対応言語タグ一覧（全言語共通モデルの場合は空リスト）。 */
+    val supportedLanguages: List<LanguageTag>
+        get() = when (this) {
+            MOONSHINE_TINY,
+            MOONSHINE_BASE,
+            -> MOONSHINE_SUPPORTED_LANGUAGE_TAGS
+
+            else -> emptyList()
+        }
+
+    /** 指定した言語 [language] に対する目安サイズ（MB）を返す。 */
+    fun approxSizeMbForLanguage(language: LanguageTag): Int {
+        val entry = SupportedLanguageCatalog.findByCode(language.value)
+        val whisperCode = entry?.whisperCode ?: language.value.trim().lowercase().substringBefore('-')
+        return when (this) {
+            MOONSHINE_TINY -> when (whisperCode) {
+                "en" -> 118
+                "ja" -> 69
+                "zh" -> 27
+                "ko" -> 69
+                "es" -> 62
+                "ar" -> 28
+                "uk" -> 37
+                "vi" -> 37
+                else -> approxSizeMb
+            }
+
+            MOONSHINE_BASE -> when (whisperCode) {
+                "en" -> 274
+                "ja" -> 135
+                "zh" -> 135
+                "ko" -> 61
+                "es" -> 62
+                "ar" -> 135
+                "uk" -> 135
+                "vi" -> 135
+                else -> approxSizeMb
+            }
+
+            else -> approxSizeMb
+        }
+    }
 
     /** 指定した言語 [language] にこのモデルが対応しているかどうか。 */
     fun isLanguageSupported(language: LanguageTag): Boolean {
@@ -151,7 +198,7 @@ enum class DownloadableSttModel(
 
             MOONSHINE_TINY,
             MOONSHINE_BASE,
-            -> whisperCode == "en"
+            -> whisperCode in MOONSHINE_SUPPORTED_CODES
         }
     }
 
@@ -165,6 +212,13 @@ enum class DownloadableSttModel(
         /** SenseVoice Small がサポートする言語コード（日本語・英語・中国語・広東語・韓国語）。 */
         val SENSE_VOICE_SUPPORTED_CODES: Set<String> = setOf("ja", "en", "zh", "yue", "ko")
 
+        /** Moonshine ONNX がサポートする 8 言語コード（英語・日本語・中国語・韓国語・スペイン語・アラビア語・ウクライナ語・ベトナム語）。 */
+        val MOONSHINE_SUPPORTED_CODES: Set<String> = setOf("en", "ja", "zh", "ko", "es", "ar", "uk", "vi")
+
+        /** Moonshine ONNX がサポートする 8 言語の [LanguageTag] 一覧（表示順）。 */
+        val MOONSHINE_SUPPORTED_LANGUAGE_TAGS: List<LanguageTag> =
+            listOf("en", "ja", "zh", "ko", "es", "ar", "uk", "vi").map(::LanguageTag)
+
         /** [SttEngine] に対応する [DownloadableSttModel] を返す。対応するローカル ONNX モデルがなければ `null`。 */
         fun fromEngineOrNull(engine: SttEngine): DownloadableSttModel? = entries.firstOrNull { it.sttEngine == engine }
     }
@@ -176,13 +230,17 @@ enum class DownloadableSttModel(
  * @property model 対象のモデル種別。
  * @property status モデルのダウンロード・インストール状態（`INSTALLED` / `NOT_INSTALLED` / `DOWNLOADING` / `DOWNLOAD_FAILED`）。
  * @property sizeBytes ディスク上の合計サイズ（バイト、目安）。
- * @property canPurge パージ（削除）ボタンを有効にするかどうか。
+ * @property canPurge 削除（パージ）ボタンを有効にするかどうか。
+ * @property availableLanguages 言語別モデル（Moonshine 等）で利用可能な対応言語一覧。
+ * @property downloadedLanguages 言語別モデル（Moonshine 等）で現在ダウンロード済みの言語一覧。
  */
 data class DownloadableSttModelState(
     val model: DownloadableSttModel,
     val status: OnDeviceLanguageModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
     val sizeBytes: Long = model.approxSizeMb * 1_024L * 1_024L,
     val canPurge: Boolean = status == OnDeviceLanguageModelStatus.INSTALLED,
+    val availableLanguages: List<LanguageTag> = model.supportedLanguages,
+    val downloadedLanguages: List<LanguageTag> = emptyList(),
 )
 
 /**

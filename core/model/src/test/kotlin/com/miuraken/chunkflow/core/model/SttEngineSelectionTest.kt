@@ -161,4 +161,27 @@ class SttEngineSelectionTest {
             ),
         )
     }
+
+    @Test
+    fun `DownloadableSttModel_Moonshineは言語別モデルとして8言語をサポートし言語ごとのサイズを返す`() {
+        val tiny = DownloadableSttModel.MOONSHINE_TINY
+        val base = DownloadableSttModel.MOONSHINE_BASE
+
+        assertTrue(tiny.isPerLanguageModel)
+        assertTrue(base.isPerLanguageModel)
+        assertFalse(DownloadableSttModel.SHERPA_SENSE_VOICE_SMALL.isPerLanguageModel)
+
+        assertEquals(
+            listOf("en", "ja", "zh", "ko", "es", "ar", "uk", "vi").map(::LanguageTag),
+            tiny.supportedLanguages,
+        )
+        assertTrue(tiny.isLanguageSupported(LanguageTag("ja")))
+        assertTrue(tiny.isLanguageSupported(LanguageTag("zh-Hans")))
+        assertFalse(tiny.isLanguageSupported(LanguageTag("fr")))
+
+        assertEquals(118, tiny.approxSizeMbForLanguage(LanguageTag("en")))
+        assertEquals(69, tiny.approxSizeMbForLanguage(LanguageTag("ja")))
+        assertEquals(274, base.approxSizeMbForLanguage(LanguageTag("en")))
+        assertEquals(135, base.approxSizeMbForLanguage(LanguageTag("ja")))
+    }
 }

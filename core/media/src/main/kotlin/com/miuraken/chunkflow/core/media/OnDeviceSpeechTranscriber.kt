@@ -223,6 +223,14 @@ interface OnDeviceChunkTranscriber {
     suspend fun deleteSherpaModel(language: LanguageTag): Boolean = false
 
     /**
+     * 指定された言語 [language] に対する [model] のローカルモデルを削除する。
+     */
+    suspend fun deleteSttModelForLanguage(
+        language: LanguageTag,
+        model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ): Boolean = false
+
+    /**
      * [language] で、エンジン [engine] のモデルの取得を要求する（ADR-0011 §2.4）。
      *
      * - [SttEngine.ML_KIT]・[SttEngine.SPEECH_RECOGNIZER]: モデルは OS が管理するので、OS に取得を要求するだけ（削除はできない）。
@@ -2141,6 +2149,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     override suspend fun deleteSherpaModel(language: LanguageTag): Boolean {
         val manager = sherpaModelManager ?: return false
         val ok = manager.deleteModelForLanguage(language)
+        if (ok) {
+            clearAllSttCache()
+        }
+        return ok
+    }
+
+    override suspend fun deleteSttModelForLanguage(
+        language: LanguageTag,
+        model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ): Boolean {
+        val manager = sherpaModelManager ?: return false
+        val ok = manager.deleteModelForLanguage(model, language)
         if (ok) {
             clearAllSttCache()
         }

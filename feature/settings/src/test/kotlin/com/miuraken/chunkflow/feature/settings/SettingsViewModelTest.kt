@@ -633,4 +633,92 @@ class SettingsViewModelTest {
         assertEquals("gsk-groq-test", repo.state.value.groqApiKey)
         assertEquals("AIza-gemini-test", repo.state.value.geminiApiKey)
     }
+
+    @Test
+    fun `Moonshineモデルの言語別ダウンロードと個別削除および一括削除が反映される`() = runTest {
+        val repo = FakeUserSettingsRepository()
+        val analysisRepo = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository()
+        val viewModel = SettingsViewModel(repo, analysisRepo)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 初期状態では Moonshine Tiny のダウンロード済み言語は空
+        val initialTiny = viewModel.uiState.value.downloadableModels.first {
+            it.model == com.miuraken.chunkflow.core.model.DownloadableSttModel.MOONSHINE_TINY
+        }
+        assertTrue(initialTiny.downloadedLanguages.isEmpty())
+        assertFalse(initialTiny.canPurge)
+
+        // 日本語と英語の Moonshine Tiny を言語別にダウンロード
+        viewModel.onEvent(
+            SettingsEvent.RequestSttModelDownload(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            ),
+        )
+        viewModel.onEvent(
+            SettingsEvent.RequestSttModelDownload(
+                LanguageTag("en"),
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            ),
+        )
+
+        val tinyAfterDownload = viewModel.uiState.value.downloadableModels.first {
+            it.model == com.miuraken.chunkflow.core.model.DownloadableSttModel.MOONSHINE_TINY
+        }
+        assertEquals(listOf(LanguageTag("ja"), LanguageTag("en")), tinyAfterDownload.downloadedLanguages)
+        assertTrue(tinyAfterDownload.canPurge)
+
+        // 日本語・英語ともに Moonshine Tiny を優先エンジンに設定できる
+        viewModel.onEvent(
+            SettingsEvent.SetSttEngineForLanguage(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            ),
+        )
+        viewModel.onEvent(
+            SettingsEvent.SetSttEngineForLanguage(
+                LanguageTag("en"),
+                com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            ),
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")],
+        )
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            viewModel.uiState.value.sttEngineByLanguage[LanguageTag("en")],
+        )
+
+        // 日本語の Moonshine Tiny だけを削除すると、日本語のみ自動 (null) に戻り、英語は残る
+        viewModel.onEvent(
+            SettingsEvent.DeleteLanguageSttModel(
+                LanguageTag("ja"),
+                com.miuraken.chunkflow.core.model.DownloadableSttModel.MOONSHINE_TINY,
+            ),
+        )
+        val tinyAfterJaDelete = viewModel.uiState.value.downloadableModels.first {
+            it.model == com.miuraken.chunkflow.core.model.DownloadableSttModel.MOONSHINE_TINY
+        }
+        assertEquals(listOf(LanguageTag("en")), tinyAfterJaDelete.downloadedLanguages)
+        assertTrue(tinyAfterJaDelete.canPurge)
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ja")])
+        assertEquals(
+            com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY,
+            viewModel.uiState.value.sttEngineByLanguage[LanguageTag("en")],
+        )
+
+        // 一括削除（PurgeSttModel）すると、残っていた英語も削除され downloadedLanguages が空になる
+        viewModel.onEvent(
+            SettingsEvent.PurgeSttModel(
+                com.miuraken.chunkflow.core.model.DownloadableSttModel.MOONSHINE_TINY,
+            ),
+        )
+        val tinyAfterPurge = viewModel.uiState.value.downloadableModels.first {
+            it.model == com.miuraken.chunkflow.core.model.DownloadableSttModel.MOONSHINE_TINY
+        }
+        assertTrue(tinyAfterPurge.downloadedLanguages.isEmpty())
+        assertFalse(tinyAfterPurge.canPurge)
+        assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("en")])
+    }
 }

@@ -154,6 +154,14 @@ interface AnalysisRepository {
     suspend fun purgeSttModel(model: com.miuraken.chunkflow.core.model.DownloadableSttModel): Boolean = false
 
     /**
+     * 指定された言語 [language] に対する [model] のローカルモデルを削除する。
+     */
+    suspend fun deleteSttModelForLanguage(
+        language: LanguageTag,
+        model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ): Boolean = false
+
+    /**
      * 指定された言語一覧 [languages] について、端末内音声認識モデルの利用可能状態と
      * 解決された BCP-47 ロケールタグ、および `sherpa-onnx` ローカルモデルの状態を問い合わせて返す（設定画面の「文字起こし設定」タブ用）。
      */

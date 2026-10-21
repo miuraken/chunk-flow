@@ -109,7 +109,7 @@
     <string name="settings_sherpa_download_confirm_button">Download</string>
     <string name="settings_sherpa_download_cancel_button">Cancel</string>
     <string name="settings_section_model_downloads">Model Downloads</string>
-    <string name="settings_model_downloads_description">Download or purge on-device ONNX speech recognition models and configure cloud transcription API keys.</string>
+    <string name="settings_model_downloads_description">Download or delete on-device ONNX speech recognition models and configure cloud transcription API keys.</string>
     <string name="settings_model_sherpa_whisper_tiny">sherpa-onnx Whisper Tiny</string>
     <string name="settings_model_sherpa_whisper_tiny_desc">99 languages, lightweight (~%1$d MB)</string>
     <string name="settings_model_sherpa_sense_voice_small">sherpa-onnx SenseVoice Small</string>
@@ -119,11 +119,14 @@
     <string name="settings_model_sherpa_whisper_small">sherpa-onnx Whisper Small</string>
     <string name="settings_model_sherpa_whisper_small_desc">99 languages, high accuracy (~%1$d MB)</string>
     <string name="settings_model_moonshine_tiny">Moonshine ONNX Tiny</string>
-    <string name="settings_model_moonshine_tiny_desc">English only, ultra-fast (~%1$d MB)</string>
+    <string name="settings_model_moonshine_tiny_desc">8 languages, ultra-fast (27–118 MB per language)</string>
     <string name="settings_model_moonshine_base">Moonshine ONNX Base</string>
-    <string name="settings_model_moonshine_base_desc">English only, high accuracy (~%1$d MB)</string>
+    <string name="settings_model_moonshine_base_desc">8 languages, high accuracy (61–274 MB per language)</string>
+    <string name="settings_model_available_languages">Available languages: %1$s</string>
+    <string name="settings_model_downloaded_languages">Downloaded: %1$s</string>
+    <string name="settings_speech_model_action_download_with_size">Download (%1$d MB)</string>
     <string name="settings_model_action_download">Download</string>
-    <string name="settings_model_action_purge">Purge</string>
+    <string name="settings_model_action_purge">Delete</string>
     <string name="settings_cloud_api_keys_subtitle">Cloud Transcription API Keys</string>
     <string name="settings_openai_api_key_label">OpenAI Compatible API Key</string>
     <string name="settings_openai_api_key_placeholder">sk-...</string>
