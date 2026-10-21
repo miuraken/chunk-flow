@@ -5,17 +5,21 @@ import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.data.library.TranscriptImportResult
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LibraryPlaylist
+import com.miuraken.chunkflow.core.model.LibraryTags
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -24,12 +28,14 @@ import kotlinx.coroutines.flow.update
  * テストとプレビュー用の [LibraryRepository]。
  *
  * 教材の一覧と教材ごとの状態はメモリ上に持つ。取り込みの結果は [importResult] / [importTranscriptResult] で決める。
+ * タグとフォルダの色は、本番の実装と同じ決まり（[LibraryTags]・[LibraryFolderColors]）でメモリ上に持つ。
  */
 class FakeLibraryRepository(
     initialItems: List<AudioItem> = emptyList(),
     initialItemStates: Map<MediaId, ItemState> = emptyMap(),
     initialCourseFolders: List<LibraryCourseFolder> = emptyList(),
     initialPlaylists: List<LibraryPlaylist> = emptyList(),
+    initialItemTags: Map<MediaId, List<String>> = emptyMap(),
 ) : LibraryRepository {
     /** 教材の一覧。テストから直接書き換えられる。 */
     val items: MutableStateFlow<List<AudioItem>> = MutableStateFlow(initialItems)
@@ -42,6 +48,31 @@ class FakeLibraryRepository(
 
     /** プレイリストの一覧。テストから直接書き換えられる。 */
     val playlists: MutableStateFlow<List<LibraryPlaylist>> = MutableStateFlow(initialPlaylists)
+
+    /** ファイルごとのタグの名前。テストから直接書き換えられる（[observeItemTags] はタグが作られた順に並べて流す）。 */
+    val itemTags: MutableStateFlow<Map<MediaId, List<String>>> = MutableStateFlow(initialItemTags)
+
+    /** タグが作られた順の名前（どのファイルにも付いていないタグは、タグを書き換えるときに除く）。 */
+    val tagCreationOrder: MutableStateFlow<List<String>> =
+        MutableStateFlow(LibraryTags.normalizeNames(initialItemTags.values.flatten()))
+
+    /** 対象言語のキー（[LibraryFolderColors.languageKey]）ごとのフォルダの既定の色の順番。テストから直接書き換えられる。 */
+    val folderLanguageColorOrdinals: MutableStateFlow<Map<LanguageTag, Int>> = MutableStateFlow(
+        initialCourseFolders
+            .mapNotNull { folder -> LibraryFolderColors.languageKey(folder.languagePair.target.value) }
+            .distinct()
+            .withIndex()
+            .associate { (ordinal, key) -> LanguageTag(key) to ordinal },
+    )
+
+    /** [setCourseFolderColor] に渡された引数（呼ばれた順）。 */
+    val folderColorRequests: MutableList<Pair<String, Int?>> = mutableListOf()
+
+    /** [setItemTags] に渡された引数（呼ばれた順）。 */
+    val setItemTagsRequests: MutableList<Pair<MediaId, List<String>>> = mutableListOf()
+
+    /** [updateItemTags] に渡された引数（呼ばれた順）。 */
+    val updateItemTagsRequests: MutableList<Triple<Set<MediaId>, Set<String>, Set<String>>> = mutableListOf()
 
     /** [import] に渡された URI（呼ばれた順）。 */
     val importedUris: MutableList<List<Uri>> = mutableListOf()
@@ -225,8 +256,10 @@ class FakeLibraryRepository(
                     treeUri = treeUri.toString(),
                     lastScannedAtEpochMs = System.currentTimeMillis(),
                     sortOrder = nextSortOrder,
+                    colorIndex = existing?.colorIndex,
                 )
         }
+        assignLanguageColor(resolvedLanguages.target)
         return import(listOf(treeUri), resolvedCourse, resolvedLanguages)
     }
 
@@ -258,8 +291,10 @@ class FakeLibraryRepository(
                     treeUri = existing?.treeUri,
                     lastScannedAtEpochMs = existing?.lastScannedAtEpochMs ?: 0L,
                     sortOrder = nextSortOrder,
+                    colorIndex = existing?.colorIndex,
                 )
         }
+        assignLanguageColor(languages.target)
         return true
     }
 
@@ -289,8 +324,10 @@ class FakeLibraryRepository(
                     treeUri = resolvedTreeUri,
                     lastScannedAtEpochMs = existing?.lastScannedAtEpochMs ?: 0L,
                     sortOrder = nextSortOrder,
+                    colorIndex = existing?.colorIndex,
                 )
         }
+        assignLanguageColor(languages.target)
         return true
     }
 
@@ -387,6 +424,128 @@ class FakeLibraryRepository(
                     }
                 }
             }
+            assignLanguageColor(languages.target)
+        }
+    }
+
+    override suspend fun setCourseFolderColor(
+        coursePath: String,
+        colorIndex: Int?,
+    ) {
+        folderColorRequests += coursePath to colorIndex
+        if (colorIndex != null && !LibraryFolderColors.isValidIndex(colorIndex)) return
+        val trimmed = coursePath.trim().trim('/').takeIf { it.isNotEmpty() } ?: return
+        if (courseFolders.value.any { it.coursePath == trimmed }) {
+            courseFolders.update { list ->
+                list.map { folder -> if (folder.coursePath == trimmed) folder.copy(colorIndex = colorIndex) else folder }
+            }
+            return
+        }
+        if (colorIndex == null) return
+        // 設定の行がない（ファイルだけから見えている）フォルダは、ファイルの言語と保存方式から行を作る
+        val treeItems = items.value.filter { item ->
+            val c = item.course?.trim()?.trim('/')
+            c == trimmed || c?.startsWith("$trimmed/") == true
+        }
+        val firstItem = treeItems.firstOrNull() ?: return
+        val kind = if (treeItems.any { it.storageState == AudioStorageState.LOCAL_REFERENCE }) {
+            LibraryFolderKind.LOCAL_DIRECTORY
+        } else {
+            LibraryFolderKind.VIRTUAL_DIRECTORY
+        }
+        courseFolders.update { list ->
+            list + LibraryCourseFolder(
+                coursePath = trimmed,
+                kind = kind,
+                languagePair = firstItem.languagePair,
+                colorIndex = colorIndex,
+            )
+        }
+        assignLanguageColor(firstItem.languagePair.target)
+    }
+
+    override fun observeFolderLanguageColorOrdinals(): Flow<Map<LanguageTag, Int>> = folderLanguageColorOrdinals
+
+    override fun observeTags(): Flow<List<String>> = combine(tagCreationOrder, itemTags) { order, tagsByItem ->
+        val usedNames = LibraryTags.normalizeNames(tagsByItem.values.flatten())
+        val usedKeys = usedNames.mapTo(HashSet(), LibraryTags::key)
+        val ordered = order.filter { LibraryTags.key(it) in usedKeys }
+        val orderedKeys = ordered.mapTo(HashSet(), LibraryTags::key)
+        // テストから直接書き換えられ、作成順の一覧にないタグは後ろに並べる
+        ordered + usedNames.filter { LibraryTags.key(it) !in orderedKeys }
+    }
+
+    override fun observeItemTags(): Flow<Map<MediaId, List<String>>> = combine(tagCreationOrder, itemTags) { order, tagsByItem ->
+        val rankByKey = order.withIndex().associate { (index, name) -> LibraryTags.key(name) to index }
+        tagsByItem
+            .filterValues { it.isNotEmpty() }
+            .mapValues { (_, names) -> names.sortedBy { rankByKey[LibraryTags.key(it)] ?: Int.MAX_VALUE } }
+    }
+
+    override suspend fun setItemTags(
+        id: MediaId,
+        tags: List<String>,
+    ) {
+        setItemTagsRequests += id to tags
+        if (items.value.none { it.id == id }) return
+        val names = resolveTagNames(LibraryTags.normalizeNames(tags).take(LibraryTags.MAX_TAGS_PER_ITEM))
+        itemTags.update { current -> if (names.isEmpty()) current - id else current + (id to names) }
+        pruneUnusedTags()
+    }
+
+    override suspend fun updateItemTags(
+        ids: Set<MediaId>,
+        addTags: Set<String>,
+        removeTags: Set<String>,
+    ) {
+        updateItemTagsRequests += Triple(ids, addTags, removeTags)
+        val existingIds = items.value.mapTo(HashSet()) { it.id }
+        val addNames = resolveTagNames(LibraryTags.normalizeNames(addTags))
+        val addKeys = addNames.mapTo(HashSet(), LibraryTags::key)
+        val removeKeys = LibraryTags.normalizeNames(removeTags)
+            .map(LibraryTags::key)
+            .filterTo(HashSet()) { it !in addKeys }
+        itemTags.update { current ->
+            val next = current.toMutableMap()
+            for (id in ids) {
+                if (id !in existingIds) continue
+                val kept = next[id].orEmpty().filterNot { LibraryTags.key(it) in removeKeys }
+                val keptKeys = kept.mapTo(HashSet(), LibraryTags::key)
+                val capacity = (LibraryTags.MAX_TAGS_PER_ITEM - kept.size).coerceAtLeast(0)
+                val updated = kept + addNames.filter { LibraryTags.key(it) !in keptKeys }.take(capacity)
+                if (updated.isEmpty()) next.remove(id) else next[id] = updated
+            }
+            next
+        }
+        pruneUnusedTags()
+    }
+
+    /** 名前を、同じキーの既存のタグの表記にそろえる。新しいタグは作成順の一覧の末尾に加える。 */
+    private fun resolveTagNames(names: List<String>): List<String> {
+        val existingByKey = LinkedHashMap<String, String>()
+        for (name in tagCreationOrder.value + itemTags.value.values.flatten()) {
+            existingByKey.putIfAbsent(LibraryTags.key(name), name)
+        }
+        val resolved = names.map { name -> existingByKey[LibraryTags.key(name)] ?: name }
+        tagCreationOrder.update { order ->
+            val orderKeys = order.mapTo(HashSet(), LibraryTags::key)
+            order + resolved.filter { LibraryTags.key(it) !in orderKeys }
+        }
+        return resolved
+    }
+
+    /** どのファイルにも付いていないタグを作成順の一覧から除く（本番の実装では行を消す）。 */
+    private fun pruneUnusedTags() {
+        val usedKeys = itemTags.value.values.flatten().mapTo(HashSet(), LibraryTags::key)
+        tagCreationOrder.update { order -> order.filter { LibraryTags.key(it) in usedKeys } }
+    }
+
+    /** 対象言語にまだ色の順番がなければ、次の順番を割り当てる。 */
+    private fun assignLanguageColor(language: LanguageTag) {
+        val key = LibraryFolderColors.languageKey(language.value) ?: return
+        folderLanguageColorOrdinals.update { current ->
+            val tag = LanguageTag(key)
+            if (tag in current) current else current + (tag to (current.values.maxOrNull() ?: -1) + 1)
         }
     }
 
@@ -617,6 +776,7 @@ class FakeLibraryRepository(
                         languagePair = itemLang,
                         sortOrder = index,
                     )
+                    assignLanguageColor(itemLang.target)
                 }
             }
             byPath.values.toList()
@@ -655,6 +815,8 @@ class FakeLibraryRepository(
         items.update { list -> list.filterNot { it.id == id } }
         itemStates.update { current -> current - id }
         missingAudioIds.update { current -> current - id }
+        itemTags.update { current -> current - id }
+        pruneUnusedTags()
         playlists.update { current ->
             current.map { playlist ->
                 playlist.copy(itemIds = playlist.itemIds.filterNot { it == id })

@@ -5,6 +5,10 @@ import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.testing.fixture.SampleMaterials
 import kotlin.test.Test
@@ -72,5 +76,50 @@ class FakeLibraryRepositoryTest {
         repo.delete(item.id)
         assertNull(repo.observeItem(item.id).first())
         assertNull(repo.observeItemState(item.id).first())
+    }
+
+    @Test
+    fun `setItemTagsとupdateItemTags_本番と同じく表記をそろえ既存のタグにまとめ使われないタグは消える`() = runTest {
+        val first = SampleMaterials.jaKo.item
+        val second = SampleMaterials.all.first { it.item.id != first.id }.item
+        val repo = FakeLibraryRepository(initialItems = listOf(first, second))
+
+        repo.setItemTags(first.id, listOf(" English ", "english", "シャドーイング"))
+        repo.updateItemTags(setOf(first.id, second.id), addTags = setOf("ENGLISH", "TOEIC"), removeTags = setOf("シャドーイング"))
+        assertEquals(
+            mapOf(first.id to listOf("English", "TOEIC"), second.id to listOf("English", "TOEIC")),
+            repo.observeItemTags().first(),
+        )
+        assertEquals(listOf("English", "TOEIC"), repo.observeTags().first())
+
+        repo.delete(second.id)
+        repo.setItemTags(first.id, listOf("TOEIC"))
+        assertEquals(mapOf(first.id to listOf("TOEIC")), repo.observeItemTags().first())
+        assertEquals(listOf("TOEIC"), repo.observeTags().first())
+    }
+
+    @Test
+    fun `setCourseFolderColor_色を設定し取り込み直しても保ち対象言語の順番はフォルダが作られた順`() = runTest {
+        val repo = FakeLibraryRepository(
+            initialCourseFolders = listOf(
+                LibraryCourseFolder(
+                    coursePath = "韓国語",
+                    kind = LibraryFolderKind.VIRTUAL_DIRECTORY,
+                    languagePair = LanguagePair(LanguageTag("ko"), LanguageTag("ja")),
+                ),
+            ),
+        )
+        repo.createRealFolder("中国語", LanguagePair(LanguageTag("zh"), LanguageTag("ja")))
+        assertEquals(
+            mapOf(LanguageTag("ko") to 0, LanguageTag("zh-cn") to 1),
+            repo.observeFolderLanguageColorOrdinals().first(),
+        )
+
+        repo.setCourseFolderColor("韓国語", 6)
+        repo.createVirtualFolder("韓国語", LanguagePair(LanguageTag("ko"), LanguageTag("en")))
+        assertEquals(6, repo.observeCourseFolders().first().first { it.coursePath == "韓国語" }.colorIndex)
+
+        repo.setCourseFolderColor("韓国語", null)
+        assertNull(repo.observeCourseFolders().first().first { it.coursePath == "韓国語" }.colorIndex)
     }
 }
