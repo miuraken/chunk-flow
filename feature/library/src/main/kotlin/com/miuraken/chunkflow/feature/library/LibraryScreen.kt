@@ -628,6 +628,10 @@ fun LibraryScreen(
             initialSttOverride = state.pendingEditItemSttOverride,
             sttEngineByLanguage = state.sttEngineByLanguage,
             onOpenLanguageSettings = { onEvent(LibraryEvent.OpenLanguageSettings) },
+            onDelete = {
+                onEvent(LibraryEvent.CancelEditMetadata)
+                onEvent(LibraryEvent.RequestDelete(itemToEdit))
+            },
         )
     }
 
@@ -649,6 +653,12 @@ fun LibraryScreen(
             onDismiss = { onEvent(LibraryEvent.CancelEditDirectoryMetadata) },
             sttEngineByLanguage = state.sttEngineByLanguage,
             onOpenLanguageSettings = { onEvent(LibraryEvent.OpenLanguageSettings) },
+            onDelete = directoryToEdit.currentCourse?.let { path ->
+                {
+                    onEvent(LibraryEvent.CancelEditDirectoryMetadata)
+                    onEvent(LibraryEvent.RequestDeleteDirectory(path))
+                }
+            },
         )
     }
 
