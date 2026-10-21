@@ -167,7 +167,7 @@ internal class MoonshineOnnxTranscriber @Inject constructor(
         val cachedInputNames = bundle.cachedDecodeSession.inputNames.toList()
         if (uncachedInputNames.size < 3 || cachedInputNames.size < 4) return null
 
-        val maxLen = (audioDurationSec * 6.5f).toInt().coerceIn(8, MAX_DECODE_TOKENS)
+        val maxLen = maxDecodeTokens(audioDurationSec.toDouble(), language)
         val tokenShape = longArrayOf(1L, 1L)
         val lenShape = longArrayOf(1L)
 
@@ -322,7 +322,7 @@ internal class MoonshineOnnxTranscriber @Inject constructor(
         val encShape = encoderOut.info.shape
         if (encShape.size < 2) return null
         val encoderFrames = encShape[1].coerceAtLeast(1L)
-        val maxLen = ((encoderFrames * 384.0 / SAMPLE_RATE.toDouble()) * 6.5).toInt().coerceIn(8, MAX_DECODE_TOKENS)
+        val maxLen = maxDecodeTokens(encoderFrames * 384.0 / SAMPLE_RATE.toDouble(), language)
 
         val decInputNames = bundle.decoderSession.inputNames.toList()
         val needsMask = decInputNames.any { it.contains("encoder_attention_mask") }
@@ -707,10 +707,36 @@ internal class MoonshineOnnxTranscriber @Inject constructor(
         private const val SAMPLE_RATE = 16_000
         private const val MIN_AUDIO_SAMPLES = 1_600 // 0.1s
         private const val MAX_AUDIO_SAMPLES = SAMPLE_RATE * 30 // 30s
+        private const val MIN_DECODE_TOKENS = 8
         private const val MAX_DECODE_TOKENS = 200
+
+        /** 英語のモデルの 1 秒あたりのトークン数の上限（公式の実装は `秒 × 6`。少し余裕を持たせる）。 */
+        private const val EN_TOKENS_PER_SECOND = 6.5
+
+        /**
+         * 英語以外の言語別モデル（ja・ko・zh・es・ar・uk・vi）の 1 秒あたりのトークン数の上限。
+         * 1 文字が複数のトークンになるので、Moonshine の言語別モデルのモデルカードの例（`13 / 16000`）に合わせる。
+         */
+        private const val NON_EN_TOKENS_PER_SECOND = 13.0
+
         private const val BOS_TOKEN_ID = 1
         private const val EOS_TOKEN_ID = 2
         private const val SILENCE_SAMPLE_ABS_MAX = 1e-6f
+
+        /**
+         * 音声の長さ [audioDurationSec] 秒と言語 [language] から、デコードするトークン数の上限を返す。
+         *
+         * 英語と同じ上限（1 秒 6.5 トークン）を日本語・韓国語・中国語に使うと文の途中で切れ、末尾に壊れた文字（U+FFFD）が出る
+         * （2026-10-22 の実機ベンチマークで確認。tools/stt-bench）。
+         */
+        internal fun maxDecodeTokens(audioDurationSec: Double, language: LanguageTag): Int {
+            val perSecond = if (SherpaOnnxModelManager.normalizeLanguageKey(language) == "en") {
+                EN_TOKENS_PER_SECOND
+            } else {
+                NON_EN_TOKENS_PER_SECOND
+            }
+            return (audioDurationSec * perSecond).toInt().coerceIn(MIN_DECODE_TOKENS, MAX_DECODE_TOKENS)
+        }
 
         internal fun parseMoonshineTokensFile(file: File): Map<Int, String> {
             if (!file.isFile) return emptyMap()
