@@ -3155,4 +3155,43 @@ class PlayerViewModelTest {
         assertFalse(viewModel.uiState.value.isChunkBoundaryEditMode)
         assertFalse(viewModel.uiState.value.chunks.any { it.id == targetChunkId })
     }
+
+    @Test
+    fun `内包フォルダの音声認識設定が全体設定から変更されている場合_folderSttOverrideに反映される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item.copy(course = "EnglishCourse/Unit1")
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample.copy(item = item)) }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+        assertTrue(viewModel.uiState.value.folderSttOverride.isEmpty)
+
+        // 親フォルダに音声認識エンジン設定を設定すると folderSttOverride に反映される
+        val folderStt = com.miuraken.chunkflow.core.model.ItemSttOverride(
+            targetEngine = com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+        )
+        libraryRepo.setCourseFolderSttOverride(
+            coursePath = "EnglishCourse",
+            sttOverride = folderStt,
+        )
+        assertEquals(folderStt, viewModel.uiState.value.folderSttOverride)
+        assertFalse(viewModel.uiState.value.folderSttOverride.isEmpty)
+
+        // フォルダ設定を全体設定に従う（NONE）に戻すと isEmpty が true に戻る
+        libraryRepo.setCourseFolderSttOverride(
+            coursePath = "EnglishCourse",
+            sttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+        )
+        assertTrue(viewModel.uiState.value.folderSttOverride.isEmpty)
+    }
 }

@@ -74,6 +74,7 @@ internal fun ResegmentSheetContent(
     useGlobalSegmentation: Boolean,
     languagePair: LanguagePair?,
     itemSttOverride: ItemSttOverride,
+    folderSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     sttEngineByLanguage: Map<LanguageTag, SttEngine>,
     languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo>,
     enabledLanguages: List<LanguageTag>,
@@ -251,11 +252,12 @@ internal fun ResegmentSheetContent(
                 val targetLang = languagePair?.target?.takeIf { it.value.isNotBlank() }
                 if (targetLang != null) {
                     val targetInfo = resolveLanguageModelInfoForItem(targetLang, languageModelInfos)
-                    val targetGlobalDefault = resolveConfiguredDefaultEngineForLanguage(
-                        rawCode = targetLang.value,
-                        sttEngineByLanguage = sttEngineByLanguage,
-                        languageModelInfos = languageModelInfos,
-                    )
+                    val targetGlobalDefault = folderSttOverride.targetEngine
+                        ?: resolveConfiguredDefaultEngineForLanguage(
+                            rawCode = targetLang.value,
+                            sttEngineByLanguage = sttEngineByLanguage,
+                            languageModelInfos = languageModelInfos,
+                        )
                     ItemSttEngineAccordion(
                         headerTitle = stringResource(
                             R.string.player_file_settings_stt_target_lang_header,
@@ -276,11 +278,12 @@ internal fun ResegmentSheetContent(
                 val baseLang = languagePair?.base?.takeIf { it.value.isNotBlank() }
                 if (baseLang != null) {
                     val baseInfo = resolveLanguageModelInfoForItem(baseLang, languageModelInfos)
-                    val baseGlobalDefault = resolveConfiguredDefaultEngineForLanguage(
-                        rawCode = baseLang.value,
-                        sttEngineByLanguage = sttEngineByLanguage,
-                        languageModelInfos = languageModelInfos,
-                    )
+                    val baseGlobalDefault = folderSttOverride.baseEngine
+                        ?: resolveConfiguredDefaultEngineForLanguage(
+                            rawCode = baseLang.value,
+                            sttEngineByLanguage = sttEngineByLanguage,
+                            languageModelInfos = languageModelInfos,
+                        )
                     ItemSttEngineAccordion(
                         headerTitle = stringResource(
                             R.string.player_file_settings_stt_base_lang_header,
