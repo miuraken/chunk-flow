@@ -257,6 +257,15 @@ data class ItemSttOverride(
     val isEmpty: Boolean
         get() = targetEngine == null && baseEngine == null
 
+    /**
+     * フォルダの上書き設定 [folderOverride] をフォールバックとして合成した実効の上書きを返す。
+     * ファイル個別設定 ＞ フォルダ設定 の順で優先される。
+     */
+    fun withFolderFallback(folderOverride: ItemSttOverride): ItemSttOverride = ItemSttOverride(
+        targetEngine = targetEngine ?: folderOverride.targetEngine,
+        baseEngine = baseEngine ?: folderOverride.baseEngine,
+    )
+
     companion object {
         /** 上書きなし。 */
         val NONE: ItemSttOverride = ItemSttOverride()

@@ -1641,6 +1641,19 @@ class DefaultLibraryRepositoryTest {
             return 1
         }
 
+        override suspend fun updateSttOverride(coursePath: String, targetEngine: String?, baseEngine: String?): Int {
+            val existing = folders.value[coursePath] ?: return 0
+            folders.update {
+                it + (
+                    coursePath to existing.copy(
+                        targetSttEngine = targetEngine,
+                        baseSttEngine = baseEngine,
+                    )
+                    )
+            }
+            return 1
+        }
+
         override fun observeLanguageColors(): Flow<List<LanguageColorEntity>> = languageColors.map { map ->
             map.values.sortedBy { it.ordinal }
         }

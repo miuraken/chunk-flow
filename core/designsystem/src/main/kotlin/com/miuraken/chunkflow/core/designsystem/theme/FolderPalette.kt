@@ -38,9 +38,28 @@ data class ChunkFlowFolderPalette(
 internal object FolderPaletteTones {
     /**
      * 番号順の色相（HCT、度）。最初に使われる番号ほど見分けやすいように、色相環を飛び飛びに並べる
-     * （青 → 橙 → 緑 → ピンク → 青緑 → 黄 → 紫 → 赤）。
+     * （1 行目の 6 色: 青 → 橙 → 緑 → ピンク → 青緑 → 黄、2〜3 行目で合計 18 色）。
      */
-    val HUES: List<Double> = listOf(255.0, 65.0, 145.0, 350.0, 195.0, 100.0, 300.0, 25.0)
+    val HUES: List<Double> = listOf(
+        255.0,
+        65.0,
+        145.0,
+        350.0,
+        195.0,
+        100.0,
+        300.0,
+        25.0,
+        225.0,
+        45.0,
+        170.0,
+        325.0,
+        82.0,
+        278.0,
+        122.0,
+        5.0,
+        210.0,
+        240.0,
+    )
 
     // ---- ライト（surfaceContainer と同じくらいの明るさに、薄く色を付ける） ----
     const val LIGHT_CONTAINER_CHROMA: Double = 24.0

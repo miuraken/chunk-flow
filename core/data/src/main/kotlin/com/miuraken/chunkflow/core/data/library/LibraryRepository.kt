@@ -156,6 +156,17 @@ interface LibraryRepository {
     ) = Unit
 
     /**
+     * フォルダ [coursePath] 単位の音声認識エンジン上書き設定 [sttOverride] を保存する。
+     *
+     * [ItemSttOverride.NONE] なら全体設定に従う状態に戻す。
+     * フォルダの設定の行がまだないフォルダは、行を作ってから保存する。
+     */
+    suspend fun setCourseFolderSttOverride(
+        coursePath: String,
+        sttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+    ) = Unit
+
+    /**
      * 対象言語ごとの、フォルダの既定の色の順番を購読する（対象言語が初めてフォルダに使われた順、0 始まり）。
      *
      * キーは [LibraryFolderColors.languageKey] でそろえた言語コード。フォルダの色は [LibraryFolderColors.resolveIndex] で決める。

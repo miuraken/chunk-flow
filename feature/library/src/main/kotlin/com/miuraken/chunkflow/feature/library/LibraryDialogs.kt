@@ -1,16 +1,24 @@
 package com.miuraken.chunkflow.feature.library
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenu
@@ -20,10 +28,12 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,15 +43,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
-import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintText
 import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
 import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
 import com.miuraken.chunkflow.core.designsystem.component.normalizeSelectableLanguageCode
 import com.miuraken.chunkflow.core.designsystem.component.resolveConfiguredDefaultEngineForLanguage
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -49,13 +64,20 @@ import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.DownloadableSttModel
 import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineLabel
+import com.miuraken.chunkflow.core.model.SttEngineSelection
+import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 
 internal typealias LanguageDropdownOption = SelectableLanguageOption
 
@@ -264,24 +286,7 @@ internal fun LanguagePairDropdownSection(
         }
     }
 
-    MissingLanguageHintText(
-        text = stringResource(R.string.library_missing_language_hint),
-    )
-
-    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-    OutlinedButton(
-        onClick = onOpenLanguageSettings,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Icon(
-            imageVector = ChunkFlowIcons.Settings,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(text = stringResource(R.string.library_open_global_language_settings))
-    }
+    MissingLanguageHintWithSettingsLink(onOpenLanguageSettings = onOpenLanguageSettings)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -782,6 +787,14 @@ private fun DeleteFromLibraryButton(
     }
 }
 
+/**
+ * フォルダの設定のシート（フォルダ名・色・言語ペア・音声認識モデルをフォルダ単位で設定する）。
+ *
+ * 上から、見出し（Tune のアイコンとフォルダ名の入力欄。仮想フォルダには「仮想」のバッジ）→ 色 → 言語（学習対象・ベース）と
+ * 案内文 → 音声認識モデルの管理 → キャンセル / 保存 → フォルダを削除 の順に並べる。
+ *
+ * @param initialColorsExpanded 色の欄をはじめから全色に広げておくかどうか（プレビュー用）。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun EditDirectoryMetadataDialog(
@@ -795,10 +808,16 @@ internal fun EditDirectoryMetadataDialog(
     ) -> Unit,
     onDismiss: () -> Unit,
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
+    onDownloadSttModel: (LanguageTag, SttEngine) -> Unit = { _, _ -> },
+    onDeleteSherpaModel: (LanguageTag) -> Unit = {},
+    onDeleteLanguageSttModel: (LanguageTag, DownloadableSttModel) -> Unit = { _, _ -> },
+    onPurgeDownloadableModel: (DownloadableSttModel) -> Unit = {},
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
     onOpenLanguageSettings: () -> Unit = {},
     onDelete: (() -> Unit)? = null,
     languageColorOrdinals: Map<LanguageTag, Int> = emptyMap(),
+    initialColorsExpanded: Boolean = false,
 ) {
     var colorIndex by remember(directoryEdit) { mutableStateOf(directoryEdit.colorIndex) }
     var courseText by remember(directoryEdit) {
@@ -810,44 +829,31 @@ internal fun EditDirectoryMetadataDialog(
     var baseLangText by remember(directoryEdit) {
         mutableStateOf(normalizeDialogLanguageCode(directoryEdit.initialLanguages.base?.value.orEmpty()))
     }
+    var useGlobalSttModels by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.initialSttOverride.isEmpty)
+    }
+    var targetSttEngine by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.initialSttOverride.targetEngine)
+    }
+    var baseSttEngine by remember(directoryEdit) {
+        mutableStateOf(directoryEdit.initialSttOverride.baseEngine)
+    }
 
-    val folderDisplayName = directoryEdit.currentCourse?.substringAfterLast('/').orEmpty()
+    val isVirtualFolder = directoryEdit.currentCourse != null && !directoryEdit.isRealFolder
 
     val content: @Composable () -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp)
-                .verticalScroll(rememberScrollState()),
+                // 色の欄は左右の余白へ少しはみ出して描くので、余白はスクロールの内側に取る（切り抜かれないように）
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (directoryEdit.isRealFolder) {
-                Text(
-                    text = stringResource(
-                        R.string.library_edit_real_folder_dialog_title,
-                        folderDisplayName,
-                    ),
-                    style = MaterialTheme.typography.titleLarge,
-                )
-            }
-            OutlinedTextField(
-                value = courseText,
-                onValueChange = { courseText = it },
-                label = { Text(text = stringResource(R.string.library_edit_course_label)) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            LanguagePairDropdownSection(
-                targetLangCode = targetLangText,
-                baseLangCode = baseLangText,
-                onTargetLangChange = { targetLangText = it },
-                onBaseLangChange = { baseLangText = it },
-                sttEngineByLanguage = sttEngineByLanguage,
-                enabledLanguages = enabledLanguages,
-                onToggleEnabledLanguage = onToggleEnabledLanguage,
-                onOpenLanguageSettings = onOpenLanguageSettings,
-                confirmTargetLangChange = true,
+            FolderSettingsHeader(
+                folderName = courseText,
+                onFolderNameChange = { courseText = it },
+                isVirtualFolder = isVirtualFolder,
             )
 
             if (directoryEdit.currentCourse != null) {
@@ -863,12 +869,50 @@ internal fun EditDirectoryMetadataDialog(
                     selectedIndex = colorIndex,
                     defaultIndex = defaultColorIndex,
                     onSelect = { colorIndex = it },
+                    initialExpanded = initialColorsExpanded,
                 )
             }
 
-            androidx.compose.foundation.layout.Row(
+            LanguagePairDropdownSection(
+                targetLangCode = targetLangText,
+                baseLangCode = baseLangText,
+                onTargetLangChange = { targetLangText = it },
+                onBaseLangChange = { baseLangText = it },
+                sttEngineByLanguage = sttEngineByLanguage,
+                enabledLanguages = enabledLanguages,
+                onToggleEnabledLanguage = onToggleEnabledLanguage,
+                onOpenLanguageSettings = onOpenLanguageSettings,
+                confirmTargetLangChange = true,
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+            FolderSttModelManagementSection(
+                targetLangCode = targetLangText,
+                baseLangCode = baseLangText,
+                useGlobalSttModels = useGlobalSttModels,
+                onToggleUseGlobalSttModels = { checked ->
+                    useGlobalSttModels = checked
+                    if (checked) {
+                        targetSttEngine = null
+                        baseSttEngine = null
+                    }
+                },
+                targetEngine = targetSttEngine,
+                baseEngine = baseSttEngine,
+                onTargetEngineChange = { targetSttEngine = it },
+                onBaseEngineChange = { baseSttEngine = it },
+                sttEngineByLanguage = sttEngineByLanguage,
+                languageModelInfos = languageModelInfos,
+                onDownloadSttModel = onDownloadSttModel,
+                onDeleteSherpaModel = onDeleteSherpaModel,
+                onDeleteLanguageSttModel = onDeleteLanguageSttModel,
+                onPurgeDownloadableModel = onPurgeDownloadableModel,
+            )
+
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.End),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
                 TextButton(onClick = onDismiss) {
                     Text(text = stringResource(R.string.library_edit_cancel))
@@ -880,13 +924,21 @@ internal fun EditDirectoryMetadataDialog(
                         val nextCourse = courseText.trim().ifBlank {
                             if (directoryEdit.isRealFolder) directoryEdit.currentCourse else null
                         }
+                        val sttOverride = if (useGlobalSttModels) {
+                            ItemSttOverride.NONE
+                        } else {
+                            ItemSttOverride(
+                                targetEngine = targetSttEngine,
+                                baseEngine = if (cleanBase != null) baseSttEngine else null,
+                            )
+                        }
                         onConfirm(
                             nextCourse,
                             LanguagePair(
                                 target = LanguageTag(cleanTarget),
                                 base = cleanBase?.let { LanguageTag(it) },
                             ),
-                            ItemSttOverride.NONE,
+                            sttOverride,
                             LibraryFolderColorChoice.of(initial = directoryEdit.colorIndex, selected = colorIndex),
                         )
                     },
@@ -922,6 +974,550 @@ internal fun EditDirectoryMetadataDialog(
             content()
         }
     }
+}
+
+/**
+ * フォルダの設定のシートの見出し。Tune のアイコン（飾り）と、フォルダ名を編集する入力欄（ラベルなし・1 行）を並べ、
+ * 仮想フォルダ（[isVirtualFolder]）なら入力欄の右に「仮想」のバッジを出す。
+ *
+ * 入力欄には見えるラベルがないので、読み上げ用の名前（「フォルダ名」）を付ける。空のときだけ同じ文言を placeholder に出す。
+ */
+@Composable
+private fun FolderSettingsHeader(
+    folderName: String,
+    onFolderNameChange: (String) -> Unit,
+    isVirtualFolder: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val folderNameLabel = stringResource(R.string.library_folder_settings_name_placeholder)
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.Tune,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(32.dp),
+        )
+        OutlinedTextField(
+            value = folderName,
+            onValueChange = onFolderNameChange,
+            singleLine = true,
+            placeholder = { Text(text = folderNameLabel) },
+            modifier = Modifier
+                .weight(1f)
+                .semantics { contentDescription = folderNameLabel },
+        )
+        FolderKindBadge(isRealFolder = !isVirtualFolder)
+    }
+}
+
+private const val DEFAULT_FOLDER_SHERPA_TINY_SIZE_MB = 113
+
+private fun resolveFolderSherpaTinySizeMb(sizeBytes: Long): Int {
+    if (sizeBytes <= 0L) return DEFAULT_FOLDER_SHERPA_TINY_SIZE_MB
+    return ((sizeBytes + 512L * 1024L) / (1024L * 1024L)).toInt().coerceAtLeast(1)
+}
+
+internal fun resolveLanguageModelInfoForFolder(
+    language: LanguageTag,
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo>,
+): OnDeviceLanguageModelInfo {
+    val normLang = LanguageSettings.normalize(language)
+    val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(language.value))
+    val raw = languageModelInfos[language]
+        ?: languageModelInfos[normLang]
+        ?: languageModelInfos[mgmtLang]
+        ?: OnDeviceLanguageModelInfo(language = language)
+    return raw.enrichedWithCatalog(language)
+}
+
+internal fun isFolderSttEngineSelectable(
+    info: OnDeviceLanguageModelInfo,
+    engine: SttEngine?,
+): Boolean {
+    if (!SttEngineSelection.isAnyEngineSupported(info)) return false
+    if (engine == null) return true
+    return info.statusOf(engine) != OnDeviceLanguageModelStatus.UNSUPPORTED
+}
+
+/**
+ * 音声認識モデルのアコーディオンの見出しに出す言語名（例: `ヒンディー語 (hi)`）。
+ *
+ * ファイルの設定（プレイヤーのファイル個別設定）の見出しと同じ書き方にする。カタログにない言語はコードだけを返す。
+ */
+private fun formatFolderLanguageDisplayName(tag: LanguageTag): String {
+    val entry = SupportedLanguageCatalog.findByCode(tag.value) ?: return tag.value
+    return "${entry.japaneseName} (${tag.value})"
+}
+
+@Composable
+internal fun FolderSttModelManagementSection(
+    targetLangCode: String,
+    baseLangCode: String,
+    useGlobalSttModels: Boolean,
+    onToggleUseGlobalSttModels: (Boolean) -> Unit,
+    targetEngine: SttEngine?,
+    baseEngine: SttEngine?,
+    onTargetEngineChange: (SttEngine?) -> Unit,
+    onBaseEngineChange: (SttEngine?) -> Unit,
+    sttEngineByLanguage: Map<LanguageTag, SttEngine>,
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo>,
+    onDownloadSttModel: (LanguageTag, SttEngine) -> Unit = { _, _ -> },
+    onDeleteSherpaModel: (LanguageTag) -> Unit = {},
+    onDeleteLanguageSttModel: (LanguageTag, DownloadableSttModel) -> Unit = { _, _ -> },
+    onPurgeDownloadableModel: (DownloadableSttModel) -> Unit = {},
+) {
+    Text(
+        text = stringResource(R.string.library_folder_settings_section_speech_models),
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggleUseGlobalSttModels(!useGlobalSttModels) }
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(
+            checked = useGlobalSttModels,
+            onCheckedChange = { checked -> onToggleUseGlobalSttModels(checked) },
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = stringResource(R.string.library_folder_settings_use_global),
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+
+    val sttAccordionEnabled = !useGlobalSttModels
+    val cleanTarget = normalizeDialogLanguageCode(targetLangCode).ifBlank { "en" }
+    val targetLang = LanguageTag(cleanTarget)
+    val targetInfo = resolveLanguageModelInfoForFolder(targetLang, languageModelInfos)
+    val targetGlobalDefault = resolveConfiguredDefaultEngineForLanguage(
+        rawCode = targetLang.value,
+        sttEngineByLanguage = sttEngineByLanguage,
+        languageModelInfos = languageModelInfos,
+    )
+    FolderSttEngineAccordion(
+        headerTitle = stringResource(
+            R.string.library_folder_settings_stt_target_lang_header,
+            formatFolderLanguageDisplayName(targetLang),
+        ),
+        info = targetInfo,
+        globalDefaultEngine = targetGlobalDefault,
+        preferredEngine = if (useGlobalSttModels) null else targetEngine,
+        enabled = sttAccordionEnabled,
+        onPreferredEngineChange = onTargetEngineChange,
+        onDownloadLanguageModel = { engine -> onDownloadSttModel(targetLang, engine) },
+        onDeleteSherpaModel = { onDeleteSherpaModel(targetLang) },
+        onDeleteLanguageSttModel = { model -> onDeleteLanguageSttModel(targetLang, model) },
+        onPurgeDownloadableModel = onPurgeDownloadableModel,
+    )
+
+    val cleanBase = normalizeDialogLanguageCode(baseLangCode).ifBlank { null }
+    if (cleanBase != null) {
+        val baseLang = LanguageTag(cleanBase)
+        val baseInfo = resolveLanguageModelInfoForFolder(baseLang, languageModelInfos)
+        val baseGlobalDefault = resolveConfiguredDefaultEngineForLanguage(
+            rawCode = baseLang.value,
+            sttEngineByLanguage = sttEngineByLanguage,
+            languageModelInfos = languageModelInfos,
+        )
+        FolderSttEngineAccordion(
+            headerTitle = stringResource(
+                R.string.library_folder_settings_stt_base_lang_header,
+                formatFolderLanguageDisplayName(baseLang),
+            ),
+            info = baseInfo,
+            globalDefaultEngine = baseGlobalDefault,
+            preferredEngine = if (useGlobalSttModels) null else baseEngine,
+            enabled = sttAccordionEnabled,
+            onPreferredEngineChange = onBaseEngineChange,
+            onDownloadLanguageModel = { engine -> onDownloadSttModel(baseLang, engine) },
+            onDeleteSherpaModel = { onDeleteSherpaModel(baseLang) },
+            onDeleteLanguageSttModel = { model -> onDeleteLanguageSttModel(baseLang, model) },
+            onPurgeDownloadableModel = onPurgeDownloadableModel,
+        )
+    }
+}
+
+@Composable
+private fun FolderSttEngineAccordion(
+    headerTitle: String,
+    info: OnDeviceLanguageModelInfo,
+    globalDefaultEngine: SttEngine,
+    preferredEngine: SttEngine?,
+    enabled: Boolean,
+    onPreferredEngineChange: (SttEngine?) -> Unit,
+    onDownloadLanguageModel: (SttEngine) -> Unit = {},
+    onDeleteSherpaModel: () -> Unit = {},
+    onDeleteLanguageSttModel: (DownloadableSttModel) -> Unit = {},
+    onPurgeDownloadableModel: (DownloadableSttModel) -> Unit = {},
+    initialExpanded: Boolean = false,
+) {
+    val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
+    val enrichedInfo = info.enrichedWithCatalog(info.language)
+    val anyEngineSupported = SttEngineSelection.isAnyEngineSupported(enrichedInfo)
+    val followGlobalLabel = if (anyEngineSupported) {
+        stringResource(
+            R.string.library_folder_settings_stt_follow_global_with_resolved,
+            folderSttEngineDisplayName(globalDefaultEngine),
+        )
+    } else {
+        "${stringResource(R.string.library_folder_settings_use_global)} (${stringResource(R.string.library_folder_settings_stt_status_unsupported)})"
+    }
+    val effectivePreferred = preferredEngine?.takeIf { isFolderSttEngineSelectable(enrichedInfo, it) }
+    val currentEngineLabel = when {
+        !anyEngineSupported -> stringResource(R.string.library_folder_settings_stt_status_unsupported)
+        effectivePreferred == null -> followGlobalLabel
+        else -> folderSttEngineDisplayName(effectivePreferred)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.6f),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectable(
+                    selected = expanded.value,
+                    onClick = { expanded.value = !expanded.value },
+                    role = Role.Button,
+                )
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = headerTitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = stringResource(R.string.library_folder_settings_stt_current_engine, currentEngineLabel),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                imageVector = if (expanded.value) ChunkFlowIcons.ExpandLess else ChunkFlowIcons.ExpandMore,
+                contentDescription = null,
+            )
+        }
+
+        AnimatedVisibility(visible = expanded.value) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, bottom = 8.dp)
+                    .selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.library_folder_settings_stt_priority_engine),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+
+                val selectableEngines = SttEngineSelection.selectableEnginesForLanguage(
+                    info = enrichedInfo,
+                    currentPreferred = effectivePreferred,
+                )
+                val options: List<Pair<SttEngine?, String>> = buildList {
+                    add(null to followGlobalLabel)
+                    for (engine in selectableEngines) {
+                        add(engine to formatFolderSttEngineOptionLabel(enrichedInfo, engine))
+                    }
+                }
+
+                options.forEach { (engine, label) ->
+                    val isOptionEnabled = enabled && isFolderSttEngineSelectable(enrichedInfo, engine)
+                    val isSelected = anyEngineSupported && effectivePreferred == engine
+                    val engineStatus = engine?.let { enrichedInfo.statusOf(it) }
+                    val downloadableModel = engine?.let { DownloadableSttModel.fromEngineOrNull(it) }
+                    val isDownloadableModelInstalled =
+                        downloadableModel != null && engineStatus == OnDeviceLanguageModelStatus.INSTALLED
+                    val isDownloadableModelSupported =
+                        downloadableModel != null &&
+                            downloadableModel.isLanguageSupported(enrichedInfo.language)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = isSelected,
+                                enabled = isOptionEnabled,
+                                onClick = {
+                                    if (isOptionEnabled) {
+                                        onPreferredEngineChange(engine)
+                                    }
+                                },
+                                role = Role.RadioButton,
+                            )
+                            .padding(vertical = 4.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = null,
+                            enabled = isOptionEnabled,
+                        )
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isOptionEnabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            },
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(start = 8.dp),
+                        )
+                        when {
+                            isDownloadableModelSupported &&
+                                (
+                                    engineStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                                        engineStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                                    ) -> {
+                                val langSizeMb = if (engine == SttEngine.SHERPA_ONNX && enrichedInfo.sherpaModelSizeBytes > 0L) {
+                                    resolveFolderSherpaTinySizeMb(enrichedInfo.sherpaModelSizeBytes)
+                                } else {
+                                    downloadableModel.approxSizeMbForLanguage(enrichedInfo.language)
+                                }
+                                OutlinedButton(
+                                    onClick = { onDownloadLanguageModel(engine) },
+                                    enabled = enabled,
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .height(28.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.library_folder_settings_stt_action_download_with_size,
+                                            langSizeMb,
+                                        ),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+
+                            isDownloadableModelSupported &&
+                                engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
+                                ChunkFlowLoadingIndicator(
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .size(20.dp),
+                                )
+                            }
+
+                            (engine == SttEngine.ML_KIT || engine == SttEngine.SPEECH_RECOGNIZER) &&
+                                (
+                                    engineStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                                        engineStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                                    ) -> {
+                                OutlinedButton(
+                                    onClick = { onDownloadLanguageModel(engine) },
+                                    enabled = enabled,
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .height(28.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.library_folder_settings_stt_action_download),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+
+                            (engine == SttEngine.ML_KIT || engine == SttEngine.SPEECH_RECOGNIZER) &&
+                                engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
+                                ChunkFlowLoadingIndicator(
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .size(20.dp),
+                                )
+                            }
+
+                            downloadableModel != null && isDownloadableModelInstalled -> {
+                                IconButton(
+                                    onClick = {
+                                        when {
+                                            engine == SttEngine.SHERPA_ONNX -> onDeleteSherpaModel()
+                                            downloadableModel.isPerLanguageModel -> onDeleteLanguageSttModel(downloadableModel)
+                                            else -> onPurgeDownloadableModel(downloadableModel)
+                                        }
+                                    },
+                                    enabled = enabled,
+                                    modifier = Modifier
+                                        .padding(start = 4.dp)
+                                        .size(32.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = ChunkFlowIcons.Delete,
+                                        contentDescription = stringResource(
+                                            R.string.library_folder_settings_stt_action_delete,
+                                        ),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun folderSttEngineDisplayName(engine: SttEngine): String = when (engine) {
+    SttEngine.ML_KIT -> stringResource(R.string.library_stt_engine_mlkit)
+    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.library_folder_settings_stt_engine_speech_recognizer)
+    SttEngine.SHERPA_ONNX -> stringResource(R.string.library_folder_settings_stt_engine_sherpa_onnx)
+    SttEngine.SHERPA_ONNX_SENSE_VOICE -> stringResource(R.string.library_folder_settings_stt_engine_sherpa_sense_voice)
+    SttEngine.SHERPA_ONNX_WHISPER_BASE -> stringResource(R.string.library_folder_settings_stt_engine_sherpa_whisper_base)
+    SttEngine.SHERPA_ONNX_WHISPER_SMALL -> stringResource(R.string.library_folder_settings_stt_engine_sherpa_whisper_small)
+    SttEngine.MOONSHINE_TINY -> stringResource(R.string.library_folder_settings_stt_engine_moonshine_tiny)
+    SttEngine.MOONSHINE_BASE -> stringResource(R.string.library_folder_settings_stt_engine_moonshine_base)
+    SttEngine.OPENAI_API -> stringResource(R.string.library_folder_settings_stt_engine_openai_api)
+    SttEngine.GROQ_API -> stringResource(R.string.library_folder_settings_stt_engine_groq_api)
+    SttEngine.GEMINI_API -> stringResource(R.string.library_folder_settings_stt_engine_gemini_api)
+}
+
+@Composable
+private fun folderSttEngineLabelText(label: SttEngineLabel): String = when (label) {
+    SttEngineLabel.RECOMMENDED -> stringResource(R.string.library_stt_label_recommended)
+    SttEngineLabel.HIGH_ACCURACY -> stringResource(R.string.library_stt_label_high_accuracy)
+    SttEngineLabel.FAST -> stringResource(R.string.library_stt_label_fast)
+    SttEngineLabel.SLOW -> stringResource(R.string.library_stt_label_slow)
+}
+
+@Composable
+private fun formatFolderSttEngineOptionLabel(
+    enrichedInfo: OnDeviceLanguageModelInfo,
+    engine: SttEngine,
+): String {
+    val status = enrichedInfo.statusOf(engine)
+    val rawLabel = when (engine) {
+        SttEngine.ML_KIT -> formatFolderEngineOptionWithStatus(
+            baseName = stringResource(R.string.library_folder_settings_stt_engine_mlkit_radio),
+            status = status,
+        )
+
+        SttEngine.SPEECH_RECOGNIZER -> formatFolderEngineOptionWithStatus(
+            baseName = stringResource(R.string.library_folder_settings_stt_engine_speech_recognizer),
+            status = status,
+        )
+
+        SttEngine.SHERPA_ONNX -> {
+            val baseName = stringResource(R.string.library_folder_settings_stt_engine_sherpa_onnx)
+            val sizeMb = resolveFolderSherpaTinySizeMb(enrichedInfo.sherpaModelSizeBytes)
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.library_folder_settings_stt_engine_sherpa_downloaded, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
+
+                else -> formatFolderEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.MOONSHINE_TINY,
+        SttEngine.MOONSHINE_BASE,
+        -> {
+            val baseName = folderSttEngineDisplayName(engine)
+            val sizeMb = DownloadableSttModel.fromEngineOrNull(engine)?.approxSizeMbForLanguage(enrichedInfo.language) ?: 100
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.library_folder_settings_stt_engine_model_downloaded_format, baseName, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
+
+                else -> formatFolderEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.SHERPA_ONNX_SENSE_VOICE,
+        SttEngine.SHERPA_ONNX_WHISPER_BASE,
+        SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+        -> {
+            val baseName = folderSttEngineDisplayName(engine)
+            val sizeMb = DownloadableSttModel.fromEngineOrNull(engine)?.estimatedSizeMb ?: 100
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.library_folder_settings_stt_engine_model_downloaded_format, baseName, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
+
+                else -> formatFolderEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.OPENAI_API,
+        SttEngine.GROQ_API,
+        SttEngine.GEMINI_API,
+        -> {
+            val baseName = folderSttEngineDisplayName(engine)
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED -> baseName
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+                    "$baseName (${stringResource(R.string.library_folder_settings_stt_status_api_key_not_configured)})"
+
+                else -> formatFolderEngineOptionWithStatus(baseName = baseName, status = status)
+            }
+        }
+    }
+    val labels = SttEngineSelection.labelsFor(enrichedInfo.language, engine)
+    if (labels.isEmpty()) {
+        return rawLabel
+    }
+    val badgeText = labels.map { folderSttEngineLabelText(it) }.joinToString("・")
+    return "$rawLabel [$badgeText]"
+}
+
+@Composable
+private fun formatFolderEngineOptionWithStatus(
+    baseName: String,
+    status: OnDeviceLanguageModelStatus,
+): String = when (status) {
+    OnDeviceLanguageModelStatus.INSTALLED -> baseName
+
+    OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+        "$baseName (${stringResource(R.string.library_folder_settings_stt_status_not_installed)})"
+
+    OnDeviceLanguageModelStatus.DOWNLOADING ->
+        "$baseName (${stringResource(R.string.library_folder_settings_stt_status_downloading)})"
+
+    OnDeviceLanguageModelStatus.DOWNLOAD_FAILED ->
+        "$baseName (${stringResource(R.string.library_folder_settings_stt_status_download_failed)})"
+
+    OnDeviceLanguageModelStatus.CHECKING ->
+        "$baseName (${stringResource(R.string.library_folder_settings_stt_status_checking)})"
+
+    OnDeviceLanguageModelStatus.UNSUPPORTED ->
+        "$baseName (${stringResource(R.string.library_folder_settings_stt_status_unsupported)})"
 }
 
 @Composable
@@ -996,6 +1592,7 @@ private fun sttEngineShortNameForLibrary(engine: SttEngine): String = when (engi
     SttEngine.GEMINI_API -> stringResource(R.string.library_stt_engine_gemini_api)
 }
 
+/** 実フォルダ（色はデフォルトのまま）のフォルダの設定のシート。 */
 @ChunkFlowPreviews
 @Composable
 private fun EditDirectoryMetadataDialogPreview() {
@@ -1008,13 +1605,69 @@ private fun EditDirectoryMetadataDialogPreview() {
                         target = LanguageTag("ko"),
                         base = LanguageTag("ja"),
                     ),
-                    colorIndex = 3,
+                    isRealFolder = true,
                 ),
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
                 onConfirm = { _, _, _, _ -> },
                 languageColorOrdinals = mapOf(LanguageTag("ko") to 0, LanguageTag("en") to 1),
                 onDismiss = {},
                 onDelete = {},
+            )
+        }
+    }
+}
+
+/**
+ * 仮想フォルダ（「仮想」のバッジ）で、ふだん隠れている行の色（パレットの番号 9）を選んでいるフォルダの設定のシート。
+ * 選んだ色が左上に来て、デフォルトの色（番号 0）にグレーのチェックが付く。
+ */
+@ChunkFlowPreviews
+@Composable
+private fun EditDirectoryMetadataDialogVirtualFolderPreview() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "Hindi_1",
+                    initialLanguages = LanguagePair(
+                        target = LanguageTag("hi"),
+                        base = LanguageTag("en"),
+                    ),
+                    isRealFolder = false,
+                    colorIndex = 9,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("hi")),
+                onConfirm = { _, _, _, _ -> },
+                languageColorOrdinals = mapOf(LanguageTag("hi") to 0, LanguageTag("ko") to 1),
+                onDismiss = {},
+                onDelete = {},
+            )
+        }
+    }
+}
+
+/** 色の欄を ▼ で 18 色（6 色 × 3 行）に広げたフォルダの設定のシート。 */
+@ChunkFlowPreviews
+@Composable
+private fun EditDirectoryMetadataDialogColorsExpandedPreview() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "Hindi_1",
+                    initialLanguages = LanguagePair(
+                        target = LanguageTag("hi"),
+                        base = LanguageTag("en"),
+                    ),
+                    isRealFolder = false,
+                    colorIndex = 9,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("hi")),
+                onConfirm = { _, _, _, _ -> },
+                languageColorOrdinals = mapOf(LanguageTag("hi") to 0, LanguageTag("ko") to 1),
+                onDismiss = {},
+                onDelete = {},
+                initialColorsExpanded = true,
             )
         }
     }

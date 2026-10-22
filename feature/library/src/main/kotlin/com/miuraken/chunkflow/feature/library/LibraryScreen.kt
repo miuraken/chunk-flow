@@ -760,6 +760,19 @@ fun LibraryScreen(
             },
             onDismiss = { onEvent(LibraryEvent.CancelEditDirectoryMetadata) },
             sttEngineByLanguage = state.sttEngineByLanguage,
+            languageModelInfos = state.languageModelInfos,
+            onDownloadSttModel = { language, engine ->
+                onEvent(LibraryEvent.RequestFolderSttModelDownload(language, engine))
+            },
+            onDeleteSherpaModel = { language ->
+                onEvent(LibraryEvent.DeleteFolderSherpaModel(language))
+            },
+            onDeleteLanguageSttModel = { language, model ->
+                onEvent(LibraryEvent.DeleteFolderLanguageSttModel(language, model))
+            },
+            onPurgeDownloadableModel = { model ->
+                onEvent(LibraryEvent.PurgeFolderSttModel(model))
+            },
             onOpenLanguageSettings = { onEvent(LibraryEvent.OpenLanguageSettings) },
             onDelete = directoryToEdit.currentCourse?.let { path ->
                 {

@@ -464,6 +464,41 @@ class FakeLibraryRepository(
         assignLanguageColor(firstItem.languagePair.target)
     }
 
+    override suspend fun setCourseFolderSttOverride(
+        coursePath: String,
+        sttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+    ) {
+        val trimmed = coursePath.trim().trim('/').takeIf { it.isNotEmpty() } ?: return
+        if (courseFolders.value.any { it.coursePath == trimmed }) {
+            courseFolders.update { list ->
+                list.map { folder ->
+                    if (folder.coursePath == trimmed) folder.copy(sttOverride = sttOverride) else folder
+                }
+            }
+            return
+        }
+        if (sttOverride.isEmpty) return
+        val treeItems = items.value.filter { item ->
+            val c = item.course?.trim()?.trim('/')
+            c == trimmed || c?.startsWith("$trimmed/") == true
+        }
+        val firstItem = treeItems.firstOrNull() ?: return
+        val kind = if (treeItems.any { it.storageState == AudioStorageState.LOCAL_REFERENCE }) {
+            LibraryFolderKind.LOCAL_DIRECTORY
+        } else {
+            LibraryFolderKind.VIRTUAL_DIRECTORY
+        }
+        courseFolders.update { list ->
+            list + LibraryCourseFolder(
+                coursePath = trimmed,
+                kind = kind,
+                languagePair = firstItem.languagePair,
+                sttOverride = sttOverride,
+            )
+        }
+        assignLanguageColor(firstItem.languagePair.target)
+    }
+
     override fun observeFolderLanguageColorOrdinals(): Flow<Map<LanguageTag, Int>> = folderLanguageColorOrdinals
 
     override fun observeTags(): Flow<List<String>> = combine(tagCreationOrder, itemTags) { order, tagsByItem ->

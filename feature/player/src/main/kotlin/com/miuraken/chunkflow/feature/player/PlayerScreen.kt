@@ -677,6 +677,7 @@ fun PlayerScreen(
                 useGlobalSegmentation = state.useGlobalSegmentationParams,
                 languagePair = state.languagePair,
                 itemSttOverride = state.itemSttOverride,
+                folderSttOverride = state.folderSttOverride,
                 sttEngineByLanguage = state.sttEngineByLanguage,
                 languageModelInfos = state.languageModelInfos,
                 enabledLanguages = state.enabledLanguages,

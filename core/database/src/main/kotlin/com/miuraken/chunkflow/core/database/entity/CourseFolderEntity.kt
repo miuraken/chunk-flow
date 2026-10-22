@@ -3,11 +3,13 @@ package com.miuraken.chunkflow.core.database.entity
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
+import com.miuraken.chunkflow.core.model.SttEngine
 
 /**
  * ライブラリに登録されたフォルダ（コース・仮想ディレクトリ）の設定情報（`course_folder` テーブル）。
@@ -33,6 +35,10 @@ data class CourseFolderEntity(
     val lastScannedAt: Long = 0L,
     @ColumnInfo(name = "color_index")
     val colorIndex: Int? = null,
+    @ColumnInfo(name = "target_stt_engine")
+    val targetSttEngine: String? = null,
+    @ColumnInfo(name = "base_stt_engine")
+    val baseSttEngine: String? = null,
 )
 
 /** [CourseFolderEntity] をドメインモデルの [LibraryCourseFolder] に変換する。 */
@@ -46,6 +52,10 @@ fun CourseFolderEntity.toExternalModel(): LibraryCourseFolder = LibraryCourseFol
     treeUri = treeUri,
     lastScannedAtEpochMs = lastScannedAt,
     colorIndex = colorIndex?.takeIf(LibraryFolderColors::isValidIndex),
+    sttOverride = ItemSttOverride(
+        targetEngine = SttEngine.fromNameOrNull(targetSttEngine),
+        baseEngine = SttEngine.fromNameOrNull(baseSttEngine),
+    ),
 )
 
 /** ドメインモデルの [LibraryCourseFolder] を [CourseFolderEntity] に変換する。 */
@@ -57,4 +67,6 @@ fun LibraryCourseFolder.toEntity(): CourseFolderEntity = CourseFolderEntity(
     treeUri = treeUri,
     lastScannedAt = lastScannedAtEpochMs,
     colorIndex = colorIndex,
+    targetSttEngine = sttOverride.targetEngine?.name,
+    baseSttEngine = sttOverride.baseEngine?.name,
 )

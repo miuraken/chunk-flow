@@ -19,5 +19,6 @@
 | [0010](0010-on-device-speech-and-whisper-lid.md) | 端末内の音声認識と量子化 Whisper Tiny による 2 言語判定 | 承認済み（エンジンの選び方は 0011 で置き換え） |
 | [0011](0011-stt-engine-selection-and-language-settings.md) | 文字起こしエンジンの選び方（ML Kit を既定にする）と、言語設定・言語ごと・ファイルごとの上書き | 承認済み |
 | [0012](0012-material3-expressive-migration.md) | Material Design 3（Expressive）への UI 移行の方針（下部ナビ、色の調和、評価用ブランチ、designsystem 担当の新設） | 承認済み |
-| [0013](0013-library-tags-and-folder-colors.md) | ライブラリのタグ（付け外し・AND の絞り込み）とフォルダの色分け（対象言語ごとの決め打ちの色・フォルダごとの指定） | 承認済み |
+| [0013](0013-library-tags-and-folder-colors.md) | ライブラリのタグ（付け外し・AND の絞り込み）とフォルダの色分け（対象言語ごとの決め打ちの色・フォルダごとの指定） | 承認済み（パレットの色数と色見本の並べ方は 0014 で置き換え） |
+| [0014](0014-folder-stt-override-and-folder-settings-panel.md) | フォルダ単位の音声認識エンジンの上書き（ファイル ＞ フォルダ ＞ 全体設定、スキーマ 9）と、フォルダの設定パネルの構成（18 色・▼・リンク） | 承認済み |
 

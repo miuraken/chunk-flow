@@ -300,6 +300,8 @@
     <string name="player_file_settings_stt_current_engine">現在: %1$s</string>
     <string name="player_file_settings_stt_priority_engine">優先するエンジン</string>
     <string name="player_file_settings_stt_follow_global_with_resolved">全体設定に従う (%1$s)</string>
+    <string name="player_file_settings_stt_follow_folder">フォルダー設定に従う</string>
+    <string name="player_file_settings_stt_follow_folder_with_resolved">フォルダー設定に従う (%1$s)</string>
     <string name="player_file_settings_stt_engine_mlkit_radio">ML Kit Gen AI</string>
     <string name="player_file_settings_stt_engine_speech_recognizer">SpeechRecognizer</string>
     <string name="player_file_settings_stt_engine_sherpa_onnx">sherpa-onnx Whisper Tiny</string>

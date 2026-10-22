@@ -22,6 +22,7 @@ import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
@@ -813,6 +814,7 @@ data class PlayerUiState(
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
     val recommendedSttModelDialog: RecommendedSttModelDialogState? = null,
     val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+    val folderSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
     val enabledLanguages: List<LanguageTag> = UserSettings.DEFAULT_ENABLED_LANGUAGES.toList(),
@@ -1533,6 +1535,8 @@ class PlayerViewModel @Inject constructor(
         val analysis: AnalysisSnapshot,
         val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride =
             com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+        val folderSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride =
+            com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
         val nextMediaId: MediaId? = null,
     )
 
@@ -1543,7 +1547,8 @@ class PlayerViewModel @Inject constructor(
             val itemAndNextFlow = combine(
                 libraryRepository.observeItem(id),
                 libraryRepository.observeItems(),
-            ) { item, allItems ->
+                libraryRepository.observeCourseFolders(),
+            ) { item, allItems, courseFolders ->
                 val nextId = if (item == null) {
                     null
                 } else {
@@ -1556,20 +1561,27 @@ class PlayerViewModel @Inject constructor(
                     val idx = sameCourse.indexOfFirst { it.id == item.id }
                     if (idx >= 0) sameCourse.getOrNull(idx + 1)?.id else null
                 }
-                item to nextId
+                // 内包するフォルダの音声認識エンジンの上書き（近いフォルダを言語ごとに優先。ファイル個別設定は含まない）
+                val folderOverride = if (item == null) {
+                    com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                } else {
+                    LibraryCourseFolder.resolveSttOverride(item.course, item.languagePair, courseFolders)
+                }
+                Triple(item, nextId, folderOverride)
             }
             combine(
                 itemAndNextFlow,
                 libraryRepository.observeItemState(id),
                 observeAnalysisSnapshot(id),
                 itemSttOverrideRepository.observe(id),
-            ) { (item, nextMediaId), itemState, analysis, override ->
+            ) { (item, nextMediaId, folderOverride), itemState, analysis, override ->
                 MediaStateInfo(
                     mediaId = id,
                     item = item,
                     itemState = itemState,
                     analysis = analysis,
                     itemSttOverride = override,
+                    folderSttOverride = folderOverride,
                     nextMediaId = nextMediaId,
                 )
             }
@@ -1599,6 +1611,7 @@ class PlayerViewModel @Inject constructor(
             settings = settings,
             local = local,
             itemSttOverride = override,
+            folderSttOverride = mediaState.folderSttOverride,
             nextMediaId = mediaState.nextMediaId,
         )
     }.stateIn(
@@ -3084,9 +3097,11 @@ class PlayerViewModel @Inject constructor(
                             }
                         }
                         if (targetAndBaseLanguages.isNotEmpty()) {
-                            val itemOverride = itemSttOverrideRepository.get(mediaId)
+                            val rawItemOverride = itemSttOverrideRepository.get(mediaId)
                                 .takeIf { it != com.miuraken.chunkflow.core.model.ItemSttOverride.NONE }
                                 ?: uiState.value.itemSttOverride
+                            // ファイル個別設定 ＞ フォルダ設定 ＞ 全体設定
+                            val itemOverride = rawItemOverride.withFolderFallback(uiState.value.folderSttOverride)
                             val settings = userSettingsRepository.settings.firstOrNull() ?: UserSettings()
                             val queryLanguages = (targetAndBaseLanguages + buildDetailedQueryLanguages(pair, null)).distinct()
                             val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
@@ -4670,6 +4685,7 @@ class PlayerViewModel @Inject constructor(
         settings: UserSettings,
         local: LocalUiSnapshot,
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        folderSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
         nextMediaId: MediaId? = null,
     ): PlayerUiState {
         val requestedMediaId = currentMediaId.value
@@ -4842,6 +4858,7 @@ class PlayerViewModel @Inject constructor(
             detailedTranscriptionDialog = local.detailedTranscriptionDialog,
             recommendedSttModelDialog = local.recommendedSttModelDialog,
             itemSttOverride = itemSttOverride,
+            folderSttOverride = folderSttOverride,
             sttEngineByLanguage = settings.sttEngineByLanguage,
             languageModelInfos = local.languageModelInfos,
             enabledLanguages = settings.enabledLanguages.toList(),
