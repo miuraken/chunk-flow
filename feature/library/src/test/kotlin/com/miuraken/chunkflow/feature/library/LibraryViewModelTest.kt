@@ -2137,4 +2137,38 @@ class LibraryViewModelTest {
             viewModel.uiState.value.currentFiles.map { it.item.id },
         )
     }
+
+    @Test
+    fun `フォルダ設定パネル_フォルダ名変更と色と音声認識モデル設定が保存されpendingEditDirectoryとcourseFoldersに反映される`() = runTest {
+        val item = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("folder-stt-1"),
+            course = "FolderA",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("FolderA"))
+        val initialEdit = viewModel.uiState.value.pendingEditDirectory
+        assertEquals("FolderA", initialEdit?.currentCourse)
+        assertEquals(com.miuraken.chunkflow.core.model.ItemSttOverride.NONE, initialEdit?.initialSttOverride)
+
+        val customStt = com.miuraken.chunkflow.core.model.ItemSttOverride(
+            targetEngine = com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            baseEngine = com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER,
+        )
+        viewModel.onEvent(
+            LibraryEvent.ConfirmEditDirectoryMetadata(
+                currentCourse = "FolderA",
+                newCourse = "FolderB",
+                languages = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+                sttOverride = customStt,
+                colorChoice = LibraryFolderColorChoice.Palette(12),
+            ),
+        )
+
+        val savedFolder = repo.courseFolders.value.firstOrNull { it.coursePath == "FolderB" }
+        assertEquals(12, savedFolder?.colorIndex)
+        assertEquals(customStt, savedFolder?.sttOverride)
+    }
 }

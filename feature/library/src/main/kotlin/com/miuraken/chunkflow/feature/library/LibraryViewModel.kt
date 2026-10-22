@@ -15,6 +15,7 @@ import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.DownloadableSttModel
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
@@ -26,6 +27,8 @@ import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LibraryPlaylist
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.PlaylistId
 import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
@@ -33,6 +36,7 @@ import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.SttEngineRecommendationChange
 import com.miuraken.chunkflow.core.model.SttEngineSelection
+import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
@@ -565,6 +569,7 @@ data class LibraryUiState(
     val collapsedDirectories: Set<String?> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
     val sttRecommendationChanges: List<SttEngineRecommendationChange> = emptyList(),
     val showLanguageOnboardingDialog: Boolean = false,
     val showLanguageSettingsModal: Boolean = false,
@@ -1244,7 +1249,7 @@ data class LibraryUiState(
                 if (hasActiveFilter) {
                     val folderMatchesLangOnly = fileTagFilter.isEmpty() &&
                         targetFilter != null &&
-                        folder.languagePair?.target?.value?.lowercase() == targetFilter
+                        folder.languagePair.target.value.lowercase() == targetFilter
                     if (!folderMatchesLangOnly) continue
                 }
                 if (currentPath == null) {
@@ -1735,6 +1740,24 @@ sealed interface LibraryEvent {
 
     /** 言語認識エンジンの推奨構成変更通知を、現在の設定を維持したまま確認済みにする。 */
     data object AcknowledgeSttRecommendationChanges : LibraryEvent
+
+    /** フォルダ設定ダイアログ等で表示する言語群の端末内 STT モデル状態を再照会する。 */
+    data class QueryFolderSttLanguageModels(val languages: List<LanguageTag>) : LibraryEvent
+
+    /** フォルダ設定ダイアログから端末内 STT モデルのダウンロードを開始する。 */
+    data class RequestFolderSttModelDownload(val language: LanguageTag, val engine: SttEngine) : LibraryEvent
+
+    /** フォルダ設定ダイアログから sherpa-onnx Whisper Tiny モデルを削除する。 */
+    data class DeleteFolderSherpaModel(val language: LanguageTag) : LibraryEvent
+
+    /** フォルダ設定ダイアログから言語固有の端末内 STT モデルを削除する。 */
+    data class DeleteFolderLanguageSttModel(
+        val language: LanguageTag,
+        val model: DownloadableSttModel,
+    ) : LibraryEvent
+
+    /** フォルダ設定ダイアログから共通の端末内 STT モデルを一括削除する。 */
+    data class PurgeFolderSttModel(val model: DownloadableSttModel) : LibraryEvent
 }
 
 private data class ItemAnalysisSummary(
@@ -1791,6 +1814,7 @@ private data class DialogAndImportSnapshot(
     val pendingEditDirectory: PendingDirectoryEdit? = null,
     val pendingImportConfig: PendingImportConfig? = null,
     val showLanguageSettingsModal: Boolean = false,
+    val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
 )
 
 private data class NavigationAndSelectionSnapshot(
@@ -1864,6 +1888,7 @@ class LibraryViewModel @Inject constructor(
     private val pendingEditDirectory = MutableStateFlow<PendingDirectoryEdit?>(null)
     private val pendingImportConfig = MutableStateFlow<PendingImportConfig?>(null)
     private val showLanguageSettingsModal = MutableStateFlow(false)
+    private val languageModelInfos = MutableStateFlow<Map<LanguageTag, OnDeviceLanguageModelInfo>>(emptyMap())
     private val selectedDirectoryName = MutableStateFlow<String?>(null)
     private val collapsedDirectories = MutableStateFlow<Set<String?>>(emptySet())
     private val currentDirectoryPath = MutableStateFlow<String?>(null)
@@ -1897,7 +1922,18 @@ class LibraryViewModel @Inject constructor(
             if (item == null) {
                 flowOf(ItemSttOverride.NONE)
             } else {
-                itemSttOverrideRepository.observe(item.id)
+                combine(
+                    itemSttOverrideRepository.observe(item.id),
+                    libraryRepository.observeCourseFolders(),
+                ) { itemOverride, folders ->
+                    val folderOverride = item.course?.trim('/')?.takeIf { it.isNotBlank() }?.let { coursePath ->
+                        folders.firstOrNull { it.coursePath.trim('/') == coursePath }?.sttOverride
+                    } ?: ItemSttOverride.NONE
+                    ItemSttOverride(
+                        targetEngine = itemOverride.targetEngine ?: folderOverride.targetEngine,
+                        baseEngine = itemOverride.baseEngine ?: folderOverride.baseEngine,
+                    )
+                }
             }
         }
 
@@ -2026,8 +2062,13 @@ class LibraryViewModel @Inject constructor(
             Triple(editItem, editItemOverride, editDir)
         },
         pendingImportConfig,
-        showLanguageSettingsModal,
-    ) { currentImport, (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig, showLangModal ->
+        combine(
+            showLanguageSettingsModal,
+            languageModelInfos,
+        ) { showLangModal, modelInfos ->
+            showLangModal to modelInfos
+        },
+    ) { currentImport, (deleteTarget, deleteDirTarget, batchDelete), (editTarget, editItemOverride, editDirTarget), importConfig, (showLangModal, modelInfos) ->
         DialogAndImportSnapshot(
             importState = currentImport,
             pendingDeleteItem = deleteTarget,
@@ -2038,6 +2079,7 @@ class LibraryViewModel @Inject constructor(
             pendingEditDirectory = editDirTarget,
             pendingImportConfig = importConfig,
             showLanguageSettingsModal = showLangModal,
+            languageModelInfos = modelInfos,
         )
     }
 
@@ -2653,7 +2695,11 @@ class LibraryViewModel @Inject constructor(
                     if (requestedTags != null && requestedTags != currentTags) {
                         libraryRepository.setItemTags(event.id, requestedTags)
                     }
-                    itemSttOverrideRepository.set(event.id, ItemSttOverride.NONE)
+                    if (!event.sttOverride.isEmpty) {
+                        itemSttOverrideRepository.set(event.id, event.sttOverride)
+                    } else if (targetLangChanged) {
+                        itemSttOverrideRepository.set(event.id, ItemSttOverride.NONE)
+                    }
                     if (targetLangChanged) {
                         libraryRepository.resetTranscriptsAndDeleteFiles(event.id)
                         analysisRepository.clearTranscriptsForMedia(event.id)
@@ -2680,20 +2726,30 @@ class LibraryViewModel @Inject constructor(
                 val initialPair = matchingItems.firstOrNull()?.item?.languagePair
                     ?: folderPair
                     ?: defaultLanguagePair
-                val firstItemId = matchingItems.firstOrNull()?.item?.id
+                val initialFolderOverride = folderRow?.sttOverride ?: ItemSttOverride.NONE
                 pendingEditDirectory.value = PendingDirectoryEdit(
                     currentCourse = dirPath,
                     initialLanguages = initialPair,
-                    initialSttOverride = ItemSttOverride.NONE,
+                    initialSttOverride = initialFolderOverride,
                     isRealFolder = dirPath != null && uiState.value.isRealFolder(dirPath),
                     colorIndex = folderRow?.colorIndex,
                 )
-                if (firstItemId != null) {
+                refreshFolderLanguageModelInfos(
+                    buildList {
+                        add(initialPair.target)
+                        initialPair.base?.let { add(it) }
+                    },
+                )
+                if (dirPath != null && initialFolderOverride.isEmpty) {
                     viewModelScope.launch {
-                        val existingOverride = itemSttOverrideRepository.get(firstItemId)
-                        if (!existingOverride.isEmpty && pendingEditDirectory.value?.currentCourse == dirPath) {
+                        val repoFolderOverride = libraryRepository.observeCourseFolders()
+                            .firstOrNull()
+                            ?.firstOrNull { it.coursePath.trim('/') == dirPath }
+                            ?.sttOverride
+                            ?: ItemSttOverride.NONE
+                        if (!repoFolderOverride.isEmpty && pendingEditDirectory.value?.currentCourse == dirPath) {
                             pendingEditDirectory.update { current ->
-                                current?.copy(initialSttOverride = existingOverride)
+                                current?.copy(initialSttOverride = repoFolderOverride)
                             }
                         }
                     }
@@ -2756,6 +2812,12 @@ class LibraryViewModel @Inject constructor(
                         newCourse = resolvedNewCourse,
                         languages = normalizedLanguages,
                     )
+                    if (currentPath != null && currentPath != resolvedNewCourse) {
+                        libraryRepository.setCourseFolderSttOverride(currentPath, ItemSttOverride.NONE)
+                    }
+                    if (resolvedNewCourse != null) {
+                        libraryRepository.setCourseFolderSttOverride(resolvedNewCourse, event.sttOverride)
+                    }
                     if (colorTargetPath != null) {
                         when (val choice = event.colorChoice) {
                             LibraryFolderColorChoice.Unchanged -> Unit
@@ -2768,10 +2830,10 @@ class LibraryViewModel @Inject constructor(
                         }
                     }
                     for (model in targetItems) {
-                        itemSttOverrideRepository.set(model.item.id, ItemSttOverride.NONE)
                         val itemTargetChanged = folderLevelTargetChanged ||
                             !model.item.languagePair.target.value.equals(newTarget.value, ignoreCase = true)
                         if (itemTargetChanged) {
+                            itemSttOverrideRepository.set(model.item.id, ItemSttOverride.NONE)
                             libraryRepository.resetTranscriptsAndDeleteFiles(model.item.id)
                             analysisRepository.clearTranscriptsForMedia(model.item.id)
                             analysisRepository.startLanguageDetectionOnly(model.item.id)
@@ -2847,6 +2909,9 @@ class LibraryViewModel @Inject constructor(
                             coursePath = cleanFolder,
                             languages = normalizedPair,
                         )
+                        if (!event.sttOverride.isEmpty) {
+                            libraryRepository.setCourseFolderSttOverride(cleanFolder, event.sttOverride)
+                        }
                     }
                 }
             }
@@ -3016,10 +3081,157 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            is LibraryEvent.QueryFolderSttLanguageModels -> {
+                refreshFolderLanguageModelInfos(event.languages)
+            }
+
+            is LibraryEvent.RequestFolderSttModelDownload -> {
+                val normLang = LanguageSettings.normalize(event.language)
+                val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                languageModelInfos.update { currentMap ->
+                    val existingInfo = currentMap[event.language]
+                        ?: currentMap[normLang]
+                        ?: currentMap[mgmtLang]
+                        ?: OnDeviceLanguageModelInfo(language = event.language)
+                    val downloadingInfo = updateFolderModelInfoStatus(
+                        info = existingInfo,
+                        engine = event.engine,
+                        status = OnDeviceLanguageModelStatus.DOWNLOADING,
+                    )
+                    currentMap +
+                        (event.language to downloadingInfo) +
+                        (normLang to downloadingInfo.copy(language = normLang)) +
+                        (mgmtLang to downloadingInfo.copy(language = mgmtLang))
+                }
+                viewModelScope.launch {
+                    val ok = analysisRepository.requestSttModelDownload(event.language, event.engine)
+                    val queryLanguages = expandFolderQueryLanguages(listOf(event.language))
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    if (!ok) {
+                        val existing = queriedMap[event.language]
+                            ?: queriedMap[normLang]
+                            ?: queriedMap[mgmtLang]
+                            ?: OnDeviceLanguageModelInfo(language = event.language)
+                        val failedInfo = updateFolderModelInfoStatus(
+                            info = existing,
+                            engine = event.engine,
+                            status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED,
+                        )
+                        queriedMap[event.language] = failedInfo
+                        queriedMap[normLang] = failedInfo.copy(language = normLang)
+                        queriedMap[mgmtLang] = failedInfo.copy(language = mgmtLang)
+                    }
+                    languageModelInfos.update { it + queriedMap }
+                }
+            }
+
+            is LibraryEvent.DeleteFolderSherpaModel -> {
+                val normLang = LanguageSettings.normalize(event.language)
+                val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                viewModelScope.launch {
+                    analysisRepository.deleteSherpaModel(event.language)
+                    val queryLanguages = expandFolderQueryLanguages(listOf(event.language))
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    for (langKey in listOf(event.language, normLang, mgmtLang)) {
+                        val existing = queriedMap[langKey]
+                            ?: languageModelInfos.value[langKey]
+                            ?: OnDeviceLanguageModelInfo(language = langKey)
+                        queriedMap[langKey] = existing.copy(
+                            sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                            canDeleteSherpaModel = false,
+                        )
+                    }
+                    languageModelInfos.update { it + queriedMap }
+                }
+            }
+
+            is LibraryEvent.DeleteFolderLanguageSttModel -> {
+                val normLang = LanguageSettings.normalize(event.language)
+                val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                viewModelScope.launch {
+                    analysisRepository.deleteSttModelForLanguage(event.language, event.model)
+                    val queryLanguages = expandFolderQueryLanguages(listOf(event.language))
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    for (langKey in listOf(event.language, normLang, mgmtLang)) {
+                        val existing = queriedMap[langKey]
+                            ?: languageModelInfos.value[langKey]
+                            ?: OnDeviceLanguageModelInfo(language = langKey)
+                        queriedMap[langKey] = existing.copy(
+                            extraEngineStatuses = existing.extraEngineStatuses +
+                                (event.model.sttEngine to OnDeviceLanguageModelStatus.NOT_INSTALLED),
+                        )
+                    }
+                    languageModelInfos.update { it + queriedMap }
+                }
+            }
+
+            is LibraryEvent.PurgeFolderSttModel -> {
+                viewModelScope.launch {
+                    analysisRepository.purgeSttModel(event.model)
+                    val queryLanguages = expandFolderQueryLanguages(languageModelInfos.value.keys.toList())
+                    val queried = if (queryLanguages.isNotEmpty()) {
+                        analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    } else {
+                        emptyList()
+                    }
+                    val queriedMap = queried.associateBy { it.language }
+                    languageModelInfos.update { currentMap ->
+                        (currentMap + queriedMap).mapValues { (_, info) ->
+                            if (event.model.isLanguageSupported(info.language)) {
+                                updateFolderModelInfoStatus(
+                                    info = info,
+                                    engine = event.model.sttEngine,
+                                    status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                                )
+                            } else {
+                                info
+                            }
+                        }
+                    }
+                }
+            }
+
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.OpenSettings,
             -> Unit
+        }
+    }
+
+    private fun expandFolderQueryLanguages(languages: List<LanguageTag>): List<LanguageTag> = languages
+        .filter { it.value.isNotBlank() && !it.value.equals("und", ignoreCase = true) }
+        .flatMap { tag ->
+            listOf(
+                tag,
+                LanguageSettings.normalize(tag),
+                LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(tag.value)),
+            )
+        }
+        .distinct()
+
+    private fun updateFolderModelInfoStatus(
+        info: OnDeviceLanguageModelInfo,
+        engine: SttEngine,
+        status: OnDeviceLanguageModelStatus,
+    ): OnDeviceLanguageModelInfo = when (engine) {
+        SttEngine.ML_KIT -> info.copy(mlKitStatus = status)
+        SttEngine.SPEECH_RECOGNIZER -> info.copy(status = status)
+        SttEngine.SHERPA_ONNX -> info.copy(sherpaModelStatus = status)
+        else -> info.copy(extraEngineStatuses = info.extraEngineStatuses + (engine to status))
+    }
+
+    private fun refreshFolderLanguageModelInfos(languages: List<LanguageTag>) {
+        val targetLangs = expandFolderQueryLanguages(languages)
+        if (targetLangs.isEmpty()) return
+        viewModelScope.launch {
+            val queried = analysisRepository.queryLanguageModelInfos(targetLangs)
+            if (queried.isNotEmpty()) {
+                val queriedMap = queried.associateBy { it.language }
+                languageModelInfos.update { it + queriedMap }
+            }
         }
     }
 
@@ -3291,6 +3503,9 @@ class LibraryViewModel @Inject constructor(
         }
         importJob?.cancel()
         importJob = viewModelScope.launch {
+            if (!sttOverride.isEmpty && initialFolder != null) {
+                libraryRepository.setCourseFolderSttOverride(initialFolder, sttOverride)
+            }
             libraryRepository.linkLocalDirectory(
                 treeUri = treeUri,
                 course = course,
@@ -3323,6 +3538,9 @@ class LibraryViewModel @Inject constructor(
                                 allItemsById[id]?.course?.substringBefore('/')?.takeIf { it.isNotBlank() }
                                     ?: allItemsById[id]?.course?.trim('/')?.takeIf { it.isNotBlank() }
                             }
+                        if (!sttOverride.isEmpty && resolvedFolder != null) {
+                            libraryRepository.setCourseFolderSttOverride(resolvedFolder, sttOverride)
+                        }
                         clearSelectionInternal()
                         selectedTab.value = LibraryViewTab.FOLDERS
                         if (resolvedFolder != null) {
@@ -3373,6 +3591,9 @@ class LibraryViewModel @Inject constructor(
                     coursePath = effectiveCourse,
                     languages = languages,
                 )
+            }
+            if (!sttOverride.isEmpty) {
+                libraryRepository.setCourseFolderSttOverride(normalizedFolder, sttOverride)
             }
             libraryRepository.import(
                 uris = uris,
@@ -3699,6 +3920,7 @@ class LibraryViewModel @Inject constructor(
             enabledLanguages = enabledLanguages,
             sttEngineByLanguage = sttEngineByLanguage,
             sttRecommendationChanges = sttRecommendationChanges,
+            languageModelInfos = dialogAndImport.languageModelInfos,
             showLanguageOnboardingDialog = showLanguageOnboardingDialog,
             showLanguageSettingsModal = dialogAndImport.showLanguageSettingsModal,
             currentDirectoryPath = navAndSelection.currentDirectoryPath,
