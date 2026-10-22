@@ -228,6 +228,7 @@
     <string name="player_long_press_next_checked">Next checked chunk</string>
     <string name="player_long_press_next_file">Next file</string>
     <string name="player_selection_edit_range">Edit range</string>
+    <string name="player_selection_unchunk">Unchunk</string>
     <string name="player_edit_range_start_minus">Move start 100ms earlier</string>
     <string name="player_edit_range_start_plus">Move start 100ms later</string>
     <string name="player_edit_range_end_minus">Move end 100ms earlier</string>

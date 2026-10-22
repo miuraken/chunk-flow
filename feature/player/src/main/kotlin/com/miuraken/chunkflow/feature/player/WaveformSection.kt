@@ -1588,18 +1588,21 @@ private fun ZoomedWaveformCanvas(
     val isInspectionMode = LocalInspectionMode.current
     val hapticFeedback = LocalHapticFeedback.current
 
-    var boundaryDragStartMs by remember(editingBoundaryChunk?.id, editingBoundaryChunk?.startMs, editingBoundaryChunk?.endMs) {
-        mutableStateOf<Long?>(null)
-    }
-    var boundaryDragEndMs by remember(editingBoundaryChunk?.id, editingBoundaryChunk?.startMs, editingBoundaryChunk?.endMs) {
-        mutableStateOf<Long?>(null)
+    var boundaryDragStartMs by remember { mutableStateOf<Long?>(null) }
+    var boundaryDragEndMs by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(editingBoundaryChunk?.id, editingBoundaryChunk?.startMs, editingBoundaryChunk?.endMs) {
+        boundaryDragStartMs = null
+        boundaryDragEndMs = null
     }
 
+    // 範囲変更モード中はチャンク前後の無音区間や境界を 1:1 で滑らかにドラッグできるよう、無音折りたたみと自動ポーズ空白を一時解除する
+    val effectiveSkipOriginalSilence = skipOriginalSilence && editingBoundaryChunk == null
+    val effectiveAutoPause = if (editingBoundaryChunk != null) AutoPause.Off else autoPause
     val timeline = remember(
         durationMs,
         chunks,
-        skipOriginalSilence,
-        autoPause,
+        effectiveSkipOriginalSilence,
+        effectiveAutoPause,
         autoPauseScope,
         languagePair,
         speed,
@@ -1607,8 +1610,8 @@ private fun ZoomedWaveformCanvas(
         buildZoomedVirtualTimeline(
             durationMs = durationMs,
             chunks = chunks,
-            skipOriginalSilence = skipOriginalSilence,
-            autoPause = autoPause,
+            skipOriginalSilence = effectiveSkipOriginalSilence,
+            autoPause = effectiveAutoPause,
             autoPauseScope = autoPauseScope,
             languagePair = languagePair,
             speed = speed,
@@ -1886,8 +1889,10 @@ private fun ZoomedWaveformCanvas(
                                 val liveWindowMs = currentZoomWindowMs.coerceAtLeast(1L)
                                 val windowVirtualStartMs = centerVirtualMs - liveWindowMs / 2L
                                 val pxPerMs = size.width / liveWindowMs.toFloat()
-                                val startX = (tl.mediaToVirtualMs(editChunk.startMs) - windowVirtualStartMs) * pxPerMs
-                                val endX = (tl.mediaToVirtualMs(editChunk.endMs) - windowVirtualStartMs) * pxPerMs
+                                val curStartMs = boundaryDragStartMs ?: editChunk.startMs
+                                val curEndMs = boundaryDragEndMs ?: editChunk.endMs
+                                val startX = (tl.mediaToVirtualMs(curStartMs) - windowVirtualStartMs) * pxPerMs
+                                val endX = (tl.mediaToVirtualMs(curEndMs) - windowVirtualStartMs) * pxPerMs
                                 val hitSlopPx = 48.dp.toPx()
                                 if (abs(offset.x - startX) <= hitSlopPx || abs(offset.x - endX) <= hitSlopPx) {
                                     return@detectTapGestures
@@ -1938,7 +1943,7 @@ private fun ZoomedWaveformCanvas(
                                 tl.mediaToVirtualMs(scrubMs)
                             } else {
                                 tl.mediaToVirtualMs(
-                                    mediaMs = positionProvider.currentPositionMs(),
+                                    mediaMs = positionProvider.currentPositionMs().coerceIn(0L, durationMs),
                                     activeAutoPauseChunkIndex = if (currentAutoPauseEndsAtMs != null) currentActiveChunkIndex else null,
                                     autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
                                 )
@@ -1946,51 +1951,69 @@ private fun ZoomedWaveformCanvas(
                             val liveWindowMs = currentZoomWindowMs.coerceAtLeast(1L)
                             val windowVirtualStartMs = centerVirtualMs - liveWindowMs / 2L
                             val pxPerMs = size.width / liveWindowMs.toFloat()
-                            val startX = (tl.mediaToVirtualMs(editChunk.startMs) - windowVirtualStartMs) * pxPerMs
-                            val endX = (tl.mediaToVirtualMs(editChunk.endMs) - windowVirtualStartMs) * pxPerMs
+                            val curStartMs = boundaryDragStartMs ?: editChunk.startMs
+                            val curEndMs = boundaryDragEndMs ?: editChunk.endMs
+                            val startX = (tl.mediaToVirtualMs(curStartMs) - windowVirtualStartMs) * pxPerMs
+                            val endX = (tl.mediaToVirtualMs(curEndMs) - windowVirtualStartMs) * pxPerMs
                             val hitSlopPx = 48.dp.toPx()
                             val distStart = abs(downOffset.x - startX)
                             val distEnd = abs(downOffset.x - endX)
                             if (distStart <= hitSlopPx || distEnd <= hitSlopPx) {
                                 draggingBoundaryIsEnd = distEnd < distStart
-                                boundaryDragStartMs = editChunk.startMs
-                                boundaryDragEndMs = editChunk.endMs
+                                boundaryDragStartMs = curStartMs
+                                boundaryDragEndMs = curEndMs
                             }
                         }
                         draggingBoundaryIsEnd != null
                     },
-                    onGesture = { pan, zoom ->
+                    onGesture = { touchPosition, pan, zoom ->
                         if (size.width > 0) {
                             val liveWindow = currentZoomWindowMs
                             val isEndHandle = draggingBoundaryIsEnd
                             val editChunk = currentEditingBoundaryChunk
                             if (isEndHandle != null && editChunk != null) {
-                                if (abs(pan.x) > 0.2f) {
-                                    val allChunks = currentChunks
-                                    val targetIndex = allChunks.indexOfFirst { it.id == editChunk.id }
-                                    val prevChunk = if (targetIndex > 0) allChunks.getOrNull(targetIndex - 1) else null
-                                    val nextChunk = if (targetIndex >= 0) allChunks.getOrNull(targetIndex + 1) else null
-                                    val minChunkLenMs = 100L
-                                    val minAllowedStartMs = when {
-                                        prevChunk == null -> 0L
-                                        prevChunk.endMs == editChunk.startMs -> prevChunk.startMs + minChunkLenMs
-                                        else -> prevChunk.endMs
-                                    }
-                                    val maxAllowedEndMs = when {
-                                        nextChunk == null -> durationMs
-                                        nextChunk.startMs == editChunk.endMs -> (nextChunk.endMs - minChunkLenMs).coerceAtMost(durationMs)
-                                        else -> nextChunk.startMs
-                                    }
-                                    val deltaMs = ((pan.x / size.width.toFloat()) * liveWindow).roundToLong()
-                                    val curStart = boundaryDragStartMs ?: editChunk.startMs
-                                    val curEnd = boundaryDragEndMs ?: editChunk.endMs
-                                    if (!isEndHandle) {
-                                        val maxStart = (curEnd - minChunkLenMs).coerceAtLeast(minAllowedStartMs)
-                                        boundaryDragStartMs = (curStart + deltaMs).coerceIn(minAllowedStartMs, maxStart)
-                                    } else {
-                                        val minEnd = (curStart + minChunkLenMs).coerceAtMost(maxAllowedEndMs)
-                                        boundaryDragEndMs = (curEnd + deltaMs).coerceIn(minEnd, maxAllowedEndMs)
-                                    }
+                                val tl = currentTimeline
+                                val scrubMs = currentScrubPositionMs
+                                val centerVirtualMs = if (scrubMs != null) {
+                                    tl.mediaToVirtualMs(scrubMs)
+                                } else {
+                                    tl.mediaToVirtualMs(
+                                        mediaMs = positionProvider.currentPositionMs().coerceIn(0L, durationMs),
+                                        activeAutoPauseChunkIndex = if (currentAutoPauseEndsAtMs != null) currentActiveChunkIndex else null,
+                                        autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
+                                    )
+                                }
+                                val touchVirtualMs = zoomedTouchXToMs(
+                                    x = touchPosition.x.coerceIn(0f, size.width.toFloat()),
+                                    widthPx = size.width,
+                                    centerMs = centerVirtualMs,
+                                    windowMs = liveWindow,
+                                    durationMs = tl.totalVirtualDurationMs,
+                                )
+                                val touchMediaMs = tl.virtualToMediaMs(touchVirtualMs).coerceIn(0L, durationMs)
+                                val allChunks = currentChunks
+                                val targetIndex = allChunks.indexOfFirst { it.id == editChunk.id }
+                                val prevChunk = if (targetIndex > 0) allChunks.getOrNull(targetIndex - 1) else null
+                                val nextChunk = if (targetIndex >= 0) allChunks.getOrNull(targetIndex + 1) else null
+                                val minChunkLenMs = 100L
+                                val minAllowedStartMs = when {
+                                    prevChunk == null -> 0L
+                                    prevChunk.endMs == editChunk.startMs -> prevChunk.startMs + minChunkLenMs
+                                    else -> prevChunk.endMs
+                                }
+                                val maxAllowedEndMs = when {
+                                    nextChunk == null -> durationMs
+                                    nextChunk.startMs == editChunk.endMs -> (nextChunk.endMs - minChunkLenMs).coerceAtMost(durationMs)
+                                    else -> nextChunk.startMs
+                                }
+                                val curStart = boundaryDragStartMs ?: editChunk.startMs
+                                val curEnd = boundaryDragEndMs ?: editChunk.endMs
+                                if (!isEndHandle) {
+                                    val maxStart = (curEnd - minChunkLenMs).coerceAtLeast(minAllowedStartMs)
+                                    boundaryDragStartMs = touchMediaMs.coerceIn(minAllowedStartMs, maxStart)
+                                } else {
+                                    val minEnd = (curStart + minChunkLenMs).coerceAtMost(maxAllowedEndMs)
+                                    boundaryDragEndMs = touchMediaMs.coerceIn(minEnd, maxAllowedEndMs)
                                 }
                             } else if (abs(zoom - 1f) > 0.004f) {
                                 currentOnZoomWindowChange((liveWindow.toFloat() / zoom).roundToLong())
@@ -2026,9 +2049,10 @@ private fun ZoomedWaveformCanvas(
                         if (wasDraggingBoundary && editChunk != null && startMs != null && endMs != null) {
                             if (startMs != editChunk.startMs || endMs != editChunk.endMs) {
                                 currentOnMoveChunkBoundary(editChunk.id, startMs, endMs)
+                            } else {
+                                boundaryDragStartMs = null
+                                boundaryDragEndMs = null
                             }
-                            boundaryDragStartMs = null
-                            boundaryDragEndMs = null
                         }
                     },
                 )
@@ -2063,8 +2087,10 @@ private fun ZoomedWaveformCanvas(
                                 val liveWindowMs = currentZoomWindowMs.coerceAtLeast(1L)
                                 val windowVirtualStartMs = centerVirtualMs - liveWindowMs / 2L
                                 val pxPerMs = size.width / liveWindowMs.toFloat()
-                                val startX = (tl.mediaToVirtualMs(editChunk.startMs) - windowVirtualStartMs) * pxPerMs
-                                val endX = (tl.mediaToVirtualMs(editChunk.endMs) - windowVirtualStartMs) * pxPerMs
+                                val curStartMs = boundaryDragStartMs ?: editChunk.startMs
+                                val curEndMs = boundaryDragEndMs ?: editChunk.endMs
+                                val startX = (tl.mediaToVirtualMs(curStartMs) - windowVirtualStartMs) * pxPerMs
+                                val endX = (tl.mediaToVirtualMs(curEndMs) - windowVirtualStartMs) * pxPerMs
                                 val hitSlopPx = 48.dp.toPx()
                                 if (abs(offset.x - startX) <= hitSlopPx || abs(offset.x - endX) <= hitSlopPx) {
                                     ignoreLongPressForBoundaryHandle = true
@@ -2183,10 +2209,53 @@ private fun ZoomedWaveformCanvas(
                     val pxPerMs = size.width / liveWindowMs.toFloat()
                     val centerX = size.width * 0.5f
 
-                    fun chunkRect(index: Int, chunk: ChunkUi): Rect? {
+                    val editingChunk = currentEditingBoundaryChunk ?: editingBoundaryChunk
+                    val editingChunkIndex = if (editingChunk != null) {
+                        chunks.indexOfFirst { it.id == editingChunk.id }.takeIf { it >= 0 }
+                    } else {
+                        null
+                    }
+                    val liveBoundaryStartMs = boundaryDragStartMs ?: editingChunk?.startMs
+                    val liveBoundaryEndMs = boundaryDragEndMs ?: editingChunk?.endMs
+
+                    fun effectiveChunkVirtualRange(index: Int, chunk: ChunkUi): Pair<Long, Long> {
+                        if (editingChunk != null && editingChunkIndex != null && liveBoundaryStartMs != null && liveBoundaryEndMs != null) {
+                            when (index) {
+                                editingChunkIndex -> {
+                                    return timeline.mediaToVirtualMs(liveBoundaryStartMs) to timeline.mediaToVirtualMs(liveBoundaryEndMs)
+                                }
+
+                                editingChunkIndex - 1 -> {
+                                    if (chunk.endMs == editingChunk.startMs || liveBoundaryStartMs < chunk.endMs) {
+                                        val adjEndMs = if (chunk.endMs == editingChunk.startMs) {
+                                            liveBoundaryStartMs.coerceAtLeast(chunk.startMs)
+                                        } else {
+                                            min(chunk.endMs, liveBoundaryStartMs)
+                                        }
+                                        return timeline.mediaToVirtualMs(chunk.startMs) to timeline.mediaToVirtualMs(adjEndMs)
+                                    }
+                                }
+
+                                editingChunkIndex + 1 -> {
+                                    if (chunk.startMs == editingChunk.endMs || liveBoundaryEndMs > chunk.startMs) {
+                                        val adjStartMs = if (chunk.startMs == editingChunk.endMs) {
+                                            liveBoundaryEndMs.coerceAtMost(chunk.endMs)
+                                        } else {
+                                            max(chunk.startMs, liveBoundaryEndMs)
+                                        }
+                                        return timeline.mediaToVirtualMs(adjStartMs) to timeline.mediaToVirtualMs(chunk.endMs)
+                                    }
+                                }
+                            }
+                        }
                         val range = timeline.chunkVirtualRange(index)
                         val vStart = range?.first ?: chunk.startMs
                         val vEnd = range?.last ?: chunk.endMs
+                        return vStart to vEnd
+                    }
+
+                    fun chunkRect(index: Int, chunk: ChunkUi): Rect? {
+                        val (vStart, vEnd) = effectiveChunkVirtualRange(index, chunk)
                         return chunkRectOnCanvas(
                             leftX = (vStart - windowVirtualStartMs) * pxPerMs,
                             rightX = (vEnd - windowVirtualStartMs) * pxPerMs,
@@ -2197,9 +2266,7 @@ private fun ZoomedWaveformCanvas(
 
                     fun drawChunkBackgrounds(targetChunks: List<ChunkUi>) {
                         targetChunks.forEachIndexed { index, chunk ->
-                            val range = timeline.chunkVirtualRange(index)
-                            val vStart = range?.first ?: chunk.startMs
-                            val vEnd = range?.last ?: chunk.endMs
+                            val (vStart, vEnd) = effectiveChunkVirtualRange(index, chunk)
                             if (vEnd <= windowVirtualStartMs || vStart >= windowVirtualEndMs) return@forEachIndexed
                             val rect = chunkRect(index, chunk) ?: return@forEachIndexed
                             val roleColor = when {
@@ -2317,9 +2384,7 @@ private fun ZoomedWaveformCanvas(
                     // 3. 選択中のチャンクの枠線とチェックの印（チャンクリストのチェックボックスと連動）
                     chunks.forEachIndexed { index, chunk ->
                         if (!chunk.isRepeatChecked) return@forEachIndexed
-                        val range = timeline.chunkVirtualRange(index)
-                        val vStart = range?.first ?: chunk.startMs
-                        val vEnd = range?.last ?: chunk.endMs
+                        val (vStart, vEnd) = effectiveChunkVirtualRange(index, chunk)
                         if (vEnd <= windowVirtualStartMs || vStart >= windowVirtualEndMs) return@forEachIndexed
                         val rect = chunkRect(index, chunk) ?: return@forEachIndexed
                         val half = selectedStrokePx / 2f
@@ -2345,9 +2410,7 @@ private fun ZoomedWaveformCanvas(
 
                     // 4. 再生中のチャンクの枠線（選択中のチャンクでは、選択の枠線の内側に描く）
                     if (activeChunk != null && activeChunkIndex != null) {
-                        val activeRange = timeline.chunkVirtualRange(activeChunkIndex)
-                        val activeVStart = activeRange?.first ?: activeChunk.startMs
-                        val activeVEnd = activeRange?.last ?: activeChunk.endMs
+                        val (activeVStart, activeVEnd) = effectiveChunkVirtualRange(activeChunkIndex, activeChunk)
                         if (activeVEnd > windowVirtualStartMs && activeVStart < windowVirtualEndMs) {
                             chunkRect(activeChunkIndex, activeChunk)?.let { rect ->
                                 val inset = if (activeChunk.isRepeatChecked) selectedStrokePx + activeStrokePx / 2f else activeStrokePx / 2f
@@ -2402,11 +2465,9 @@ private fun ZoomedWaveformCanvas(
                     }
 
                     // 5.5. チャンク境界編集モード時の開始・終了境界ハンドルを描画
-                    if (editingBoundaryChunk != null) {
-                        val dispStartMs = boundaryDragStartMs ?: editingBoundaryChunk.startMs
-                        val dispEndMs = boundaryDragEndMs ?: editingBoundaryChunk.endMs
-                        val editVirtualStart = timeline.mediaToVirtualMs(dispStartMs)
-                        val editVirtualEnd = timeline.mediaToVirtualMs(dispEndMs)
+                    if (editingChunk != null && liveBoundaryStartMs != null && liveBoundaryEndMs != null) {
+                        val editVirtualStart = timeline.mediaToVirtualMs(liveBoundaryStartMs)
+                        val editVirtualEnd = timeline.mediaToVirtualMs(liveBoundaryEndMs)
                         val rawLeftX = (editVirtualStart - windowVirtualStartMs) * pxPerMs
                         val rawRightX = (editVirtualEnd - windowVirtualStartMs) * pxPerMs
                         if (rawRightX > 0f && rawLeftX < size.width) {
@@ -2678,7 +2739,7 @@ private fun DrawScope.drawSelectionCheckBadge(
  */
 private suspend fun PointerInputScope.detectZoomAndPanGestures(
     onGestureStart: (downOffset: Offset) -> Boolean,
-    onGesture: (pan: Offset, zoom: Float) -> Unit,
+    onGesture: (touchPosition: Offset, pan: Offset, zoom: Float) -> Unit,
     onGestureEnd: () -> Unit = {},
 ) {
     awaitEachGesture {
@@ -2686,6 +2747,7 @@ private suspend fun PointerInputScope.detectZoomAndPanGestures(
         var pan = Offset.Zero
         val touchSlop = viewConfiguration.touchSlop
         val down = awaitFirstDown(requireUnconsumed = false)
+        var currentPosition = down.position
         var pastTouchSlop = onGestureStart(down.position)
         if (pastTouchSlop) {
             down.consume()
@@ -2696,6 +2758,9 @@ private suspend fun PointerInputScope.detectZoomAndPanGestures(
             if (!canceled) {
                 val zoomChange = event.calculateZoom()
                 val panChange = event.calculatePan()
+                event.changes.firstOrNull { it.pressed }?.let { pressedChange ->
+                    currentPosition = pressedChange.position
+                }
                 if (!pastTouchSlop) {
                     zoom *= zoomChange
                     pan += panChange
@@ -2707,7 +2772,7 @@ private suspend fun PointerInputScope.detectZoomAndPanGestures(
                 }
                 if (pastTouchSlop) {
                     if (zoomChange != 1f || panChange != Offset.Zero) {
-                        onGesture(panChange, zoomChange)
+                        onGesture(currentPosition, panChange, zoomChange)
                     }
                     event.changes.forEach { change ->
                         if (change.positionChanged()) change.consume()

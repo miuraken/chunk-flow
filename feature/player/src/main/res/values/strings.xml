@@ -228,6 +228,7 @@
     <string name="player_long_press_next_checked">一つ後のチェック項目へ</string>
     <string name="player_long_press_next_file">次のファイルへ</string>
     <string name="player_selection_edit_range">範囲変更</string>
+    <string name="player_selection_unchunk">非チャンク化</string>
     <string name="player_edit_range_start_minus">開始を100ms早める</string>
     <string name="player_edit_range_start_plus">開始を100ms遅める</string>
     <string name="player_edit_range_end_minus">終了を100ms早める</string>

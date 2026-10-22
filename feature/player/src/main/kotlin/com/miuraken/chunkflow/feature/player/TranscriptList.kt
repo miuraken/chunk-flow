@@ -734,14 +734,6 @@ fun TranscriptList(
                                     isAutoFollowPaused = true
                                     onOpenDetailedTranscription(chunk.id)
                                 },
-                                onMoveChunkBoundary = { newStartMs, newEndMs ->
-                                    isAutoFollowPaused = true
-                                    onMoveChunkBoundary(chunk.id, newStartMs, newEndMs)
-                                },
-                                onDeleteChunk = {
-                                    isAutoFollowPaused = true
-                                    onDeleteChunk(chunk.id)
-                                },
                             )
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                         }
@@ -1197,8 +1189,6 @@ private fun TranscriptChunkRow(
     inFlightStartedAtEpochMs: Long? = null,
     onRetranscribeChunk: () -> Unit = {},
     onOpenDetailedTranscription: () -> Unit = {},
-    onMoveChunkBoundary: (Long, Long) -> Unit,
-    onDeleteChunk: () -> Unit = {},
     onUserInteract: () -> Unit = {},
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -1820,47 +1810,6 @@ private fun TranscriptChunkRow(
                 onClick = {
                     menuExpanded = false
                     onStartRangeSelection()
-                },
-            )
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(text = stringResource(R.string.player_chunk_boundary_start_minus)) },
-                onClick = {
-                    menuExpanded = false
-                    onMoveChunkBoundary((chunk.startMs - 100L).coerceAtLeast(0L), chunk.endMs)
-                },
-            )
-            if (chunk.startMs + 100L < chunk.endMs) {
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chunk_boundary_start_plus)) },
-                    onClick = {
-                        menuExpanded = false
-                        onMoveChunkBoundary(chunk.startMs + 100L, chunk.endMs)
-                    },
-                )
-            }
-            if (chunk.endMs - 100L > chunk.startMs) {
-                DropdownMenuItem(
-                    text = { Text(text = stringResource(R.string.player_chunk_boundary_end_minus)) },
-                    onClick = {
-                        menuExpanded = false
-                        onMoveChunkBoundary(chunk.startMs, chunk.endMs - 100L)
-                    },
-                )
-            }
-            DropdownMenuItem(
-                text = { Text(text = stringResource(R.string.player_chunk_boundary_end_plus)) },
-                onClick = {
-                    menuExpanded = false
-                    onMoveChunkBoundary(chunk.startMs, chunk.endMs + 100L)
-                },
-            )
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(text = stringResource(R.string.player_chunk_delete)) },
-                onClick = {
-                    menuExpanded = false
-                    onDeleteChunk()
                 },
             )
         }

@@ -3127,4 +3127,33 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.ClearItemSttOverride)
         assertTrue(viewModel.uiState.value.itemSttOverride.isEmpty)
     }
+
+    @Test
+    fun `DeleteChunk_選択中の単一チャンクを非チャンク化するとチャンクを削除し境界編集モードも解除する`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+        val targetChunkId = sample.chunks.first().id
+        viewModel.onEvent(PlayerEvent.SetChunkSelected(targetChunkId, selected = true))
+        viewModel.onEvent(PlayerEvent.ToggleChunkBoundaryEditMode)
+        assertTrue(viewModel.uiState.value.isChunkBoundaryEditMode)
+
+        viewModel.onEvent(PlayerEvent.DeleteChunk(targetChunkId))
+
+        assertFalse(viewModel.uiState.value.isChunkBoundaryEditMode)
+        assertFalse(viewModel.uiState.value.chunks.any { it.id == targetChunkId })
+    }
 }

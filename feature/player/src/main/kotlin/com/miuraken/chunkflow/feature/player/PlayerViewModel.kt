@@ -2968,7 +2968,10 @@ class PlayerViewModel @Inject constructor(
                             emptySet()
                         }
                         localUiState.update { state ->
-                            state.copy(languageOverrides = state.languageOverrides - event.chunkId)
+                            state.copy(
+                                languageOverrides = state.languageOverrides - event.chunkId,
+                                isChunkBoundaryEditMode = false,
+                            )
                         }
                         val deleted = analysisRepository.deleteChunk(id, event.chunkId)
                         if (deleted && currentRepeatIds.isNotEmpty()) {

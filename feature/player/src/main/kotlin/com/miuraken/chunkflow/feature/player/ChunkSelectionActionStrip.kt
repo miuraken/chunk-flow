@@ -64,7 +64,7 @@ internal fun ChunkSelectionActionStrip(
 ) {
     val selectedChunkCount = state.chunks.count { it.isRepeatChecked }
     val hasSelection = selectedChunkCount > 0
-    val isSingleChunkSelected = selectedChunkCount == 1
+    val singleSelectedChunk = state.chunks.singleOrNull { it.isRepeatChecked }
     val mergeSummary = remember(state.chunks) { summarizeMergeSelection(state.chunks) }
     val canMergeSelection = mergeSummary != null
     val abRange = (state.practice.loop as? LoopMode.AbRange)?.takeIf { it.startMs < it.endMs }
@@ -149,7 +149,7 @@ internal fun ChunkSelectionActionStrip(
                 enabled = hasSelection,
                 label = { Text(text = stringResource(R.string.player_selection_clear_all), maxLines = 1) },
             )
-            if (isSingleChunkSelected) {
+            if (singleSelectedChunk != null) {
                 val isEditingRange = state.isChunkBoundaryEditMode
                 val chipShape = AssistChipDefaults.shape
                 val containerColor = if (isEditingRange) {
@@ -229,6 +229,11 @@ internal fun ChunkSelectionActionStrip(
                         )
                     }
                 }
+                AssistChip(
+                    onClick = { onEvent(PlayerEvent.DeleteChunk(singleSelectedChunk.id)) },
+                    enabled = true,
+                    label = { Text(text = stringResource(R.string.player_selection_unchunk), maxLines = 1) },
+                )
             } else {
                 AssistChip(
                     onClick = { showMergeConfirmDialog = true },
