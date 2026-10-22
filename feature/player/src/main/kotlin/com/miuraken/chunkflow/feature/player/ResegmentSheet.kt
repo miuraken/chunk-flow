@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.player
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -7,10 +8,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -19,9 +23,11 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -40,14 +46,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
+import com.miuraken.chunkflow.core.model.DownloadableSttModel
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageSettings
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
+import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineLabel
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import java.util.Locale
 import kotlin.math.max
@@ -58,14 +73,22 @@ internal fun ResegmentSheetContent(
     initialParams: SegmentationParams,
     useGlobalSegmentation: Boolean,
     languagePair: LanguagePair?,
-    itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
-    sttEngineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
-    languageModelInfos: Map<LanguageTag, com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo>,
-    enabledLanguages: List<com.miuraken.chunkflow.core.model.LanguageTag>,
+    itemSttOverride: ItemSttOverride,
+    sttEngineByLanguage: Map<LanguageTag, SttEngine>,
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo>,
+    enabledLanguages: List<LanguageTag>,
     onChangeLanguages: (LanguagePair) -> Unit,
-    onChangeTargetEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
-    onChangeBaseEngine: (com.miuraken.chunkflow.core.model.SttEngine?) -> Unit,
-    onToggleEnabledLanguage: (com.miuraken.chunkflow.core.model.LanguageTag) -> Unit = {},
+    onChangeTargetEngine: (SttEngine?) -> Unit,
+    onChangeBaseEngine: (SttEngine?) -> Unit,
+    onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
+    onClearSttOverride: () -> Unit = {
+        onChangeTargetEngine(null)
+        onChangeBaseEngine(null)
+    },
+    onDownloadSttModel: (LanguageTag, SttEngine) -> Unit = { _, _ -> },
+    onDeleteSherpaModel: (LanguageTag) -> Unit = {},
+    onDeleteLanguageSttModel: (LanguageTag, DownloadableSttModel) -> Unit = { _, _ -> },
+    onPurgeDownloadableModel: (DownloadableSttModel) -> Unit = {},
     transcriptOffsetMs: Int,
     onAdjustTranscriptOffset: (Int) -> Unit,
     onAutoAlignTranscriptOffset: () -> Unit,
@@ -86,6 +109,14 @@ internal fun ResegmentSheetContent(
     var postPaddingMs by remember(initialParams) { mutableIntStateOf(initialParams.postPaddingMs) }
     var thresholdRatio by remember(initialParams) { mutableFloatStateOf(initialParams.thresholdRatio) }
     var showResetConfirmDialog by remember { mutableStateOf(false) }
+    var useGlobalSttModels by rememberSaveable {
+        mutableStateOf(itemSttOverride == ItemSttOverride.NONE)
+    }
+    LaunchedEffect(itemSttOverride) {
+        if (itemSttOverride != ItemSttOverride.NONE) {
+            useGlobalSttModels = false
+        }
+    }
 
     val formattedOffset = if (transcriptOffsetMs >= 0) {
         "+$transcriptOffsetMs"
@@ -170,7 +201,7 @@ internal fun ResegmentSheetContent(
             }
 
             1 -> {
-                // 「文字起こし」タブ: 最上位にリセットボタン / エクスポート / インポート / ログ
+                // 「文字起こし」タブ: 最上位にリセットボタン / 音声認識モデルの管理 / エクスポート / インポート / ログ
                 OutlinedButton(
                     onClick = { showResetConfirmDialog = true },
                     modifier = Modifier.fillMaxWidth(),
@@ -185,6 +216,95 @@ internal fun ResegmentSheetContent(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(text = stringResource(R.string.player_transcript_reset_button))
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // 0. 音声認識モデルの管理（学習対象言語・ベース言語のアコーディオン）
+                Text(
+                    text = stringResource(R.string.player_file_settings_section_speech_models),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val nextUseGlobal = !useGlobalSttModels
+                            useGlobalSttModels = nextUseGlobal
+                            if (nextUseGlobal) {
+                                onClearSttOverride()
+                            }
+                        }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(
+                        checked = useGlobalSttModels,
+                        onCheckedChange = { checked ->
+                            useGlobalSttModels = checked
+                            if (checked) {
+                                onClearSttOverride()
+                            }
+                        },
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.player_segmentation_use_global),
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+
+                val sttAccordionEnabled = !useGlobalSttModels
+                val targetLang = languagePair?.target?.takeIf { it.value.isNotBlank() }
+                if (targetLang != null) {
+                    val targetInfo = resolveLanguageModelInfoForItem(targetLang, languageModelInfos)
+                    val targetGlobalDefault = resolveConfiguredDefaultEngineForLanguage(
+                        rawCode = targetLang.value,
+                        sttEngineByLanguage = sttEngineByLanguage,
+                        languageModelInfos = languageModelInfos,
+                    )
+                    ItemSttEngineAccordion(
+                        headerTitle = stringResource(
+                            R.string.player_file_settings_stt_target_lang_header,
+                            formatLanguageDisplayName(targetLang),
+                        ),
+                        info = targetInfo,
+                        globalDefaultEngine = targetGlobalDefault,
+                        preferredEngine = if (useGlobalSttModels) null else itemSttOverride.targetEngine,
+                        enabled = sttAccordionEnabled,
+                        onPreferredEngineChange = onChangeTargetEngine,
+                        onDownloadLanguageModel = { engine -> onDownloadSttModel(targetLang, engine) },
+                        onDeleteSherpaModel = { onDeleteSherpaModel(targetLang) },
+                        onDeleteLanguageSttModel = { model -> onDeleteLanguageSttModel(targetLang, model) },
+                        onPurgeDownloadableModel = onPurgeDownloadableModel,
+                    )
+                }
+
+                val baseLang = languagePair?.base?.takeIf { it.value.isNotBlank() }
+                if (baseLang != null) {
+                    val baseInfo = resolveLanguageModelInfoForItem(baseLang, languageModelInfos)
+                    val baseGlobalDefault = resolveConfiguredDefaultEngineForLanguage(
+                        rawCode = baseLang.value,
+                        sttEngineByLanguage = sttEngineByLanguage,
+                        languageModelInfos = languageModelInfos,
+                    )
+                    ItemSttEngineAccordion(
+                        headerTitle = stringResource(
+                            R.string.player_file_settings_stt_base_lang_header,
+                            formatLanguageDisplayName(baseLang),
+                        ),
+                        info = baseInfo,
+                        globalDefaultEngine = baseGlobalDefault,
+                        preferredEngine = if (useGlobalSttModels) null else itemSttOverride.baseEngine,
+                        enabled = sttAccordionEnabled,
+                        onPreferredEngineChange = onChangeBaseEngine,
+                        onDownloadLanguageModel = { engine -> onDownloadSttModel(baseLang, engine) },
+                        onDeleteSherpaModel = { onDeleteSherpaModel(baseLang) },
+                        onDeleteLanguageSttModel = { model -> onDeleteLanguageSttModel(baseLang, model) },
+                        onPurgeDownloadableModel = onPurgeDownloadableModel,
+                    )
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -543,4 +663,407 @@ private fun SegmentationSlider(
             onValueChange(newValue)
         },
     )
+}
+
+internal fun resolveLanguageModelInfoForItem(
+    language: LanguageTag,
+    languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo>,
+): OnDeviceLanguageModelInfo {
+    val normLang = LanguageSettings.normalize(language)
+    val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(language.value))
+    val raw = languageModelInfos[language]
+        ?: languageModelInfos[normLang]
+        ?: languageModelInfos[mgmtLang]
+        ?: OnDeviceLanguageModelInfo(language = language)
+    return DetailedTranscriptionDialogState.enrichWithCatalog(raw, language)
+}
+
+internal fun isItemSttEngineSelectable(
+    info: OnDeviceLanguageModelInfo,
+    engine: SttEngine?,
+): Boolean {
+    if (!SttEngineSelection.isAnyEngineSupported(info)) return false
+    if (engine == null) return true
+    return info.statusOf(engine) != OnDeviceLanguageModelStatus.UNSUPPORTED
+}
+
+private const val DEFAULT_SHERPA_TINY_SIZE_MB = 113
+
+private fun resolveSherpaTinySizeMb(sizeBytes: Long): Int {
+    if (sizeBytes <= 0L) return DEFAULT_SHERPA_TINY_SIZE_MB
+    return ((sizeBytes + 512L * 1024L) / (1024L * 1024L)).toInt().coerceAtLeast(1)
+}
+
+@Composable
+private fun ItemSttEngineAccordion(
+    headerTitle: String,
+    info: OnDeviceLanguageModelInfo,
+    globalDefaultEngine: SttEngine,
+    preferredEngine: SttEngine?,
+    enabled: Boolean,
+    onPreferredEngineChange: (SttEngine?) -> Unit,
+    onDownloadLanguageModel: (SttEngine) -> Unit = {},
+    onDeleteSherpaModel: () -> Unit = {},
+    onDeleteLanguageSttModel: (DownloadableSttModel) -> Unit = {},
+    onPurgeDownloadableModel: (DownloadableSttModel) -> Unit = {},
+    initialExpanded: Boolean = false,
+) {
+    val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
+    val enrichedInfo = DetailedTranscriptionDialogState.enrichWithCatalog(info, info.language)
+    val anyEngineSupported = SttEngineSelection.isAnyEngineSupported(enrichedInfo)
+    val followGlobalLabel = if (anyEngineSupported) {
+        stringResource(
+            R.string.player_file_settings_stt_follow_global_with_resolved,
+            itemSttEngineDisplayName(globalDefaultEngine),
+        )
+    } else {
+        "${stringResource(R.string.player_segmentation_use_global)} (${stringResource(R.string.player_file_settings_stt_status_unsupported)})"
+    }
+    val effectivePreferred = preferredEngine?.takeIf { isItemSttEngineSelectable(enrichedInfo, it) }
+    val currentEngineLabel = when {
+        !anyEngineSupported -> stringResource(R.string.player_file_settings_stt_status_unsupported)
+        effectivePreferred == null -> followGlobalLabel
+        else -> itemSttEngineDisplayName(effectivePreferred)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.6f),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectable(
+                    selected = expanded.value,
+                    onClick = { expanded.value = !expanded.value },
+                    role = Role.Button,
+                )
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = headerTitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = stringResource(R.string.player_file_settings_stt_current_engine, currentEngineLabel),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                imageVector = if (expanded.value) ChunkFlowIcons.ExpandLess else ChunkFlowIcons.ExpandMore,
+                contentDescription = null,
+            )
+        }
+
+        AnimatedVisibility(visible = expanded.value) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, bottom = 8.dp)
+                    .selectableGroup(),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.player_file_settings_stt_priority_engine),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+
+                val selectableEngines = SttEngineSelection.selectableEnginesForLanguage(
+                    info = enrichedInfo,
+                    currentPreferred = effectivePreferred,
+                )
+                val options: List<Pair<SttEngine?, String>> = buildList {
+                    add(null to followGlobalLabel)
+                    for (engine in selectableEngines) {
+                        add(engine to formatItemSttEngineOptionLabel(enrichedInfo, engine))
+                    }
+                }
+
+                options.forEach { (engine, label) ->
+                    val isOptionEnabled = enabled && isItemSttEngineSelectable(enrichedInfo, engine)
+                    val isSelected = anyEngineSupported && effectivePreferred == engine
+                    val engineStatus = engine?.let { enrichedInfo.statusOf(it) }
+                    val downloadableModel = engine?.downloadableModel
+                    val isDownloadableModelInstalled =
+                        downloadableModel != null && engineStatus == OnDeviceLanguageModelStatus.INSTALLED
+                    val isDownloadableModelSupported =
+                        downloadableModel != null &&
+                            downloadableModel.isLanguageSupported(enrichedInfo.language)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = isSelected,
+                                enabled = isOptionEnabled,
+                                onClick = {
+                                    if (isOptionEnabled) {
+                                        onPreferredEngineChange(engine)
+                                    }
+                                },
+                                role = Role.RadioButton,
+                            )
+                            .padding(vertical = 4.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = null,
+                            enabled = isOptionEnabled,
+                        )
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isOptionEnabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            },
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(start = 8.dp),
+                        )
+                        when {
+                            isDownloadableModelSupported &&
+                                (
+                                    engineStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                                        engineStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                                    ) -> {
+                                val langSizeMb = if (engine == SttEngine.SHERPA_ONNX && enrichedInfo.sherpaModelSizeBytes > 0L) {
+                                    resolveSherpaTinySizeMb(enrichedInfo.sherpaModelSizeBytes)
+                                } else {
+                                    downloadableModel.approxSizeMbForLanguage(enrichedInfo.language)
+                                }
+                                OutlinedButton(
+                                    onClick = { onDownloadLanguageModel(engine) },
+                                    enabled = enabled,
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .height(28.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.player_file_settings_stt_action_download_with_size,
+                                            langSizeMb,
+                                        ),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+
+                            isDownloadableModelSupported &&
+                                engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
+                                ChunkFlowLoadingIndicator(
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .size(20.dp),
+                                )
+                            }
+
+                            (engine == SttEngine.ML_KIT || engine == SttEngine.SPEECH_RECOGNIZER) &&
+                                (
+                                    engineStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                                        engineStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                                    ) -> {
+                                OutlinedButton(
+                                    onClick = { onDownloadLanguageModel(engine) },
+                                    enabled = enabled,
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .height(28.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.player_file_settings_stt_action_download),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+
+                            (engine == SttEngine.ML_KIT || engine == SttEngine.SPEECH_RECOGNIZER) &&
+                                engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
+                                ChunkFlowLoadingIndicator(
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .size(20.dp),
+                                )
+                            }
+
+                            downloadableModel != null && isDownloadableModelInstalled -> {
+                                IconButton(
+                                    onClick = {
+                                        when {
+                                            engine == SttEngine.SHERPA_ONNX -> onDeleteSherpaModel()
+                                            downloadableModel.isPerLanguageModel -> onDeleteLanguageSttModel(downloadableModel)
+                                            else -> onPurgeDownloadableModel(downloadableModel)
+                                        }
+                                    },
+                                    enabled = enabled,
+                                    modifier = Modifier
+                                        .padding(start = 4.dp)
+                                        .size(32.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = ChunkFlowIcons.Delete,
+                                        contentDescription = stringResource(
+                                            R.string.player_file_settings_stt_action_delete,
+                                        ),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun itemSttEngineDisplayName(engine: SttEngine): String = when (engine) {
+    SttEngine.ML_KIT -> stringResource(R.string.player_settings_stt_engine_mlkit)
+    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.player_file_settings_stt_engine_speech_recognizer)
+    SttEngine.SHERPA_ONNX -> stringResource(R.string.player_file_settings_stt_engine_sherpa_onnx)
+    SttEngine.SHERPA_ONNX_SENSE_VOICE -> stringResource(R.string.player_file_settings_stt_engine_sherpa_sense_voice)
+    SttEngine.SHERPA_ONNX_WHISPER_BASE -> stringResource(R.string.player_file_settings_stt_engine_sherpa_whisper_base)
+    SttEngine.SHERPA_ONNX_WHISPER_SMALL -> stringResource(R.string.player_file_settings_stt_engine_sherpa_whisper_small)
+    SttEngine.MOONSHINE_TINY -> stringResource(R.string.player_file_settings_stt_engine_moonshine_tiny)
+    SttEngine.MOONSHINE_BASE -> stringResource(R.string.player_file_settings_stt_engine_moonshine_base)
+    SttEngine.OPENAI_API -> stringResource(R.string.player_file_settings_stt_engine_openai_api)
+    SttEngine.GROQ_API -> stringResource(R.string.player_file_settings_stt_engine_groq_api)
+    SttEngine.GEMINI_API -> stringResource(R.string.player_file_settings_stt_engine_gemini_api)
+}
+
+@Composable
+private fun itemSttEngineLabelText(label: SttEngineLabel): String = when (label) {
+    SttEngineLabel.RECOMMENDED -> stringResource(R.string.player_stt_label_recommended)
+    SttEngineLabel.HIGH_ACCURACY -> stringResource(R.string.player_stt_label_high_accuracy)
+    SttEngineLabel.FAST -> stringResource(R.string.player_stt_label_fast)
+    SttEngineLabel.SLOW -> stringResource(R.string.player_stt_label_slow)
+}
+
+@Composable
+private fun formatItemSttEngineOptionLabel(
+    enrichedInfo: OnDeviceLanguageModelInfo,
+    engine: SttEngine,
+): String {
+    val status = enrichedInfo.statusOf(engine)
+    val rawLabel = when (engine) {
+        SttEngine.ML_KIT -> formatItemEngineOptionWithStatus(
+            baseName = stringResource(R.string.player_file_settings_stt_engine_mlkit_radio),
+            status = status,
+        )
+
+        SttEngine.SPEECH_RECOGNIZER -> formatItemEngineOptionWithStatus(
+            baseName = stringResource(R.string.player_file_settings_stt_engine_speech_recognizer),
+            status = status,
+        )
+
+        SttEngine.SHERPA_ONNX -> {
+            val baseName = stringResource(R.string.player_file_settings_stt_engine_sherpa_onnx)
+            val sizeMb = resolveSherpaTinySizeMb(enrichedInfo.sherpaModelSizeBytes)
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.player_file_settings_stt_engine_sherpa_downloaded, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
+
+                else -> formatItemEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.MOONSHINE_TINY,
+        SttEngine.MOONSHINE_BASE,
+        -> {
+            val baseName = itemSttEngineDisplayName(engine)
+            val sizeMb = engine.downloadableModel?.approxSizeMbForLanguage(enrichedInfo.language) ?: 100
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.player_file_settings_stt_engine_model_downloaded_format, baseName, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
+
+                else -> formatItemEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.SHERPA_ONNX_SENSE_VOICE,
+        SttEngine.SHERPA_ONNX_WHISPER_BASE,
+        SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+        -> {
+            val baseName = itemSttEngineDisplayName(engine)
+            val sizeMb = engine.downloadableModel?.estimatedSizeMb ?: 100
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED ->
+                    stringResource(R.string.player_file_settings_stt_engine_model_downloaded_format, baseName, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
+
+                else -> formatItemEngineOptionWithStatus(
+                    baseName = baseName,
+                    status = status,
+                )
+            }
+        }
+
+        SttEngine.OPENAI_API,
+        SttEngine.GROQ_API,
+        SttEngine.GEMINI_API,
+        -> {
+            val baseName = itemSttEngineDisplayName(engine)
+            when (status) {
+                OnDeviceLanguageModelStatus.INSTALLED -> baseName
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+                    "$baseName (${stringResource(R.string.player_file_settings_stt_status_api_key_not_configured)})"
+
+                else -> formatItemEngineOptionWithStatus(baseName = baseName, status = status)
+            }
+        }
+    }
+    val labels = SttEngineSelection.labelsFor(enrichedInfo.language, engine)
+    if (labels.isEmpty()) {
+        return rawLabel
+    }
+    val badgeText = labels.map { itemSttEngineLabelText(it) }.joinToString("・")
+    return "$rawLabel [$badgeText]"
+}
+
+@Composable
+private fun formatItemEngineOptionWithStatus(
+    baseName: String,
+    status: OnDeviceLanguageModelStatus,
+): String = when (status) {
+    OnDeviceLanguageModelStatus.INSTALLED -> baseName
+
+    OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+        "$baseName (${stringResource(R.string.player_file_settings_stt_status_not_installed)})"
+
+    OnDeviceLanguageModelStatus.DOWNLOADING ->
+        "$baseName (${stringResource(R.string.player_file_settings_stt_status_downloading)})"
+
+    OnDeviceLanguageModelStatus.DOWNLOAD_FAILED ->
+        "$baseName (${stringResource(R.string.player_file_settings_stt_status_download_failed)})"
+
+    OnDeviceLanguageModelStatus.CHECKING ->
+        "$baseName (${stringResource(R.string.player_file_settings_stt_status_checking)})"
+
+    OnDeviceLanguageModelStatus.UNSUPPORTED ->
+        "$baseName (${stringResource(R.string.player_file_settings_stt_status_unsupported)})"
 }

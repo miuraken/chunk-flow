@@ -1301,12 +1301,6 @@ private fun TranscriptChunkRow(
         }
     }
 
-    val effectiveIsBookmarked = chunk.isBookmarked && !chunk.isSkipped
-    val bookmarkCd = if (effectiveIsBookmarked) {
-        stringResource(R.string.player_bookmark_toggle_remove)
-    } else {
-        stringResource(R.string.player_bookmark_toggle_add)
-    }
     val repeatCheckCd = if (chunk.isRepeatChecked) {
         stringResource(R.string.player_repeat_check_remove)
     } else {
@@ -1705,15 +1699,20 @@ private fun TranscriptChunkRow(
                 modifier = Modifier.size(if (chunk.isSkipped) 28.dp else 36.dp),
             ) {
                 Icon(
-                    imageVector = if (effectiveIsBookmarked) {
+                    imageVector = if (chunk.isBookmarked) {
                         ChunkFlowIcons.Bookmark
                     } else {
                         ChunkFlowIcons.BookmarkBorder
                     },
-                    contentDescription = bookmarkCd,
+                    contentDescription = if (chunk.isBookmarked) {
+                        stringResource(R.string.player_bookmark_toggle_remove)
+                    } else {
+                        stringResource(R.string.player_bookmark_toggle_add)
+                    },
                     tint = when {
+                        chunk.isSkipped && chunk.isBookmarked -> colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
                         chunk.isSkipped -> colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
-                        effectiveIsBookmarked -> colorScheme.primary
+                        chunk.isBookmarked -> colorScheme.primary
                         else -> colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     },
                     modifier = Modifier.size(if (chunk.isSkipped) 16.dp else 18.dp),

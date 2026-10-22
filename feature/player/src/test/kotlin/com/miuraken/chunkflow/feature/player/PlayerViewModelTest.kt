@@ -3061,4 +3061,70 @@ class PlayerViewModelTest {
         assertFalse(viewModel.uiState.value.isTranscriptionBadgeTooltipVisible)
         assertTrue(viewModel.uiState.value.lookaheadStatus.enabled)
     }
+
+    @Test
+    fun `スキップ済みチャンクにブックマークがある場合_isBookmarkedはtrueのまま保持されブックマーク移動ではスキップされる`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val firstChunk = sample.chunks[0].copy(isSkipped = false)
+        val secondChunk = sample.chunks[1].copy(isSkipped = false)
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample.copy(chunks = listOf(firstChunk, secondChunk)))
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+        // ブックマークを付けたあとでチャンクをスキップにする
+        viewModel.onEvent(PlayerEvent.ToggleBookmark(firstChunk.id))
+        viewModel.onEvent(PlayerEvent.ToggleBookmark(secondChunk.id))
+        viewModel.onEvent(PlayerEvent.SetChunksSkipped(setOf(firstChunk.id), skipped = true))
+
+        val chunks = viewModel.uiState.value.chunks
+        val firstUi = chunks.first { it.id == firstChunk.id }
+        val secondUi = chunks.first { it.id == secondChunk.id }
+        assertTrue(firstUi.isSkipped)
+        assertTrue(firstUi.isBookmarked)
+        assertFalse(secondUi.isSkipped)
+        assertTrue(secondUi.isBookmarked)
+    }
+
+    @Test
+    fun `ClearItemSttOverride_ファイル個別の音声認識エンジン上書きをクリアして全体設定に従う状態に戻す`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item))
+        val playback = FakePlaybackController()
+        val settingsRepo = FakeUserSettingsRepository()
+        val analysisRepo = FakeAnalysisRepository().apply { put(sample) }
+        val itemSttOverrideRepo = com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository()
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            settingsRepo,
+            itemSttOverrideRepo,
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+        viewModel.onEvent(
+            PlayerEvent.SetTargetEngineOverride(
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            ),
+        )
+        assertFalse(viewModel.uiState.value.itemSttOverride.isEmpty)
+
+        viewModel.onEvent(PlayerEvent.ClearItemSttOverride)
+        assertTrue(viewModel.uiState.value.itemSttOverride.isEmpty)
+    }
 }

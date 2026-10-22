@@ -1881,6 +1881,18 @@ private fun ZoomedWaveformCanvas(
                                     autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
                                 )
                             }
+                            val editChunk = currentEditingBoundaryChunk
+                            if (editChunk != null) {
+                                val liveWindowMs = currentZoomWindowMs.coerceAtLeast(1L)
+                                val windowVirtualStartMs = centerVirtualMs - liveWindowMs / 2L
+                                val pxPerMs = size.width / liveWindowMs.toFloat()
+                                val startX = (tl.mediaToVirtualMs(editChunk.startMs) - windowVirtualStartMs) * pxPerMs
+                                val endX = (tl.mediaToVirtualMs(editChunk.endMs) - windowVirtualStartMs) * pxPerMs
+                                val hitSlopPx = 48.dp.toPx()
+                                if (abs(offset.x - startX) <= hitSlopPx || abs(offset.x - endX) <= hitSlopPx) {
+                                    return@detectTapGestures
+                                }
+                            }
                             val touchVirtualMs = zoomedTouchXToMs(
                                 x = offset.x,
                                 widthPx = size.width,
@@ -1936,7 +1948,7 @@ private fun ZoomedWaveformCanvas(
                             val pxPerMs = size.width / liveWindowMs.toFloat()
                             val startX = (tl.mediaToVirtualMs(editChunk.startMs) - windowVirtualStartMs) * pxPerMs
                             val endX = (tl.mediaToVirtualMs(editChunk.endMs) - windowVirtualStartMs) * pxPerMs
-                            val hitSlopPx = 24.dp.toPx()
+                            val hitSlopPx = 48.dp.toPx()
                             val distStart = abs(downOffset.x - startX)
                             val distEnd = abs(downOffset.x - endX)
                             if (distStart <= hitSlopPx || distEnd <= hitSlopPx) {
@@ -1945,6 +1957,7 @@ private fun ZoomedWaveformCanvas(
                                 boundaryDragEndMs = editChunk.endMs
                             }
                         }
+                        draggingBoundaryIsEnd != null
                     },
                     onGesture = { pan, zoom ->
                         if (size.width > 0) {
@@ -2029,8 +2042,10 @@ private fun ZoomedWaveformCanvas(
                 var abCurrentVirtualMs = 0L
                 var abStartMs = 0L
                 var abCurrentMs = 0L
+                var ignoreLongPressForBoundaryHandle = false
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
+                        ignoreLongPressForBoundaryHandle = false
                         if (size.width > 0) {
                             val tl = currentTimeline
                             val scrubMs = currentScrubPositionMs
@@ -2042,6 +2057,20 @@ private fun ZoomedWaveformCanvas(
                                     activeAutoPauseChunkIndex = if (currentAutoPauseEndsAtMs != null) currentActiveChunkIndex else null,
                                     autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
                                 )
+                            }
+                            val editChunk = currentEditingBoundaryChunk
+                            if (editChunk != null) {
+                                val liveWindowMs = currentZoomWindowMs.coerceAtLeast(1L)
+                                val windowVirtualStartMs = centerVirtualMs - liveWindowMs / 2L
+                                val pxPerMs = size.width / liveWindowMs.toFloat()
+                                val startX = (tl.mediaToVirtualMs(editChunk.startMs) - windowVirtualStartMs) * pxPerMs
+                                val endX = (tl.mediaToVirtualMs(editChunk.endMs) - windowVirtualStartMs) * pxPerMs
+                                val hitSlopPx = 48.dp.toPx()
+                                if (abs(offset.x - startX) <= hitSlopPx || abs(offset.x - endX) <= hitSlopPx) {
+                                    ignoreLongPressForBoundaryHandle = true
+                                    initialTouchedChunk = null
+                                    return@detectDragGesturesAfterLongPress
+                                }
                             }
                             val touchVirtualMs = zoomedTouchXToMs(
                                 x = offset.x,
@@ -2066,6 +2095,7 @@ private fun ZoomedWaveformCanvas(
                         }
                     },
                     onDrag = { change, dragAmount ->
+                        if (ignoreLongPressForBoundaryHandle) return@detectDragGesturesAfterLongPress
                         change.consume()
                         if (size.width > 0) {
                             val tl = currentTimeline
@@ -2076,6 +2106,10 @@ private fun ZoomedWaveformCanvas(
                         }
                     },
                     onDragEnd = {
+                        if (ignoreLongPressForBoundaryHandle) {
+                            ignoreLongPressForBoundaryHandle = false
+                            return@detectDragGesturesAfterLongPress
+                        }
                         val touched = initialTouchedChunk
                         initialTouchedChunk = null
                         if (abs(abCurrentVirtualMs - abStartVirtualMs) < 100L && touched != null) {
@@ -2084,6 +2118,10 @@ private fun ZoomedWaveformCanvas(
                         currentOnAbDragFinish()
                     },
                     onDragCancel = {
+                        if (ignoreLongPressForBoundaryHandle) {
+                            ignoreLongPressForBoundaryHandle = false
+                            return@detectDragGesturesAfterLongPress
+                        }
                         initialTouchedChunk = null
                         currentOnAbDragFinish()
                     },
@@ -2385,9 +2423,9 @@ private fun ZoomedWaveformCanvas(
                                 size = Size(clampedRight - clampedLeft, size.height),
                                 style = Stroke(width = 2.dp.toPx()),
                             )
-                            val handleBarWidthPx = 3.dp.toPx()
-                            val handleKnobWidthPx = 12.dp.toPx()
-                            val handleKnobHeightPx = 7.dp.toPx()
+                            val handleBarWidthPx = 3.5.dp.toPx()
+                            val handleKnobWidthPx = 16.dp.toPx()
+                            val handleKnobHeightPx = 9.dp.toPx()
                             val handleKnobRadiusPx = handleKnobHeightPx * 0.5f
                             for (handleX in listOf(rawLeftX, rawRightX)) {
                                 if (handleX in -handleKnobWidthPx..(size.width + handleKnobWidthPx)) {
@@ -2635,20 +2673,23 @@ private fun DrawScope.drawSelectionCheckBadge(
  * ピンチ（拡大縮小）と 1 本指のパンを検出する。
  *
  * 判定は `detectTransformGestures` と同じ（タッチスロップを超えてから反応し、反応したら位置の変化を消費する）。
- * それに加えて、ジェスチャーの開始時に [onGestureStart] を呼ぶ。
+ * それに加えて、ジェスチャーの開始時に [onGestureStart] を呼び、`true` が返された場合（境界ハンドルを掴んだ場合など）は
+ * タッチスロップを待たずに即座にドラッグを開始する。
  */
 private suspend fun PointerInputScope.detectZoomAndPanGestures(
-    onGestureStart: (downOffset: Offset) -> Unit,
+    onGestureStart: (downOffset: Offset) -> Boolean,
     onGesture: (pan: Offset, zoom: Float) -> Unit,
     onGestureEnd: () -> Unit = {},
 ) {
     awaitEachGesture {
         var zoom = 1f
         var pan = Offset.Zero
-        var pastTouchSlop = false
         val touchSlop = viewConfiguration.touchSlop
         val down = awaitFirstDown(requireUnconsumed = false)
-        onGestureStart(down.position)
+        var pastTouchSlop = onGestureStart(down.position)
+        if (pastTouchSlop) {
+            down.consume()
+        }
         do {
             val event = awaitPointerEvent()
             val canceled = event.changes.any { it.isConsumed }

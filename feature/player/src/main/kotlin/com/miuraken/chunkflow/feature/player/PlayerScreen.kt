@@ -692,6 +692,21 @@ fun PlayerScreen(
                 onChangeBaseEngine = { engine ->
                     onEvent(PlayerEvent.SetBaseEngineOverride(engine))
                 },
+                onClearSttOverride = {
+                    onEvent(PlayerEvent.ClearItemSttOverride)
+                },
+                onDownloadSttModel = { language, engine ->
+                    onEvent(PlayerEvent.RequestItemSttModelDownload(language, engine))
+                },
+                onDeleteSherpaModel = { language ->
+                    onEvent(PlayerEvent.DeleteItemSherpaModel(language))
+                },
+                onDeleteLanguageSttModel = { language, model ->
+                    onEvent(PlayerEvent.DeleteItemLanguageSttModel(language, model))
+                },
+                onPurgeDownloadableModel = { model ->
+                    onEvent(PlayerEvent.PurgeItemSttModel(model))
+                },
                 transcriptOffsetMs = state.transcriptOffsetMs,
                 onAdjustTranscriptOffset = { deltaMs ->
                     onEvent(PlayerEvent.AdjustTranscriptOffset(deltaMs))

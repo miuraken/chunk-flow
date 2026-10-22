@@ -1302,6 +1302,29 @@ sealed interface PlayerEvent {
     /** ファイル設定のベース言語の文字起こしエンジンを上書きする。 */
     data class SetBaseEngineOverride(val engine: com.miuraken.chunkflow.core.model.SttEngine?) : PlayerEvent
 
+    /** ファイル設定の対象言語・ベース言語の文字起こしエンジン上書きを解除し、全体設定に従う状態へ戻す。 */
+    data object ClearItemSttOverride : PlayerEvent
+
+    /** ファイル設定の音声認識モデル管理から指定言語・エンジンのモデル取得を要求する。 */
+    data class RequestItemSttModelDownload(
+        val language: LanguageTag,
+        val engine: com.miuraken.chunkflow.core.model.SttEngine,
+    ) : PlayerEvent
+
+    /** ファイル設定の音声認識モデル管理から指定言語の sherpa-onnx Whisper Tiny モデルを削除する。 */
+    data class DeleteItemSherpaModel(val language: LanguageTag) : PlayerEvent
+
+    /** ファイル設定の音声認識モデル管理から指定言語の言語別ローカルモデルを削除する。 */
+    data class DeleteItemLanguageSttModel(
+        val language: LanguageTag,
+        val model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ) : PlayerEvent
+
+    /** ファイル設定の音声認識モデル管理から多言語共通のローカルモデルを削除（パージ）する。 */
+    data class PurgeItemSttModel(
+        val model: com.miuraken.chunkflow.core.model.DownloadableSttModel,
+    ) : PlayerEvent
+
     /** 巻き戻し秒数（ミリ秒）を変更する。 */
     data class SetSeekBackMs(val durationMs: Long) : PlayerEvent
 
@@ -2339,7 +2362,7 @@ class PlayerViewModel @Inject constructor(
                     val added = analysisRepository.toggleChunkBookmark(id, event.chunkId)
                     if (!added) {
                         val remainingOtherBookmarks = uiState.value.chunks.any {
-                            it.id != event.chunkId && it.isBookmarked
+                            it.id != event.chunkId && it.isBookmarked && !it.isSkipped
                         }
                         if (!remainingOtherBookmarks) {
                             playbackController.updatePractice { current ->
@@ -3464,6 +3487,195 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            PlayerEvent.ClearItemSttOverride -> {
+                val mediaId = uiState.value.mediaId ?: return
+                viewModelScope.launch {
+                    itemSttOverrideRepository.set(mediaId, com.miuraken.chunkflow.core.model.ItemSttOverride.NONE)
+                }
+            }
+
+            is PlayerEvent.RequestItemSttModelDownload -> {
+                val normLang = LanguageSettings.normalize(event.language)
+                val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                localUiState.update { state ->
+                    val existingInfo = state.languageModelInfos[event.language]
+                        ?: state.languageModelInfos[normLang]
+                        ?: state.languageModelInfos[mgmtLang]
+                        ?: OnDeviceLanguageModelInfo(language = event.language)
+                    val downloadingInfo = updateModelInfoStatus(
+                        info = existingInfo,
+                        engine = event.engine,
+                        status = OnDeviceLanguageModelStatus.DOWNLOADING,
+                    )
+                    val nextMap = state.languageModelInfos +
+                        (event.language to downloadingInfo) +
+                        (normLang to downloadingInfo.copy(language = normLang)) +
+                        (mgmtLang to downloadingInfo.copy(language = mgmtLang))
+                    state.copy(languageModelInfos = nextMap)
+                }
+                viewModelScope.launch {
+                    val ok = analysisRepository.requestSttModelDownload(event.language, event.engine)
+                    val queryLanguages = buildDetailedQueryLanguages(uiState.value.languagePair, event.language)
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    if (!ok) {
+                        val existing = queriedMap[event.language]
+                            ?: queriedMap[normLang]
+                            ?: queriedMap[mgmtLang]
+                            ?: OnDeviceLanguageModelInfo(language = event.language)
+                        val failedInfo = updateModelInfoStatus(
+                            info = existing,
+                            engine = event.engine,
+                            status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED,
+                        )
+                        queriedMap[event.language] = failedInfo
+                        queriedMap[normLang] = failedInfo.copy(language = normLang)
+                        queriedMap[mgmtLang] = failedInfo.copy(language = mgmtLang)
+                    }
+                    localUiState.update { state ->
+                        state.copy(languageModelInfos = state.languageModelInfos + queriedMap)
+                    }
+                }
+            }
+
+            is PlayerEvent.DeleteItemSherpaModel -> {
+                val normLang = LanguageSettings.normalize(event.language)
+                val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                viewModelScope.launch {
+                    analysisRepository.deleteSherpaModel(event.language)
+                    val mediaId = uiState.value.mediaId
+                    if (mediaId != null) {
+                        val pair = uiState.value.languagePair
+                        val currentOverride = itemSttOverrideRepository.get(mediaId)
+                        val nextTarget = if (pair != null &&
+                            matchesLanguageRole(event.language, pair.target) &&
+                            currentOverride.targetEngine == SttEngine.SHERPA_ONNX
+                        ) {
+                            null
+                        } else {
+                            currentOverride.targetEngine
+                        }
+                        val nextBase = if (pair?.base != null &&
+                            matchesLanguageRole(event.language, pair.base) &&
+                            currentOverride.baseEngine == SttEngine.SHERPA_ONNX
+                        ) {
+                            null
+                        } else {
+                            currentOverride.baseEngine
+                        }
+                        if (nextTarget != currentOverride.targetEngine || nextBase != currentOverride.baseEngine) {
+                            itemSttOverrideRepository.set(
+                                mediaId,
+                                currentOverride.copy(targetEngine = nextTarget, baseEngine = nextBase),
+                            )
+                        }
+                    }
+                    val queryLanguages = buildDetailedQueryLanguages(uiState.value.languagePair, event.language)
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    for (langKey in listOf(event.language, normLang, mgmtLang)) {
+                        val existing = queriedMap[langKey]
+                            ?: localUiState.value.languageModelInfos[langKey]
+                            ?: OnDeviceLanguageModelInfo(language = langKey)
+                        queriedMap[langKey] = existing.copy(
+                            sherpaModelStatus = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                            canDeleteSherpaModel = false,
+                        )
+                    }
+                    localUiState.update { state ->
+                        state.copy(languageModelInfos = state.languageModelInfos + queriedMap)
+                    }
+                }
+            }
+
+            is PlayerEvent.DeleteItemLanguageSttModel -> {
+                val normLang = LanguageSettings.normalize(event.language)
+                val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
+                viewModelScope.launch {
+                    analysisRepository.deleteSttModelForLanguage(event.language, event.model)
+                    val mediaId = uiState.value.mediaId
+                    if (mediaId != null) {
+                        val pair = uiState.value.languagePair
+                        val currentOverride = itemSttOverrideRepository.get(mediaId)
+                        val nextTarget = if (pair != null &&
+                            matchesLanguageRole(event.language, pair.target) &&
+                            currentOverride.targetEngine == event.model.sttEngine
+                        ) {
+                            null
+                        } else {
+                            currentOverride.targetEngine
+                        }
+                        val nextBase = if (pair?.base != null &&
+                            matchesLanguageRole(event.language, pair.base) &&
+                            currentOverride.baseEngine == event.model.sttEngine
+                        ) {
+                            null
+                        } else {
+                            currentOverride.baseEngine
+                        }
+                        if (nextTarget != currentOverride.targetEngine || nextBase != currentOverride.baseEngine) {
+                            itemSttOverrideRepository.set(
+                                mediaId,
+                                currentOverride.copy(targetEngine = nextTarget, baseEngine = nextBase),
+                            )
+                        }
+                    }
+                    val queryLanguages = buildDetailedQueryLanguages(uiState.value.languagePair, event.language)
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    for (langKey in listOf(event.language, normLang, mgmtLang)) {
+                        val existing = queriedMap[langKey]
+                            ?: localUiState.value.languageModelInfos[langKey]
+                            ?: OnDeviceLanguageModelInfo(language = langKey)
+                        queriedMap[langKey] = existing.copy(
+                            extraEngineStatuses = existing.extraEngineStatuses +
+                                (event.model.sttEngine to OnDeviceLanguageModelStatus.NOT_INSTALLED),
+                        )
+                    }
+                    localUiState.update { state ->
+                        state.copy(languageModelInfos = state.languageModelInfos + queriedMap)
+                    }
+                }
+            }
+
+            is PlayerEvent.PurgeItemSttModel -> {
+                viewModelScope.launch {
+                    analysisRepository.purgeSttModel(event.model)
+                    val mediaId = uiState.value.mediaId
+                    if (mediaId != null) {
+                        val currentOverride = itemSttOverrideRepository.get(mediaId)
+                        val nextTarget = if (currentOverride.targetEngine == event.model.sttEngine) null else currentOverride.targetEngine
+                        val nextBase = if (currentOverride.baseEngine == event.model.sttEngine) null else currentOverride.baseEngine
+                        if (nextTarget != currentOverride.targetEngine || nextBase != currentOverride.baseEngine) {
+                            itemSttOverrideRepository.set(
+                                mediaId,
+                                currentOverride.copy(targetEngine = nextTarget, baseEngine = nextBase),
+                            )
+                        }
+                    }
+                    val queryLanguages = buildDetailedQueryLanguages(
+                        uiState.value.languagePair,
+                        uiState.value.languagePair?.target,
+                    )
+                    val queried = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    val queriedMap = queried.associateBy { it.language }.toMutableMap()
+                    val updatedInfos = (localUiState.value.languageModelInfos + queriedMap).mapValues { (_, info) ->
+                        if (event.model.isLanguageSupported(info.language)) {
+                            updateModelInfoStatus(
+                                info = info,
+                                engine = event.model.sttEngine,
+                                status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+                            )
+                        } else {
+                            info
+                        }
+                    }
+                    localUiState.update { state ->
+                        state.copy(languageModelInfos = updatedInfos)
+                    }
+                }
+            }
+
             PlayerEvent.DismissDetailedTranscription -> {
                 detailedTrialJob?.cancel()
                 detailedTrialJob = null
@@ -4494,7 +4706,7 @@ class PlayerViewModel @Inject constructor(
         }
         val chunkUis = analysis.chunks.map { chunk ->
             val transcript = analysis.transcripts[chunk.id]
-            val isBookmarked = !chunk.isSkipped && analysis.bookmarks.any { bookmark ->
+            val isBookmarked = analysis.bookmarks.any { bookmark ->
                 (bookmark.positionMs >= chunk.startMs && bookmark.positionMs < chunk.endMs) ||
                     bookmark.positionMs == chunk.startMs
             }

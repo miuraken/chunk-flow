@@ -347,7 +347,7 @@ internal fun ChunkDisplaySettingsStrip(
                     )
                 }
                 // 「🔖」（ブックマークしたチャンクのみ表示。1つでもブックマークがあるときのみ表示）
-                if (state.chunks.any { it.isBookmarked }) {
+                if (state.chunks.any { it.isBookmarked && !it.isSkipped }) {
                     add(
                         ChunkFlowToggleButtonItem(
                             label = bookmarksOnlyLabel,
