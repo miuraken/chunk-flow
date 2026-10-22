@@ -55,8 +55,10 @@ import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ChunkTranscriptionTrialResult
 import com.miuraken.chunkflow.core.model.EngineId
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelInfo
@@ -187,26 +189,30 @@ class DefaultAnalysisRepository(
     )
 
     /**
-     * ファイル個別設定 ＞ フォルダ設定 の順で合成した音声認識エンジンの上書きを返す。
+     * 教材 [id] の文字起こしに使う音声認識エンジンの上書きを、ファイル個別設定 ＞ フォルダ設定 の順で合成して返す。
+     * どちらも指定していない言語は全体設定に従う。
+     *
+     * - フォルダ設定は、プレイヤー画面・ライブラリ画面と同じ [LibraryCourseFolder.resolveSttOverride] で決める。
+     *   教材のフォルダ（`media_item.course`）から親フォルダへ近い順にたどり、言語の役割（学習対象 / ベース）ごとに、
+     *   フォルダが上書きしていないか、フォルダの言語が教材の言語（`media_item` の学習対象言語・ベース言語）と違えば、
+     *   さらに親フォルダの設定を使う。
+     * - ファイル個別設定で両方の言語が決まっていれば、フォルダは調べない。
+     * - [courseFolderDao] がないとき、教材が見つからないときは、ファイル個別設定だけを返す。
      */
-    private suspend fun resolveEffectiveItemSttOverride(
-        id: MediaId,
-    ): com.miuraken.chunkflow.core.model.ItemSttOverride {
-        val itemOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+    private suspend fun resolveEffectiveItemSttOverride(id: MediaId): ItemSttOverride {
+        val itemOverride = itemSttOverrideRepository?.get(id) ?: ItemSttOverride.NONE
         if (itemOverride.targetEngine != null && itemOverride.baseEngine != null) {
             return itemOverride
         }
         val dao = courseFolderDao ?: return itemOverride
-        val course = mediaItemDao.getById(id.value)?.course?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
-            ?: return itemOverride
-        val folderEntity = dao.getByPath(course)
-            ?: if ('/' in course) dao.getByPath(course.substringBeforeLast('/')) else null
-        val folderOverride = folderEntity?.let {
-            com.miuraken.chunkflow.core.model.ItemSttOverride(
-                targetEngine = com.miuraken.chunkflow.core.model.SttEngine.fromNameOrNull(it.targetSttEngine),
-                baseEngine = com.miuraken.chunkflow.core.model.SttEngine.fromNameOrNull(it.baseSttEngine),
-            )
-        } ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+        val mediaItem = mediaItemDao.getById(id.value) ?: return itemOverride
+        val itemLanguages = LanguagePair(
+            target = LanguageTag(mediaItem.targetLang),
+            base = mediaItem.baseLang?.takeIf { it.isNotBlank() }?.let(::LanguageTag),
+        )
+        val folderOverride = LibraryCourseFolder.resolveSttOverride(mediaItem.course, itemLanguages) { path ->
+            dao.getByPath(path)?.toExternalModel()
+        }
         return itemOverride.withFolderFallback(folderOverride)
     }
 
@@ -1814,7 +1820,7 @@ class DefaultAnalysisRepository(
                                     languagePair = effectiveLanguagePair,
                                     forceRefresh = true,
                                     highPriority = true,
-                                    itemSttOverride = itemSttOverride,
+                                    itemSttOverride = itemSttOverride.forRecognitionLanguages(effectiveLanguagePair, mediaLanguagePair),
                                     engineByLanguage = engineByLanguage,
                                     precomputedLanguage = null,
                                     precomputedLanguageConfidence = null,
@@ -2644,7 +2650,7 @@ class DefaultAnalysisRepository(
                                         endMs = targetChunk.endMs,
                                         languagePair = effectiveLanguagePair,
                                         forceRefresh = false,
-                                        itemSttOverride = itemSttOverride,
+                                        itemSttOverride = itemSttOverride.forRecognitionLanguages(effectiveLanguagePair, mediaLanguagePair),
                                         engineByLanguage = engineByLanguage,
                                         highPriority = true,
                                         precomputedLanguage = precomputedLidLang,
@@ -2745,9 +2751,6 @@ class DefaultAnalysisRepository(
     override suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) {
         withContext(ioDispatcher) {
             withTrackedTranscriptionJob(id) {
-                val itemSttOverride = resolveEffectiveItemSttOverride(id)
-                val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
-
                 attemptedEmptyChunkIds[id]?.remove(chunkId.value)
 
                 val allChunks = chunkDao.observeByMediaId(id.value).first()
@@ -2909,7 +2912,7 @@ class DefaultAnalysisRepository(
                                 endMs = targetChunk.endMs,
                                 languagePair = effectiveLanguagePair,
                                 forceRefresh = true,
-                                itemSttOverride = itemSttOverride,
+                                itemSttOverride = itemSttOverride.forRecognitionLanguages(effectiveLanguagePair, mediaLanguagePair),
                                 engineByLanguage = engineByLanguage,
                                 highPriority = true,
                                 precomputedLanguage = precomputedLidLang,
@@ -3518,7 +3521,7 @@ class DefaultAnalysisRepository(
                                         endMs = targetChunk.endMs,
                                         languagePair = effectiveLanguagePair,
                                         forceRefresh = false,
-                                        itemSttOverride = itemSttOverride,
+                                        itemSttOverride = itemSttOverride.forRecognitionLanguages(effectiveLanguagePair, languagePair),
                                         engineByLanguage = engineByLanguage,
                                         highPriority = false,
                                         precomputedLanguage = precomputedLidLang,
