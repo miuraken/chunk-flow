@@ -7,18 +7,23 @@ import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.ItemState
+import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.WordTiming
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository
+import com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository
 import com.miuraken.chunkflow.core.testing.fake.FakeLibraryRepository
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.testing.fake.FakeUserSettingsRepository
@@ -3194,4 +3199,140 @@ class PlayerViewModelTest {
         )
         assertTrue(viewModel.uiState.value.folderSttOverride.isEmpty)
     }
+
+    @Test
+    fun `祖父母のフォルダだけが音声認識設定を上書きしている場合_孫のフォルダのファイルのfolderSttOverrideに反映される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item.copy(course = "Korean/Level1/Unit1")
+        val grandparentOverride = ItemSttOverride(
+            targetEngine = SttEngine.SHERPA_ONNX,
+            baseEngine = SttEngine.ML_KIT,
+        )
+        val libraryRepo = FakeLibraryRepository(
+            initialItems = listOf(item),
+            initialCourseFolders = listOf(
+                courseFolder("Korean", item.languagePair, grandparentOverride),
+                // 親のフォルダは設定の行があるが、音声認識エンジンは上書きしていない（全体設定に従う）
+                courseFolder("Korean/Level1", item.languagePair),
+            ),
+        )
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            FakeAnalysisRepository().apply { put(sample.copy(item = item)) },
+            FakePlaybackController(),
+            FakeUserSettingsRepository(),
+            FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+
+        assertEquals(grandparentOverride, viewModel.uiState.value.folderSttOverride)
+    }
+
+    @Test
+    fun `近いフォルダと遠いフォルダが上書きしている場合_言語の役割ごとに近いフォルダの設定が優先される`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item = sample.item.copy(course = "Korean/Level1/Unit1")
+        val libraryRepo = FakeLibraryRepository(
+            initialItems = listOf(item),
+            initialCourseFolders = listOf(
+                // 遠いフォルダ（祖父母）: 学習対象言語・ベース言語の両方を上書き
+                courseFolder(
+                    "Korean",
+                    item.languagePair,
+                    ItemSttOverride(targetEngine = SttEngine.ML_KIT, baseEngine = SttEngine.SPEECH_RECOGNIZER),
+                ),
+                // 近いフォルダ（ファイルのフォルダ）: 学習対象言語だけを上書き
+                courseFolder(
+                    "Korean/Level1/Unit1",
+                    item.languagePair,
+                    ItemSttOverride(targetEngine = SttEngine.SHERPA_ONNX_SENSE_VOICE),
+                ),
+            ),
+        )
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            FakeAnalysisRepository().apply { put(sample.copy(item = item)) },
+            FakePlaybackController(),
+            FakeUserSettingsRepository(),
+            FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+
+        // 学習対象言語は近いフォルダの設定、近いフォルダが上書きしていないベース言語は遠いフォルダの設定
+        assertEquals(
+            ItemSttOverride(
+                targetEngine = SttEngine.SHERPA_ONNX_SENSE_VOICE,
+                baseEngine = SttEngine.SPEECH_RECOGNIZER,
+            ),
+            viewModel.uiState.value.folderSttOverride,
+        )
+    }
+
+    @Test
+    fun `フォルダの言語とファイルの言語が違う場合_その言語の役割ではフォルダの音声認識設定が効かない`() = runTest {
+        val sample = SampleMaterials.jaKo
+        // ファイルの言語は 学習対象: ko / ベース: ja
+        val item = sample.item.copy(course = "Mixed/Korean")
+        val libraryRepo = FakeLibraryRepository(
+            initialItems = listOf(item),
+            initialCourseFolders = listOf(
+                // ファイルのフォルダ: 言語がどちらも違う（en / fr）ので、どちらの上書きも効かない
+                courseFolder(
+                    "Mixed/Korean",
+                    LanguagePair(target = LanguageTag("en"), base = LanguageTag("fr")),
+                    ItemSttOverride(targetEngine = SttEngine.SHERPA_ONNX, baseEngine = SttEngine.ML_KIT),
+                ),
+                // 親のフォルダ: 学習対象言語（zh）は違うので効かず、ベース言語（ja）は同じなので効く
+                courseFolder(
+                    "Mixed",
+                    LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja")),
+                    ItemSttOverride(
+                        targetEngine = SttEngine.SPEECH_RECOGNIZER,
+                        baseEngine = SttEngine.SHERPA_ONNX_SENSE_VOICE,
+                    ),
+                ),
+            ),
+        )
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            FakeAnalysisRepository().apply { put(sample.copy(item = item)) },
+            FakePlaybackController(),
+            FakeUserSettingsRepository(),
+            FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.open(item.id)
+
+        assertEquals(
+            ItemSttOverride(targetEngine = null, baseEngine = SttEngine.SHERPA_ONNX_SENSE_VOICE),
+            viewModel.uiState.value.folderSttOverride,
+        )
+
+        // 親のフォルダの言語もファイルと違えば、フォルダの設定はまったく効かない（全体設定に従う）
+        libraryRepo.courseFolders.value = libraryRepo.courseFolders.value.map { folder ->
+            if (folder.coursePath == "Mixed") {
+                folder.copy(languagePair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("en")))
+            } else {
+                folder
+            }
+        }
+        assertTrue(viewModel.uiState.value.folderSttOverride.isEmpty)
+    }
+
+    /** 音声認識エンジンの上書きを持つフォルダの設定の行を作る。 */
+    private fun courseFolder(
+        path: String,
+        languages: LanguagePair,
+        sttOverride: ItemSttOverride = ItemSttOverride.NONE,
+    ): LibraryCourseFolder = LibraryCourseFolder(
+        coursePath = path,
+        kind = LibraryFolderKind.LOCAL_DIRECTORY,
+        languagePair = languages,
+        sttOverride = sttOverride,
+    )
 }

@@ -1926,12 +1926,9 @@ class LibraryViewModel @Inject constructor(
                     itemSttOverrideRepository.observe(item.id),
                     libraryRepository.observeCourseFolders(),
                 ) { itemOverride, folders ->
-                    val folderOverride = item.course?.trim('/')?.takeIf { it.isNotBlank() }?.let { coursePath ->
-                        folders.firstOrNull { it.coursePath.trim('/') == coursePath }?.sttOverride
-                    } ?: ItemSttOverride.NONE
-                    ItemSttOverride(
-                        targetEngine = itemOverride.targetEngine ?: folderOverride.targetEngine,
-                        baseEngine = itemOverride.baseEngine ?: folderOverride.baseEngine,
+                    // ファイル個別設定 ＞ フォルダ設定（近いフォルダを言語ごとに優先）＞ 全体設定
+                    itemOverride.withFolderFallback(
+                        LibraryCourseFolder.resolveSttOverride(item.course, item.languagePair, folders),
                     )
                 }
             }
