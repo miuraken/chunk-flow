@@ -1043,11 +1043,14 @@ internal fun isFolderSttEngineSelectable(
     return info.statusOf(engine) != OnDeviceLanguageModelStatus.UNSUPPORTED
 }
 
+/**
+ * 音声認識モデルのアコーディオンの見出しに出す言語名（例: `ヒンディー語 (hi)`）。
+ *
+ * ファイルの設定（プレイヤーのファイル個別設定）の見出しと同じ書き方にする。カタログにない言語はコードだけを返す。
+ */
 private fun formatFolderLanguageDisplayName(tag: LanguageTag): String {
-    val normCode = normalizeDialogLanguageCode(tag.value)
-    return ALPHABETICAL_LANGUAGE_OPTIONS.firstOrNull { it.code == normCode }?.label
-        ?: SupportedLanguageCatalog.findByCode(tag.value)?.japaneseName
-        ?: tag.value
+    val entry = SupportedLanguageCatalog.findByCode(tag.value) ?: return tag.value
+    return "${entry.japaneseName} (${tag.value})"
 }
 
 @Composable

@@ -76,7 +76,7 @@
     <string name="library_edit_stt_engine_speech_recognizer">SpeechRecognizer (Google)</string>
     <string name="library_edit_stt_engine_sherpa_onnx">sherpa-onnx (SenseVoice)</string>
     <!-- %1$s には「⚙ 全体設定（言語）」のリンク（library_open_global_language_settings）が入る -->
-    <string name="library_missing_language_hint_with_link">設定したい言語が見つからないときは、%1$s から追加してください。</string>
+    <string name="library_missing_language_hint_with_link">設定したい言語が見つからないときは、%1$sから追加してください。</string>
     <string name="library_open_global_language_settings">全体設定（言語）</string>
     <string name="library_edit_transcript_section_title">文字起こし</string>
     <string name="library_edit_import_transcript_button">ファイルから文字起こしをインポート</string>

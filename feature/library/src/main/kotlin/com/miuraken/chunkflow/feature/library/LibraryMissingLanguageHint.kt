@@ -48,7 +48,7 @@ private const val LANGUAGE_SETTINGS_LINK_TAG = "openLanguageSettings"
 /**
  * 設定したい言語が選択肢にないときの案内文。
  *
- * 「設定したい言語が見つからないときは、⚙ 全体設定（言語） から追加してください。」のように、文中の
+ * 「設定したい言語が見つからないときは、⚙ 全体設定（言語）から追加してください。」のように、文中の
  * 「⚙ 全体設定（言語）」を primary 色のリンクにし、押すと [onOpenLanguageSettings]（全体設定の言語の画面を開く）を呼ぶ。
  * リンクは [LinkAnnotation.Clickable] で作るので、TalkBack でもリンクとして扱われる。
  * 歯車は `ChunkFlowIcons.Settings` を文中に置くインラインのアイコンで、文字の大きさに合わせて大きくなる
