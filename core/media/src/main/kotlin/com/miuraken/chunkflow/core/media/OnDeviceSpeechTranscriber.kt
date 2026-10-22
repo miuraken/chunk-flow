@@ -2035,6 +2035,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
     private val activeJobsLock = Any()
     private val activeJobHandles = LinkedHashSet<ActiveJobHandle>()
+    private val confirmedInstalledOsOrMlKitLanguages: MutableSet<String> =
+        java.util.Collections.synchronizedSet(HashSet())
+
+    private fun markLanguageConfirmedInstalled(language: LanguageTag?) {
+        if (language == null) return
+        val normCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
+            .normalizeToModelManagementCode(language.value)
+            .ifBlank { language.value.lowercase(Locale.ROOT) }
+        if (normCode.isNotBlank()) {
+            confirmedInstalledOsOrMlKitLanguages.add(normCode)
+        }
+    }
 
     private val activeStepMutableState =
         MutableStateFlow<OnDeviceChunkTranscriber.ActiveTranscriptionStepInfo?>(null)
@@ -2603,20 +2615,35 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 mlKitSupportRaw[it]?.first == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
             }
 
+            val isConfirmedInstalled = normCode in confirmedInstalledOsOrMlKitLanguages
+            val effectiveOsStatus = if (isConfirmedInstalled && osStatusAndTag.first != OnDeviceLanguageModelStatus.INSTALLED) {
+                OnDeviceLanguageModelStatus.INSTALLED
+            } else {
+                osStatusAndTag.first
+            }
+
             val mlKitResolvedTag = mlKitInstalled ?: mlKitPending ?: mlKitSupported
             val mlKitMode = mlKitResolvedTag?.let { mlKitSupportRaw[it]?.second }
             val catalogEntry = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(canonicalLang.value)
             val mlKitStatus = when {
                 mlKitInstalled != null -> OnDeviceLanguageModelStatus.INSTALLED
+
+                mlKitAvailable && catalogEntry?.mlKitSupported == true && effectiveOsStatus == OnDeviceLanguageModelStatus.INSTALLED ->
+                    OnDeviceLanguageModelStatus.INSTALLED
+
                 mlKitPending != null -> OnDeviceLanguageModelStatus.DOWNLOADING
+
                 mlKitSupported != null -> OnDeviceLanguageModelStatus.NOT_INSTALLED
-                mlKitAvailable && catalogEntry?.mlKitSupported == true && osStatusAndTag.first != OnDeviceLanguageModelStatus.UNSUPPORTED -> osStatusAndTag.first
+
+                mlKitAvailable && catalogEntry?.mlKitSupported == true && effectiveOsStatus != OnDeviceLanguageModelStatus.UNSUPPORTED ->
+                    effectiveOsStatus
+
                 else -> OnDeviceLanguageModelStatus.UNSUPPORTED
             }
 
             canonicalInfoByCode[normCode] = withSherpaAndMlKitModelFields(
                 language = canonicalLang,
-                osStatus = osStatusAndTag.first,
+                osStatus = effectiveOsStatus,
                 resolvedBcp47Tag = osStatusAndTag.second,
                 mlKitSupport = Pair(mlKitStatus, mlKitMode),
                 extraStatuses = extraStatusesByCanonical[canonicalLang].orEmpty(),
@@ -2798,7 +2825,10 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     ) {
         if (language == null || attempt == null) return
         when {
-            attempt.text.isNotBlank() -> clearModelIssue(language)
+            attempt.text.isNotBlank() -> {
+                markLanguageConfirmedInstalled(language)
+                clearModelIssue(language)
+            }
 
             attempt.errorCode == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> {
                 if (selectedEngine != OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER &&
@@ -4836,6 +4866,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                     rememberResolvedBcp47Tag(language?.value, candidateTag)
                 }
                 if (attempt?.text?.isNotBlank() == true) {
+                    markLanguageConfirmedInstalled(language)
                     if (language != null) clearModelIssue(language)
                     return attempt
                 }
@@ -4861,6 +4892,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             null
                         }
                         if (refreshedAttempt?.text?.isNotBlank() == true) {
+                            markLanguageConfirmedInstalled(language)
                             clearModelIssue(language)
                             return refreshedAttempt
                         }

@@ -535,6 +535,12 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
         }
 
         val combinedStatus = combineFeatureStatuses(basicStatus, advancedStatus)
+        if (combinedStatus != FeatureStatus.AVAILABLE && basicStatus == FeatureStatus.AVAILABLE) {
+            val pair = SpeechRecognizerOptions.Mode.MODE_BASIC to FeatureStatus.AVAILABLE
+            cachedAvailableModeByTag[tagKey] = SpeechRecognizerOptions.Mode.MODE_BASIC
+            cachedTagStatusByKey[tagKey] = CachedTagStatus(pair, System.nanoTime())
+            return pair
+        }
         val pair = SpeechRecognizerOptions.Mode.MODE_ADVANCED to combinedStatus
         if (combinedStatus == FeatureStatus.AVAILABLE) {
             cachedAvailableModeByTag[tagKey] = SpeechRecognizerOptions.Mode.MODE_ADVANCED
