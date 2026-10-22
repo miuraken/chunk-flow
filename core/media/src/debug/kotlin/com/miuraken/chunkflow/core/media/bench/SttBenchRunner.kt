@@ -401,6 +401,8 @@ internal class SttBenchRunner(
 
     private suspend fun trial(engine: SttBenchEngine, language: String, item: PreparedClip): TrialOutcome {
         val foregroundBefore = isForeground()
+        val speechTranscriber = transcriber as? com.miuraken.chunkflow.core.media.AndroidSpeechRecognizerChunkTranscriber
+        speechTranscriber?.activeTrialContextHint = item.clip.context
         val startNanos = nanoTime()
         val result = try {
             transcriber.transcribeChunkTrial(
@@ -420,6 +422,8 @@ internal class SttBenchRunner(
                 background = !foregroundBefore || !isForeground(),
                 error = e.javaClass.simpleName,
             )
+        } finally {
+            speechTranscriber?.activeTrialContextHint = null
         }
         val elapsedMs = (nanoTime() - startNanos) / 1e6
         val status = when {

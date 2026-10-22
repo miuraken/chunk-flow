@@ -20,8 +20,8 @@ ACTIVITY=com.miuraken.chunkflow/com.miuraken.chunkflow.core.media.bench.SttBench
 STALL_SEC=${STALL_SEC:-300}
 COOLDOWN_SEC=${COOLDOWN_SEC:-10}
 
-adb -s "$D" shell svc power stayon usb
-trap 'adb -s "$D" shell svc power stayon false' EXIT
+adb -s "$D" shell svc power stayon true
+trap 'adb -s "$D" shell svc power stayon true' EXIT
 
 for engine in "$@"; do
     run_tag="${TAG}_${engine}"

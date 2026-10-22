@@ -100,6 +100,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "yue-HK",
             bcp47Candidates = listOf("yue-HK", "yue-Hant-HK", "zh-HK", "zh-Hant-HK", "cmn-Hant-HK", "yue"),
             whisperCode = "yue",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "es",
@@ -180,6 +182,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "th-TH",
             bcp47Candidates = listOf("th-TH", "th"),
             whisperCode = "th",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "ar",
@@ -188,6 +192,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "ar-SA",
             bcp47Candidates = listOf("ar-SA", "ar-EG", "ar-AE", "ar-001", "ar"),
             whisperCode = "ar",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "tr",
@@ -236,6 +242,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "uk-UA",
             bcp47Candidates = listOf("uk-UA", "uk"),
             whisperCode = "uk",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         // その他の SpeechRecognizer / sherpa-onnx (Whisper) / ML Kit 対応言語（アルファベット順）
         SupportedLanguageEntry(
@@ -418,6 +426,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "fa-IR",
             bcp47Candidates = listOf("fa-IR", "fa"),
             whisperCode = "fa",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "fi",
@@ -810,6 +820,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "pa-Guru-IN",
             bcp47Candidates = listOf("pa-Guru-IN", "pa-IN", "pa"),
             whisperCode = "pa",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "ps",
@@ -826,6 +838,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "ro-RO",
             bcp47Candidates = listOf("ro-RO", "ro"),
             whisperCode = "ro",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "rw",
@@ -944,6 +958,8 @@ object SupportedLanguageCatalog {
             defaultBcp47Tag = "sw-TZ",
             bcp47Candidates = listOf("sw-TZ", "sw-KE", "sw"),
             whisperCode = "sw",
+            speechRecognizerSupported = false,
+            mlKitSupported = false,
         ),
         SupportedLanguageEntry(
             code = "ta",

@@ -46,6 +46,23 @@ SOURCES: list[Source] = [
     Source("Mandarin_Chinese_4_Lesson_01_en.mp3", "zhpims4", "zh", "en", 70),
     Source("Mandarin_stepup_18_ja.mp3", "zhstepup18", "zh", "ja", 50),
     Source("Mandarin.mp3", "zhshort", "zh", "ja", 10, min_silence_sec=0.3),
+    # 第 2 バッチ: 追加の 16 教材（すべて解説言語は英語）
+    Source("Brazilian_Portuguese3_U07_Lesson_en.mp3", "ptbr07", "pt", "en", 45),
+    Source("PortugueseEuropean_2_Lesson06_en.mp3", "pteu06", "pt", "en", 45),
+    Source("Dutch_1_Lesson_11_en.mp3", "nl11", "nl", "en", 60),
+    Source("FarsiPersian_Unit_14_en.mp3", "fa14", "fa", "en", 60),
+    Source("German_4_Lesson_12_en.mp3", "de12", "de", "en", 60),
+    Source("Indonesian_1_Lesson_09_en.mp3", "id09", "id", "en", 60),
+    Source("Italian_5_lesson09_en.mp3", "it09", "it", "en", 60),
+    Source("Polish_Unit_11_en.mp3", "pl11", "pl", "en", 60),
+    Source("Punjabi_13_en.mp3", "pa13", "pa", "en", 60),
+    Source("Romanian_1_Lesson_06_en.mp3", "ro06", "ro", "en", 60),
+    Source("Russian_2_Lesson_05_en.mp3", "ru05", "ru", "en", 60),
+    Source("Spanish_4_Lesson_02_en.mp3", "es02", "es", "en", 60),
+    Source("Swahili_1_Lesson_12_en.mp3", "sw12", "sw", "en", 60),
+    Source("Thai_1_Lesson_30_en.mp3", "th30", "th", "en", 60),
+    Source("Turkish_1_Lesson_25_en.mp3", "tr25", "tr", "en", 60),
+    Source("Vietnamese_1_Lessong_06_en.mp3", "vi06", "vi", "en", 60),
 ]
 
 SILENCE_START = re.compile(r"silence_start:\s*(-?[0-9.]+)")
@@ -172,13 +189,18 @@ def main() -> int:
     parser.add_argument("--max-sec", type=float, default=12.0, help="クリップの長さの上限（秒）")
     parser.add_argument("--pad-sec", type=float, default=0.15, help="前後に付ける余白（秒）")
     parser.add_argument("--probe", action="store_true", help="切り出さずに、教材ごとの区間の数と長さの分布だけを出す")
+    parser.add_argument("--only-keys", type=str, default="", help="カンマ区切りで対象の source.key を絞る")
+    parser.add_argument("--manifest-name", type=str, default="candidates.tsv", help="書き出す TSV のファイル名")
     args = parser.parse_args()
 
+    only_keys = {k.strip() for k in args.only_keys.split(",") if k.strip()}
     clips_dir = args.out / "clips"
     if not args.probe:
         clips_dir.mkdir(parents=True, exist_ok=True)
     rows: list[str] = ["id\tlang\tfile\tpair\tsource\tstartMs\tendMs"]
     for source in SOURCES:
+        if only_keys and source.key not in only_keys:
+            continue
         path = args.src / source.file
         if not path.is_file():
             print(f"skip (not found): {path}", file=sys.stderr)
@@ -215,7 +237,7 @@ def main() -> int:
                 )
             )
     if not args.probe:
-        manifest = args.out / "candidates.tsv"
+        manifest = args.out / args.manifest_name
         manifest.write_text("\n".join(rows) + "\n", encoding="utf-8")
         print(f"wrote {len(rows) - 1} clips -> {manifest}", file=sys.stderr)
     return 0

@@ -253,18 +253,20 @@ internal data class SttBenchConfig(
  * @property language 文字起こしに使う言語タグ（[SttBenchMode.RUN]）。
  * @property relativePath 入力のディレクトリからの相対パス（16kHz モノラル 16-bit の WAV を想定）。
  * @property pair 言語判定で比べる 2 言語（学習言語・解説の言語）。[SttBenchMode.LID] で使う。
+ * @property context 音声認識に渡す前後の文脈・語彙ヒント（任意）。
  */
 internal data class SttBenchClip(
     val id: String,
     val language: String,
     val relativePath: String,
     val pair: Pair<String, String>? = null,
+    val context: String? = null,
 )
 
 /**
  * クリップ一覧（TSV）を読む。
  *
- * 1 行目は列名の行（`id`、`lang`、`file` は必須、`pair`（`ko,ja` の形）は任意。ほかの列は読み飛ばす）。
+ * 1 行目は列名の行（`id`、`lang`、`file` は必須、`pair`（`ko,ja` の形）と `context` は任意。ほかの列は読み飛ばす）。
  * `#` で始まる行と空行は読み飛ばす。信頼できない入力として扱い、形・大きさ・パスを確かめる。
  */
 internal object SttBenchManifest {
@@ -299,6 +301,7 @@ internal object SttBenchManifest {
         val langColumn = header.indexOf("lang")
         val fileColumn = header.indexOf("file")
         val pairColumn = header.indexOf("pair")
+        val contextColumn = header.indexOf("context")
         if (idColumn < 0 || langColumn < 0 || fileColumn < 0) {
             return SttBenchParsed.Invalid("列名の行に id・lang・file のどれかがない")
         }
@@ -322,7 +325,12 @@ internal object SttBenchManifest {
             } else {
                 null
             }
-            clips += SttBenchClip(id = id, language = language, relativePath = file, pair = pair)
+            val context = if (contextColumn >= 0) {
+                cells.getOrNull(contextColumn)?.takeIf { it.isNotEmpty() }
+            } else {
+                null
+            }
+            clips += SttBenchClip(id = id, language = language, relativePath = file, pair = pair, context = context)
             if (clips.size > MAX_CLIPS) return SttBenchParsed.Invalid("クリップが多すぎる（上限 $MAX_CLIPS）")
         }
         if (clips.isEmpty()) return SttBenchParsed.Invalid("クリップが 1 つもない")

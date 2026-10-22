@@ -65,16 +65,26 @@ class SttBenchConfigTest {
     }
 
     @Test
-    fun `manifest_列名の順は自由でコメントと空行は読み飛ばす`() {
-        val text = "\uFEFF# 実教材のクリップ\nfile\tid\tlang\tpair\tsource\n\nclips/a.wav\tko_001\tko\tko,ja\tKorean_mainichi\r\n" +
-            "# 途中のコメント\nclips/b.wav\tja_001\tja\t\tKorean_mainichi\n"
+    fun `manifest_列名の順は自由でコメントと空行は読み飛ばしcontext列も読める`() {
+        val text = "\uFEFF# 実教材のクリップ\nfile\tid\tlang\tpair\tsource\tcontext\n\nclips/a.wav\tko_001\tko\tko,ja\tKorean_mainichi\tBOTH::안녕||안녕\r\n" +
+            "# 途中のコメント\nclips/b.wav\tja_001\tja\t\tKorean_mainichi\t\n"
 
         val clips = assertIs<SttBenchParsed.Ok<List<SttBenchClip>>>(SttBenchManifest.parse(text)).value
 
         assertEquals(2, clips.size)
-        assertEquals(SttBenchClip(id = "ko_001", language = "ko", relativePath = "clips/a.wav", pair = "ko" to "ja"), clips[0])
+        assertEquals(
+            SttBenchClip(
+                id = "ko_001",
+                language = "ko",
+                relativePath = "clips/a.wav",
+                pair = "ko" to "ja",
+                context = "BOTH::안녕||안녕",
+            ),
+            clips[0],
+        )
         assertEquals("ja_001", clips[1].id)
         assertNull(clips[1].pair)
+        assertNull(clips[1].context)
     }
 
     @Test

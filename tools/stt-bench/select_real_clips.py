@@ -22,8 +22,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=Path("sample_files/stt-bench/real/real.tsv"))
     parser.add_argument("--per-lang", type=int, default=36)
     parser.add_argument("--min-confidence", type=float, default=0.85)
+    parser.add_argument("--exclude-langs", type=str, default="", help="除外する言語コード（カンマ区切り）")
     args = parser.parse_args()
 
+    exclude_langs = {x.strip() for x in args.exclude_langs.split(",") if x.strip()}
     lid: dict[str, tuple[str, float]] = {}
     for path in args.lid:
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -37,25 +39,64 @@ def main() -> int:
     header, body = rows[0], rows[1:]
     col = {name: i for i, name in enumerate(header)}
     by_lang_source: dict[str, dict[str, list[list[str]]]] = defaultdict(lambda: defaultdict(list))
+    by_lang_source_fallback: dict[str, dict[str, list[list[str]]]] = defaultdict(lambda: defaultdict(list))
+    by_lang_source_null: dict[str, dict[str, list[list[str]]]] = defaultdict(lambda: defaultdict(list))
     dropped = 0
     for row in body:
         clip_id = row[col["id"]]
         detected = lid.get(clip_id)
-        if detected is None or detected[1] < args.min_confidence:
+        if detected is None:
+            target_lang = row[col["lang"]]
+            if target_lang not in exclude_langs:
+                by_lang_source_null[target_lang][row[col["source"]]].append(row)
+            else:
+                dropped += 1
+            continue
+        if detected[1] < 0.50:
             dropped += 1
             continue
-        by_lang_source[detected[0]][row[col["source"]]].append(row)
+        if detected[0] in exclude_langs:
+            continue
+        if detected[1] >= args.min_confidence:
+            by_lang_source[detected[0]][row[col["source"]]].append(row)
+        else:
+            by_lang_source_fallback[detected[0]][row[col["source"]]].append(row)
 
     out_lines = ["id\tlang\tfile\tsource\tlidConfidence"]
-    for lang in sorted(by_lang_source):
-        sources = {s: sorted(rows, key=lambda r: int(r[col["startMs"]])) for s, rows in by_lang_source[lang].items()}
+    all_langs = sorted(set(by_lang_source.keys()) | set(by_lang_source_fallback.keys()) | set(by_lang_source_null.keys()))
+    for lang in all_langs:
+        all_sources = sorted(
+            set(by_lang_source[lang].keys())
+            | set(by_lang_source_fallback[lang].keys())
+            | set(by_lang_source_null[lang].keys())
+        )
+        sources: dict[str, list[list[str]]] = {}
+        for s in all_sources:
+            primary = sorted(by_lang_source[lang][s], key=lambda r: int(r[col["startMs"]]))
+            if len(primary) < args.per_lang and by_lang_source_fallback[lang][s]:
+                need = args.per_lang - len(primary)
+                extra = sorted(
+                    by_lang_source_fallback[lang][s],
+                    key=lambda r: lid[r[col["id"]]][1],
+                    reverse=True,
+                )[:need]
+                primary = sorted(primary + extra, key=lambda r: int(r[col["startMs"]]))
+            if len(primary) < args.per_lang and by_lang_source_null[lang][s]:
+                need = args.per_lang - len(primary)
+                extra_null = pick_evenly(
+                    sorted(by_lang_source_null[lang][s], key=lambda r: int(r[col["startMs"]])),
+                    need,
+                )
+                primary = sorted(primary + extra_null, key=lambda r: int(r[col["startMs"]]))
+            sources[s] = primary
         quotas = allocate(args.per_lang, {s: len(rows) for s, rows in sources.items()})
         picked: list[list[str]] = []
         for source, rows in sources.items():
             picked.extend(pick_evenly(rows, quotas[source]))
         for row in sorted(picked, key=lambda r: r[col["id"]]):
             clip_id = row[col["id"]]
-            out_lines.append(f"{clip_id}\t{lang}\t{row[col['file']]}\t{row[col['source']]}\t{lid[clip_id][1]:.3f}")
+            conf = lid.get(clip_id, (lang, 0.50))[1]
+            out_lines.append(f"{clip_id}\t{lang}\t{row[col['file']]}\t{row[col['source']]}\t{conf:.3f}")
         print(f"{lang}: {len(picked)} clips {quotas}", file=sys.stderr)
     args.out.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
     print(f"dropped (low confidence / no result): {dropped}; wrote {len(out_lines) - 1} -> {args.out}", file=sys.stderr)

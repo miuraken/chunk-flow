@@ -1985,6 +1985,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     @Volatile
     private var activeTrialEngineOverride: OnDeviceTranscriptionEngine? = null
 
+    @Volatile
+    internal var activeTrialContextHint: String? = null
+
     private data class ActiveJobHandle(
         val job: Job,
         val highPriority: Boolean,
@@ -2206,7 +2209,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         success = true
                     }
                 })
-                ok || success
+                if (ok || success) {
+                    true
+                } else {
+                    requestRecognitionModelDownload(language)
+                }
             }
 
             com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER -> {
@@ -2466,7 +2473,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         // AICore IPC が直列にブロックするため、ML Kit 対応言語の代表 BCP-47 タグのみを問い合わせる
         val mlKitCandidatesByCanonical = uniqueCanonicalList.associateWith { canonicalLang ->
             val catalogEntry = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(canonicalLang.value)
-            if (catalogEntry != null && (!catalogEntry.mlKitSupported || !catalogEntry.speechRecognizerSupported)) {
+            if (catalogEntry != null && !catalogEntry.mlKitSupported) {
                 emptyList()
             } else {
                 val primaryTag = toBcp47LocaleTag(canonicalLang.value)
@@ -2559,10 +2566,12 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
             val mlKitResolvedTag = mlKitInstalled ?: mlKitPending ?: mlKitSupported
             val mlKitMode = mlKitResolvedTag?.let { mlKitSupportRaw[it]?.second }
+            val catalogEntry = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(canonicalLang.value)
             val mlKitStatus = when {
                 mlKitInstalled != null -> OnDeviceLanguageModelStatus.INSTALLED
                 mlKitPending != null -> OnDeviceLanguageModelStatus.DOWNLOADING
                 mlKitSupported != null -> OnDeviceLanguageModelStatus.NOT_INSTALLED
+                mlKitAvailable && catalogEntry?.mlKitSupported == true && osStatusAndTag.first != OnDeviceLanguageModelStatus.UNSUPPORTED -> osStatusAndTag.first
                 else -> OnDeviceLanguageModelStatus.UNSUPPORTED
             }
 
@@ -3882,6 +3891,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         return recognitionLock.withLock(highPriority = highPriority) {
             activeTrialEngineOverride = engineOverride
+            sherpaWhisperTranscriberInstance?.activeContextHint = activeTrialContextHint
             val lockAcquiredRealtimeMs = SystemClock.elapsedRealtime()
             try {
                 if (forceRefresh) {
@@ -4047,6 +4057,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 throw ce
             } finally {
                 activeTrialEngineOverride = null
+                sherpaWhisperTranscriberInstance?.activeContextHint = null
             }
         }
     }
@@ -4849,7 +4860,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
             }
             when (engine) {
                 com.miuraken.chunkflow.core.model.SttEngine.ML_KIT -> {
-                    if (catalogEntry != null && (!catalogEntry.mlKitSupported || !catalogEntry.speechRecognizerSupported)) {
+                    if (catalogEntry != null && !catalogEntry.mlKitSupported) {
                         lastAttempt = SpeechRecognitionAttemptResult(
                             text = "",
                             errorCode = SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
@@ -5473,6 +5484,27 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
         putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
         putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, sampleRateHz)
+        val rawHint = activeTrialContextHint?.trim().orEmpty()
+        if (rawHint.isNotEmpty() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val biasingPhrases = ArrayList<String>()
+            for (part in rawHint.split("||")) {
+                val trimmed = part.trim()
+                val body = when {
+                    trimmed.startsWith("BIAS:", ignoreCase = true) -> trimmed.substringAfter(":").trim()
+                    trimmed.startsWith("PROMPT:", ignoreCase = true) -> trimmed.substringAfter(":").trim()
+                    else -> trimmed
+                }
+                for (phrase in body.split(',', ';', '|')) {
+                    val p = phrase.trim()
+                    if (p.isNotEmpty() && p !in biasingPhrases) {
+                        biasingPhrases.add(p)
+                    }
+                }
+            }
+            if (biasingPhrases.isNotEmpty()) {
+                putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, biasingPhrases)
+            }
+        }
     }
 
     private fun extractBestRecognitionText(bundle: Bundle?): String = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)

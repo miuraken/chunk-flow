@@ -33,6 +33,17 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
     private val sessionLock = Any()
     private val loadedBundles = LinkedHashMap<DownloadableSttModel, LoadedModelBundle>()
 
+    /**
+     * チャンク音声認識時のコンテキスト注入ヒント（先行発話プロンプト・語彙バイアス実験および文脈引き継ぎ用）。
+     *
+     * - `"PROMPT:<text>"`: `<|startofprev|>` (`50361L`) トークンに続けて `<text>` の BPE トークン列をデコーダ初期入力へ注入する。
+     * - `"BIAS:<text>"`: `<text>` のマルチバイト BPE トークンに対してデコーダロジットをブーストする。
+     * - `"BOTH:<text>"`: プロンプト注入とロジットバイアスの両方を適用する。
+     * - プレフィックスなしの文字列: `"PROMPT:<text>"` と同様に扱う。
+     */
+    @Volatile
+    internal var activeContextHint: String? = null
+
     private class LoadedModelBundle(
         val encoderPath: String,
         val encoderLastModified: Long,
@@ -142,6 +153,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                     language = language,
                     languageToken = langToken,
                     engineId = EngineId(model.modelId),
+                    contextHint = activeContextHint,
                 )
             } catch (e: Exception) {
                 logInfo("sherpa-onnx inference failed model=${model.modelId} lang=${language.value} error=${e.javaClass.simpleName}")
@@ -156,9 +168,11 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         language: LanguageTag,
         languageToken: Long,
         engineId: EngineId = SHERPA_ONNX_ENGINE_ID,
+        contextHint: String? = null,
     ): OnDeviceChunkTranscriptionResult? {
         val env = bundle.env
         val config = bundle.config
+        val parsedContext = parseContextConditioning(contextHint, bundle.tokenBytesById, config.sotToken.toInt())
 
         val melShape = longArrayOf(1L, WhisperTinyLanguageDetector.N_MELS.toLong(), WhisperTinyLanguageDetector.MEL_FRAMES_30S.toLong())
         OnnxTensor.createTensor(env, FloatBuffer.wrap(mel80x3000), melShape).use { melTensor ->
@@ -181,12 +195,27 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                 var activeDecoderResult: OrtSession.Result? = null
 
                 try {
-                    val promptTokens = longArrayOf(
+                    val basePromptTokens = longArrayOf(
                         config.sotToken,
                         languageToken,
                         config.transcribeToken,
                         config.noTimestampsToken,
                     )
+                    val prevTokens = parsedContext.first
+                    val biasedTokenIds = parsedContext.second
+                    val promptTokens = if (prevTokens.isNotEmpty()) {
+                        LongArray(1 + prevTokens.size + basePromptTokens.size).apply {
+                            this[0] = DEFAULT_SOT_PREV_TOKEN
+                            for (i in prevTokens.indices) {
+                                this[1 + i] = prevTokens[i]
+                            }
+                            for (i in basePromptTokens.indices) {
+                                this[1 + prevTokens.size + i] = basePromptTokens[i]
+                            }
+                        }
+                    } else {
+                        basePromptTokens
+                    }
                     var nextToken: Long
                     var offset = 0L
                     var sumLogProb = 0.0
@@ -221,6 +250,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                                 suppressBlank = true,
                                 suppressEot = false,
                                 config = config,
+                                biasedTokenIds = biasedTokenIds,
                             )
                             if (picked.tokenId.toLong() == config.eotToken) {
                                 val nonEotPicked = selectGreedyNextToken(
@@ -230,6 +260,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                                     suppressBlank = true,
                                     suppressEot = true,
                                     config = config,
+                                    biasedTokenIds = biasedTokenIds,
                                 )
                                 if (nonEotPicked.tokenId.toLong() != config.eotToken &&
                                     nonEotPicked.logProb >= MIN_INITIAL_NON_EOT_LOG_PROB
@@ -252,7 +283,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                     }
 
                     val singleTokenShape = longArrayOf(1L, 1L)
-                    while (generatedCount < MAX_DECODE_STEPS && nextToken != config.eotToken) {
+                    while (generatedCount < MAX_DECODE_STEPS && nextToken != config.eotToken && offset < config.nTextCtx) {
                         if (isRepeatedTailLoop(generatedTokenIds, generatedCount, nextToken.toInt())) {
                             break
                         }
@@ -284,6 +315,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
                                     suppressBlank = false,
                                     suppressEot = false,
                                     config = config,
+                                    biasedTokenIds = biasedTokenIds,
                                 )
                                 nextToken = picked.tokenId.toLong()
                                 if (nextToken != config.eotToken) {
@@ -338,6 +370,7 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         suppressBlank: Boolean,
         suppressEot: Boolean = false,
         config: WhisperModelConfig,
+        biasedTokenIds: Set<Int> = emptySet(),
     ): TokenPick {
         val lastTokenOffset = (seqLength - 1) * vocabSize
         val eotId = config.eotToken.toInt()
@@ -355,8 +388,13 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
             if (isSuppressedToken(tokenId, eotId, sotId, suppressBlank, suppressEot, config)) {
                 continue
             }
-            if (rawLogit > bestLogit) {
-                bestLogit = rawLogit
+            val effectiveLogit = if (biasedTokenIds.isNotEmpty() && tokenId in biasedTokenIds) {
+                rawLogit + CONTEXT_LOGIT_BIAS_DELTA
+            } else {
+                rawLogit
+            }
+            if (effectiveLogit > bestLogit) {
+                bestLogit = effectiveLogit
                 bestId = tokenId
             }
         }
@@ -579,8 +617,11 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         private const val DEFAULT_SOT_TOKEN: Long = 50_258L
         private const val FIRST_LANGUAGE_TOKEN_ID: Long = 50_259L
         private const val DEFAULT_TRANSCRIBE_TOKEN: Long = 50_359L
+        private const val DEFAULT_SOT_PREV_TOKEN: Long = 50_361L
         private const val DEFAULT_NO_SPEECH_TOKEN: Long = 50_362L
         private const val DEFAULT_NO_TIMESTAMPS_TOKEN: Long = 50_363L
+        private const val CONTEXT_LOGIT_BIAS_DELTA: Float = 2.5f
+        private const val MAX_PROMPT_TOKENS: Int = 64
 
         private const val SPACE_TOKEN_ID: Int = 220
         private const val MAX_DECODE_STEPS: Int = 160
@@ -589,6 +630,119 @@ class SherpaOnnxWhisperTranscriber @Inject constructor(
         private const val MIN_NGRAM_LOOP_REPEATS: Int = 3
         private const val MIN_INITIAL_NON_EOT_LOG_PROB: Double = -3.0
         private const val LOG_TAG: String = "ChunkFlowSherpa"
+
+        /**
+         * コンテキストヒント文字列（`PROMPT:...` / `BIAS:...` / プレーン文字列）を解析し、
+         * `<|startofprev|>` 用のプロンプトトークン列と Logit Bias 対象のトークン ID 集合を返す。
+         */
+        internal fun parseContextConditioning(
+            contextHint: String?,
+            tokenBytesById: Map<Int, ByteArray>,
+            eotTokenId: Int,
+        ): Pair<LongArray, Set<Int>> {
+            val raw = contextHint?.trim().orEmpty()
+            if (raw.isEmpty()) return LongArray(0) to emptySet()
+
+            var promptText: String? = null
+            var biasText: String? = null
+            val parts = raw.split("||")
+            for (part in parts) {
+                val trimmed = part.trim()
+                when {
+                    trimmed.startsWith("PROMPT:", ignoreCase = true) -> {
+                        promptText = trimmed.substringAfter(":").trim()
+                    }
+
+                    trimmed.startsWith("BIAS:", ignoreCase = true) -> {
+                        biasText = trimmed.substringAfter(":").trim()
+                    }
+                }
+            }
+            if (promptText == null && biasText == null) {
+                promptText = raw
+                biasText = raw
+            }
+
+            val promptTokens = if (!promptText.isNullOrEmpty()) {
+                val encoded = encodeUtf8BytesToTokens(
+                    text = " " + promptText.trim(),
+                    tokenBytesById = tokenBytesById,
+                    eotTokenId = eotTokenId,
+                )
+                if (encoded.size > MAX_PROMPT_TOKENS) {
+                    encoded.copyOfRange(encoded.size - MAX_PROMPT_TOKENS, encoded.size)
+                } else {
+                    encoded
+                }
+            } else {
+                LongArray(0)
+            }
+
+            val biasedIds = LinkedHashSet<Int>()
+            if (!biasText.isNullOrEmpty()) {
+                val phrases = biasText.split(',', ';', '|').map { it.trim() }.filter { it.isNotEmpty() }
+                for (phrase in phrases) {
+                    for (variant in listOf(" $phrase", phrase)) {
+                        val ids = encodeUtf8BytesToTokens(
+                            text = variant,
+                            tokenBytesById = tokenBytesById,
+                            eotTokenId = eotTokenId,
+                        )
+                        for (id in ids) {
+                            val intId = id.toInt()
+                            val tokenBytes = tokenBytesById[intId] ?: continue
+                            // 空白単体や1バイト記号のみのトークンを除外し、意味のある語彙トークンのみブーストする
+                            if (intId != SPACE_TOKEN_ID && tokenBytes.size >= 2) {
+                                biasedIds.add(intId)
+                            }
+                        }
+                    }
+                }
+            }
+            return promptTokens to biasedIds
+        }
+
+        /**
+         * 最長一致法により UTF-8 文字列 [text] を Whisper BPE トークン ID 列へ変換する。
+         */
+        internal fun encodeUtf8BytesToTokens(
+            text: String,
+            tokenBytesById: Map<Int, ByteArray>,
+            eotTokenId: Int,
+        ): LongArray {
+            if (text.isEmpty() || tokenBytesById.isEmpty()) return LongArray(0)
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            val result = ArrayList<Long>(bytes.size)
+            var pos = 0
+            while (pos < bytes.size) {
+                var bestId = -1
+                var bestLen = 0
+                for ((id, tokBytes) in tokenBytesById) {
+                    if (id >= eotTokenId || tokBytes.isEmpty()) continue
+                    val len = tokBytes.size
+                    if (len <= bestLen || pos + len > bytes.size) continue
+                    if (isSpecialControlTokenBytes(tokBytes)) continue
+                    var match = true
+                    for (k in 0 until len) {
+                        if (bytes[pos + k] != tokBytes[k]) {
+                            match = false
+                            break
+                        }
+                    }
+                    if (match) {
+                        bestLen = len
+                        bestId = id
+                    }
+                }
+                if (bestId >= 0 && bestLen > 0) {
+                    result.add(bestId.toLong())
+                    pos += bestLen
+                } else {
+                    pos += 1
+                }
+            }
+            return result.toLongArray()
+        }
 
         /**
          * `sherpa-onnx` の `tiny-tokens.txt`（各行 `<base64_bytes> <token_id>`）を解析し、

@@ -178,7 +178,7 @@ data class OnDeviceLanguageModelInfo(
             }
         }
         return copy(
-            mlKitStatus = if (!entry.mlKitSupported || !entry.speechRecognizerSupported) {
+            mlKitStatus = if (!entry.mlKitSupported) {
                 OnDeviceLanguageModelStatus.UNSUPPORTED
             } else {
                 mlKitStatus

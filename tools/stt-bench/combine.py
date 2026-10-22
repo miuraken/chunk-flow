@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from score import ENGINE_NAMES, ENGINE_ORDER, LANG_NAMES  # noqa: E402
 
-LANG_ORDER = ["en", "ja", "zh", "yue", "ko", "hi", "es", "ar", "uk", "vi"]
+LANG_ORDER = list(LANG_NAMES.keys())
 
 
 def load(path: Path | None) -> dict[tuple[str, str], dict]:

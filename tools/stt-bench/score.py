@@ -27,7 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CER_LANGS = {"ja", "zh", "yue", "ko"}
+CER_LANGS = {"ja", "zh", "yue", "ko", "th"}
 HANT2HANS = Path(__file__).with_name("hant2hans.swift")
 
 ENGINE_ORDER = ["mlkit", "sr", "wtiny", "wbase", "wsmall", "sensevoice", "mtiny", "mbase"]
@@ -48,10 +48,24 @@ LANG_NAMES = {
     "yue": "広東語",
     "ko": "韓国語",
     "hi": "ヒンディー語",
+    "fr": "フランス語",
     "es": "スペイン語",
+    "de": "ドイツ語",
+    "it": "イタリア語",
+    "pt": "ポルトガル語",
+    "nl": "オランダ語",
+    "ru": "ロシア語",
+    "pl": "ポーランド語",
+    "tr": "トルコ語",
+    "id": "インドネシア語",
+    "vi": "ベトナム語",
+    "th": "タイ語",
     "ar": "アラビア語",
     "uk": "ウクライナ語",
-    "vi": "ベトナム語",
+    "ro": "ルーマニア語",
+    "fa": "ペルシア語",
+    "pa": "パンジャブ語",
+    "sw": "スワヒリ語",
 }
 
 ARABIC_DIACRITICS = {chr(c) for c in range(0x064B, 0x0653)} | {"\u0670", "\u0640"}
@@ -188,6 +202,12 @@ def normalize(text: str, lang: str) -> str:
     elif lang == "ko":
         t = KO_HOUR.sub(lambda m: KO_NATIVE_HOURS.get(int(m.group(1)), ko_sino_number(int(m.group(1)))) + "시", t)
         t = NUMBER.sub(lambda m: ko_sino_number(int(m.group())), t)
+    elif lang in WORD_REPLACEMENTS_BY_LANG:
+        for src_w, dst_w in WORD_REPLACEMENTS_BY_LANG[lang].items():
+            t = re.sub(rf"\b{re.escape(src_w)}\b", dst_w, t)
+    if lang == "th":
+        for src_w, dst_w in THAI_REPLACEMENTS.items():
+            t = t.replace(src_w, dst_w)
     if lang in ("zh", "yue"):
         t = t.translate(ZH_FILLERS)
     if lang == "yue":
@@ -198,6 +218,21 @@ def normalize(text: str, lang: str) -> str:
         # 句読点（P*）と記号（S*）は空白に。結合文字（M*）はインド系の文字で必要なので残す
         out.append(" " if cat.startswith("P") or cat.startswith("S") else ch)
     return " ".join("".join(out).split())
+
+
+WORD_REPLACEMENTS_BY_LANG: dict[str, dict[str, str]] = {
+    "de": {"10": "zehn", "12": "zwölften"},
+    "es": {"2": "dos", "8": "ocho"},
+    "id": {"1": "satu", "2": "dua", "8": "delapan", "lapan": "delapan", "9": "sembilan"},
+    "nl": {"1": "een", "3": "drie", "6": "zes", "7": "zeven", "10": "tien"},
+    "pl": {"5": "piątej"},
+    "tr": {"8": "sekiz", "70": "yetmiş", "km": "kilometre"},
+}
+THAI_REPLACEMENTS: dict[str, str] = {
+    "2-3": "สองสาม",
+    "2": "สอง",
+    "3": "สาม",
+}
 
 
 def tokens(normalized: str, lang: str) -> list[str]:

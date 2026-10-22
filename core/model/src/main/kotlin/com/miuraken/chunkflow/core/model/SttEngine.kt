@@ -295,9 +295,11 @@ object SttEngineSelection {
         languagePair: LanguagePair,
         itemOverride: ItemSttOverride,
         engineByLanguage: Map<LanguageTag, SttEngine>,
-    ): List<SttEngine> = SttEngine.tryOrder(
-        preferredEngine(language, languagePair, itemOverride, engineByLanguage),
-    )
+    ): List<SttEngine> {
+        val preferred = preferredEngine(language, languagePair, itemOverride, engineByLanguage)
+            ?: recommendedDownloadEngineForLanguage(language)
+        return SttEngine.tryOrder(preferred)
+    }
 
     /**
      * 試す順番 [tryOrder] のうち、モデルの状態 [info] で今すぐ使える（[OnDeviceLanguageModelStatus.INSTALLED]）最初のエンジンを返す。
@@ -330,8 +332,9 @@ object SttEngineSelection {
      *    [OnDeviceLanguageModelStatus.DOWNLOADING]）のときのみ [SttEngine.ML_KIT] を返す。未確認（`CHECKING`）や非対応（`UNSUPPORTED`）の
      *    環境では ML Kit を選ばない。
      * 4. `SpeechRecognizer` が非対応でなければ [SttEngine.SPEECH_RECOGNIZER] を返す。
-     * 5. `sherpa-onnx` が非対応でなければ [SttEngine.SHERPA_ONNX] を返す。
-     * 6. それ以外は [SttEngine.SPEECH_RECOGNIZER] を返す。
+     * 5. 推奨ダウンロードモデルがある言語で OS 標準が非対応なら、その推奨モデルを返す。
+     * 6. `sherpa-onnx` が非対応でなければ [SttEngine.SHERPA_ONNX] を返す。
+     * 7. それ以外は [SttEngine.SPEECH_RECOGNIZER] を返す。
      */
     fun resolveAutoEngine(info: OnDeviceLanguageModelInfo): SttEngine {
         val enriched = info.enrichedWithCatalog()
@@ -347,6 +350,9 @@ object SttEngineSelection {
         }
         if (enriched.status != OnDeviceLanguageModelStatus.UNSUPPORTED) {
             return SttEngine.SPEECH_RECOGNIZER
+        }
+        if (recommended != null && enriched.statusOf(recommended) != OnDeviceLanguageModelStatus.UNSUPPORTED) {
+            return recommended
         }
         if (enriched.sherpaModelStatus != OnDeviceLanguageModelStatus.UNSUPPORTED) {
             return SttEngine.SHERPA_ONNX
@@ -369,6 +375,7 @@ object SttEngineSelection {
             "vi" -> SttEngine.MOONSHINE_BASE
             "ar" -> SttEngine.MOONSHINE_BASE
             "uk" -> SttEngine.MOONSHINE_BASE
+            "th", "ro", "fa", "pa", "sw" -> SttEngine.SHERPA_ONNX_WHISPER_SMALL
             else -> null
         }
     }
@@ -378,7 +385,8 @@ object SttEngineSelection {
      *
      * - `SpeechRecognizer` は `ML Kit` の裏の自動フォールバック専用とし、選択肢には出さない。
      * - `Whisper Base` は全言語で他のエンジンに精度・速度とも劣るため除外する。
-     * - `Whisper Small` は「より詳しく文字起こし」専用とし、通常の言語別選択には出さない。
+     * - `Whisper Small` は原則として「より詳しく文字起こし」専用とするが、OS 音声認識と Moonshine/SenseVoice がともに非対応で
+     *   `Whisper Tiny` の精度が著しく不足する言語（`th`, `ro`, `fa`, `pa`, `sw`）では第一推奨として選択肢に含める。
      * - 言語ごとに不具合があるモデル（韓国語の `Moonshine Base`、日本語の `Moonshine`、中国語の `Moonshine Tiny` など）は除外し、
      *   その言語でおすすめできる端末内モデルは未ダウンロードでも一覧に含める（設定画面では未ダウンロード時は無効化しダウンロードボタンを表示する）。
      */
@@ -427,6 +435,7 @@ object SttEngineSelection {
 
             "es" -> listOf(
                 SttEngine.ML_KIT,
+                SttEngine.MOONSHINE_TINY,
                 SttEngine.MOONSHINE_BASE,
                 SttEngine.SHERPA_ONNX,
             )
@@ -444,6 +453,11 @@ object SttEngineSelection {
 
             "uk" -> listOf(
                 SttEngine.MOONSHINE_BASE,
+                SttEngine.SHERPA_ONNX,
+            )
+
+            "th", "ro", "fa", "pa", "sw" -> listOf(
+                SttEngine.SHERPA_ONNX_WHISPER_SMALL,
                 SttEngine.SHERPA_ONNX,
             )
 
@@ -517,7 +531,14 @@ object SttEngineSelection {
         val code = SupportedLanguageCatalog.normalizeToModelManagementCode(language.value)
         if (engine == SttEngine.SHERPA_ONNX_WHISPER_SMALL) {
             return when (code) {
+                "th", "ro", "fa", "pa", "sw" -> listOf(
+                    SttEngineLabel.RECOMMENDED,
+                    SttEngineLabel.HIGH_ACCURACY,
+                    SttEngineLabel.SLOW,
+                )
+
                 "yue", "hi", "vi", "uk" -> listOf(SttEngineLabel.SLOW)
+
                 else -> listOf(SttEngineLabel.HIGH_ACCURACY, SttEngineLabel.SLOW)
             }
         }
@@ -569,8 +590,14 @@ object SttEngineSelection {
             }
 
             "es" -> when (engine) {
-                SttEngine.ML_KIT -> listOf(SttEngineLabel.FAST)
-                SttEngine.MOONSHINE_BASE -> listOf(SttEngineLabel.HIGH_ACCURACY)
+                SttEngine.ML_KIT -> listOf(SttEngineLabel.HIGH_ACCURACY, SttEngineLabel.FAST)
+                SttEngine.MOONSHINE_TINY -> listOf(SttEngineLabel.HIGH_ACCURACY, SttEngineLabel.FAST)
+                SttEngine.MOONSHINE_BASE -> listOf(SttEngineLabel.HIGH_ACCURACY, SttEngineLabel.FAST)
+                else -> emptyList()
+            }
+
+            "de", "it", "pt", "nl", "ru", "pl", "tr", "id" -> when (engine) {
+                SttEngine.ML_KIT -> listOf(SttEngineLabel.HIGH_ACCURACY)
                 else -> emptyList()
             }
 
