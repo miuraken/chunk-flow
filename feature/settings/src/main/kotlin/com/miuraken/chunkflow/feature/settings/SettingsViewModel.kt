@@ -710,13 +710,14 @@ class SettingsViewModel @Inject constructor(
                 }
                 val modelInfo = (rawInfo ?: OnDeviceLanguageModelInfo(language = event.language))
                     .enrichedWithCatalog(event.language)
-                if (!isSttEngineSelectableInSettings(modelInfo, event.engine)) {
-                    return
-                }
                 val targetEngine = event.engine
                 val downloadableModel = targetEngine?.downloadableModel
                 if (targetEngine != null && downloadableModel != null) {
-                    if (modelInfo.statusOf(targetEngine) != OnDeviceLanguageModelStatus.INSTALLED) {
+                    val dlStatus = modelInfo.statusOf(targetEngine)
+                    if (dlStatus != OnDeviceLanguageModelStatus.INSTALLED &&
+                        dlStatus != OnDeviceLanguageModelStatus.UNSUPPORTED &&
+                        dlStatus != OnDeviceLanguageModelStatus.CHECKING
+                    ) {
                         val sizeMb = if (targetEngine == SttEngine.SHERPA_ONNX && modelInfo.sherpaModelSizeBytes > 0L) {
                             SherpaDownloadDialogState.resolveSizeMb(modelInfo.sherpaModelSizeBytes)
                         } else {
@@ -732,6 +733,9 @@ class SettingsViewModel @Inject constructor(
                         )
                         return
                     }
+                }
+                if (!isSttEngineSelectableInSettings(modelInfo, event.engine)) {
+                    return
                 }
                 val needsOsOrMlKitDownload = when (targetEngine) {
                     SttEngine.ML_KIT ->
@@ -823,13 +827,30 @@ class SettingsViewModel @Inject constructor(
                 val mgmtCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
                     event.language.value,
                 )
+                val downloadableModel = event.engine.downloadableModel
+                if (downloadableModel != null) {
+                    downloadableModelsState.update { current ->
+                        current.map { st ->
+                            if (st.model == downloadableModel) {
+                                st.copy(status = OnDeviceLanguageModelStatus.DOWNLOADING)
+                            } else {
+                                st
+                            }
+                        }
+                    }
+                }
                 languageModelsState.update { current ->
                     current.map { info ->
-                        if (info.language == event.language ||
+                        val matchesLanguage = info.language == event.language ||
                             com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
                                 info.language.value,
-                            ) == mgmtCode
-                        ) {
+                            ) == mgmtCode ||
+                            (
+                                downloadableModel != null &&
+                                    !downloadableModel.isPerLanguageModel &&
+                                    downloadableModel.isLanguageSupported(info.language)
+                                )
+                        if (matchesLanguage) {
                             when (event.engine) {
                                 SttEngine.ML_KIT -> info.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOADING)
 
@@ -851,13 +872,29 @@ class SettingsViewModel @Inject constructor(
                     val ok = analysisRepository.requestSttModelDownload(event.language, event.engine)
                     refreshDownloadableModels()
                     if (!ok) {
+                        if (downloadableModel != null) {
+                            downloadableModelsState.update { current ->
+                                current.map { st ->
+                                    if (st.model == downloadableModel) {
+                                        st.copy(status = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
+                                    } else {
+                                        st
+                                    }
+                                }
+                            }
+                        }
                         languageModelsState.update { current ->
                             current.map { info ->
-                                if (info.language == event.language ||
+                                val matchesLanguage = info.language == event.language ||
                                     com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
                                         info.language.value,
-                                    ) == mgmtCode
-                                ) {
+                                    ) == mgmtCode ||
+                                    (
+                                        downloadableModel != null &&
+                                            !downloadableModel.isPerLanguageModel &&
+                                            downloadableModel.isLanguageSupported(info.language)
+                                        )
+                                if (matchesLanguage) {
                                     when (event.engine) {
                                         SttEngine.ML_KIT -> info.copy(mlKitStatus = OnDeviceLanguageModelStatus.DOWNLOAD_FAILED)
 
@@ -877,6 +914,9 @@ class SettingsViewModel @Inject constructor(
                         }
                     } else {
                         queryAndMergeLanguageModels(listOf(LanguageTag(mgmtCode)))
+                        if (downloadableModel != null && !downloadableModel.isPerLanguageModel) {
+                            refreshActiveLanguageModelsFirst()
+                        }
                     }
                 }
             }
@@ -1109,8 +1149,9 @@ class SettingsViewModel @Inject constructor(
  * 設定画面の言語別音声認識エンジン選択で、指定した [engine]（`null` は自動）を選択可能（enabled）にするかどうかを返す。
  *
  * - `null`（自動）は少なくとも 1 つのエンジンが対応している（または確認中）のときに選択可能。
- * - 各エンジンは、端末・言語で対応が確認されている（`UNSUPPORTED` でも `CHECKING` でもない）ときだけ選択可能。
+ * - ダウンロードが必要な端末内モデル（[SttEngine.downloadableModel] != null）は、ダウンロード済み（`INSTALLED`）のときだけ選択可能（未ダウンロード時は無効化し横にダウンロードボタンを出す）。
  * - クラウド API エンジン（OpenAI / Groq / Gemini）は API キーが設定済み（`INSTALLED`）のときだけ選択可能。
+ * - それ以外（ML Kit など）は、端末・言語で対応が確認されている（`UNSUPPORTED` でも `CHECKING` でもない）ときだけ選択可能。
  */
 internal fun isSttEngineSelectableInSettings(
     info: OnDeviceLanguageModelInfo,
@@ -1121,7 +1162,7 @@ internal fun isSttEngineSelectableInSettings(
         return SttEngineSelection.isAnyEngineSupported(enriched)
     }
     val status = enriched.statusOf(engine)
-    if (engine.isCloudApi) {
+    if (engine.isCloudApi || engine.downloadableModel != null) {
         return status == OnDeviceLanguageModelStatus.INSTALLED
     }
     return status != OnDeviceLanguageModelStatus.UNSUPPORTED &&

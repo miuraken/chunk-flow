@@ -766,16 +766,6 @@ private fun TranscriptionSettingsSection(
 
     SettingsSectionDivider()
 
-    ModelDownloadsAndApiKeysSection(
-        downloadableModels = downloadableModels,
-        openAiApiKey = openAiApiKey,
-        groqApiKey = groqApiKey,
-        geminiApiKey = geminiApiKey,
-        onEvent = onEvent,
-    )
-
-    SettingsSectionDivider()
-
     SettingsSection(title = stringResource(R.string.settings_section_speech_models)) {
         val displayEntries = LanguageSettings.SELECTABLE_LANGUAGES.filter {
             enabledLanguages.contains(LanguageTag(it.code))
@@ -819,14 +809,27 @@ private fun TranscriptionSettingsSection(
             )
         }
     }
+
+    SettingsSectionDivider()
+
+    ModelDownloadsSection(
+        downloadableModels = downloadableModels,
+        onEvent = onEvent,
+    )
+
+    SettingsSectionDivider()
+
+    CloudApiKeysSection(
+        openAiApiKey = openAiApiKey,
+        groqApiKey = groqApiKey,
+        geminiApiKey = geminiApiKey,
+        onEvent = onEvent,
+    )
 }
 
 @Composable
-private fun ModelDownloadsAndApiKeysSection(
+private fun ModelDownloadsSection(
     downloadableModels: List<DownloadableSttModelState>,
-    openAiApiKey: String,
-    groqApiKey: String,
-    geminiApiKey: String,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     SettingsSection(title = stringResource(R.string.settings_section_model_downloads)) {
@@ -853,19 +856,17 @@ private fun ModelDownloadsAndApiKeysSection(
                 onPurge = { onEvent(SettingsEvent.PurgeSttModel(modelState.model)) },
             )
         }
+    }
+}
 
-        HorizontalDivider(
-            modifier = Modifier.padding(vertical = 4.dp),
-            color = MaterialTheme.colorScheme.outlineVariant,
-        )
-
-        Text(
-            text = stringResource(R.string.settings_cloud_api_keys_subtitle),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-
+@Composable
+private fun CloudApiKeysSection(
+    openAiApiKey: String,
+    groqApiKey: String,
+    geminiApiKey: String,
+    onEvent: (SettingsEvent) -> Unit,
+) {
+    SettingsSection(title = stringResource(R.string.settings_cloud_api_keys_subtitle)) {
         ApiKeyInputField(
             label = stringResource(R.string.settings_openai_api_key_label),
             placeholder = stringResource(R.string.settings_openai_api_key_placeholder),
@@ -1570,9 +1571,8 @@ private fun SttEngineAccordion(
                     val downloadableModel = engine?.downloadableModel
                     val isDownloadableModelInstalled =
                         downloadableModel != null && engineStatus == OnDeviceLanguageModelStatus.INSTALLED
-                    val isPerLanguageModelSupported =
+                    val isDownloadableModelSupported =
                         downloadableModel != null &&
-                            downloadableModel.isPerLanguageModel &&
                             downloadableModel.isLanguageSupported(enrichedInfo.language)
 
                     Row(
@@ -1609,12 +1609,16 @@ private fun SttEngineAccordion(
                                 .padding(start = 8.dp),
                         )
                         when {
-                            isPerLanguageModelSupported &&
+                            isDownloadableModelSupported &&
                                 (
                                     engineStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
                                         engineStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
                                     ) -> {
-                                val langSizeMb = downloadableModel.approxSizeMbForLanguage(enrichedInfo.language)
+                                val langSizeMb = if (engine == SttEngine.SHERPA_ONNX && enrichedInfo.sherpaModelSizeBytes > 0L) {
+                                    SherpaDownloadDialogState.resolveSizeMb(enrichedInfo.sherpaModelSizeBytes)
+                                } else {
+                                    downloadableModel.approxSizeMbForLanguage(enrichedInfo.language)
+                                }
                                 OutlinedButton(
                                     onClick = { onDownloadLanguageModel(engine) },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
@@ -1632,7 +1636,7 @@ private fun SttEngineAccordion(
                                 }
                             }
 
-                            isPerLanguageModelSupported &&
+                            isDownloadableModelSupported &&
                                 engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
                                 ChunkFlowLoadingIndicator(
                                     modifier = Modifier
@@ -1698,16 +1702,16 @@ private fun formatSttEngineOptionLabel(
         )
 
         SttEngine.SHERPA_ONNX -> {
+            val baseName = stringResource(R.string.settings_stt_engine_sherpa_onnx)
             val sizeMb = SherpaDownloadDialogState.resolveSizeMb(enrichedInfo.sherpaModelSizeBytes)
             when (status) {
                 OnDeviceLanguageModelStatus.INSTALLED ->
                     stringResource(R.string.settings_stt_engine_sherpa_downloaded, sizeMb)
 
-                OnDeviceLanguageModelStatus.NOT_INSTALLED ->
-                    stringResource(R.string.settings_stt_engine_sherpa_not_downloaded, sizeMb)
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
 
                 else -> formatEngineOptionWithStatus(
-                    baseName = stringResource(R.string.settings_stt_engine_sherpa_onnx),
+                    baseName = baseName,
                     status = status,
                 )
             }
@@ -1721,6 +1725,8 @@ private fun formatSttEngineOptionLabel(
             when (status) {
                 OnDeviceLanguageModelStatus.INSTALLED ->
                     stringResource(R.string.settings_stt_engine_model_downloaded_format, baseName, sizeMb)
+
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
 
                 else -> formatEngineOptionWithStatus(
                     baseName = baseName,
@@ -1739,8 +1745,7 @@ private fun formatSttEngineOptionLabel(
                 OnDeviceLanguageModelStatus.INSTALLED ->
                     stringResource(R.string.settings_stt_engine_model_downloaded_format, baseName, sizeMb)
 
-                OnDeviceLanguageModelStatus.NOT_INSTALLED ->
-                    stringResource(R.string.settings_stt_engine_model_not_downloaded_format, baseName, sizeMb)
+                OnDeviceLanguageModelStatus.NOT_INSTALLED -> baseName
 
                 else -> formatEngineOptionWithStatus(
                     baseName = baseName,

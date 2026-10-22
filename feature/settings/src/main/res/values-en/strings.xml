@@ -90,9 +90,7 @@
     <string name="settings_stt_engine_openai_api">OpenAI Compatible API</string>
     <string name="settings_stt_engine_groq_api">Groq Compatible API</string>
     <string name="settings_stt_engine_gemini_api">Gemini API</string>
-    <string name="settings_stt_engine_sherpa_not_downloaded">sherpa-onnx Whisper Tiny (%1$dMB/Not downloaded)</string>
     <string name="settings_stt_engine_sherpa_downloaded">sherpa-onnx Whisper Tiny (%1$dMB)</string>
-    <string name="settings_stt_engine_model_not_downloaded_format">%1$s (%2$dMB/Not downloaded)</string>
     <string name="settings_stt_engine_model_downloaded_format">%1$s (%2$dMB)</string>
     <string name="settings_stt_engine_priority">Preferred Engine</string>
     <string name="settings_stt_engine_current">Current: %1$s</string>
@@ -110,7 +108,7 @@
     <string name="settings_sherpa_download_confirm_button">Download</string>
     <string name="settings_sherpa_download_cancel_button">Cancel</string>
     <string name="settings_section_model_downloads">Model Downloads</string>
-    <string name="settings_model_downloads_description">Download or delete on-device ONNX speech recognition models and configure cloud transcription API keys.</string>
+    <string name="settings_model_downloads_description">Download or delete on-device ONNX speech recognition models.</string>
     <string name="settings_model_sherpa_whisper_tiny">sherpa-onnx Whisper Tiny</string>
     <string name="settings_model_sherpa_whisper_tiny_desc">99 languages, lightweight (~%1$d MB)</string>
     <string name="settings_model_sherpa_sense_voice_small">sherpa-onnx SenseVoice Small</string>
@@ -141,4 +139,8 @@
     <string name="settings_api_key_hide">Hide API key</string>
     <string name="settings_api_key_status_configured">Configured</string>
     <string name="settings_api_key_status_not_configured">Not configured</string>
+    <string name="settings_stt_label_recommended">Recommended</string>
+    <string name="settings_stt_label_high_accuracy">High accuracy</string>
+    <string name="settings_stt_label_fast">Fast</string>
+    <string name="settings_stt_label_slow">Slow</string>
 </resources>

@@ -221,23 +221,23 @@ class SttEngineSelectionTest {
             koEngines,
         )
 
-        // 韓国語: SenseVoice がインストール済みなら未インストールの Moonshine Tiny は除外
+        // 韓国語: SenseVoice がインストール済みでも未インストールの Moonshine Tiny は一覧に残す（設定画面で disabled + ダウンロードボタン表示）
         val koWithSenseVoice = OnDeviceLanguageModelInfo(
             language = LanguageTag("ko"),
             extraEngineStatuses = mapOf(SttEngine.SHERPA_ONNX_SENSE_VOICE to OnDeviceLanguageModelStatus.INSTALLED),
         )
         assertEquals(
-            listOf(SttEngine.ML_KIT, SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.SHERPA_ONNX),
+            listOf(SttEngine.ML_KIT, SttEngine.MOONSHINE_TINY, SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.SHERPA_ONNX),
             SttEngineSelection.selectableEnginesForLanguage(koWithSenseVoice),
         )
 
-        // 中国語: SenseVoice がインストール済みなら未インストールの Moonshine Base は除外
+        // 中国語: SenseVoice がインストール済みでも未インストールの Moonshine Base は一覧に残す（設定画面で disabled + ダウンロードボタン表示）
         val zhWithSenseVoice = OnDeviceLanguageModelInfo(
             language = LanguageTag("zh-cn"),
             extraEngineStatuses = mapOf(SttEngine.SHERPA_ONNX_SENSE_VOICE to OnDeviceLanguageModelStatus.INSTALLED),
         )
         assertEquals(
-            listOf(SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.ML_KIT, SttEngine.SHERPA_ONNX),
+            listOf(SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.ML_KIT, SttEngine.MOONSHINE_BASE, SttEngine.SHERPA_ONNX),
             SttEngineSelection.selectableEnginesForLanguage(zhWithSenseVoice),
         )
     }

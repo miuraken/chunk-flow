@@ -550,7 +550,14 @@ class SettingsViewModelTest {
         assertFalse(isSttEngineSelectableInSettings(koInfo, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT))
         assertFalse(isSttEngineSelectableInSettings(enInfo, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT))
         assertTrue(isSttEngineSelectableInSettings(koInfo, com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER))
-        assertTrue(isSttEngineSelectableInSettings(koInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
+        // 未ダウンロードのダウンロード対象モデルはラジオボタンとしては disabled（横にダウンロードボタンを出す）
+        assertFalse(isSttEngineSelectableInSettings(koInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
+        assertTrue(
+            isSttEngineSelectableInSettings(
+                koInfo.copy(sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED),
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            ),
+        )
 
         // 非対応の ML Kit を選んでも sttEngineByLanguage には保存されない
         viewModel.onEvent(
@@ -561,11 +568,17 @@ class SettingsViewModelTest {
         )
         assertNull(viewModel.uiState.value.sttEngineByLanguage[LanguageTag("ko")])
 
-        // ラテン語 (la): ML Kit / SpeechRecognizer はカタログで非対応、sherpa-onnx のみ対応
+        // ラテン語 (la): ML Kit / SpeechRecognizer はカタログで非対応、sherpa-onnx のみ対応（未ダウンロード時は個別選択 disabled だが「自動」は有効）
         val laInfo = viewModel.uiState.value.languageModels.first { it.language == LanguageTag("la") }
         assertFalse(isSttEngineSelectableInSettings(laInfo, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT))
         assertFalse(isSttEngineSelectableInSettings(laInfo, com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER))
-        assertTrue(isSttEngineSelectableInSettings(laInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
+        assertFalse(isSttEngineSelectableInSettings(laInfo, com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX))
+        assertTrue(
+            isSttEngineSelectableInSettings(
+                laInfo.copy(sherpaModelStatus = com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus.INSTALLED),
+                com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,
+            ),
+        )
         assertTrue(isSttEngineSelectableInSettings(laInfo, null))
         assertEquals(
             com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX,

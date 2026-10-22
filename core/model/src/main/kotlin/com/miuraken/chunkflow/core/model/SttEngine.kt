@@ -379,8 +379,8 @@ object SttEngineSelection {
      * - `SpeechRecognizer` は `ML Kit` の裏の自動フォールバック専用とし、選択肢には出さない。
      * - `Whisper Base` は全言語で他のエンジンに精度・速度とも劣るため除外する。
      * - `Whisper Small` は「より詳しく文字起こし」専用とし、通常の言語別選択には出さない。
-     * - 言語ごとに不具合があるモデル（韓国語の `Moonshine Base`、日本語の `Moonshine`、中国語の `Moonshine Tiny` など）や、
-     *   すでにインストール済みのモデルに対して精度・速度とも優位性のない未インストールモデルを除外する。
+     * - 言語ごとに不具合があるモデル（韓国語の `Moonshine Base`、日本語の `Moonshine`、中国語の `Moonshine Tiny` など）は除外し、
+     *   その言語でおすすめできる端末内モデルは未ダウンロードでも一覧に含める（設定画面では未ダウンロード時は無効化しダウンロードボタンを表示する）。
      */
     fun selectableEnginesForLanguage(
         info: OnDeviceLanguageModelInfo,
@@ -401,45 +401,24 @@ object SttEngineSelection {
                 SttEngine.SHERPA_ONNX,
             )
 
-            "zh", "zh-cn", "zh-tw" -> {
-                val senseVoiceInstalled =
-                    enriched.statusOf(SttEngine.SHERPA_ONNX_SENSE_VOICE) == OnDeviceLanguageModelStatus.INSTALLED
-                val moonshineBaseInstalled =
-                    enriched.statusOf(SttEngine.MOONSHINE_BASE) == OnDeviceLanguageModelStatus.INSTALLED
-                buildList {
-                    add(SttEngine.SHERPA_ONNX_SENSE_VOICE)
-                    add(SttEngine.ML_KIT)
-                    // SenseVoice がすでにインストール済みで Moonshine Base が未インストールの場合は優位性がないため除外
-                    if (!senseVoiceInstalled || moonshineBaseInstalled || currentPreferred == SttEngine.MOONSHINE_BASE) {
-                        add(SttEngine.MOONSHINE_BASE)
-                    }
-                    add(SttEngine.SHERPA_ONNX)
-                }
-            }
+            "zh", "zh-cn", "zh-tw" -> listOf(
+                SttEngine.SHERPA_ONNX_SENSE_VOICE,
+                SttEngine.ML_KIT,
+                SttEngine.MOONSHINE_BASE,
+                SttEngine.SHERPA_ONNX,
+            )
 
             "yue" -> listOf(
                 SttEngine.SHERPA_ONNX_SENSE_VOICE,
                 SttEngine.SHERPA_ONNX,
             )
 
-            "ko" -> {
-                val senseVoiceInstalled =
-                    enriched.statusOf(SttEngine.SHERPA_ONNX_SENSE_VOICE) == OnDeviceLanguageModelStatus.INSTALLED
-                val moonshineTinyInstalled =
-                    enriched.statusOf(SttEngine.MOONSHINE_TINY) == OnDeviceLanguageModelStatus.INSTALLED
-                buildList {
-                    add(SttEngine.ML_KIT)
-                    // 韓国語では Moonshine Tiny と SenseVoice Small が同等の高精度・高速（CER 1.2%, RTF ~0.15）のため、
-                    // 片方がすでにインストール済みでもう片方が未インストールの場合は未インストール側を除外する
-                    if (!senseVoiceInstalled || moonshineTinyInstalled || currentPreferred == SttEngine.MOONSHINE_TINY) {
-                        add(SttEngine.MOONSHINE_TINY)
-                    }
-                    if (!moonshineTinyInstalled || senseVoiceInstalled || currentPreferred == SttEngine.SHERPA_ONNX_SENSE_VOICE) {
-                        add(SttEngine.SHERPA_ONNX_SENSE_VOICE)
-                    }
-                    add(SttEngine.SHERPA_ONNX)
-                }
-            }
+            "ko" -> listOf(
+                SttEngine.ML_KIT,
+                SttEngine.MOONSHINE_TINY,
+                SttEngine.SHERPA_ONNX_SENSE_VOICE,
+                SttEngine.SHERPA_ONNX,
+            )
 
             "hi" -> listOf(
                 SttEngine.ML_KIT,
