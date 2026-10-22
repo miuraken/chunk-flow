@@ -3202,8 +3202,33 @@ class LibraryViewModel @Inject constructor(
 
     private fun confirmDelete() {
         val currentState = uiState.value
-        val targets = currentState.pendingDeleteTargetItems
-        val targetDirs = currentState.pendingDeleteDirectoryPaths
+        val directPendingDir = pendingDeleteDirectoryPath.value?.trim('/')?.takeIf { it.isNotBlank() }
+        val directPendingItem = pendingDeleteItem.value
+        val directBatch = isPendingBatchDelete.value
+        val directSelectedDirs = selectedDirectoryPaths.value
+        val directSelectedItemIds = selectedItemIds.value
+
+        val targetDirs = when {
+            directPendingDir != null -> listOf(directPendingDir)
+            directBatch -> directSelectedDirs.sorted()
+            else -> currentState.pendingDeleteDirectoryPaths
+        }
+        val targets = when {
+            directPendingItem != null -> listOf(directPendingItem)
+
+            directPendingDir != null -> currentState.itemsInDirectoryTree(directPendingDir).map { it.item }
+
+            directBatch -> {
+                val fromDirs = directSelectedDirs.flatMap { path ->
+                    currentState.itemsInDirectoryTree(path).map { it.item }
+                }
+                val fromItems = currentState.items.filter { it.item.id in directSelectedItemIds }.map { it.item }
+                (fromDirs + fromItems).distinctBy { it.id }
+            }
+
+            else -> currentState.pendingDeleteTargetItems
+        }
+
         pendingDeleteItem.value = null
         pendingDeleteDirectoryPath.value = null
         isPendingBatchDelete.value = false
@@ -3234,10 +3259,11 @@ class LibraryViewModel @Inject constructor(
             }
             for (target in targets) {
                 libraryRepository.delete(target.id)
-                if (playbackController is FakePlaybackController &&
-                    playbackController.status.value.mediaId == target.id
-                ) {
-                    playbackController.statusState.value = PlaybackStatus()
+                if (playbackController.status.value.mediaId == target.id) {
+                    playbackController.player.value?.pause()
+                    if (playbackController is FakePlaybackController) {
+                        playbackController.statusState.value = PlaybackStatus()
+                    }
                 }
             }
         }

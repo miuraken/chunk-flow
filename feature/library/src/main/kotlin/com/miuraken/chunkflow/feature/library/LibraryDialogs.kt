@@ -743,6 +743,9 @@ internal fun EditItemMetadataDialog(
     } else {
         androidx.compose.material3.ModalBottomSheet(
             onDismissRequest = onDismiss,
+            sheetState = androidx.compose.material3.rememberModalBottomSheetState(
+                skipPartiallyExpanded = true,
+            ),
         ) {
             content()
         }
@@ -912,6 +915,9 @@ internal fun EditDirectoryMetadataDialog(
     } else {
         androidx.compose.material3.ModalBottomSheet(
             onDismissRequest = onDismiss,
+            sheetState = androidx.compose.material3.rememberModalBottomSheetState(
+                skipPartiallyExpanded = true,
+            ),
         ) {
             content()
         }
