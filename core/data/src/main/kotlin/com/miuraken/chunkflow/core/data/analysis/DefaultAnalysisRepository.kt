@@ -143,6 +143,7 @@ class DefaultAnalysisRepository(
     /** CPU を使う処理（一括言語判定の Whisper 推論など）の Dispatcher。 */
     @Dispatcher(ChunkFlowDispatchers.Default) private val computeDispatcher: CoroutineDispatcher = ioDispatcher,
     private val speechProbabilityStreamFactory: SpeechProbabilityStreamFactory? = null,
+    private val courseFolderDao: com.miuraken.chunkflow.core.database.dao.CourseFolderDao? = null,
 ) : AnalysisRepository {
 
     @Inject
@@ -163,6 +164,7 @@ class DefaultAnalysisRepository(
         textTranslator: OnDeviceTextTranslator,
         @Dispatcher(ChunkFlowDispatchers.Default) computeDispatcher: CoroutineDispatcher,
         speechProbabilityStreamFactory: SpeechProbabilityStreamFactory,
+        courseFolderDao: com.miuraken.chunkflow.core.database.dao.CourseFolderDao,
     ) : this(
         context = context,
         analysisStateDao = analysisStateDao,
@@ -181,7 +183,32 @@ class DefaultAnalysisRepository(
         textTranslator = textTranslator,
         computeDispatcher = computeDispatcher,
         speechProbabilityStreamFactory = speechProbabilityStreamFactory,
+        courseFolderDao = courseFolderDao,
     )
+
+    /**
+     * ファイル個別設定 ＞ フォルダ設定 の順で合成した音声認識エンジンの上書きを返す。
+     */
+    private suspend fun resolveEffectiveItemSttOverride(
+        id: MediaId,
+    ): com.miuraken.chunkflow.core.model.ItemSttOverride {
+        val itemOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+        if (itemOverride.targetEngine != null && itemOverride.baseEngine != null) {
+            return itemOverride
+        }
+        val dao = courseFolderDao ?: return itemOverride
+        val course = mediaItemDao.getById(id.value)?.course?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
+            ?: return itemOverride
+        val folderEntity = dao.getByPath(course)
+            ?: if ('/' in course) dao.getByPath(course.substringBeforeLast('/')) else null
+        val folderOverride = folderEntity?.let {
+            com.miuraken.chunkflow.core.model.ItemSttOverride(
+                targetEngine = com.miuraken.chunkflow.core.model.SttEngine.fromNameOrNull(it.targetSttEngine),
+                baseEngine = com.miuraken.chunkflow.core.model.SttEngine.fromNameOrNull(it.baseSttEngine),
+            )
+        } ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+        return itemOverride.withFolderFallback(folderOverride)
+    }
 
     private data class ChunkLangCacheKey(
         val mediaId: String,
@@ -1769,7 +1796,7 @@ class DefaultAnalysisRepository(
                                     skippedEmptyChunkIds = currentSkippedChunkIds(id),
                                 )
                             }
-                            val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                            val itemSttOverride = resolveEffectiveItemSttOverride(id)
                             val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
                             val activeChunksForContext = selectActiveChunkEntities(
                                 itemStateDao.getByMediaId(id.value),
@@ -2526,7 +2553,7 @@ class DefaultAnalysisRepository(
 
                 val existing = transcriptDao.getByChunkId(chunkId.value)
                 val mediaItem = mediaItemDao.getById(id.value)
-                val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                val itemSttOverride = resolveEffectiveItemSttOverride(id)
                 val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
 
                 val offsetMs = (mediaItem?.transcriptOffsetMs ?: 0).toLong()
@@ -2718,7 +2745,7 @@ class DefaultAnalysisRepository(
     override suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) {
         withContext(ioDispatcher) {
             withTrackedTranscriptionJob(id) {
-                val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                val itemSttOverride = resolveEffectiveItemSttOverride(id)
                 val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
 
                 attemptedEmptyChunkIds[id]?.remove(chunkId.value)
@@ -2865,7 +2892,7 @@ class DefaultAnalysisRepository(
                                 skippedEmptyChunkIds = currentSkippedChunkIds(id),
                             )
                         }
-                        val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                        val itemSttOverride = resolveEffectiveItemSttOverride(id)
                         val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
                         val activeChunksForContext = selectActiveChunkEntities(
                             itemStateDao.getByMediaId(id.value),
@@ -3478,7 +3505,7 @@ class DefaultAnalysisRepository(
                                     }
                                 }
                                 // チャンク区間 [startMs, endMs] のみを切り出して認識し、チャンク間の無音はスキップする（F6.2）
-                                val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
+                                val itemSttOverride = resolveEffectiveItemSttOverride(id)
                                 val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
                                 val precedingContextByLanguage = buildPrecedingContextByLanguage(
                                     activeChunks = activeChunks,
