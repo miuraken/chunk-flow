@@ -39,6 +39,7 @@
     <string name="library_item_tags_cd">Tags: %1$s</string>
     <string name="library_item_tags_more">+%1$d</string>
     <string name="library_selection_count">%1$d selected</string>
+    <string name="library_selection_select_all">Select all</string>
     <string name="library_selection_clear">Clear selection</string>
     <string name="library_selection_delete_action">Delete (%1$d)</string>
     <string name="library_selection_delete_badge">Delete</string>

@@ -644,15 +644,24 @@ class LibraryViewModelTest {
         assertSame(treeUri, repo.linkedLocalDirectories.single().first)
         assertEquals("NHKハングル", repo.linkedLocalDirectories.single().second)
         assertEquals(selectedPair, repo.linkedLocalDirectories.single().third)
+        assertEquals("NHKハングル", viewModel.uiState.value.currentDirectoryPath)
         assertEquals(
-            LibraryImportUiState.Done(addedCount = 1, duplicates = 0, transcriptsAttached = 1),
+            LibraryImportUiState.Done(
+                addedCount = 1,
+                duplicates = 0,
+                transcriptsAttached = 1,
+                importedFiles = listOf(
+                    LibraryImportedFileUiModel(mediaId = item.id, fileName = item.id.value),
+                ),
+                targetFolderName = "NHKハングル",
+            ),
             viewModel.uiState.value.importState,
         )
 
-        // 2. RescanLocalDirectories を送ると rescanLocalDirectories が呼ばれ importState が更新される
+        // 2. RescanLocalDirectories を送ると現在開いているフォルダの rescanLocalDirectories が呼ばれ importState が更新される
         repo.rescanResultCount = 2
         viewModel.onEvent(LibraryEvent.RescanLocalDirectories)
-        assertEquals(listOf<String?>(null), repo.rescanRequests)
+        assertEquals(listOf<String?>("NHKハングル"), repo.rescanRequests)
         assertEquals(
             LibraryImportUiState.Done(addedCount = 2, duplicates = 0, transcriptsAttached = 0),
             viewModel.uiState.value.importState,
@@ -1974,5 +1983,87 @@ class LibraryViewModelTest {
         viewModel.onEvent(LibraryEvent.DismissLanguageSettingsModal)
         assertFalse(viewModel.uiState.value.showLanguageSettingsModal)
         assertEquals(sample.item, viewModel.uiState.value.pendingEditItem)
+    }
+
+    @Test
+    fun `SelectAll_現在の表示一覧のアイテムまたはフォルダをすべて選択状態にする`() = runTest {
+        val item1 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("m1"),
+            course = "CourseA",
+        )
+        val item2 = SampleMaterials.jaZh.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("m2"),
+            course = "CourseA",
+        )
+        val item3 = SampleMaterials.jaKo.item.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("m3"),
+            course = "CourseB",
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2, item3))
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. フォルダタブのルートでフォルダを1つ選択してから SelectAll を送ると全フォルダが選択される
+        viewModel.onEvent(LibraryEvent.ToggleDirectorySelection("CourseA"))
+        assertEquals(setOf("CourseA"), viewModel.uiState.value.selectedDirectoryPaths)
+        viewModel.onEvent(LibraryEvent.SelectAll)
+        assertEquals(setOf("CourseA", "CourseB"), viewModel.uiState.value.selectedDirectoryPaths)
+
+        // 2. CourseA フォルダ内でファイルを1つ選択してから SelectAll を送ると CourseA 内の全ファイルが選択される
+        viewModel.onEvent(LibraryEvent.ClearSelection)
+        viewModel.onEvent(LibraryEvent.OpenDirectory("CourseA"))
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item1.id))
+        assertEquals(setOf(item1.id), viewModel.uiState.value.selectedItemIds)
+        viewModel.onEvent(LibraryEvent.SelectAll)
+        assertEquals(setOf(item1.id, item2.id), viewModel.uiState.value.selectedItemIds)
+
+        // 3. ファイル一覧タブで SelectAll を送ると表示中の全ファイルが選択される
+        viewModel.onEvent(LibraryEvent.ClearSelection)
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.FILES))
+        viewModel.onEvent(LibraryEvent.ToggleItemSelection(item1.id))
+        viewModel.onEvent(LibraryEvent.SelectAll)
+        assertEquals(setOf(item1.id, item2.id, item3.id), viewModel.uiState.value.selectedItemIds)
+    }
+
+    @Test
+    fun `ConfirmImportConfig_インポート完了を待たずにインポート開始時点で対象フォルダへ遷移し完了後も維持する`() = runTest {
+        val progressFlow = kotlinx.coroutines.flow.MutableSharedFlow<ImportProgress>()
+        val repo = FakeLibraryRepository().apply {
+            importResult = { progressFlow }
+        }
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.FILES))
+        viewModel.onEvent(
+            LibraryEvent.ImportUris(
+                uris = listOf(StubUri.create("content://test/audio.mp3")),
+                parentFolderName = "MyFolder",
+            ),
+        )
+        viewModel.onEvent(
+            LibraryEvent.ConfirmImportConfig(
+                course = "MyFolder",
+                languages = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")),
+            ),
+        )
+
+        // インポート進行中（Copying 発行前・中）の時点で既に FOLDERS タブの MyFolder へ遷移していること
+        assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
+        assertEquals("MyFolder", viewModel.uiState.value.currentDirectoryPath)
+
+        progressFlow.emit(ImportProgress.Copying(fraction = 0.5f, currentFileName = "audio.mp3"))
+        assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
+        assertEquals("MyFolder", viewModel.uiState.value.currentDirectoryPath)
+
+        progressFlow.emit(
+            ImportProgress.Done(
+                mediaIds = listOf(com.miuraken.chunkflow.core.model.MediaId("imported-1")),
+                duplicates = 0,
+                transcriptsAttached = 0,
+            ),
+        )
+        assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
+        assertEquals("MyFolder", viewModel.uiState.value.currentDirectoryPath)
     }
 }

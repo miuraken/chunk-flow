@@ -219,6 +219,33 @@ internal fun extractParentFolderNameFromUri(
 }
 
 /**
+ * SAF のツリー URI（`OpenDocumentTree`）から選択されたディレクトリの名称を抽出する。
+ */
+internal fun extractTreeFolderNameFromUri(treeUri: Uri): String? {
+    val docId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?: extractTreeOrDocIdFromUriString(treeUri.toString())
+    if (docId != null) {
+        val rawPath = if (docId.startsWith("raw:")) {
+            docId.removePrefix("raw:")
+        } else {
+            docId.substringAfter(':')
+        }.trim('/')
+        val lastSegment = rawPath.split('/').lastOrNull { it.isNotBlank() }
+        if (lastSegment != null) {
+            return lastSegment
+        }
+    }
+    return treeUri.lastPathSegment
+        ?.let(::safeUrlDecode)
+        ?.substringAfter(':')
+        ?.trim('/')
+        ?.split('/')
+        ?.lastOrNull { it.isNotBlank() }
+}
+
+/**
  * ファイル URI から親ディレクトリの SAF ドキュメント URI 文字列を抽出する。
  */
 internal fun extractParentDirectoryUriFromFileUri(

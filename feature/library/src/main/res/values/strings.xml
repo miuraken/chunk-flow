@@ -39,6 +39,7 @@
     <string name="library_item_tags_cd">タグ: %1$s</string>
     <string name="library_item_tags_more">+%1$d</string>
     <string name="library_selection_count">%1$d 件選択中</string>
+    <string name="library_selection_select_all">すべて選択する</string>
     <string name="library_selection_clear">選択解除</string>
     <string name="library_selection_delete_action">削除 (%1$d)</string>
     <string name="library_selection_delete_badge">削除</string>

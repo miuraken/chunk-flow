@@ -257,7 +257,7 @@ internal fun LibraryItemRow(
                     drawRect(
                         color = folderStripColor,
                         topLeft = Offset.Zero,
-                        size = Size(width = 30.dp.toPx(), height = size.height),
+                        size = Size(width = 5.dp.toPx(), height = size.height),
                     )
                 }
             }
@@ -419,36 +419,37 @@ internal fun LibraryItemRow(
             }
         }
 
-        if (!isSelectionMode) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // ☆（お気に入り）は複数選択中も表示して状態を確認・切り替えできるようにし、
+            // 通常表示時はその下にファイル設定を開く Tune アイコンを置く
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // ☆（お気に入り）の下に、ファイル設定を開く Tune アイコンを置く
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    if (onToggleFavoriteClick != null) {
-                        IconToggleButton(
-                            checked = isFavorite,
-                            onCheckedChange = { onToggleFavoriteClick() },
-                            modifier = Modifier.size(30.dp),
-                        ) {
-                            Icon(
-                                imageVector = if (isFavorite) {
-                                    ChunkFlowIcons.Favorite
-                                } else {
-                                    ChunkFlowIcons.FavoriteBorder
-                                },
-                                contentDescription = favoriteCd,
-                                tint = if (isFavorite) {
-                                    chunkFlowExtendedColors().favorite
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
+                if (onToggleFavoriteClick != null) {
+                    IconToggleButton(
+                        checked = isFavorite,
+                        onCheckedChange = { onToggleFavoriteClick() },
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (isFavorite) {
+                                ChunkFlowIcons.Favorite
+                            } else {
+                                ChunkFlowIcons.FavoriteBorder
+                            },
+                            contentDescription = favoriteCd,
+                            tint = if (isFavorite) {
+                                chunkFlowExtendedColors().favorite
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(18.dp),
+                        )
                     }
+                }
+                if (!isSelectionMode) {
                     IconButton(
                         onClick = onEditMetadataClick,
                         modifier = Modifier.size(30.dp),
@@ -461,18 +462,18 @@ internal fun LibraryItemRow(
                         )
                     }
                 }
-                if (onRemoveFromPlaylistClick != null) {
-                    IconButton(
-                        onClick = onRemoveFromPlaylistClick,
-                        modifier = Modifier.size(30.dp),
-                    ) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.Close,
-                            contentDescription = removeFromPlaylistCd,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
+            }
+            if (!isSelectionMode && onRemoveFromPlaylistClick != null) {
+                IconButton(
+                    onClick = onRemoveFromPlaylistClick,
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Close,
+                        contentDescription = removeFromPlaylistCd,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
             }
         }

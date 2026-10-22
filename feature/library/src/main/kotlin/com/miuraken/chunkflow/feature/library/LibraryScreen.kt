@@ -14,7 +14,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -326,27 +328,41 @@ fun LibraryScreen(
                             transitionSpec = { fadeIn() togetherWith fadeOut() },
                             label = "topAppBarTitle",
                         ) { (isSelection, selectedCount) ->
-                            val titleText = if (isSelection) {
-                                stringResource(
-                                    R.string.library_selection_count,
-                                    selectedCount,
-                                )
+                            if (isSelection) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(
+                                            R.string.library_selection_count,
+                                            selectedCount,
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    TextButton(
+                                        onClick = { onEvent(LibraryEvent.SelectAll) },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    ) {
+                                        Text(
+                                            text = stringResource(R.string.library_selection_select_all),
+                                            style = MaterialTheme.typography.labelLarge,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                }
                             } else {
-                                stringResource(R.string.library_title)
-                            }
-                            Text(
-                                text = titleText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = if (!isSelection) {
-                                    Modifier.clickable(
+                                Text(
+                                    text = stringResource(R.string.library_title),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.clickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
-                                    ) { onEvent(LibraryEvent.ResetToFoldersRoot) }
-                                } else {
-                                    Modifier
-                                },
-                            )
+                                    ) { onEvent(LibraryEvent.ResetToFoldersRoot) },
+                                )
+                            }
                         }
                     },
                     actions = {
@@ -490,6 +506,7 @@ fun LibraryScreen(
                     Spacer(modifier = Modifier.weight(1f))
                 } else if (state.items.isEmpty() &&
                     state.courseFolders.isEmpty() &&
+                    state.currentDirectoryPath == null &&
                     state.selectedTab != LibraryViewTab.PLAYLISTS &&
                     state.selectedTab != LibraryViewTab.BOOKMARKS
                 ) {

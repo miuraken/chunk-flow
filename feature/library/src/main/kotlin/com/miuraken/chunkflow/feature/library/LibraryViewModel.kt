@@ -1447,6 +1447,9 @@ sealed interface LibraryEvent {
     /** 複数選択状態をすべて解除する。 */
     data object ClearSelection : LibraryEvent
 
+    /** 現在の表示一覧の項目をすべて選択する。 */
+    data object SelectAll : LibraryEvent
+
     /** 教材を開いてプレイヤー画面へ遷移する。 */
     data class OpenItem(val id: MediaId) : LibraryEvent
 
@@ -2184,6 +2187,7 @@ class LibraryViewModel @Inject constructor(
                         course = normalizedCourse,
                         languages = normalizedLanguages,
                         sttOverride = event.sttOverride,
+                        fallbackFolderName = config.initialCourse,
                     )
                 } else {
                     val targetCourse = normalizedCourse
@@ -2510,6 +2514,41 @@ class LibraryViewModel @Inject constructor(
 
             LibraryEvent.ClearSelection -> {
                 clearSelectionInternal()
+            }
+
+            LibraryEvent.SelectAll -> {
+                val state = uiState.value
+                when (state.selectedTab) {
+                    LibraryViewTab.FOLDERS -> {
+                        val fileIds = state.currentFiles.mapTo(linkedSetOf()) { it.item.id }
+                        val dirPaths = state.currentDirectories.mapNotNullTo(linkedSetOf()) {
+                            it.name?.trim('/')?.takeIf { p -> p.isNotEmpty() }
+                        }
+                        if (fileIds.isNotEmpty() &&
+                            (selectedDirectoryPaths.value.isEmpty() || selectedItemIds.value.isNotEmpty())
+                        ) {
+                            selectedItemIds.update { it + fileIds }
+                            if (selectedDirectoryPaths.value.isNotEmpty()) {
+                                selectedDirectoryPaths.update { it + dirPaths }
+                            }
+                        } else {
+                            selectedDirectoryPaths.update { it + dirPaths }
+                        }
+                    }
+
+                    LibraryViewTab.FILES -> {
+                        selectedItemIds.value = state.filteredAllFiles.mapTo(linkedSetOf()) { it.item.id }
+                    }
+
+                    LibraryViewTab.PLAYLISTS -> {
+                        val playlistItems = state.selectedPlaylistId?.let(state::playlistItemsFor).orEmpty()
+                        selectedItemIds.value = playlistItems.mapTo(linkedSetOf()) { it.item.id }
+                    }
+
+                    LibraryViewTab.BOOKMARKS -> {
+                        selectedItemIds.value = state.bookmarkedFiles.mapTo(linkedSetOf()) { it.mediaId }
+                    }
+                }
             }
 
             is LibraryEvent.RequestEditMetadata -> {
@@ -3166,7 +3205,16 @@ class LibraryViewModel @Inject constructor(
         course: String?,
         languages: LanguagePair,
         sttOverride: ItemSttOverride = ItemSttOverride.NONE,
+        fallbackFolderName: String? = null,
     ) {
+        val initialFolder = course?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
+            ?: fallbackFolderName?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
+            ?: extractTreeFolderNameFromUri(treeUri)
+        clearSelectionInternal()
+        selectedTab.value = LibraryViewTab.FOLDERS
+        if (initialFolder != null) {
+            currentDirectoryPath.value = initialFolder
+        }
         importJob?.cancel()
         importJob = viewModelScope.launch {
             libraryRepository.linkLocalDirectory(
@@ -3179,19 +3227,45 @@ class LibraryViewModel @Inject constructor(
                         itemSttOverrideRepository.set(mediaId, sttOverride)
                     }
                 }
-                importState.value = when (progress) {
-                    is ImportProgress.Copying -> LibraryImportUiState.Copying(
-                        fraction = progress.fraction,
-                        currentFileName = progress.currentFileName,
-                    )
+                when (progress) {
+                    is ImportProgress.Copying -> {
+                        importState.value = LibraryImportUiState.Copying(
+                            fraction = progress.fraction,
+                            currentFileName = progress.currentFileName,
+                        )
+                    }
 
-                    is ImportProgress.Done -> LibraryImportUiState.Done(
-                        addedCount = progress.mediaIds.size,
-                        duplicates = progress.duplicates,
-                        transcriptsAttached = progress.transcriptsAttached,
-                    )
+                    is ImportProgress.Done -> {
+                        val allItemsById = libraryRepository.observeItems().firstOrNull().orEmpty().associateBy { it.id }
+                        val importedFiles = progress.mediaIds.map { id ->
+                            val item = allItemsById[id]
+                            LibraryImportedFileUiModel(
+                                mediaId = id,
+                                fileName = item?.title?.takeIf { it.isNotBlank() } ?: id.value,
+                            )
+                        }
+                        val resolvedFolder = initialFolder
+                            ?: progress.mediaIds.firstNotNullOfOrNull { id ->
+                                allItemsById[id]?.course?.substringBefore('/')?.takeIf { it.isNotBlank() }
+                                    ?: allItemsById[id]?.course?.trim('/')?.takeIf { it.isNotBlank() }
+                            }
+                        clearSelectionInternal()
+                        selectedTab.value = LibraryViewTab.FOLDERS
+                        if (resolvedFolder != null) {
+                            currentDirectoryPath.value = resolvedFolder
+                        }
+                        importState.value = LibraryImportUiState.Done(
+                            addedCount = progress.mediaIds.size,
+                            duplicates = progress.duplicates,
+                            transcriptsAttached = progress.transcriptsAttached,
+                            importedFiles = importedFiles,
+                            targetFolderName = resolvedFolder,
+                        )
+                    }
 
-                    is ImportProgress.Failed -> LibraryImportUiState.Error(progress.error)
+                    is ImportProgress.Failed -> {
+                        importState.value = LibraryImportUiState.Error(progress.error)
+                    }
                 }
             }
         }
@@ -3209,6 +3283,9 @@ class LibraryViewModel @Inject constructor(
         val effectiveCourse = course?.trim()?.takeIf { it.isNotEmpty() }
             ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
         val normalizedFolder = effectiveCourse.trim('/').ifBlank { LibraryCourseFolder.DEFAULT_IMPORTED_COURSE }
+        clearSelectionInternal()
+        selectedTab.value = LibraryViewTab.FOLDERS
+        currentDirectoryPath.value = normalizedFolder
         importJob?.cancel()
         importJob = viewModelScope.launch {
             if (treatAsRealFolder) {

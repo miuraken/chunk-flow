@@ -68,10 +68,14 @@ internal fun LibraryFoldersTabContent(
                 folderPath = currentFolderPath,
                 itemCount = totalItemsInFolder,
                 isRealFolder = state.isRealFolder(currentFolderPath),
+                isSelectionMode = state.isSelectionMode,
                 isSelected = currentFolderPath in state.selectedDirectoryPaths,
                 colorIndex = state.folderColorIndexFor(currentFolderPath),
                 onNavigateUp = { onEvent(LibraryEvent.NavigateUp) },
                 onLongClick = { onEvent(LibraryEvent.ToggleDirectorySelection(currentFolderPath)) },
+                onEditDirectoryMetadata = {
+                    onEvent(LibraryEvent.RequestEditDirectoryMetadata(currentFolderPath))
+                },
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
             )
         } else {
@@ -235,10 +239,12 @@ private fun LibraryCurrentFolderHeader(
     folderPath: String,
     itemCount: Int,
     isRealFolder: Boolean,
+    isSelectionMode: Boolean,
     isSelected: Boolean,
     colorIndex: Int?,
     onNavigateUp: () -> Unit,
     onLongClick: () -> Unit,
+    onEditDirectoryMetadata: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val hierarchicalTitle = folderPath.replace("/", " / ")
@@ -262,7 +268,7 @@ private fun LibraryCurrentFolderHeader(
                     onLongClick = onLongClick,
                 )
                 .semantics { contentDescription = navigateUpCd }
-                .padding(horizontal = 4.dp, vertical = 8.dp),
+                .padding(horizontal = 4.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -312,6 +318,19 @@ private fun LibraryCurrentFolderHeader(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (!isSelectionMode) {
+                IconButton(
+                    onClick = onEditDirectoryMetadata,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.Tune,
+                        contentDescription = stringResource(R.string.library_edit_directory_metadata_cd),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
     }
