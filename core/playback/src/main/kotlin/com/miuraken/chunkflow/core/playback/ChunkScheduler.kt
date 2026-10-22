@@ -289,8 +289,8 @@ class ChunkScheduler(
         pausedAtChunkEndPositionMs = null
         shouldRestartSelectedChunksOnPlay = true
         singleChunkPlaybackId = targetChunk.id
-        seekInternal(targetChunk.startMs)
         updateState(chunkId = targetChunk.id, autoPauseEndsAt = null)
+        seekInternal(targetChunk.startMs)
         scheduleBoundaryMessage(
             payload = createChunkEndPayload(targetChunk),
             persistent = false,
@@ -309,8 +309,8 @@ class ChunkScheduler(
         singleChunkPlaybackId = null
         pausedAtChunkEndPositionMs = null
         shouldRestartSelectedChunksOnPlay = false
-        seekInternal(targetChunk.startMs)
         updateState(chunkId = targetChunk.id, autoPauseEndsAt = null)
+        seekInternal(targetChunk.startMs)
         scheduleBoundaryMessage(
             payload = createChunkEndPayload(targetChunk),
             persistent = false,
@@ -346,7 +346,11 @@ class ChunkScheduler(
         if (practiceSettings.loop is LoopMode.AbRange) {
             val activeId = findChunkAt(nowMs)?.id
             if (activeId != null && activeId != _currentChunkId.value) {
-                updateState(chunkId = activeId, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                updateState(
+                    chunkId = activeId,
+                    autoPauseEndsAt = _autoPauseEndsAtMs.value,
+                    flushBufferOnSpeedChange = true,
+                )
             }
             return
         }
@@ -362,7 +366,11 @@ class ChunkScheduler(
             val activeChunk = chunks.firstOrNull { nowMs in it.startMs until it.endMs }
             if (activeChunk != null) {
                 if (_currentChunkId.value != activeChunk.id) {
-                    updateState(chunkId = activeChunk.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                    updateState(
+                        chunkId = activeChunk.id,
+                        autoPauseEndsAt = _autoPauseEndsAtMs.value,
+                        flushBufferOnSpeedChange = true,
+                    )
                 }
                 reschedule()
             }
@@ -391,10 +399,6 @@ class ChunkScheduler(
         val newPosMs = newPosition.positionMs.coerceAtLeast(0L)
         if (pendingSelfSeekCount > 0) {
             pendingSelfSeekCount -= 1
-            updateState(
-                chunkId = findChunkAt(newPosMs)?.id,
-                autoPauseEndsAt = _autoPauseEndsAtMs.value,
-            )
             return
         }
 
@@ -466,8 +470,8 @@ class ChunkScheduler(
                 shouldRestartSelectedChunksOnPlay = false
                 if (shouldStartFromFirst) {
                     val target = repeatChunks.first()
-                    seekInternal(target.startMs)
                     updateState(chunkId = target.id, autoPauseEndsAt = null)
+                    seekInternal(target.startMs)
                     scheduleBoundaryMessage(
                         payload = createChunkEndPayload(target),
                         persistent = false,
@@ -499,8 +503,8 @@ class ChunkScheduler(
             } else {
                 0L
             }
-            seekInternal(targetMs)
             updateState(chunkId = findChunkAt(targetMs)?.id, autoPauseEndsAt = null)
+            seekInternal(targetMs)
             exoPlayer.play()
             reschedule()
             return
@@ -586,8 +590,8 @@ class ChunkScheduler(
                 if (repeatChunks.none { isPositionWithinRepeatChunkOrSilence(it, nowMs, newSettings) }) {
                     val target = repeatChunks.firstOrNull { it.startMs >= nowMs } ?: repeatChunks.first()
                     shouldRestartSelectedChunksOnPlay = false
-                    seekInternal(target.startMs)
                     updateState(chunkId = target.id, autoPauseEndsAt = null)
+                    seekInternal(target.startMs)
                     scheduleBoundaryMessage(
                         payload = createChunkEndPayload(target),
                         persistent = false,
@@ -688,13 +692,18 @@ class ChunkScheduler(
                     }
                     if (nextRepeatChunk != null && nextRepeatChunk.id == nextChunk.id) {
                         if (nextChunk.startMs <= nowMs) {
-                            updateState(chunkId = nextChunk.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                            updateState(
+                                chunkId = nextChunk.id,
+                                autoPauseEndsAt = _autoPauseEndsAtMs.value,
+                                flushBufferOnSpeedChange = isPlayingOrStarting,
+                            )
                             scheduleBoundaryMessage(
                                 payload = createChunkEndPayload(nextChunk),
                                 persistent = false,
                             )
                         } else {
                             updateState(chunkId = owner.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                            prepareSpeedForUpcomingChunk(nextChunk, isPlayingOrStarting)
                             scheduleBoundaryMessage(
                                 payload = BoundaryPayload.ChunkStart(nextChunk),
                                 persistent = false,
@@ -726,8 +735,8 @@ class ChunkScheduler(
                     }
                 if (nextTarget != null) {
                     shouldRestartSelectedChunksOnPlay = false
-                    seekInternal(nextTarget.startMs)
                     updateState(chunkId = nextTarget.id, autoPauseEndsAt = null)
+                    seekInternal(nextTarget.startMs)
                     scheduleBoundaryMessage(
                         payload = createChunkEndPayload(nextTarget),
                         persistent = false,
@@ -774,19 +783,24 @@ class ChunkScheduler(
                 return
             }
             if (nextChunk.startMs <= nowMs || nextChunk.startMs == minBoundaryAfterMs) {
-                updateState(chunkId = nextChunk.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                updateState(
+                    chunkId = nextChunk.id,
+                    autoPauseEndsAt = _autoPauseEndsAtMs.value,
+                    flushBufferOnSpeedChange = isPlayingOrStarting,
+                )
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(nextChunk),
                     persistent = false,
                 )
             } else if (practiceSettings.skipOriginalSilence && isPlayingOrStarting) {
-                seekInternal(nextChunk.startMs)
                 updateState(chunkId = nextChunk.id, autoPauseEndsAt = null)
+                seekInternal(nextChunk.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(nextChunk),
                     persistent = false,
                 )
             } else {
+                prepareSpeedForUpcomingChunk(nextChunk, isPlayingOrStarting)
                 scheduleBoundaryMessage(
                     payload = BoundaryPayload.ChunkStart(nextChunk),
                     persistent = false,
@@ -805,8 +819,8 @@ class ChunkScheduler(
         } else {
             val nextChunk = chunks.firstOrNull { it.startMs > nowMs }
             if (nextChunk != null && practiceSettings.skipOriginalSilence && isPlayingOrStarting) {
-                seekInternal(nextChunk.startMs)
                 updateState(chunkId = nextChunk.id, autoPauseEndsAt = null)
+                seekInternal(nextChunk.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(nextChunk),
                     persistent = false,
@@ -818,6 +832,7 @@ class ChunkScheduler(
                 autoPauseEndsAt = _autoPauseEndsAtMs.value,
             )
             if (nextChunk != null) {
+                prepareSpeedForUpcomingChunk(nextChunk, isPlayingOrStarting)
                 scheduleBoundaryMessage(
                     payload = BoundaryPayload.ChunkStart(nextChunk),
                     persistent = false,
@@ -874,8 +889,8 @@ class ChunkScheduler(
                         )
                     }
                     if (firstMatching != null) {
-                        seekInternal(firstMatching.startMs)
                         updateState(chunkId = firstMatching.id, autoPauseEndsAt = null)
+                        seekInternal(firstMatching.startMs)
                         scheduleBoundaryMessage(
                             payload = createChunkEndPayload(firstMatching),
                             persistent = false,
@@ -897,13 +912,18 @@ class ChunkScheduler(
             if (!practiceSettings.skipOriginalSilence) {
                 if (nextChunkMatches) {
                     if (nextChunk.startMs <= nowMs) {
-                        updateState(chunkId = nextChunk.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                        updateState(
+                            chunkId = nextChunk.id,
+                            autoPauseEndsAt = _autoPauseEndsAtMs.value,
+                            flushBufferOnSpeedChange = isPlayingOrStarting,
+                        )
                         scheduleBoundaryMessage(
                             payload = createChunkEndPayload(nextChunk),
                             persistent = false,
                         )
                     } else {
                         updateState(chunkId = owner.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                        prepareSpeedForUpcomingChunk(nextChunk, isPlayingOrStarting)
                         scheduleBoundaryMessage(
                             payload = BoundaryPayload.ChunkStart(nextChunk),
                             persistent = false,
@@ -945,8 +965,8 @@ class ChunkScheduler(
                 val targetMatching = nextMatching
                     ?: if (wrapToFirstMatchingIfNoNext || shouldWrapAtEnd) firstMatching else null
                 if (targetMatching != null) {
-                    seekInternal(targetMatching.startMs)
                     updateState(chunkId = targetMatching.id, autoPauseEndsAt = null)
+                    seekInternal(targetMatching.startMs)
                     scheduleBoundaryMessage(
                         payload = createChunkEndPayload(targetMatching),
                         persistent = false,
@@ -975,8 +995,8 @@ class ChunkScheduler(
             )
         ) {
             if (practiceSettings.skipOriginalSilence && isPlayingOrStarting && firstChunk.startMs > nowMs) {
-                seekInternal(firstChunk.startMs)
                 updateState(chunkId = firstChunk.id, autoPauseEndsAt = null)
+                seekInternal(firstChunk.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(firstChunk),
                     persistent = false,
@@ -984,6 +1004,7 @@ class ChunkScheduler(
                 return
             }
             updateState(chunkId = null, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+            prepareSpeedForUpcomingChunk(firstChunk, isPlayingOrStarting)
             scheduleBoundaryMessage(
                 payload = BoundaryPayload.ChunkStart(firstChunk),
                 persistent = false,
@@ -1018,8 +1039,8 @@ class ChunkScheduler(
                 ?: if (wrapToFirstMatchingIfNoNext || shouldWrapAtEnd) firstMatching else null
 
             if (targetMatching != null) {
-                seekInternal(targetMatching.startMs)
                 updateState(chunkId = targetMatching.id, autoPauseEndsAt = null)
+                seekInternal(targetMatching.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(targetMatching),
                     persistent = false,
@@ -1070,20 +1091,24 @@ class ChunkScheduler(
         when (payload) {
             is BoundaryPayload.AbEnd -> {
                 val loop = practiceSettings.loop as? LoopMode.AbRange ?: return
-                seekInternal(loop.startMs)
                 if (chunks.isNotEmpty()) {
                     updateState(
                         chunkId = findChunkAt(loop.startMs)?.id,
                         autoPauseEndsAt = null,
                     )
                 }
+                seekInternal(loop.startMs)
             }
 
             is BoundaryPayload.ChunkStart -> {
                 pendingMessage = null
                 pendingMessagePayload = null
                 val chunk = payload.chunk
-                updateState(chunkId = chunk.id, autoPauseEndsAt = _autoPauseEndsAtMs.value)
+                updateState(
+                    chunkId = chunk.id,
+                    autoPauseEndsAt = _autoPauseEndsAtMs.value,
+                    flushBufferOnSpeedChange = exoPlayer.playWhenReady,
+                )
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(chunk),
                     persistent = false,
@@ -1130,8 +1155,8 @@ class ChunkScheduler(
                 chunk.id in practiceSettings.repeatChunkIds &&
                 practiceSettings.repeatCheckedOnly
             ) {
-                seekInternal(chunk.startMs)
                 updateState(chunkId = chunk.id, autoPauseEndsAt = null)
+                seekInternal(chunk.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(chunk),
                     persistent = false,
@@ -1155,8 +1180,8 @@ class ChunkScheduler(
             } ?: if (practiceSettings.repeatCheckedOnly) repeatChunks.first() else null
             if (nextTarget != null) {
                 shouldRestartSelectedChunksOnPlay = false
-                seekInternal(nextTarget.startMs)
                 updateState(chunkId = nextTarget.id, autoPauseEndsAt = null)
+                seekInternal(nextTarget.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(nextTarget),
                     persistent = false,
@@ -1193,8 +1218,8 @@ class ChunkScheduler(
             )
         }
         if (nextMatching != null) {
-            seekInternal(nextMatching.startMs)
             updateState(chunkId = nextMatching.id, autoPauseEndsAt = null)
+            seekInternal(nextMatching.startMs)
             scheduleBoundaryMessage(
                 payload = createChunkEndPayload(nextMatching),
                 persistent = false,
@@ -1211,8 +1236,8 @@ class ChunkScheduler(
                 )
             }
             if (firstMatching != null) {
-                seekInternal(firstMatching.startMs)
                 updateState(chunkId = firstMatching.id, autoPauseEndsAt = null)
+                seekInternal(firstMatching.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(firstMatching),
                     persistent = false,
@@ -1446,18 +1471,18 @@ class ChunkScheduler(
     private fun executePostChunkAction(action: PostChunkAction) {
         when (action) {
             is PostChunkAction.SeekToPosition -> {
-                seekInternal(action.positionMs)
                 updateState(
                     chunkId = findChunkAt(action.positionMs)?.id,
                     autoPauseEndsAt = null,
                 )
+                seekInternal(action.positionMs)
                 reschedule()
             }
 
             is PostChunkAction.SeekToChunk -> {
                 val target = action.targetChunk
-                seekInternal(target.startMs)
                 updateState(chunkId = target.id, autoPauseEndsAt = null)
+                seekInternal(target.startMs)
                 scheduleBoundaryMessage(
                     payload = createChunkEndPayload(target),
                     persistent = false,
@@ -1582,8 +1607,8 @@ class ChunkScheduler(
         if (action != null) {
             when (action) {
                 is PostChunkAction.SeekToPosition -> {
-                    seekInternal(action.positionMs)
                     updateState(chunkId = findChunkAt(action.positionMs)?.id, autoPauseEndsAt = null)
+                    seekInternal(action.positionMs)
                     if (ensurePlaying) {
                         resumePlayerFromAutoPause()
                     }
@@ -1593,8 +1618,8 @@ class ChunkScheduler(
                 is PostChunkAction.SeekToChunk -> {
                     val target = action.targetChunk
                     shouldRestartSelectedChunksOnPlay = false
-                    seekInternal(target.startMs)
                     updateState(chunkId = target.id, autoPauseEndsAt = null)
+                    seekInternal(target.startMs)
                     if (ensurePlaying) {
                         resumePlayerFromAutoPause()
                     }
@@ -1605,10 +1630,13 @@ class ChunkScheduler(
                 }
 
                 is PostChunkAction.AdvanceAfter -> {
+                    reschedule(
+                        minBoundaryAfterMs = action.finishedChunkEndMs,
+                        assumePlaying = ensurePlaying,
+                    )
                     if (ensurePlaying) {
                         resumePlayerFromAutoPause()
                     }
-                    reschedule(minBoundaryAfterMs = action.finishedChunkEndMs)
                 }
 
                 is PostChunkAction.PlayTrailingSilenceUntil -> {
@@ -1636,10 +1664,13 @@ class ChunkScheduler(
                 }
             }
         } else {
+            reschedule(
+                minBoundaryAfterMs = resumeAfterMs,
+                assumePlaying = ensurePlaying,
+            )
             if (ensurePlaying) {
                 resumePlayerFromAutoPause()
             }
-            reschedule(minBoundaryAfterMs = resumeAfterMs)
         }
     }
 
@@ -1855,14 +1886,21 @@ class ChunkScheduler(
     private fun findChunkAt(positionMs: Long): Chunk? = chunks.firstOrNull { positionMs in it.startMs until it.endMs }
         ?: chunks.lastOrNull { it.startMs <= positionMs }
 
-    private fun updateState(chunkId: ChunkId?, autoPauseEndsAt: Long?) {
+    private fun updateState(
+        chunkId: ChunkId?,
+        autoPauseEndsAt: Long?,
+        flushBufferOnSpeedChange: Boolean = false,
+    ) {
         val chunkChanged = _currentChunkId.value != chunkId
         val changed = chunkChanged || _autoPauseEndsAtMs.value != autoPauseEndsAt
         _currentChunkId.value = chunkId
         _autoPauseEndsAtMs.value = autoPauseEndsAt
         if (chunkChanged) {
             // チャンクが変わったら、ベース言語のチャンクかどうかで速度を切り替える
-            applyEffectiveSpeed()
+            applyEffectiveSpeed(
+                userSpeedChanged = false,
+                flushBufferOnSpeedChange = flushBufferOnSpeedChange,
+            )
         }
         if (changed) {
             onStateChanged(chunkId, autoPauseEndsAt)
@@ -1875,8 +1913,16 @@ class ChunkScheduler(
      *
      * ExoPlayer の速度を変えるのは、ベース言語の速度を当てる・戻すとき、または利用者が速度を変えたとき（[userSpeedChanged]）
      * だけにする。この機能を使っていないときは、チャンクが変わっても速度に手を出さない。
+     *
+     * チャンク境界を跨いで速度が切り替わるとき（[flushBufferOnSpeedChange] が `true`）、`DefaultAudioSink`（`AudioTrack`）や
+     * `SonicAudioProcessor` に前のチャンクの速度で先読み伸長済みの PCM が最大約 750ms 残っていると、
+     * 新しいチャンクの冒頭が前の速度で再生されてしまう。そのため、速度変更直後に当該チャンクの先頭（または現在位置）へ
+     * 内部シークしてオーディオパイプラインをフラッシュし、チャンク冒頭から正しい速度で再生させる。
      */
-    private fun applyEffectiveSpeed(userSpeedChanged: Boolean = false) {
+    private fun applyEffectiveSpeed(
+        userSpeedChanged: Boolean = false,
+        flushBufferOnSpeedChange: Boolean = false,
+    ) {
         val chunkId = _currentChunkId.value
         val override = baseLanguageSpeed?.takeIf { chunkId != null && isBaseLanguageChunk(chunkId) }
         val wasApplied = isBaseLanguageSpeedApplied
@@ -1885,6 +1931,40 @@ class ChunkScheduler(
         val desired = override ?: userSpeed
         if (abs(exoPlayer.playbackParameters.speed - desired) < SPEED_EPSILON) return
         exoPlayer.setPlaybackSpeed(desired)
+        if (!userSpeedChanged && flushBufferOnSpeedChange && chunkId != null) {
+            val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            val targetChunk = chunks.firstOrNull { it.id == chunkId }
+            val flushPosMs = if (targetChunk != null &&
+                nowMs in targetChunk.startMs..(targetChunk.startMs + SPEED_CHANGE_START_SNAP_MS)
+            ) {
+                targetChunk.startMs
+            } else {
+                nowMs
+            }
+            seekInternal(flushPosMs)
+        }
+    }
+
+    /**
+     * 前チャンク終端から次チャンク [nextChunk] 開始までの無音区間に入った時点で、
+     * 次チャンクの有効再生速度が現在と異なる場合は無音区間のうちに速度切替と `AudioTrack` のフラッシュを済ませ、
+     * [nextChunk] の開始時刻に到達した瞬間から [nextChunk] の速度で再生されるようにする。
+     */
+    private fun prepareSpeedForUpcomingChunk(
+        nextChunk: Chunk,
+        isPlayingOrStarting: Boolean,
+    ) {
+        val override = baseLanguageSpeed?.takeIf { isBaseLanguageChunk(nextChunk.id) }
+        val wasApplied = isBaseLanguageSpeedApplied
+        isBaseLanguageSpeedApplied = override != null
+        if (override == null && !wasApplied) return
+        val desired = override ?: userSpeed
+        if (abs(exoPlayer.playbackParameters.speed - desired) < SPEED_EPSILON) return
+        exoPlayer.setPlaybackSpeed(desired)
+        if (isPlayingOrStarting) {
+            val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            seekInternal(nowMs)
+        }
     }
 
     /**
@@ -1958,6 +2038,9 @@ class ChunkScheduler(
 
         /** 末尾カット適用時でも最低限確保するチャンク再生時間（ミリ秒）。 */
         internal const val MIN_PLAYABLE_CHUNK_DURATION_MS: Long = 200L
+
+        /** チャンク境界で速度切替に伴うバッファフラッシュを行う際、チャンク先頭へスナップする許容幅（ミリ秒）。 */
+        internal const val SPEED_CHANGE_START_SNAP_MS: Long = 250L
 
         private const val END_OF_CHUNK_MARGIN_MS: Long = 100L
         private const val MISSED_BOUNDARY_THRESHOLD_MS: Long = 50L

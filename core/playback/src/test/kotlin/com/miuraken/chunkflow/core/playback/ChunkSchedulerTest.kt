@@ -1712,6 +1712,87 @@ class ChunkSchedulerTest {
         assertEquals(2.0f, exoPlayer.playbackParameters.speed)
     }
 
+    @Test
+    fun `ベース言語の速度_隣接チャンク境界で速度変更後にチャンク先頭へ内部シークして先読みバッファをフラッシュする`() {
+        setUpEnJaTranscripts()
+        scheduler.setUserSpeed(1.25f)
+        scheduler.setBaseLanguageSpeed(2.25f)
+        pumpLoopers()
+
+        val seekEvents = mutableListOf<Pair<Long, Float>>()
+        exoPlayer.addListener(
+            object : Player.Listener {
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                        seekEvents += newPosition.positionMs to exoPlayer.playbackParameters.speed
+                    }
+                }
+            },
+        )
+
+        exoPlayer.play()
+        runUntil { scheduler.currentChunkId.value == chunk2.id }
+        pumpLoopers()
+
+        // chunk1 (en, 1.25f) -> chunk2 (ja, 2.25f) の境界で速度を 2.25f に変えた上で chunk2.startMs へ内部シークされること
+        assertTrue(
+            seekEvents.any { (posMs, speed) -> posMs == chunk2.startMs && speed == 2.25f },
+            "Expected seek to chunk2.startMs (${chunk2.startMs}) with speed 2.25f, but was $seekEvents",
+        )
+        assertEquals(0, scheduler.pendingSelfSeekCount)
+
+        runUntil { scheduler.currentChunkId.value == chunk3.id }
+        pumpLoopers()
+
+        // chunk2 (ja, 2.25f) -> chunk3 (en, 1.25f) の境界でも速度を 1.25f に変えた上で chunk3.startMs へ内部シークされること
+        assertTrue(
+            seekEvents.any { (posMs, speed) -> posMs == chunk3.startMs && speed == 1.25f },
+            "Expected seek to chunk3.startMs (${chunk3.startMs}) with speed 1.25f, but was $seekEvents",
+        )
+        assertEquals(0, scheduler.pendingSelfSeekCount)
+    }
+
+    @Test
+    fun `ベース言語の速度_チャンク間に無音区間がある場合は前チャンク終端の無音突入時に次チャンクの速度へ切り替える`() {
+        val gappedChunk1 = Chunk(id = ChunkId(1L), startMs = 0L, endMs = 1_500L, origin = ChunkOrigin.AUTO)
+        val gappedChunk2 = Chunk(id = ChunkId(2L), startMs = 2_000L, endMs = 3_500L, origin = ChunkOrigin.AUTO)
+        val gappedChunk3 = Chunk(id = ChunkId(3L), startMs = 4_000L, endMs = 5_500L, origin = ChunkOrigin.AUTO)
+        scheduler.setChunks(listOf(gappedChunk1, gappedChunk2, gappedChunk3))
+        scheduler.setLanguagePair(LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja")))
+        scheduler.setTranscripts(
+            mapOf(
+                gappedChunk1.id to sampleTranscript(gappedChunk1.id, "Hello", "en"),
+                gappedChunk2.id to sampleTranscript(gappedChunk2.id, "こんにちは", "ja"),
+                gappedChunk3.id to sampleTranscript(gappedChunk3.id, "World", "en"),
+            ),
+        )
+        scheduler.setUserSpeed(1.0f)
+        scheduler.setBaseLanguageSpeed(2.0f)
+        pumpLoopers()
+
+        exoPlayer.play()
+        // gappedChunk1 の終端 (1_500ms) を通過して無音区間 [1_500, 2_000) に入った時点で既に 2.0f へ切り替わっていること
+        runUntil { exoPlayer.currentPosition >= 1_500L && scheduler.isBaseLanguageSpeedApplied }
+        pumpLoopers()
+        assertEquals(2.0f, exoPlayer.playbackParameters.speed)
+        assertTrue(exoPlayer.currentPosition < gappedChunk2.startMs)
+
+        // gappedChunk2 開始時点でも 2.0f のまま再生されること
+        runUntil { scheduler.currentChunkId.value == gappedChunk2.id }
+        pumpLoopers()
+        assertEquals(2.0f, exoPlayer.playbackParameters.speed)
+
+        // gappedChunk2 の終端 (3_500ms) を通過して無音区間 [3_500, 4_000) に入った時点で既に 1.0f へ戻っていること
+        runUntil { exoPlayer.currentPosition >= 3_500L && !scheduler.isBaseLanguageSpeedApplied }
+        pumpLoopers()
+        assertEquals(1.0f, exoPlayer.playbackParameters.speed)
+        assertTrue(exoPlayer.currentPosition < gappedChunk3.startMs)
+    }
+
     /** chunk1・chunk3 が学習言語（en）、chunk2 がベース言語（ja）の教材にする。 */
     private fun setUpEnJaTranscripts() {
         scheduler.setChunks(sampleChunks)
