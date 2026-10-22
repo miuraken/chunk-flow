@@ -31,6 +31,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -285,19 +286,43 @@ internal fun LibraryFilesTabContent(
             }
         }
 
+        if (state.allTags.isNotEmpty()) {
+            FileTagFilterRow(
+                tags = state.allTags,
+                selectedTags = state.fileTagFilter,
+                onToggleTag = { tag -> onEvent(LibraryEvent.ToggleFileTagFilter(tag)) },
+                onClear = { onEvent(LibraryEvent.ClearFileTagFilter) },
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
+
         if (!state.isLoading && filteredFiles.isEmpty()) {
-            Box(
+            val isEmptyBecauseOfTags = state.isFileListEmptyBecauseOfTagFilter
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(24.dp),
-                contentAlignment = Alignment.Center,
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    text = stringResource(R.string.library_files_no_matching_results),
+                    text = stringResource(
+                        if (isEmptyBecauseOfTags) {
+                            R.string.library_files_no_matching_tag_results
+                        } else {
+                            R.string.library_files_no_matching_results
+                        },
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                 )
+                // タグで絞り込んでいるときは、選択を解除する手段を一覧の場所にも出す
+                if (state.fileTagFilter.isNotEmpty()) {
+                    TextButton(onClick = { onEvent(LibraryEvent.ClearFileTagFilter) }) {
+                        Text(text = stringResource(R.string.library_files_tag_filter_clear))
+                    }
+                }
             }
         } else if (filteredFiles.isNotEmpty()) {
             LazyColumn(

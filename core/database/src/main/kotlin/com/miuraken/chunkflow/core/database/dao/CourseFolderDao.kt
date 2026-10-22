@@ -1,12 +1,17 @@
 package com.miuraken.chunkflow.core.database.dao
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
+import com.miuraken.chunkflow.core.database.entity.LanguageColorEntity
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import kotlinx.coroutines.flow.Flow
 
-/** `course_folder` テーブルの DAO。 */
+/** `course_folder` テーブル（と、フォルダの既定の色を決める `language_color` テーブル）の DAO。 */
 @Dao
 interface CourseFolderDao {
     /** すべてのコースフォルダ設定をパス順で購読する。 */
@@ -25,11 +30,62 @@ interface CourseFolderDao {
     @Query("SELECT * FROM course_folder WHERE tree_uri = :treeUri LIMIT 1")
     suspend fun getByTreeUri(treeUri: String): CourseFolderEntity?
 
-    /** コースフォルダ設定を挿入または更新する。 */
+    /**
+     * コースフォルダ設定を挿入または更新する。
+     *
+     * - [CourseFolderEntity.colorIndex] が `null` のときは、既存の行の色の指定を保つ（再スキャンや取り込みで
+     *   行を作り直しても、ユーザーが選んだ色を失わないようにする）。色を変える・既定に戻すときは [updateColorIndex] を使う。
+     * - 対象言語にまだ色の順番がなければ割り当てる（[assignLanguageColorIfAbsent]）。
+     */
+    @Transaction
+    suspend fun upsert(folder: CourseFolderEntity) {
+        val preservedColor = if (folder.colorIndex == null) getByPath(folder.coursePath)?.colorIndex else null
+        upsertRow(if (preservedColor != null) folder.copy(colorIndex = preservedColor) else folder)
+        assignLanguageColorIfAbsent(folder.targetLang)
+    }
+
+    /** 行をそのまま挿入または更新する（色の指定を保たない）。通常は [upsert] を使う。 */
     @Upsert
-    suspend fun upsert(folder: CourseFolderEntity)
+    suspend fun upsertRow(folder: CourseFolderEntity)
 
     /** 指定したパスのコースフォルダ設定を削除する。 */
     @Query("DELETE FROM course_folder WHERE course_path = :coursePath")
     suspend fun deleteByPath(coursePath: String)
+
+    /**
+     * フォルダの色の指定（パレットの番号）を書き換える。`null` で対象言語の既定の色に戻す。
+     *
+     * @return 書き換えた行の数（フォルダの行がなければ 0）。
+     */
+    @Query("UPDATE course_folder SET color_index = :colorIndex WHERE course_path = :coursePath")
+    suspend fun updateColorIndex(coursePath: String, colorIndex: Int?): Int
+
+    /** 対象言語ごとの色の順番を、順番の昇順で購読する。 */
+    @Query("SELECT * FROM language_color ORDER BY ordinal ASC")
+    fun observeLanguageColors(): Flow<List<LanguageColorEntity>>
+
+    /** 指定した対象言語のキーの色の順番を取得する。 */
+    @Query("SELECT * FROM language_color WHERE language = :language")
+    suspend fun getLanguageColor(language: String): LanguageColorEntity?
+
+    /** 割り当て済みの色の順番の最大値を取得する（まだなければ `null`）。 */
+    @Query("SELECT MAX(ordinal) FROM language_color")
+    suspend fun getMaxLanguageColorOrdinal(): Int?
+
+    /** 対象言語の色の順番を挿入する（すでにあれば何もしない）。 */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertLanguageColor(entity: LanguageColorEntity): Long
+
+    /**
+     * 対象言語（言語コード [rawLanguageCode]）にまだ色の順番がなければ、次の順番を割り当てる。
+     *
+     * キーは [LibraryFolderColors.languageKey] でそろえる。空の言語コードは何もしない。
+     */
+    @Transaction
+    suspend fun assignLanguageColorIfAbsent(rawLanguageCode: String) {
+        val key = LibraryFolderColors.languageKey(rawLanguageCode) ?: return
+        if (getLanguageColor(key) != null) return
+        val nextOrdinal = (getMaxLanguageColorOrdinal() ?: -1) + 1
+        insertLanguageColor(LanguageColorEntity(language = key, ordinal = nextOrdinal))
+    }
 }

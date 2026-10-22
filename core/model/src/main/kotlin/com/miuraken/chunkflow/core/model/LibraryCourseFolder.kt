@@ -20,6 +20,7 @@ enum class LibraryFolderKind {
  * @property treeUri ローカルフォルダの場合の SAF Tree URI 文字列。
  * @property lastScannedAtEpochMs 最終スキャン時刻（ミリ秒）。
  * @property sortOrder ルートフォルダの表示順序（小さい値ほど上に表示。`null` の場合は名前順）。
+ * @property colorIndex フォルダに指定した色（[LibraryFolderColors] のパレットの番号）。`null` なら対象言語の既定の色。
  */
 data class LibraryCourseFolder(
     val coursePath: String,
@@ -28,6 +29,7 @@ data class LibraryCourseFolder(
     val treeUri: String? = null,
     val lastScannedAtEpochMs: Long = 0L,
     val sortOrder: Int? = null,
+    val colorIndex: Int? = null,
 ) {
     companion object {
         /** 単一・複数ファイル選択時に既定で格納される仮想ディレクトリ名。 */

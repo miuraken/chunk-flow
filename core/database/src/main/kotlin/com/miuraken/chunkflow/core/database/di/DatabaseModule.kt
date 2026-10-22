@@ -11,6 +11,7 @@ import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.ItemSttOverrideDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
 import com.miuraken.chunkflow.core.database.dao.PlaylistDao
+import com.miuraken.chunkflow.core.database.dao.TagDao
 import com.miuraken.chunkflow.core.database.dao.TranscriptDao
 import dagger.Module
 import dagger.Provides
@@ -71,4 +72,8 @@ object DatabaseModule {
     /** [PlaylistDao] を提供する。 */
     @Provides
     fun providesPlaylistDao(database: ChunkFlowDatabase): PlaylistDao = database.playlistDao()
+
+    /** [TagDao] を提供する。 */
+    @Provides
+    fun providesTagDao(database: ChunkFlowDatabase): TagDao = database.tagDao()
 }

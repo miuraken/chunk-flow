@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowFolderPalette
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.model.MediaId
 import java.util.Locale
@@ -68,6 +69,7 @@ internal fun LibraryFoldersTabContent(
                 itemCount = totalItemsInFolder,
                 isRealFolder = state.isRealFolder(currentFolderPath),
                 isSelected = currentFolderPath in state.selectedDirectoryPaths,
+                colorIndex = state.folderColorIndexFor(currentFolderPath),
                 onNavigateUp = { onEvent(LibraryEvent.NavigateUp) },
                 onLongClick = { onEvent(LibraryEvent.ToggleDirectorySelection(currentFolderPath)) },
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
@@ -234,18 +236,21 @@ private fun LibraryCurrentFolderHeader(
     itemCount: Int,
     isRealFolder: Boolean,
     isSelected: Boolean,
+    colorIndex: Int?,
     onNavigateUp: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val hierarchicalTitle = folderPath.replace("/", " / ")
     val navigateUpCd = stringResource(R.string.library_navigate_up)
+    val folderPalette = chunkFlowFolderPalette()
     Surface(
         modifier = modifier.fillMaxWidth(),
+        // フォルダの色（ADR 0013）で薄く塗る。色がなければ従来どおり透明
         color = if (isSelected) {
-            MaterialTheme.colorScheme.secondaryContainer
+            folderPalette.selectedContainerOrNull(colorIndex) ?: MaterialTheme.colorScheme.secondaryContainer
         } else {
-            Color.Transparent
+            folderPalette.containerOrNull(colorIndex) ?: Color.Transparent
         },
         shape = MaterialTheme.shapes.small,
     ) {
@@ -325,10 +330,17 @@ private fun LibraryDirectoryRow(
     dragHandle: (@Composable () -> Unit)? = null,
 ) {
     val directoryTitle = directory.displayName ?: directory.name.orEmpty()
+    val folderPalette = chunkFlowFolderPalette()
+    // フォルダの色（ADR 0013）で薄く塗る。選択中は同じ色相の濃い色にする（色がなければ従来の色）
     val containerColor by androidx.compose.animation.animateColorAsState(
         targetValue = when {
-            isSelected -> MaterialTheme.colorScheme.secondaryContainer
-            else -> MaterialTheme.colorScheme.surfaceContainer
+            isSelected ->
+                folderPalette.selectedContainerOrNull(directory.colorIndex)
+                    ?: MaterialTheme.colorScheme.secondaryContainer
+
+            else ->
+                folderPalette.containerOrNull(directory.colorIndex)
+                    ?: MaterialTheme.colorScheme.surfaceContainer
         },
         label = "directorySelectionColor",
     )

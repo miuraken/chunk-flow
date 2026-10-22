@@ -53,6 +53,7 @@ import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderColors
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SttEngine
 
@@ -614,15 +615,20 @@ internal fun CreateVirtualFolderDialog(
 internal fun EditItemMetadataDialog(
     item: AudioItem,
     enabledLanguages: List<LanguageTag>,
-    onConfirm: (String?, LanguagePair, ItemSttOverride) -> Unit,
+    onConfirm: (course: String?, languages: LanguagePair, sttOverride: ItemSttOverride, tags: List<String>) -> Unit,
     onDismiss: () -> Unit,
     initialSttOverride: ItemSttOverride = ItemSttOverride.NONE,
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
     onOpenLanguageSettings: () -> Unit = {},
     onDelete: (() -> Unit)? = null,
+    initialTags: List<String> = emptyList(),
+    availableTags: List<String> = emptyList(),
 ) {
     var courseText by remember(item) { mutableStateOf(item.course.orEmpty()) }
+    var tags by remember(item) { mutableStateOf(initialTags) }
+    var tagInput by remember(item) { mutableStateOf("") }
+    var tagInputError by remember(item) { mutableStateOf<TagInputResult?>(null) }
     var targetLangText by remember(item) {
         mutableStateOf(normalizeDialogLanguageCode(item.languagePair.target.value))
     }
@@ -658,6 +664,34 @@ internal fun EditItemMetadataDialog(
                 confirmTargetLangChange = true,
             )
 
+            ItemTagEditor(
+                tags = tags,
+                availableTags = availableTags,
+                input = tagInput,
+                inputError = tagInputError,
+                onInputChange = {
+                    tagInput = it
+                    tagInputError = null
+                },
+                onSubmitInput = {
+                    if (tagInput.isNotBlank()) {
+                        when (val result = addTagFromInput(tags, tagInput, availableTags)) {
+                            is TagInputResult.Added -> {
+                                tags = result.tags
+                                tagInput = ""
+                                tagInputError = null
+                            }
+
+                            else -> tagInputError = result
+                        }
+                    }
+                },
+                onTagsChange = {
+                    tags = it
+                    tagInputError = null
+                },
+            )
+
             androidx.compose.foundation.layout.Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.End),
@@ -669,14 +703,20 @@ internal fun EditItemMetadataDialog(
                     onClick = {
                         val cleanTarget = normalizeDialogLanguageCode(targetLangText).ifBlank { "en" }
                         val cleanBase = normalizeDialogLanguageCode(baseLangText).ifBlank { null }
-                        onConfirm(
-                            courseText.trim().ifBlank { null },
-                            LanguagePair(
-                                target = LanguageTag(cleanTarget),
-                                base = cleanBase?.let { LanguageTag(it) },
-                            ),
-                            ItemSttOverride.NONE,
-                        )
+                        // 入力途中のタグも保存する。正しくなければ保存せず、入力欄に理由を出す
+                        when (val tagResult = resolveTagsForSave(tags, tagInput, availableTags)) {
+                            is TagInputResult.Added -> onConfirm(
+                                courseText.trim().ifBlank { null },
+                                LanguagePair(
+                                    target = LanguageTag(cleanTarget),
+                                    base = cleanBase?.let { LanguageTag(it) },
+                                ),
+                                ItemSttOverride.NONE,
+                                tagResult.tags,
+                            )
+
+                            else -> tagInputError = tagResult
+                        }
                     },
                 ) {
                     Text(text = stringResource(R.string.library_edit_save))
@@ -744,13 +784,20 @@ private fun DeleteFromLibraryButton(
 internal fun EditDirectoryMetadataDialog(
     directoryEdit: PendingDirectoryEdit,
     enabledLanguages: List<LanguageTag>,
-    onConfirm: (String?, LanguagePair, ItemSttOverride) -> Unit,
+    onConfirm: (
+        newCourse: String?,
+        languages: LanguagePair,
+        sttOverride: ItemSttOverride,
+        colorChoice: LibraryFolderColorChoice,
+    ) -> Unit,
     onDismiss: () -> Unit,
     sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     onToggleEnabledLanguage: (LanguageTag) -> Unit = {},
     onOpenLanguageSettings: () -> Unit = {},
     onDelete: (() -> Unit)? = null,
+    languageColorOrdinals: Map<LanguageTag, Int> = emptyMap(),
 ) {
+    var colorIndex by remember(directoryEdit) { mutableStateOf(directoryEdit.colorIndex) }
     var courseText by remember(directoryEdit) {
         mutableStateOf(directoryEdit.currentCourse?.substringAfterLast('/').orEmpty())
     }
@@ -800,6 +847,22 @@ internal fun EditDirectoryMetadataDialog(
                 confirmTargetLangChange = true,
             )
 
+            if (directoryEdit.currentCourse != null) {
+                // 「デフォルト」の色は、シートで選んでいる対象言語の色（ADR 0013）
+                val defaultColorIndex = LibraryFolderColors.resolveIndex(
+                    colorIndex = null,
+                    targetLanguage = normalizeDialogLanguageCode(targetLangText)
+                        .takeIf { it.isNotBlank() }
+                        ?.let { LanguageTag(it) },
+                    languageOrdinals = languageColorOrdinals,
+                )
+                FolderColorPicker(
+                    selectedIndex = colorIndex,
+                    defaultIndex = defaultColorIndex,
+                    onSelect = { colorIndex = it },
+                )
+            }
+
             androidx.compose.foundation.layout.Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, androidx.compose.ui.Alignment.End),
@@ -821,6 +884,7 @@ internal fun EditDirectoryMetadataDialog(
                                 base = cleanBase?.let { LanguageTag(it) },
                             ),
                             ItemSttOverride.NONE,
+                            LibraryFolderColorChoice.of(initial = directoryEdit.colorIndex, selected = colorIndex),
                         )
                     },
                 ) {
@@ -866,9 +930,11 @@ private fun EditDirectoryMetadataDialogPreview() {
                         target = LanguageTag("ko"),
                         base = LanguageTag("ja"),
                     ),
+                    colorIndex = 3,
                 ),
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
-                onConfirm = { _, _, _ -> },
+                onConfirm = { _, _, _, _ -> },
+                languageColorOrdinals = mapOf(LanguageTag("ko") to 0, LanguageTag("en") to 1),
                 onDismiss = {},
                 onDelete = {},
             )
@@ -897,9 +963,11 @@ private fun EditItemMetadataDialogPreview() {
                     importedAtEpochMs = 0L,
                 ),
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
-                onConfirm = { _, _, _ -> },
+                onConfirm = { _, _, _, _ -> },
                 onDismiss = {},
                 onDelete = {},
+                initialTags = listOf("N5", "シャドーイング"),
+                availableTags = listOf("N5", "シャドーイング", "旅行", "復習"),
             )
         }
     }

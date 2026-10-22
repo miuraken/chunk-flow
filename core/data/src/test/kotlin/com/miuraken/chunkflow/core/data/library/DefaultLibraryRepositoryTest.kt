@@ -14,10 +14,15 @@ import com.miuraken.chunkflow.core.database.dao.ChunkDao
 import com.miuraken.chunkflow.core.database.dao.CourseFolderDao
 import com.miuraken.chunkflow.core.database.dao.ItemStateDao
 import com.miuraken.chunkflow.core.database.dao.MediaItemDao
+import com.miuraken.chunkflow.core.database.dao.TagDao
 import com.miuraken.chunkflow.core.database.entity.ChunkEntity
 import com.miuraken.chunkflow.core.database.entity.CourseFolderEntity
 import com.miuraken.chunkflow.core.database.entity.ItemStateEntity
+import com.miuraken.chunkflow.core.database.entity.LanguageColorEntity
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
+import com.miuraken.chunkflow.core.database.entity.MediaItemTagEntity
+import com.miuraken.chunkflow.core.database.entity.MediaItemTagNameRow
+import com.miuraken.chunkflow.core.database.entity.TagEntity
 import com.miuraken.chunkflow.core.database.entity.TranscriptEntity
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
@@ -31,6 +36,7 @@ import com.miuraken.chunkflow.core.model.EngineId
 import com.miuraken.chunkflow.core.model.LanguagePair
 import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
+import com.miuraken.chunkflow.core.model.LibraryTags
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -59,6 +65,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -83,6 +90,7 @@ class DefaultLibraryRepositoryTest {
     private lateinit var mediaItemDao: InMemoryMediaItemDao
     private lateinit var chunkDao: InMemoryChunkDao
     private lateinit var courseFolderDao: InMemoryCourseFolderDao
+    private lateinit var tagDao: InMemoryTagDao
     private lateinit var analysisRepository: RecordingAnalysisRepository
     private lateinit var transcriptParser: FakeTranscriptParser
     private lateinit var settingsRepository: TestUserSettingsRepository
@@ -103,6 +111,11 @@ class DefaultLibraryRepositoryTest {
         )
     }
     private var currentEpochMs: Long = 1_700_000_000_000L
+    private companion object {
+        const val MEDIA_A = "00000000-0000-4000-8000-0000000000a1"
+        const val MEDIA_B = "00000000-0000-4000-8000-0000000000b2"
+        const val MEDIA_MISSING = "00000000-0000-4000-8000-0000000000ff"
+    }
     private var usableSpaceBytes: Long = 50L * 1024L * 1024L * 1024L
 
     @BeforeTest
@@ -117,10 +130,12 @@ class DefaultLibraryRepositoryTest {
         itemStateDao = InMemoryItemStateDao(mediaItemExistsCheck = { id -> mediaItemDao.getById(id) != null })
         chunkDao = InMemoryChunkDao()
         courseFolderDao = InMemoryCourseFolderDao()
+        tagDao = InMemoryTagDao(mediaItemExistsCheck = { id -> mediaItemDao.getById(id) != null })
         mediaItemDao = InMemoryMediaItemDao(
             onCascadeDelete = { mediaId ->
                 itemStateDao.deleteByMediaId(mediaId)
                 chunkDao.deleteByMediaId(mediaId)
+                tagDao.deleteByMediaId(mediaId)
             },
         )
         analysisRepository = RecordingAnalysisRepository()
@@ -146,6 +161,7 @@ class DefaultLibraryRepositoryTest {
         mediaFileLocator = mediaFileLocator,
         chunkDao = chunkDao,
         courseFolderDao = courseFolderDao,
+        tagDao = tagDao,
         analysisRepository = analysisRepository,
         transcriptParser = transcriptParser,
         clock = { currentEpochMs },
@@ -1365,6 +1381,168 @@ class DefaultLibraryRepositoryTest {
         assertEquals(parentDirUri, realFolder.treeUri)
     }
 
+    @Test
+    fun `setItemTags_名前をそろえて重複をまとめ上限まで付けobserveItemTagsとobserveTagsに出る`() = runTest {
+        insertMediaItem(MEDIA_A, sha = "a")
+        insertMediaItem(MEDIA_B, sha = "b")
+        val repo = createRepository()
+
+        repo.setItemTags(MediaId(MEDIA_A), listOf(" English ", "english", "", "シャドーイング"))
+        repo.setItemTags(MediaId(MEDIA_B), listOf("ENGLISH", "TOEIC"))
+        assertEquals(
+            mapOf(
+                MediaId(MEDIA_A) to listOf("English", "シャドーイング"),
+                MediaId(MEDIA_B) to listOf("English", "TOEIC"),
+            ),
+            repo.observeItemTags().first(),
+        )
+        assertEquals(listOf("English", "シャドーイング", "TOEIC"), repo.observeTags().first())
+
+        // タグを外すと、どのファイルにも付いていないタグは一覧から消える
+        repo.setItemTags(MediaId(MEDIA_A), listOf("English"))
+        assertEquals(listOf("English", "TOEIC"), repo.observeTags().first())
+
+        // 1 つのファイルに付けられるのは上限まで
+        repo.setItemTags(MediaId(MEDIA_A), (1..LibraryTags.MAX_TAGS_PER_ITEM + 5).map { "tag$it" })
+        assertEquals(LibraryTags.MAX_TAGS_PER_ITEM, repo.observeItemTags().first().getValue(MediaId(MEDIA_A)).size)
+
+        // 削除済みのファイルには付けない
+        repo.setItemTags(MediaId(MEDIA_MISSING), listOf("English"))
+        assertNull(repo.observeItemTags().first()[MediaId(MEDIA_MISSING)])
+
+        // ファイルを削除すると、そのファイルのタグも消える
+        repo.delete(MediaId(MEDIA_B))
+        assertNull(repo.observeItemTags().first()[MediaId(MEDIA_B)])
+        assertFalse("TOEIC" in repo.observeTags().first())
+    }
+
+    @Test
+    fun `updateItemTags_選んだ複数のファイルにタグを一斉に付け外しする`() = runTest {
+        insertMediaItem(MEDIA_A, sha = "a")
+        insertMediaItem(MEDIA_B, sha = "b")
+        val repo = createRepository()
+        repo.setItemTags(MediaId(MEDIA_A), listOf("初級"))
+
+        repo.updateItemTags(
+            ids = setOf(MediaId(MEDIA_A), MediaId(MEDIA_B), MediaId(MEDIA_MISSING)),
+            addTags = setOf(" TOEIC ", "Part 2"),
+            removeTags = setOf("初級"),
+        )
+        assertEquals(
+            mapOf(
+                MediaId(MEDIA_A) to listOf("TOEIC", "Part 2"),
+                MediaId(MEDIA_B) to listOf("TOEIC", "Part 2"),
+            ),
+            repo.observeItemTags().first(),
+        )
+        assertEquals(listOf("TOEIC", "Part 2"), repo.observeTags().first())
+
+        repo.updateItemTags(ids = setOf(MediaId(MEDIA_B)), addTags = emptySet(), removeTags = setOf("toeic"))
+        assertEquals(
+            mapOf(
+                MediaId(MEDIA_A) to listOf("TOEIC", "Part 2"),
+                MediaId(MEDIA_B) to listOf("Part 2"),
+            ),
+            repo.observeItemTags().first(),
+        )
+    }
+
+    @Test
+    fun `setCourseFolderColor_行があれば色を変え取り込み直しても保ち既定に戻せ不正な番号は無視する`() = runTest {
+        val repo = createRepository()
+        val langs = LanguagePair(LanguageTag("ko"), LanguageTag("ja"))
+        assertTrue(repo.createVirtualFolder("韓国語", langs))
+
+        repo.setCourseFolderColor("韓国語", 2)
+        assertEquals(2, repo.observeCourseFolders().first().single().colorIndex)
+
+        // パレットの範囲外の番号は無視する
+        repo.setCourseFolderColor("韓国語", 99)
+        assertEquals(2, repo.observeCourseFolders().first().single().colorIndex)
+
+        // 同じフォルダへの取り込み（createVirtualFolder の呼び直し）や言語の変更でも色は保たれる
+        assertTrue(repo.createVirtualFolder("韓国語", langs))
+        repo.updateDirectoryMetadata(currentCourse = "韓国語", newCourse = "韓国語", languages = langs)
+        assertEquals(2, repo.observeCourseFolders().first().single().colorIndex)
+
+        // 名前を変えると、色も新しい名前のフォルダに移る
+        repo.updateDirectoryMetadata(currentCourse = "韓国語", newCourse = "韓国語 中級", languages = langs)
+        val renamed = repo.observeCourseFolders().first().single()
+        assertEquals("韓国語 中級", renamed.coursePath)
+        assertEquals(2, renamed.colorIndex)
+
+        // 既定の色に戻す
+        repo.setCourseFolderColor("韓国語 中級", null)
+        assertNull(repo.observeCourseFolders().first().single().colorIndex)
+    }
+
+    @Test
+    fun `setCourseFolderColor_行のないフォルダはファイルの言語と保存方式から行を作って色を付ける`() = runTest {
+        insertMediaItem(
+            MEDIA_A,
+            sha = "a",
+            course = "legacy/sub",
+            targetLang = "fr",
+            storageState = AudioStorageState.LOCAL_REFERENCE.name,
+        )
+        val repo = createRepository()
+
+        repo.setCourseFolderColor("legacy", 4)
+        val created = assertNotNull(courseFolderDao.getByPath("legacy"))
+        assertEquals(LibraryFolderKind.LOCAL_DIRECTORY.name, created.kind)
+        assertEquals("fr", created.targetLang)
+        assertEquals(4, created.colorIndex)
+
+        // フォルダがなければ行を作らない。行のないフォルダを既定の色に戻すのは何もしない
+        repo.setCourseFolderColor("nothing", 1)
+        assertNull(courseFolderDao.getByPath("nothing"))
+        repo.setCourseFolderColor("legacy/sub", null)
+        assertNull(courseFolderDao.getByPath("legacy/sub"))
+    }
+
+    @Test
+    fun `observeFolderLanguageColorOrdinals_フォルダの対象言語に使われた順で順番が付きフォルダを消しても残る`() = runTest {
+        val repo = createRepository()
+        repo.createVirtualFolder("韓国語", LanguagePair(LanguageTag("ko"), LanguageTag("ja")))
+        repo.createRealFolder("中国語", LanguagePair(LanguageTag("zh"), LanguageTag("ja")))
+        repo.createVirtualFolder("韓国語 2", LanguagePair(LanguageTag("ko"), LanguageTag("en")))
+        assertEquals(
+            mapOf(LanguageTag("ko") to 0, LanguageTag("zh-cn") to 1),
+            repo.observeFolderLanguageColorOrdinals().first(),
+        )
+
+        repo.deleteCourseFolder("韓国語")
+        repo.createVirtualFolder("英語", LanguagePair(LanguageTag("en"), LanguageTag("ja")))
+        assertEquals(
+            mapOf(LanguageTag("ko") to 0, LanguageTag("zh-cn") to 1, LanguageTag("en") to 2),
+            repo.observeFolderLanguageColorOrdinals().first(),
+        )
+    }
+
+    private suspend fun insertMediaItem(
+        id: String,
+        sha: String,
+        course: String? = "korean-course",
+        targetLang: String = "ko",
+        storageState: String = AudioStorageState.APP_MANAGED.name,
+    ) {
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = id,
+                title = "Lesson $sha",
+                durationMs = 60_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1_000L,
+                sha256 = sha.repeat(64),
+                course = course,
+                targetLang = targetLang,
+                baseLang = "ja",
+                importedAt = 1_000L,
+                storageState = storageState,
+            ),
+        )
+    }
+
     private fun registerTreeDirectoryWithChunkFlowDir(
         rootDocId: String,
         rootDisplayName: String,
@@ -1434,8 +1612,10 @@ class DefaultLibraryRepositoryTest {
         return treeUri
     }
 
+    /** 本物の DAO と同じく、[upsert] は既定の実装（色の指定を保ち、対象言語の色の順番を割り当てる）を使う。 */
     private class InMemoryCourseFolderDao : CourseFolderDao {
         private val folders = MutableStateFlow<Map<String, CourseFolderEntity>>(emptyMap())
+        private val languageColors = MutableStateFlow<Map<String, LanguageColorEntity>>(emptyMap())
 
         override fun observeAll(): Flow<List<CourseFolderEntity>> = folders.map { map ->
             map.values.sortedBy { it.coursePath }
@@ -1447,12 +1627,89 @@ class DefaultLibraryRepositoryTest {
 
         override suspend fun getByTreeUri(treeUri: String): CourseFolderEntity? = folders.value.values.firstOrNull { it.treeUri == treeUri }
 
-        override suspend fun upsert(folder: CourseFolderEntity) {
+        override suspend fun upsertRow(folder: CourseFolderEntity) {
             folders.update { it + (folder.coursePath to folder) }
         }
 
         override suspend fun deleteByPath(coursePath: String) {
             folders.update { it - coursePath }
+        }
+
+        override suspend fun updateColorIndex(coursePath: String, colorIndex: Int?): Int {
+            val existing = folders.value[coursePath] ?: return 0
+            folders.update { it + (coursePath to existing.copy(colorIndex = colorIndex)) }
+            return 1
+        }
+
+        override fun observeLanguageColors(): Flow<List<LanguageColorEntity>> = languageColors.map { map ->
+            map.values.sortedBy { it.ordinal }
+        }
+
+        override suspend fun getLanguageColor(language: String): LanguageColorEntity? = languageColors.value[language]
+
+        override suspend fun getMaxLanguageColorOrdinal(): Int? = languageColors.value.values.maxOfOrNull { it.ordinal }
+
+        override suspend fun insertLanguageColor(entity: LanguageColorEntity): Long {
+            if (entity.language in languageColors.value) return -1L
+            languageColors.update { it + (entity.language to entity) }
+            return 1L
+        }
+    }
+
+    /**
+     * @param mediaItemExistsCheck 教材が `media_item` にあるか（本物の DAO と同じく、削除済みの教材へ書かないかを確かめるため）。
+     *
+     * 付け外しのトランザクション（`replaceTagsForItem` など）は DAO の既定の実装を使う。
+     */
+    private class InMemoryTagDao(
+        private val mediaItemExistsCheck: suspend (String) -> Boolean,
+    ) : TagDao {
+        private var nextId: Long = 1L
+        private val tags = MutableStateFlow<Map<Long, TagEntity>>(emptyMap())
+        private val itemTags = MutableStateFlow<List<MediaItemTagEntity>>(emptyList())
+
+        override fun observeUsedTags(): Flow<List<TagEntity>> = combine(tags, itemTags) { tagMap, rows ->
+            val usedIds = rows.map { it.tagId }.toSet()
+            tagMap.values.filter { it.id in usedIds }.sortedWith(compareBy({ it.createdAt }, { it.id }))
+        }
+
+        override fun observeItemTagNames(): Flow<List<MediaItemTagNameRow>> = combine(tags, itemTags) { tagMap, rows ->
+            rows.mapNotNull { row -> tagMap[row.tagId]?.let { tag -> tag to row } }
+                .sortedWith(compareBy({ it.first.createdAt }, { it.first.id }))
+                .map { (tag, row) -> MediaItemTagNameRow(mediaId = row.mediaId, tagName = tag.name) }
+        }
+
+        override suspend fun getByKey(nameKey: String): TagEntity? = tags.value.values.firstOrNull { it.nameKey == nameKey }
+
+        override suspend fun insertTag(tag: TagEntity): Long {
+            if (getByKey(tag.nameKey) != null) return -1L
+            val id = nextId++
+            tags.update { it + (id to tag.copy(id = id)) }
+            return id
+        }
+
+        override suspend fun getTagIdsForItem(mediaId: String): List<Long> = itemTags.value.filter { it.mediaId == mediaId }.map { it.tagId }
+
+        override suspend fun insertItemTags(rows: List<MediaItemTagEntity>) {
+            itemTags.update { current -> (current + rows).distinct() }
+        }
+
+        override suspend fun deleteItemTags(mediaId: String, tagIds: List<Long>) {
+            itemTags.update { current -> current.filterNot { it.mediaId == mediaId && it.tagId in tagIds } }
+        }
+
+        override suspend fun getExistingMediaIds(mediaIds: List<String>): List<String> = mediaIds.filter { mediaItemExistsCheck(it) }
+
+        override suspend fun deleteUnusedTags(): Int {
+            val usedIds = itemTags.value.map { it.tagId }.toSet()
+            val unusedIds = tags.value.keys - usedIds
+            tags.update { it - unusedIds }
+            return unusedIds.size
+        }
+
+        /** `media_item` の削除に伴う `ON DELETE CASCADE` を再現する。 */
+        fun deleteByMediaId(mediaId: String) {
+            itemTags.update { current -> current.filterNot { it.mediaId == mediaId } }
         }
     }
 

@@ -1,10 +1,26 @@
 package com.miuraken.chunkflow.feature.library
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
+import com.miuraken.chunkflow.core.model.LibraryFolderKind
+import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.testing.fixture.SampleLibraries
 
 // Compose Preview Screenshot Testing（ADR 0002、§10.5）。
@@ -260,5 +276,184 @@ fun LibraryScreenBookmarksTabScreenshot() {
             ),
             onEvent = {},
         )
+    }
+}
+
+// ---- タグとフォルダの色分け（ADR 0013） ----
+
+private fun taggedSampleItem(
+    id: String,
+    title: String,
+    course: String?,
+    target: String = "ko",
+): AudioItem = SampleLibraries.multipleCourses.first().copy(
+    id = MediaId(id),
+    title = title,
+    course = course,
+    languagePair = LanguagePair(target = LanguageTag(target), base = LanguageTag("ja")),
+)
+
+private fun sampleFolder(
+    path: String,
+    target: String,
+    kind: LibraryFolderKind,
+    colorIndex: Int? = null,
+): LibraryCourseFolder = LibraryCourseFolder(
+    coursePath = path,
+    kind = kind,
+    languagePair = LanguagePair(target = LanguageTag(target), base = LanguageTag("ja")),
+    colorIndex = colorIndex,
+)
+
+/** 対象言語ごとの色（追加された順）と、フォルダに指定した色。実フォルダと仮想フォルダは「仮想」の表示で見分ける。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryScreenFolderColorsScreenshot() {
+    val items = listOf(
+        taggedSampleItem("ko-1", "ピンズラー 韓国語 01", course = "ピンズラー韓国語 I", target = "ko"),
+        taggedSampleItem("ko-2", "ピンズラー 韓国語 02", course = "ピンズラー韓国語 I", target = "ko"),
+        taggedSampleItem("en-1", "Episode 1", course = "English Podcast", target = "en"),
+        taggedSampleItem("zh-1", "新闻 01", course = "中国語ニュース", target = "zh"),
+        taggedSampleItem("es-1", "Lección 1", course = "スペイン語", target = "es"),
+    ).map { LibraryItemUiModel(item = it) }
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = items,
+                courseFolders = listOf(
+                    sampleFolder("ピンズラー韓国語 I", target = "ko", kind = LibraryFolderKind.LOCAL_DIRECTORY),
+                    sampleFolder("English Podcast", target = "en", kind = LibraryFolderKind.VIRTUAL_DIRECTORY),
+                    sampleFolder("中国語ニュース", target = "zh", kind = LibraryFolderKind.LOCAL_DIRECTORY, colorIndex = 6),
+                    sampleFolder("スペイン語", target = "es", kind = LibraryFolderKind.VIRTUAL_DIRECTORY),
+                ),
+                folderLanguageColorOrdinals = mapOf(
+                    LanguageTag("ko") to 0,
+                    LanguageTag("en") to 1,
+                    LanguageTag("zh-cn") to 2,
+                    LanguageTag("es") to 3,
+                ),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+/** ファイルタブ: タグの絞り込み（N5 を選択）と行のタグ、2 件を選んだ選択モード（上部バーに「タグを編集」）。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryScreenFilesTabTagsScreenshot() {
+    val a = taggedSampleItem("a", "ピンズラー 韓国語 01", course = "ピンズラー韓国語 I")
+    val b = taggedSampleItem("b", "ピンズラー 韓国語 02", course = "ピンズラー韓国語 I")
+    val c = taggedSampleItem("c", "Episode 1", course = "English Podcast", target = "en")
+    val items = listOf(
+        LibraryItemUiModel(item = a, tags = listOf("N5", "シャドーイング", "旅行", "復習")),
+        LibraryItemUiModel(item = b, tags = listOf("N5")),
+        LibraryItemUiModel(item = c, tags = listOf("旅行")),
+    )
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = items,
+                allTags = listOf("N5", "シャドーイング", "旅行", "復習"),
+                selectedTab = LibraryViewTab.FILES,
+                fileTagFilter = setOf("N5"),
+                selectedItemIds = setOf(a.id, b.id),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+/** ファイルタブ: 選んだタグをすべて持つファイルがないときの表示（タグの選択を解除する手段を出す）。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryScreenFilesTabTagFilterEmptyScreenshot() {
+    val a = taggedSampleItem("a", "ピンズラー 韓国語 01", course = "ピンズラー韓国語 I")
+    val b = taggedSampleItem("b", "Episode 1", course = "English Podcast", target = "en")
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = listOf(
+                    LibraryItemUiModel(item = a, tags = listOf("N5")),
+                    LibraryItemUiModel(item = b, tags = listOf("旅行")),
+                ),
+                allTags = listOf("N5", "旅行"),
+                selectedTab = LibraryViewTab.FILES,
+                fileTagFilter = setOf("N5", "旅行"),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+/** 選択モードの「タグを編集」ダイアログ（すべて / 一部 / なし のチェック）。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryEditTagsForSelectionDialogScreenshot() {
+    ChunkFlowTheme {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceDim),
+            contentAlignment = Alignment.Center,
+        ) {
+            EditTagsForSelectionCard(
+                allTags = listOf("N5", "シャドーイング", "旅行", "復習"),
+                tagCounts = mapOf("N5" to 3, "シャドーイング" to 1),
+                targetCount = 3,
+                onConfirm = {},
+                onDismiss = {},
+                modifier = Modifier
+                    .padding(24.dp)
+                    .sizeIn(minWidth = 280.dp, maxWidth = 560.dp),
+            )
+        }
+    }
+}
+
+/** フォルダの設定のシート: 色見本（指定した色を選択中）と「デフォルトに戻す」。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryEditFolderSheetScreenshot() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "ピンズラー韓国語 I",
+                    initialLanguages = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+                    colorIndex = 6,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onConfirm = { _, _, _, _ -> },
+                onDismiss = {},
+                onDelete = {},
+                languageColorOrdinals = mapOf(LanguageTag("ko") to 0, LanguageTag("en") to 1),
+            )
+        }
+    }
+}
+
+/** ファイルの設定のシート: 付いているタグ（✕ で外す）・新しいタグの入力・既存のタグから付ける。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryEditFileSheetScreenshot() {
+    ChunkFlowTheme {
+        Surface {
+            EditItemMetadataDialog(
+                item = taggedSampleItem("a", "ピンズラー 韓国語 01", course = "ピンズラー韓国語 I"),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onConfirm = { _, _, _, _ -> },
+                onDismiss = {},
+                onDelete = {},
+                initialTags = listOf("N5", "シャドーイング"),
+                availableTags = listOf("N5", "シャドーイング", "旅行", "復習"),
+            )
+        }
     }
 }

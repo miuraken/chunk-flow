@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalInspectionMode
  * 画像の比較が安定するように常に代替の配色（[FallbackLightColorScheme] / [FallbackDarkColorScheme]）を使う（§10.5.1）。
  * 言語役割カラー（[chunkFlowLanguagePalette]）と拡張色（[chunkFlowExtendedColors]）は、
  * `primary` の色相に調和させて生成する（計画書 §3.1、§3.2）。
+ * ライブラリのフォルダの色分け（[chunkFlowFolderPalette]）は、決め打ちの色をライト / ダークで切り替える（ADR 0013）。
  * [ChunkFlowTypography] と [ChunkFlowShapes] をここで渡す。
  *
  * @param darkTheme ダークテーマにするかどうか。
@@ -45,9 +46,11 @@ fun ChunkFlowTheme(
     val primary = colorScheme.primary
     val languagePalette = remember(primary, darkTheme) { languagePaletteFor(primary, darkTheme) }
     val extendedColors = remember(primary, darkTheme) { extendedColorsFor(primary, darkTheme) }
+    val folderPalette = remember(darkTheme) { folderPaletteFor(darkTheme) }
     CompositionLocalProvider(
         LocalChunkFlowLanguagePalette provides languagePalette,
         LocalChunkFlowExtendedColors provides extendedColors,
+        LocalChunkFlowFolderPalette provides folderPalette,
     ) {
         MaterialExpressiveTheme(
             colorScheme = colorScheme,
