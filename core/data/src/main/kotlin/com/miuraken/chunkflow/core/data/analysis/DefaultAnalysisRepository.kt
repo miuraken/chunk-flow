@@ -3770,6 +3770,7 @@ class DefaultAnalysisRepository(
                 language = recognized.language ?: languageOverride ?: effectiveLanguagePair?.target,
                 confidence = recognized.confidence,
                 engineId = recognized.engineId,
+                errorMessage = recognized.errorMessage,
             )
         }
     }

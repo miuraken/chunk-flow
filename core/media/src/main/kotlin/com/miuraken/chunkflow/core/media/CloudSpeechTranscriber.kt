@@ -55,7 +55,14 @@ internal class CloudSpeechTranscriber @Inject constructor(
             when (engine) {
                 SttEngine.OPENAI_API -> {
                     val apiKey = settings.openAiApiKey.trim()
-                    if (apiKey.isEmpty()) return null
+                    if (apiKey.isEmpty()) {
+                        return OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = language,
+                            engineId = OPENAI_ENGINE_ID,
+                            errorMessage = "OpenAI API キーが設定されていません。設定画面の「クラウド文字起こし API キー」で入力し、「保存」を押してください。",
+                        )
+                    }
                     callOpenAiCompatibleMultipart(
                         endpointUrl = OPENAI_TRANSCRIPTIONS_URL,
                         apiKey = apiKey,
@@ -63,12 +70,20 @@ internal class CloudSpeechTranscriber @Inject constructor(
                         wavBytes = wavBytes,
                         language = language,
                         engineId = OPENAI_ENGINE_ID,
+                        providerLabel = "OpenAI API",
                     )
                 }
 
                 SttEngine.GROQ_API -> {
                     val apiKey = settings.groqApiKey.trim()
-                    if (apiKey.isEmpty()) return null
+                    if (apiKey.isEmpty()) {
+                        return OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = language,
+                            engineId = GROQ_ENGINE_ID,
+                            errorMessage = "Groq API キーが設定されていません。設定画面の「クラウド文字起こし API キー」で入力し、「保存」を押してください。",
+                        )
+                    }
                     callOpenAiCompatibleMultipart(
                         endpointUrl = GROQ_TRANSCRIPTIONS_URL,
                         apiKey = apiKey,
@@ -76,12 +91,20 @@ internal class CloudSpeechTranscriber @Inject constructor(
                         wavBytes = wavBytes,
                         language = language,
                         engineId = GROQ_ENGINE_ID,
+                        providerLabel = "Groq API",
                     )
                 }
 
                 SttEngine.GEMINI_API -> {
                     val apiKey = settings.geminiApiKey.trim()
-                    if (apiKey.isEmpty()) return null
+                    if (apiKey.isEmpty()) {
+                        return OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = language,
+                            engineId = GEMINI_ENGINE_ID,
+                            errorMessage = "Gemini API キーが設定されていません。設定画面の「クラウド文字起こし API キー」で入力し、「保存」を押してください。",
+                        )
+                    }
                     callGeminiGenerateContent(
                         apiKey = apiKey,
                         wavBytes = wavBytes,
@@ -95,7 +118,22 @@ internal class CloudSpeechTranscriber @Inject constructor(
             throw ce
         } catch (e: Exception) {
             logInfo("cloud transcription failed engine=${engine.name} error=${e.javaClass.simpleName}")
-            null
+            val engineId = when (engine) {
+                SttEngine.OPENAI_API -> OPENAI_ENGINE_ID
+                SttEngine.GROQ_API -> GROQ_ENGINE_ID
+                else -> GEMINI_ENGINE_ID
+            }
+            val providerLabel = when (engine) {
+                SttEngine.OPENAI_API -> "OpenAI API"
+                SttEngine.GROQ_API -> "Groq API"
+                else -> "Gemini API"
+            }
+            OnDeviceChunkTranscriptionResult(
+                text = "",
+                language = language,
+                engineId = engineId,
+                errorMessage = "$providerLabel への通信に失敗しました（ネットワーク接続を確認してください: ${e.javaClass.simpleName}）。",
+            )
         }
     }
 
@@ -122,6 +160,7 @@ internal class CloudSpeechTranscriber @Inject constructor(
         wavBytes: ByteArray,
         language: LanguageTag,
         engineId: EngineId,
+        providerLabel: String,
     ): OnDeviceChunkTranscriptionResult? {
         val boundary = "----ChunkFlowBoundary" + UUID.randomUUID().toString().replace("-", "")
         val lineEnd = "\r\n"
@@ -180,7 +219,17 @@ internal class CloudSpeechTranscriber @Inject constructor(
             val code = connection.responseCode
             if (code !in 200..299) {
                 logInfo("OpenAI/Groq API returned HTTP $code for engine=${engineId.value}")
-                return null
+                return OnDeviceChunkTranscriptionResult(
+                    text = "",
+                    language = language,
+                    engineId = engineId,
+                    errorMessage = formatCloudHttpErrorMessage(
+                        providerLabel = providerLabel,
+                        httpCode = code,
+                        apiKey = apiKey,
+                        isGemini = false,
+                    ),
+                )
             }
             val responseText = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val json = JSONObject(responseText)
@@ -253,7 +302,17 @@ internal class CloudSpeechTranscriber @Inject constructor(
             val code = connection.responseCode
             if (code !in 200..299) {
                 logInfo("Gemini API returned HTTP $code")
-                return null
+                return OnDeviceChunkTranscriptionResult(
+                    text = "",
+                    language = language,
+                    engineId = GEMINI_ENGINE_ID,
+                    errorMessage = formatCloudHttpErrorMessage(
+                        providerLabel = "Gemini API",
+                        httpCode = code,
+                        apiKey = apiKey,
+                        isGemini = true,
+                    ),
+                )
             }
             val responseText = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
             val json = JSONObject(responseText)
@@ -280,6 +339,30 @@ internal class CloudSpeechTranscriber @Inject constructor(
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun formatCloudHttpErrorMessage(
+        providerLabel: String,
+        httpCode: Int,
+        apiKey: String,
+        isGemini: Boolean,
+    ): String = when (httpCode) {
+        400, 401, 403 -> if (isGemini && !apiKey.startsWith("AIza")) {
+            "Gemini API の認証に失敗しました（HTTP $httpCode）。現在入力されているキーは Google AI Studio の Gemini API キー形式（AIza… で始まる文字列）ではありません。Google AI Studio で発行した Gemini API キーを設定画面で入力し、「保存」を押してください。"
+        } else if (isGemini) {
+            "Gemini API の認証またはリクエストに失敗しました（HTTP $httpCode）。Google AI Studio で発行した有効な Gemini API キー（AIza…）が設定・保存されているか確認してください。"
+        } else {
+            "$providerLabel の認証またはリクエストに失敗しました（HTTP $httpCode）。有効な API キーが設定画面で入力・保存されているか確認してください。"
+        }
+
+        429 ->
+            "$providerLabel の利用上限（レート制限 / クォータ上限: HTTP 429）に達しました。しばらく待ってから再試行するか、利用プラン・残高を確認してください。"
+
+        in 500..599 ->
+            "$providerLabel サーバー側で一時的なエラーが発生しました（HTTP $httpCode）。しばらく待ってから再試行してください。"
+
+        else ->
+            "$providerLabel の呼び出しに失敗しました（HTTP $httpCode）。設定画面の API キーや通信環境を確認してください。"
     }
 
     private fun wrapPcm16LeAsWav(

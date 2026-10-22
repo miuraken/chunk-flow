@@ -2034,6 +2034,40 @@ class PlayerViewModelTest {
             "音声を認識できませんでした。このチャンクが無音・BGM のみであるか、認識言語（現在: ko）が実際の音声の言語と異なっている可能性があります。認識言語やエンジン・入力速度を変えて再試行してください。",
             viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
         )
+
+        // 5. クラウド API エンジンで API キー未設定 (NOT_INSTALLED) のとき
+        viewModel.onEvent(
+            PlayerEvent.RunDetailedTranscriptionTrial(
+                chunkId = targetChunk.id,
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.GEMINI_API,
+                languageOverride = LanguageTag("ko"),
+                audioSpeed = 1.0f,
+            ),
+        )
+        assertEquals(
+            "API キーが設定されていません。設定画面の「クラウド文字起こし API キー」で入力し、「保存」を押してから再試行してください。",
+            viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
+        )
+
+        // 6. クラウド API が認証エラーなどの具体的な errorMessage を返したとき
+        analysisRepo.customTrialResultStub = com.miuraken.chunkflow.core.model.ChunkTranscriptionTrialResult(
+            text = "",
+            language = LanguageTag("ko"),
+            engineId = com.miuraken.chunkflow.core.model.EngineId("gemini-2.5-flash"),
+            errorMessage = "Gemini API のキー形式または認証が無効です（HTTP 401）。Google AI Studio で発行した Gemini API キー（通常「AIza」で始まる文字列）を設定画面で入力し、「保存」を押してください。",
+        )
+        viewModel.onEvent(
+            PlayerEvent.RunDetailedTranscriptionTrial(
+                chunkId = targetChunk.id,
+                engine = com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine.GEMINI_API,
+                languageOverride = LanguageTag("ko"),
+                audioSpeed = 1.0f,
+            ),
+        )
+        assertEquals(
+            "Gemini API のキー形式または認証が無効です（HTTP 401）。Google AI Studio で発行した Gemini API キー（通常「AIza」で始まる文字列）を設定画面で入力し、「保存」を押してください。",
+            viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
+        )
     }
 
     @Test

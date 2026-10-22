@@ -695,6 +695,13 @@ internal fun resolveDetailedTrialEmptyMessage(
     modelStatus: OnDeviceLanguageModelStatus,
     hasRecordAudioPermission: Boolean = true,
 ): String = when {
+    (
+        engine == OnDeviceTranscriptionEngine.OPENAI_API ||
+            engine == OnDeviceTranscriptionEngine.GROQ_API ||
+            engine == OnDeviceTranscriptionEngine.GEMINI_API
+        ) && modelStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ->
+        "API キーが設定されていません。設定画面の「クラウド文字起こし API キー」で入力し、「保存」を押してから再試行してください。"
+
     modelStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
         modelStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED ->
         "選択した言語（${targetLanguage.value}）の音声認識モデルがダウンロードされていません。モデルをダウンロードしてから再試行してください。"
@@ -3377,13 +3384,15 @@ class PlayerViewModel @Inject constructor(
                         } else {
                             val resultText = trialResult?.text.orEmpty()
                             val emptyMessage = if (resultText.isBlank()) {
-                                val modelStatus = currentDialog.engineStatus(resolvedLanguage, event.engine)
-                                resolveDetailedTrialEmptyMessage(
-                                    targetLanguage = resolvedLanguage,
-                                    engine = event.engine,
-                                    modelStatus = modelStatus,
-                                    hasRecordAudioPermission = event.hasRecordAudioPermission,
-                                )
+                                trialResult?.errorMessage?.takeIf { it.isNotBlank() } ?: run {
+                                    val modelStatus = currentDialog.engineStatus(resolvedLanguage, event.engine)
+                                    resolveDetailedTrialEmptyMessage(
+                                        targetLanguage = resolvedLanguage,
+                                        engine = event.engine,
+                                        modelStatus = modelStatus,
+                                        hasRecordAudioPermission = event.hasRecordAudioPermission,
+                                    )
+                                }
                             } else {
                                 null
                             }

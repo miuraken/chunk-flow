@@ -74,16 +74,18 @@ import kotlinx.coroutines.withTimeoutOrNull
  * @property language 検出または指定された言語タグ（不明な場合は `null`）。
  * @property confidence 認識信頼度（0.0..1.0、取得できない場合は `null`）。言語判定のみの結果では言語判定の確率。
  * @property engineId 使用した端末内認識エンジンの識別子。
+ * @property errorMessage 認識エンジン（クラウド API など）が具体的な失敗理由を返した場合のエラーメッセージ。
  */
 data class OnDeviceChunkTranscriptionResult(
     val text: String,
     val language: LanguageTag? = null,
     val confidence: Float? = null,
     val engineId: EngineId = DEFAULT_ON_DEVICE_ENGINE_ID,
+    val errorMessage: String? = null,
 ) {
     /** 本文がなく、言語の判定だけを行った結果かどうか（音声認識モデルが使えなかった場合）。 */
     val isLanguageOnly: Boolean
-        get() = text.isBlank() && language != null
+        get() = text.isBlank() && language != null && errorMessage.isNullOrBlank()
 
     companion object {
         val DEFAULT_ON_DEVICE_ENGINE_ID: EngineId = EngineId("android-on-device-speech")
@@ -968,12 +970,14 @@ object ChunkPcmExtractor {
  *
  * @property errorCode 認識できなかったときの `SpeechRecognizer` のエラーコード（言語モデルの未ダウンロードなどの判定に使う）。
  * @property engineId 実際に認識を実行したエンジンの識別子。
+ * @property errorMessage 認識エンジン（クラウド API など）が具体的な失敗理由を返した場合のエラーメッセージ。
  */
 internal data class SpeechRecognitionAttemptResult(
     val text: String,
     val confidence: Float? = null,
     val errorCode: Int? = null,
     val engineId: EngineId = OnDeviceChunkTranscriptionResult.DEFAULT_ON_DEVICE_ENGINE_ID,
+    val errorMessage: String? = null,
 ) {
     /** 言語モデルが使えない（未ダウンロード・非対応）ために認識できなかったかどうか。 */
     val isLanguageModelUnavailable: Boolean
@@ -4104,6 +4108,17 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         )
                         putCachedSttResult(cacheScope, singleLang?.value ?: bcp47Tag, res)
                         res
+                    } else if (activeTrialEngineOverride != null && !attempt?.errorMessage.isNullOrBlank()) {
+                        logInfo(
+                            "singleLang trial error chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} " +
+                                "engine=${attempt.engineId.value} error=${attempt.errorMessage}",
+                        )
+                        OnDeviceChunkTranscriptionResult(
+                            text = "",
+                            language = singleLang,
+                            engineId = attempt.engineId,
+                            errorMessage = attempt.errorMessage,
+                        )
                     } else {
                         logInfo(
                             "singleLang empty chunkDurationMs=$chunkDurationMs lang=${singleLang?.value ?: bcp47Tag} " +
@@ -5302,12 +5317,27 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                                     errorCode = null,
                                     engineId = res.engineId,
                                 )
+                            } else {
+                                lastAttempt = SpeechRecognitionAttemptResult(
+                                    text = "",
+                                    errorCode = SpeechRecognizer.ERROR_CLIENT,
+                                    engineId = res?.engineId ?: engineId,
+                                    errorMessage = res?.errorMessage,
+                                )
+                                if (!res?.errorMessage.isNullOrBlank()) {
+                                    recordExternalDiagnostic(
+                                        "cloud-error",
+                                        "${engine.name} failed: ${res.errorMessage}",
+                                        true,
+                                    )
+                                }
                             }
                         } else {
                             lastAttempt = SpeechRecognitionAttemptResult(
                                 text = "",
                                 errorCode = SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE,
                                 engineId = engineId,
+                                errorMessage = "API キーが設定されていません。設定画面の「クラウド文字起こし API キー」で入力し、「保存」を押してから再試行してください。",
                             )
                             recordExternalDiagnostic("fallback", "Fallback from ${engine.name}: API key not configured", true)
                         }

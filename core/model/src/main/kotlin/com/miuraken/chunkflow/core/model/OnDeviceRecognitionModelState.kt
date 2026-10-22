@@ -236,10 +236,12 @@ data class OnDeviceLanguageModelInfo(
  * @property language 判定または使用された言語タグ（不明時は `null`）。
  * @property confidence 認識信頼度（0.0..1.0、不明時は `null`）。
  * @property engineId 実際に認識を行ったエンジン識別子。
+ * @property errorMessage クラウド API の認証失敗（HTTP 401/403）やレート制限（429）、通信失敗など具体的な失敗理由メッセージ（通常時は `null`）。
  */
 data class ChunkTranscriptionTrialResult(
     val text: String,
     val language: LanguageTag? = null,
     val confidence: Float? = null,
     val engineId: EngineId = EngineId("unknown"),
+    val errorMessage: String? = null,
 )
