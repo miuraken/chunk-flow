@@ -95,6 +95,7 @@ import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.SttEngineLabel
+import com.miuraken.chunkflow.core.model.SttEngineRecommendationChange
 import com.miuraken.chunkflow.core.model.SttEngineSelection
 import java.util.Locale
 import kotlin.math.abs
@@ -266,6 +267,7 @@ fun SettingsScreen(
                             geminiApiKey = state.geminiApiKey,
                             enabledLanguages = state.enabledLanguages,
                             sttEngineByLanguage = state.sttEngineByLanguage,
+                            sttRecommendationChanges = state.sttRecommendationChanges,
                             onEvent = onEvent,
                             expandFirstAccordion = expandFirstAccordion,
                             initialExpandedLanguages = initialExpandedLanguages,
@@ -741,6 +743,7 @@ private fun TranscriptionSettingsSection(
     enabledLanguages: Set<LanguageTag>,
     sttEngineByLanguage: Map<LanguageTag, SttEngine>,
     onEvent: (SettingsEvent) -> Unit,
+    sttRecommendationChanges: List<SttEngineRecommendationChange> = emptyList(),
     expandFirstAccordion: Boolean = false,
     initialExpandedLanguages: Set<LanguageTag> = emptySet(),
 ) {
@@ -767,6 +770,15 @@ private fun TranscriptionSettingsSection(
     SettingsSectionDivider()
 
     SettingsSection(title = stringResource(R.string.settings_section_speech_models)) {
+        if (sttRecommendationChanges.isNotEmpty()) {
+            SttRecommendationUpdateNoticeCard(
+                changes = sttRecommendationChanges,
+                onSwitchToAuto = { onEvent(SettingsEvent.ApplyRecommendedAutoForUpdatedLanguages) },
+                onKeepCurrent = { onEvent(SettingsEvent.AcknowledgeSttRecommendationChanges) },
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
         val displayEntries = LanguageSettings.SELECTABLE_LANGUAGES.filter {
             enabledLanguages.contains(LanguageTag(it.code))
         }
@@ -825,6 +837,62 @@ private fun TranscriptionSettingsSection(
         geminiApiKey = geminiApiKey,
         onEvent = onEvent,
     )
+}
+
+@Composable
+private fun SttRecommendationUpdateNoticeCard(
+    changes: List<SttEngineRecommendationChange>,
+    onSwitchToAuto: () -> Unit,
+    onKeepCurrent: () -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.settings_stt_recommendation_update_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = stringResource(R.string.settings_stt_recommendation_update_message),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                changes.forEach { change ->
+                    Text(
+                        text = stringResource(
+                            R.string.settings_stt_recommendation_update_item_format,
+                            speechModelLanguageDisplayName(change.language),
+                            sttEngineDisplayName(change.currentSelectedEngine),
+                            sttEngineDisplayName(change.recommendedEngine),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onKeepCurrent) {
+                    Text(text = stringResource(R.string.settings_stt_recommendation_update_keep_current))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(onClick = onSwitchToAuto) {
+                    Text(text = stringResource(R.string.settings_stt_recommendation_update_switch_to_auto))
+                }
+            }
+        }
+    }
 }
 
 @Composable

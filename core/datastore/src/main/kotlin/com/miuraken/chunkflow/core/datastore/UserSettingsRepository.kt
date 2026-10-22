@@ -82,6 +82,12 @@ interface UserSettingsRepository {
      */
     suspend fun setSttEngineForLanguage(language: LanguageTag, engine: SttEngine?) = Unit
 
+    /**
+     * 指定した言語一覧 [languages] について、現在の文字起こしエンジン推奨カタログリビジョン
+     * （[com.miuraken.chunkflow.core.model.SttEngineSelection.recommendationRevisionFor]）を確認済みとして記録する。
+     */
+    suspend fun acknowledgeSttRecommendationChanges(languages: Collection<LanguageTag>) = Unit
+
     /** 初回起動時の言語選択ダイアログの表示・確認が完了したことを記録する。 */
     suspend fun completeLanguageOnboarding() = Unit
 

@@ -636,7 +636,92 @@ object SttEngineSelection {
             else -> emptyList()
         }
     }
+
+    /**
+     * 言語 [language] における文字起こしエンジンの評価・推奨設定カタログのリビジョン番号を返す。
+     *
+     * ベンチマーク評価の更新や新しい音声認識エンジンの追加によって、ある言語の推奨エンジンや
+     * 利用可能なエンジン構成が変更された場合、このリビジョン番号をインクリメントする。
+     * ユーザーが「自動」以外のエンジンを手動選択している言語で、保存済みの確認リビジョン
+     * （[UserSettings.acknowledgedSttRecommendationRevisions]）よりもこの値が大きい場合、
+     * アップデート後にユーザーへ言語認識エンジンの状況変更を通知する。
+     */
+    fun recommendationRevisionFor(language: LanguageTag): Int {
+        val code = SupportedLanguageCatalog.normalizeToModelManagementCode(language.value)
+        return when (code) {
+            // 2026-10 21言語ベンチマーク評価反映リビジョン (Rev 2)
+            "en", "ja", "zh", "zh-cn", "zh-tw", "yue", "ko", "hi",
+            "es", "fr", "de", "it", "pt", "nl", "ru", "pl", "tr", "id",
+            "vi", "ar", "uk", "th", "ro", "fa", "pa", "sw",
+            -> 2
+
+            else -> 1
+        }
+    }
+
+    /**
+     * 言語 [language] で現在「自動」設定にした場合に第一候補（おすすめ）となる標準エンジンを返す。
+     *
+     * 推奨ダウンロードモデル（[recommendedDownloadEngineForLanguage]）がある言語ではそのエンジンを返し、
+     * それ以外の言語では [selectableEnginesForLanguage] の先頭（`ML Kit` または `Whisper Tiny`）を返す。
+     */
+    fun recommendedOrPrimaryEngineForLanguage(
+        language: LanguageTag,
+        info: OnDeviceLanguageModelInfo? = null,
+    ): SttEngine {
+        recommendedDownloadEngineForLanguage(language)?.let { return it }
+        val modelInfo = info ?: OnDeviceLanguageModelInfo(
+            language = LanguageSettings.normalize(language),
+            status = OnDeviceLanguageModelStatus.NOT_INSTALLED,
+        )
+        return selectableEnginesForLanguage(modelInfo).firstOrNull() ?: SttEngine.ML_KIT
+    }
+
+    /**
+     * ユーザーが「自動」以外の設定（[sttEngineByLanguage] にエントリが存在）をしている言語のうち、
+     * アプリのアップデートで言語認識エンジンの状況・おすすめ設定が更新され、まだ通知確認していない言語の一覧を返す。
+     */
+    fun detectUpdatedLanguageRecommendations(
+        sttEngineByLanguage: Map<LanguageTag, SttEngine>,
+        acknowledgedRevisions: Map<LanguageTag, Int>,
+        modelInfoByLanguage: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
+    ): List<SttEngineRecommendationChange> {
+        if (sttEngineByLanguage.isEmpty()) return emptyList()
+        return sttEngineByLanguage.entries
+            .mapNotNull { (rawLang, selectedEngine) ->
+                val language = LanguageSettings.normalize(rawLang)
+                val currentRev = recommendationRevisionFor(language)
+                val ackRev = acknowledgedRevisions[language] ?: 0
+                if (ackRev >= currentRev) {
+                    null
+                } else {
+                    val info = modelInfoByLanguage[language]
+                    SttEngineRecommendationChange(
+                        language = language,
+                        currentSelectedEngine = selectedEngine,
+                        recommendedEngine = recommendedOrPrimaryEngineForLanguage(language, info),
+                        revision = currentRev,
+                    )
+                }
+            }
+            .sortedBy { it.language.value }
+    }
 }
+
+/**
+ * アプリのアップデートに伴い、ユーザーが手動（「自動」以外）で選択している言語の文字起こしエンジン状況・推奨が更新されたことを表す通知情報。
+ *
+ * @property language 対象の言語（[LanguageSettings.normalize] 済み）。
+ * @property currentSelectedEngine ユーザーが現在手動で選択しているエンジン。
+ * @property recommendedEngine 最新ベンチマークに基づく「自動」時の第一推奨エンジン。
+ * @property revision 最新の推奨カタログリビジョン番号。
+ */
+data class SttEngineRecommendationChange(
+    val language: LanguageTag,
+    val currentSelectedEngine: SttEngine,
+    val recommendedEngine: SttEngine,
+    val revision: Int,
+)
 
 /**
  * 言語ごとの文字起こしエンジン選択肢に付与する特徴ラベル。

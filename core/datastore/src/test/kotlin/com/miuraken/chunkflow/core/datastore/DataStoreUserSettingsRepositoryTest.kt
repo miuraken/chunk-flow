@@ -284,4 +284,28 @@ class DataStoreUserSettingsRepositoryTest {
         repository.completeLanguageOnboarding()
         assertEquals(true, repository.settings.first().hasCompletedLanguageOnboarding)
     }
+
+    @Test
+    fun `言語別エンジン変更時と推奨更新確認時に現在の推奨リビジョンが記録される`() = runTest(UnconfinedTestDispatcher()) {
+        val (repository, _) = createRepository(this)
+        assertEquals(emptyMap(), repository.settings.first().acknowledgedSttRecommendationRevisions)
+
+        // 手動設定した時点でその言語の現在リビジョンが記録される
+        repository.setSttEngineForLanguage(LanguageTag("zh-Hans"), SttEngine.ML_KIT)
+        assertEquals(
+            mapOf(LanguageTag("zh-cn") to 2),
+            repository.settings.first().acknowledgedSttRecommendationRevisions,
+        )
+
+        // 複数言語の推奨更新をまとめて確認済みにできる
+        repository.acknowledgeSttRecommendationChanges(setOf(LanguageTag("vi"), LanguageTag("th")))
+        assertEquals(
+            mapOf(
+                LanguageTag("zh-cn") to 2,
+                LanguageTag("vi") to 2,
+                LanguageTag("th") to 2,
+            ),
+            repository.settings.first().acknowledgedSttRecommendationRevisions,
+        )
+    }
 }

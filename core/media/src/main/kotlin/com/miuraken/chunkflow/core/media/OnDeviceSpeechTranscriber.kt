@@ -352,6 +352,38 @@ interface OnDeviceChunkTranscriber {
     )
 
     /**
+     * 音声ファイル [audioFile] の `[startMs, endMs]` 区間を 16kHz モノラル 16-bit PCM に切り出して端末内音声認識を行う。
+     *
+     * @param precedingContextByLanguage 直前 1〜2 チャンクの同一言語の確定テキスト（ステージ A 文脈引き継ぎ用）。
+     */
+    suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+        precomputedLanguage: LanguageTag?,
+        precomputedLanguageConfidence: Float?,
+        compareBothLanguages: Boolean,
+        precedingContextByLanguage: Map<LanguageTag, String>,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = forceRefresh,
+        highPriority = highPriority,
+        itemSttOverride = itemSttOverride,
+        engineByLanguage = engineByLanguage,
+        precomputedLanguage = precomputedLanguage,
+        precomputedLanguageConfidence = precomputedLanguageConfidence,
+        compareBothLanguages = compareBothLanguages,
+    )
+
+    /**
      * 切り出し済みの 16kHz モノラル 16-bit リトルエンディアン PCM（[pcm16LeBytes]）に対して端末内音声認識を行う。
      */
     suspend fun transcribePcm16Le(
@@ -1988,6 +2020,9 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     @Volatile
     internal var activeTrialContextHint: String? = null
 
+    @Volatile
+    private var activePrecedingContextByLanguage: Map<String, String> = emptyMap()
+
     private data class ActiveJobHandle(
         val job: Job,
         val highPriority: Boolean,
@@ -2883,6 +2918,34 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         precomputedLanguage: LanguageTag?,
         precomputedLanguageConfidence: Float?,
         compareBothLanguages: Boolean,
+    ): OnDeviceChunkTranscriptionResult? = transcribeChunk(
+        audioFile = audioFile,
+        startMs = startMs,
+        endMs = endMs,
+        languagePair = languagePair,
+        forceRefresh = forceRefresh,
+        highPriority = highPriority,
+        itemSttOverride = itemSttOverride,
+        engineByLanguage = engineByLanguage,
+        precomputedLanguage = precomputedLanguage,
+        precomputedLanguageConfidence = precomputedLanguageConfidence,
+        compareBothLanguages = compareBothLanguages,
+        precedingContextByLanguage = emptyMap(),
+    )
+
+    override suspend fun transcribeChunk(
+        audioFile: File,
+        startMs: Long,
+        endMs: Long,
+        languagePair: LanguagePair?,
+        forceRefresh: Boolean,
+        highPriority: Boolean,
+        itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+        engineByLanguage: Map<LanguageTag, com.miuraken.chunkflow.core.model.SttEngine>,
+        precomputedLanguage: LanguageTag?,
+        precomputedLanguageConfidence: Float?,
+        compareBothLanguages: Boolean,
+        precedingContextByLanguage: Map<LanguageTag, String>,
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || startMs < 0L || endMs <= startMs || !audioFile.isFile) {
             return null
@@ -2990,6 +3053,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 precomputedLanguage = precomputedLanguage,
                 precomputedLanguageConfidence = precomputedLanguageConfidence,
                 compareBothLanguages = compareBothLanguages,
+                precedingContextByLanguage = precedingContextByLanguage,
             )
         } finally {
             if (jobHandle != null) {
@@ -3846,6 +3910,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         precomputedLanguage: LanguageTag? = null,
         precomputedLanguageConfidence: Float? = null,
         compareBothLanguages: Boolean = false,
+        precedingContextByLanguage: Map<LanguageTag, String> = emptyMap(),
     ): OnDeviceChunkTranscriptionResult? {
         if (!isAvailable() || pcm16LeBytes.isEmpty() || sampleRateHz <= 0) {
             return null
@@ -3891,6 +3956,20 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         return recognitionLock.withLock(highPriority = highPriority) {
             activeTrialEngineOverride = engineOverride
+            activePrecedingContextByLanguage = if (precedingContextByLanguage.isEmpty()) {
+                emptyMap()
+            } else {
+                buildMap {
+                    for ((lang, text) in precedingContextByLanguage) {
+                        val trimmed = text.trim()
+                        if (trimmed.isNotEmpty()) {
+                            val normKey = com.miuraken.chunkflow.core.model.LanguageSettings.normalize(lang).value
+                            put(normKey, trimmed)
+                            put(lang.value.trim().lowercase(Locale.ROOT), trimmed)
+                        }
+                    }
+                }
+            }
             sherpaWhisperTranscriberInstance?.activeContextHint = activeTrialContextHint
             val lockAcquiredRealtimeMs = SystemClock.elapsedRealtime()
             try {
@@ -4057,6 +4136,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 throw ce
             } finally {
                 activeTrialEngineOverride = null
+                activePrecedingContextByLanguage = emptyMap()
                 sherpaWhisperTranscriberInstance?.activeContextHint = null
             }
         }
@@ -4665,6 +4745,18 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         }
     }
 
+    private fun resolveEffectiveWhisperContextHint(language: LanguageTag?): String? {
+        val trialHint = activeTrialContextHint?.takeIf { it.isNotBlank() }
+        if (trialHint != null) return trialHint
+        if (language == null) return null
+        val contextMap = activePrecedingContextByLanguage
+        if (contextMap.isEmpty()) return null
+        val normKey = com.miuraken.chunkflow.core.model.LanguageSettings.normalize(language).value
+        val rawKey = language.value.trim().lowercase(Locale.ROOT)
+        val precedingText = contextMap[normKey] ?: contextMap[rawKey] ?: return null
+        return "PROMPT:$precedingText"
+    }
+
     private fun trySherpaInference(
         pcm16LeBytes: ByteArray,
         sampleRateHz: Int,
@@ -4677,9 +4769,16 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         ) {
             return null
         }
-        val result = runCatching {
-            runner(pcm16LeBytes, sampleRateHz, language)
-        }.getOrNull() ?: return null
+        val whisperTranscriber = sherpaWhisperTranscriberInstance
+        val prevHint = whisperTranscriber?.activeContextHint
+        whisperTranscriber?.activeContextHint = resolveEffectiveWhisperContextHint(language)
+        val result = try {
+            runCatching {
+                runner(pcm16LeBytes, sampleRateHz, language)
+            }.getOrNull()
+        } finally {
+            whisperTranscriber?.activeContextHint = prevHint
+        } ?: return null
         if (result.text.isBlank()) return null
         clearModelIssue(language)
         return SpeechRecognitionAttemptResult(
@@ -5045,14 +5144,20 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                         } else {
                             val whisperTranscriber = sherpaWhisperTranscriberInstance
                             if (whisperTranscriber != null && whisperTranscriber.isReadyForLanguage(language.value, model)) {
-                                val res = runCatching {
-                                    whisperTranscriber.transcribePcm16Le(
-                                        pcm16LeBytes = pcm16LeBytes,
-                                        sampleRateHz = sampleRateHz,
-                                        language = language,
-                                        model = model,
-                                    )
-                                }.getOrNull()
+                                val prevHint = whisperTranscriber.activeContextHint
+                                whisperTranscriber.activeContextHint = resolveEffectiveWhisperContextHint(language)
+                                val res = try {
+                                    runCatching {
+                                        whisperTranscriber.transcribePcm16Le(
+                                            pcm16LeBytes = pcm16LeBytes,
+                                            sampleRateHz = sampleRateHz,
+                                            language = language,
+                                            model = model,
+                                        )
+                                    }.getOrNull()
+                                } finally {
+                                    whisperTranscriber.activeContextHint = prevHint
+                                }
                                 if (res != null && res.text.isNotBlank()) {
                                     clearModelIssue(language)
                                     return SpeechRecognitionAttemptResult(

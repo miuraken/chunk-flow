@@ -924,6 +924,78 @@ internal fun EditDirectoryMetadataDialog(
     }
 }
 
+@Composable
+internal fun SttRecommendationUpdateDialog(
+    changes: List<com.miuraken.chunkflow.core.model.SttEngineRecommendationChange>,
+    onApplyRecommendedAuto: () -> Unit,
+    onKeepCurrent: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onKeepCurrent,
+        title = {
+            Text(
+                text = stringResource(R.string.library_stt_recommendation_update_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.library_stt_recommendation_update_message),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                for (change in changes) {
+                    val normCode = normalizeDialogLanguageCode(change.language.value)
+                    val langName = ALPHABETICAL_LANGUAGE_OPTIONS.firstOrNull { it.code == normCode }?.label
+                        ?: change.language.value
+                    Text(
+                        text = stringResource(
+                            R.string.library_stt_recommendation_update_item_format,
+                            langName,
+                            sttEngineShortNameForLibrary(change.currentSelectedEngine),
+                            sttEngineShortNameForLibrary(change.recommendedEngine),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            FilledTonalButton(onClick = onApplyRecommendedAuto) {
+                Text(text = stringResource(R.string.library_stt_recommendation_update_switch_to_auto))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onKeepCurrent) {
+                Text(text = stringResource(R.string.library_stt_recommendation_update_keep_current))
+            }
+        },
+    )
+}
+
+@Composable
+private fun sttEngineShortNameForLibrary(engine: SttEngine): String = when (engine) {
+    SttEngine.ML_KIT -> stringResource(R.string.library_stt_engine_mlkit)
+    SttEngine.SPEECH_RECOGNIZER -> stringResource(R.string.library_stt_engine_speech_recognizer)
+    SttEngine.SHERPA_ONNX -> stringResource(R.string.library_stt_engine_sherpa_onnx)
+    SttEngine.SHERPA_ONNX_WHISPER_BASE -> stringResource(R.string.library_stt_engine_sherpa_whisper_base)
+    SttEngine.SHERPA_ONNX_WHISPER_SMALL -> stringResource(R.string.library_stt_engine_sherpa_whisper_small)
+    SttEngine.SHERPA_ONNX_SENSE_VOICE -> stringResource(R.string.library_stt_engine_sherpa_sense_voice)
+    SttEngine.MOONSHINE_TINY -> stringResource(R.string.library_stt_engine_moonshine_tiny)
+    SttEngine.MOONSHINE_BASE -> stringResource(R.string.library_stt_engine_moonshine_base)
+    SttEngine.OPENAI_API -> stringResource(R.string.library_stt_engine_openai_api)
+    SttEngine.GROQ_API -> stringResource(R.string.library_stt_engine_groq_api)
+    SttEngine.GEMINI_API -> stringResource(R.string.library_stt_engine_gemini_api)
+}
+
 @ChunkFlowPreviews
 @Composable
 private fun EditDirectoryMetadataDialogPreview() {

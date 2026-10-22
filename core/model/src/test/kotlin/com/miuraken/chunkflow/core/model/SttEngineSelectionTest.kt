@@ -305,4 +305,41 @@ class SttEngineSelectionTest {
             SttEngineSelection.labelsFor(LanguageTag("es"), SttEngine.MOONSHINE_TINY),
         )
     }
+
+    @Test
+    fun `detectUpdatedLanguageRecommendations_自動以外を設定していて未確認リビジョンの言語を検出し確認済みは除外する`() {
+        val sttEngineByLanguage = mapOf(
+            LanguageTag("zh-cn") to SttEngine.ML_KIT,
+            LanguageTag("vi") to SttEngine.SHERPA_ONNX,
+            LanguageTag("th") to SttEngine.SHERPA_ONNX, // 確認済み -> 除外
+        )
+        val acknowledged = mapOf(
+            LanguageTag("th") to SttEngineSelection.recommendationRevisionFor(LanguageTag("th")),
+        )
+
+        val changes = SttEngineSelection.detectUpdatedLanguageRecommendations(
+            sttEngineByLanguage = sttEngineByLanguage,
+            acknowledgedRevisions = acknowledged,
+        )
+
+        assertEquals(2, changes.size)
+        assertEquals(
+            SttEngineRecommendationChange(
+                language = LanguageTag("vi"),
+                currentSelectedEngine = SttEngine.SHERPA_ONNX,
+                recommendedEngine = SttEngine.MOONSHINE_BASE,
+                revision = 2,
+            ),
+            changes[0],
+        )
+        assertEquals(
+            SttEngineRecommendationChange(
+                language = LanguageTag("zh-cn"),
+                currentSelectedEngine = SttEngine.ML_KIT,
+                recommendedEngine = SttEngine.SHERPA_ONNX_SENSE_VOICE,
+                revision = 2,
+            ),
+            changes[1],
+        )
+    }
 }

@@ -1769,6 +1769,14 @@ class DefaultAnalysisRepository(
                             }
                             val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
                             val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
+                            val activeChunksForContext = selectActiveChunkEntities(
+                                itemStateDao.getByMediaId(id.value),
+                                allChunks,
+                            )
+                            val precedingContextByLanguage = buildPrecedingContextByLanguage(
+                                activeChunks = activeChunksForContext,
+                                targetChunk = targetChunk,
+                            )
                             val recognized = try {
                                 onDeviceChunkTranscriber.transcribeChunk(
                                     audioFile = audioFile,
@@ -1782,6 +1790,7 @@ class DefaultAnalysisRepository(
                                     precomputedLanguage = null,
                                     precomputedLanguageConfidence = null,
                                     compareBothLanguages = normalizedNewLang == null,
+                                    precedingContextByLanguage = precedingContextByLanguage,
                                 )
                             } catch (ce: CancellationException) {
                                 throw ce
@@ -2595,6 +2604,10 @@ class DefaultAnalysisRepository(
                                     mediaLanguagePair
                                 }
 
+                                val precedingContextByLanguage = buildPrecedingContextByLanguage(
+                                    activeChunks = activeChunks,
+                                    targetChunk = targetChunk,
+                                )
                                 val result = try {
                                     onDeviceChunkTranscriber.transcribeChunk(
                                         audioFile = audioFile,
@@ -2607,6 +2620,8 @@ class DefaultAnalysisRepository(
                                         highPriority = true,
                                         precomputedLanguage = precomputedLidLang,
                                         precomputedLanguageConfidence = precomputedLidConfidence,
+                                        compareBothLanguages = false,
+                                        precedingContextByLanguage = precedingContextByLanguage,
                                     )
                                 } catch (ce: CancellationException) {
                                     throw ce
@@ -2850,6 +2865,14 @@ class DefaultAnalysisRepository(
                         }
                         val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
                         val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
+                        val activeChunksForContext = selectActiveChunkEntities(
+                            itemStateDao.getByMediaId(id.value),
+                            allChunks,
+                        )
+                        val precedingContextByLanguage = buildPrecedingContextByLanguage(
+                            activeChunks = activeChunksForContext,
+                            targetChunk = targetChunk,
+                        )
                         val recognized = try {
                             onDeviceChunkTranscriber.transcribeChunk(
                                 audioFile = audioFile,
@@ -2862,6 +2885,8 @@ class DefaultAnalysisRepository(
                                 highPriority = true,
                                 precomputedLanguage = precomputedLidLang,
                                 precomputedLanguageConfidence = precomputedLidConfidence,
+                                compareBothLanguages = false,
+                                precedingContextByLanguage = precedingContextByLanguage,
                             )
                         } catch (ce: CancellationException) {
                             throw ce
@@ -3464,6 +3489,10 @@ class DefaultAnalysisRepository(
                                 // チャンク区間 [startMs, endMs] のみを切り出して認識し、チャンク間の無音はスキップする（F6.2）
                                 val itemSttOverride = itemSttOverrideRepository?.get(id) ?: com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
                                 val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
+                                val precedingContextByLanguage = buildPrecedingContextByLanguage(
+                                    activeChunks = activeChunks,
+                                    targetChunk = targetChunk,
+                                )
                                 val result: OnDeviceChunkTranscriptionResult? = try {
                                     onDeviceChunkTranscriber.transcribeChunk(
                                         audioFile = audioFile,
@@ -3476,6 +3505,8 @@ class DefaultAnalysisRepository(
                                         highPriority = false,
                                         precomputedLanguage = precomputedLidLang,
                                         precomputedLanguageConfidence = precomputedLidConfidence,
+                                        compareBothLanguages = false,
+                                        precedingContextByLanguage = precedingContextByLanguage,
                                     )
                                 } catch (ce: CancellationException) {
                                     throw ce
@@ -4906,12 +4937,59 @@ class DefaultAnalysisRepository(
         }
     }
 
+    /**
+     * ステージ A 文脈引き継ぎ用に、[targetChunk] より前にある最大 4 チャンクから
+     * 同一言語ごとに直近最大 2 チャンク分の確定テキスト（`!isLanguageIdOnly()` かつ十分な信頼度または手動編集済み）を連結したマップを返す。
+     */
+    private suspend fun buildPrecedingContextByLanguage(
+        activeChunks: List<ChunkEntity>,
+        targetChunk: ChunkEntity,
+    ): Map<LanguageTag, String> {
+        if (activeChunks.size <= 1) return emptyMap()
+        val sortedChunks = activeChunks.sortedWith(
+            compareBy<ChunkEntity> { it.startMs }.thenBy { it.endMs }.thenBy { it.id },
+        )
+        val targetPos = sortedChunks.indexOfFirst { it.id == targetChunk.id }
+        val precedingWindow = if (targetPos > 0) {
+            sortedChunks.subList((targetPos - 4).coerceAtLeast(0), targetPos)
+        } else {
+            sortedChunks.filter { it.startMs < targetChunk.startMs }.takeLast(4)
+        }
+        if (precedingWindow.isEmpty()) return emptyMap()
+
+        val transcriptsByChunkId = runCatching {
+            transcriptDao.getByChunkIds(precedingWindow.map { it.id }).associateBy { it.chunkId }
+        }.getOrDefault(emptyMap())
+        if (transcriptsByChunkId.isEmpty()) return emptyMap()
+
+        val recentTextsByLang = LinkedHashMap<LanguageTag, ArrayDeque<String>>()
+        for (chunk in precedingWindow.asReversed()) {
+            val t = transcriptsByChunkId[chunk.id] ?: continue
+            if (t.isLanguageIdOnly()) continue
+            val text = t.text.trim()
+            if (text.isEmpty()) continue
+            val rawLang = t.language?.trim()?.takeIf {
+                it.isNotEmpty() && !it.equals("und", ignoreCase = true)
+            } ?: continue
+            val conf = t.languageConfidence
+            if (!t.userEdited && conf != null && conf < MIN_PRECEDING_CONTEXT_CONFIDENCE) continue
+            val normLang = com.miuraken.chunkflow.core.model.LanguageSettings.normalize(LanguageTag(rawLang))
+            val deque = recentTextsByLang.getOrPut(normLang) { ArrayDeque() }
+            if (deque.size < MAX_PRECEDING_CONTEXT_CHUNKS_PER_LANGUAGE) {
+                deque.addFirst(text)
+            }
+        }
+        return recentTextsByLang.mapValues { (_, texts) -> texts.joinToString(" ") }
+    }
+
     companion object {
         internal const val MEDIA_DIR_NAME: String = "media"
         internal const val ANALYSIS_DIR_NAME: String = "analysis"
         internal const val WAVEFORM_FILE_NAME: String = "waveform.bin"
         internal const val FEATURES_FILE_NAME: String = "features.bin"
         internal const val LOOKAHEAD_WINDOW_AHEAD: Int = 5
+        private const val MAX_PRECEDING_CONTEXT_CHUNKS_PER_LANGUAGE: Int = 2
+        private const val MIN_PRECEDING_CONTEXT_CONFIDENCE: Float = 0.5f
 
         /** 同一フォルダ内で事前に波形・チャンク解析を行っておく未アクセス教材の上限数。 */
         const val MAX_UNACCESSED_ANALYZED_PER_FOLDER: Int = 2

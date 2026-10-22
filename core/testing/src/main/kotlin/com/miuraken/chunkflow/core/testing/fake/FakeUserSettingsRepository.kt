@@ -10,6 +10,7 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.UserSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -118,12 +119,36 @@ class FakeUserSettingsRepository(
         val normalized = LanguageSettings.normalize(language)
         require(normalized.value.isNotEmpty()) { "language tag must not be blank" }
         state.update { current ->
-            val next = if (engine == null) {
+            val nextEngines = if (engine == null) {
                 current.sttEngineByLanguage - normalized
             } else {
                 current.sttEngineByLanguage + (normalized to engine)
             }
-            current.copy(sttEngineByLanguage = next)
+            val nextAck = if (engine == null) {
+                current.acknowledgedSttRecommendationRevisions - normalized
+            } else {
+                current.acknowledgedSttRecommendationRevisions +
+                    (normalized to SttEngineSelection.recommendationRevisionFor(normalized))
+            }
+            current.copy(
+                sttEngineByLanguage = nextEngines,
+                acknowledgedSttRecommendationRevisions = nextAck,
+            )
+        }
+    }
+
+    override suspend fun acknowledgeSttRecommendationChanges(languages: Collection<LanguageTag>) {
+        val normalizedTags = languages
+            .map(LanguageSettings::normalize)
+            .filter { it.value.isNotEmpty() }
+            .distinct()
+        if (normalizedTags.isEmpty()) return
+        state.update { current ->
+            val nextAck = current.acknowledgedSttRecommendationRevisions.toMutableMap()
+            for (tag in normalizedTags) {
+                nextAck[tag] = SttEngineSelection.recommendationRevisionFor(tag)
+            }
+            current.copy(acknowledgedSttRecommendationRevisions = nextAck)
         }
     }
 

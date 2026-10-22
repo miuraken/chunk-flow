@@ -116,9 +116,9 @@
     <string name="settings_model_sherpa_whisper_base">sherpa-onnx Whisper Base</string>
     <string name="settings_model_sherpa_whisper_base_desc">99言語対応・標準精度（約 %1$d MB）</string>
     <string name="settings_model_sherpa_whisper_small">sherpa-onnx Whisper Small</string>
-    <string name="settings_model_sherpa_whisper_small_desc">99言語対応・「より詳しく文字起こし」専用（高精度・低速・約 %1$d MB）</string>
+    <string name="settings_model_sherpa_whisper_small_desc">99言語対応・タイ語やルーマニア語等の推奨モデル／詳細文字起こし対応（高精度・低速・約 %1$d MB）</string>
     <string name="settings_model_moonshine_tiny">Moonshine ONNX Tiny</string>
-    <string name="settings_model_moonshine_tiny_desc">韓国語向け・高速（約 69 MB）</string>
+    <string name="settings_model_moonshine_tiny_desc">韓国語・スペイン語向け・高速（約 62〜69 MB）</string>
     <string name="settings_model_moonshine_base">Moonshine ONNX Base</string>
     <string name="settings_model_moonshine_base_desc">英・中・西・アラビア・ウクライナ・ベトナム語向け・高速高精度（言語別 62〜274 MB）</string>
     <string name="settings_model_available_languages">利用可能な言語: %1$s</string>
@@ -143,4 +143,9 @@
     <string name="settings_stt_label_high_accuracy">高精度</string>
     <string name="settings_stt_label_fast">高速</string>
     <string name="settings_stt_label_slow">低速</string>
+    <string name="settings_stt_recommendation_update_title">音声認識エンジンの状況が更新されました</string>
+    <string name="settings_stt_recommendation_update_message">アプリのアップデートに伴い、手動（「自動」以外）で設定している言語の推奨エンジン構成が更新されました。</string>
+    <string name="settings_stt_recommendation_update_item_format">・%1$s: 現在 %2$s → おすすめ: 自動（%3$s）</string>
+    <string name="settings_stt_recommendation_update_switch_to_auto">自動（おすすめ）に切り替える</string>
+    <string name="settings_stt_recommendation_update_keep_current">現在の設定を維持</string>
 </resources>

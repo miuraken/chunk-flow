@@ -213,4 +213,20 @@
     <string name="transcript_export_failed">文字起こしの書き出しに失敗しました</string>
     <string name="library_mini_player_expand_cd">再生コントローラーを展開</string>
     <string name="library_mini_player_collapse_cd">ミニプレイヤーに折りたたむ</string>
+    <string name="library_stt_recommendation_update_title">音声認識エンジンの状況が更新されました</string>
+    <string name="library_stt_recommendation_update_message">アプリのアップデートに伴い、手動（「自動」以外）で設定している言語の音声認識エンジン状況・おすすめ設定が更新されました。</string>
+    <string name="library_stt_recommendation_update_item_format">・%1$s: 現在 %2$s → おすすめ: 自動（%3$s）</string>
+    <string name="library_stt_recommendation_update_switch_to_auto">自動（おすすめ）に切り替える</string>
+    <string name="library_stt_recommendation_update_keep_current">現在の設定を維持</string>
+    <string name="library_stt_engine_mlkit">ML Kit GenAI</string>
+    <string name="library_stt_engine_speech_recognizer">OS 標準 (SpeechRecognizer)</string>
+    <string name="library_stt_engine_sherpa_onnx">sherpa-onnx Whisper Tiny</string>
+    <string name="library_stt_engine_sherpa_sense_voice">sherpa-onnx SenseVoice Small</string>
+    <string name="library_stt_engine_sherpa_whisper_base">sherpa-onnx Whisper Base</string>
+    <string name="library_stt_engine_sherpa_whisper_small">sherpa-onnx Whisper Small</string>
+    <string name="library_stt_engine_moonshine_tiny">Moonshine ONNX Tiny</string>
+    <string name="library_stt_engine_moonshine_base">Moonshine ONNX Base</string>
+    <string name="library_stt_engine_openai_api">OpenAI 互換 API</string>
+    <string name="library_stt_engine_groq_api">Groq 互換 API</string>
+    <string name="library_stt_engine_gemini_api">Gemini API</string>
 </resources>

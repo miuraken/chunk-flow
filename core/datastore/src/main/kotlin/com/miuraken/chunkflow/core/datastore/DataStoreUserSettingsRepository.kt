@@ -19,6 +19,7 @@ import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.UserSettings
 import java.io.IOException
 import javax.inject.Inject
@@ -230,18 +231,44 @@ class DataStoreUserSettingsRepository @Inject constructor(
     override suspend fun setSttEngineForLanguage(language: LanguageTag, engine: SttEngine?) {
         val code = LanguageSettings.normalizeCode(language.value)
         require(code.isNotEmpty()) { "language tag must not be blank" }
+        val normalizedTag = LanguageTag(code)
         dataStore.edit { prefs ->
             val current = decodeEngineByLanguage(prefs[KEY_STT_ENGINE_BY_LANGUAGE]).toMutableMap()
+            val ackRevs = decodeAckRevisions(prefs[KEY_STT_RECOMMENDATION_ACK_REVISIONS]).toMutableMap()
             if (engine == null) {
-                current.remove(LanguageTag(code))
+                current.remove(normalizedTag)
+                ackRevs.remove(normalizedTag)
             } else {
-                current[LanguageTag(code)] = engine
+                current[normalizedTag] = engine
+                ackRevs[normalizedTag] = SttEngineSelection.recommendationRevisionFor(normalizedTag)
             }
             if (current.isEmpty()) {
                 prefs.remove(KEY_STT_ENGINE_BY_LANGUAGE)
             } else {
                 prefs[KEY_STT_ENGINE_BY_LANGUAGE] = encodeEngineByLanguage(current)
             }
+            if (ackRevs.isEmpty()) {
+                prefs.remove(KEY_STT_RECOMMENDATION_ACK_REVISIONS)
+            } else {
+                prefs[KEY_STT_RECOMMENDATION_ACK_REVISIONS] = encodeAckRevisions(ackRevs)
+            }
+        }
+    }
+
+    override suspend fun acknowledgeSttRecommendationChanges(languages: Collection<LanguageTag>) {
+        val normalizedTags = languages
+            .mapNotNull { lang ->
+                val code = LanguageSettings.normalizeCode(lang.value)
+                if (code.isEmpty()) null else LanguageTag(code)
+            }
+            .distinct()
+        if (normalizedTags.isEmpty()) return
+        dataStore.edit { prefs ->
+            val ackRevs = decodeAckRevisions(prefs[KEY_STT_RECOMMENDATION_ACK_REVISIONS]).toMutableMap()
+            for (tag in normalizedTags) {
+                ackRevs[tag] = SttEngineSelection.recommendationRevisionFor(tag)
+            }
+            prefs[KEY_STT_RECOMMENDATION_ACK_REVISIONS] = encodeAckRevisions(ackRevs)
         }
     }
 
@@ -355,6 +382,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
             ?.let { name -> OnDeviceTranscriptionEngine.entries.firstOrNull { it.name == name } }
             ?: defaults.transcriptionEngine
         val sttEngineByLanguage = decodeEngineByLanguage(this[KEY_STT_ENGINE_BY_LANGUAGE])
+        val acknowledgedRevisions = decodeAckRevisions(this[KEY_STT_RECOMMENDATION_ACK_REVISIONS])
 
         return UserSettings(
             defaultLanguagePair = LanguagePair(target = targetLang, base = baseLang),
@@ -386,6 +414,7 @@ class DataStoreUserSettingsRepository @Inject constructor(
                 ?: defaults.backgroundTranscriptionEnabled,
             transcriptionEngine = transcriptionEngine,
             sttEngineByLanguage = sttEngineByLanguage,
+            acknowledgedSttRecommendationRevisions = acknowledgedRevisions,
             hasCompletedLanguageOnboarding = hasCompletedLanguageOnboarding,
             openAiApiKey = this[KEY_OPENAI_API_KEY]?.trim().orEmpty(),
             groqApiKey = this[KEY_GROQ_API_KEY]?.trim().orEmpty(),
@@ -434,6 +463,9 @@ class DataStoreUserSettingsRepository @Inject constructor(
         /** 言語ごとに優先する文字起こしエンジン（`code=ENGINE` のカンマ区切り。ADR-0011 §2.2）。 */
         val KEY_STT_ENGINE_BY_LANGUAGE = stringPreferencesKey("stt_engine_by_language")
 
+        /** 言語ごとの文字起こし推奨カタログの確認済みリビジョン（`code=REV` のカンマ区切り）。 */
+        val KEY_STT_RECOMMENDATION_ACK_REVISIONS = stringPreferencesKey("stt_recommendation_ack_revisions")
+
         /** クラウド文字起こしエンジン用の API キー。 */
         val KEY_OPENAI_API_KEY = stringPreferencesKey("stt_openai_api_key")
         val KEY_GROQ_API_KEY = stringPreferencesKey("stt_groq_api_key")
@@ -451,6 +483,21 @@ class DataStoreUserSettingsRepository @Inject constructor(
                 val code = LanguageSettings.normalizeCode(item.substringBefore('=', missingDelimiterValue = ""))
                 val engine = SttEngine.fromNameOrNull(item.substringAfter('=', missingDelimiterValue = "").trim())
                 if (code.isEmpty() || engine == null) null else LanguageTag(code) to engine
+            }.toMap()
+        }
+
+        /** 言語ごとの確認済み推奨リビジョンを `code=REV` のカンマ区切りにする。 */
+        fun encodeAckRevisions(revisions: Map<LanguageTag, Int>): String = revisions.entries
+            .sortedBy { it.key.value }
+            .joinToString(",") { (language, rev) -> "${language.value}=$rev" }
+
+        /** [encodeAckRevisions] の逆。 */
+        fun decodeAckRevisions(raw: String?): Map<LanguageTag, Int> {
+            if (raw.isNullOrBlank()) return emptyMap()
+            return raw.split(",").mapNotNull { item ->
+                val code = LanguageSettings.normalizeCode(item.substringBefore('=', missingDelimiterValue = ""))
+                val rev = item.substringAfter('=', missingDelimiterValue = "").trim().toIntOrNull()
+                if (code.isEmpty() || rev == null || rev <= 0) null else LanguageTag(code) to rev
             }.toMap()
         }
 

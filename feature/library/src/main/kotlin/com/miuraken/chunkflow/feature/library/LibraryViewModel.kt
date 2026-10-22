@@ -31,6 +31,8 @@ import com.miuraken.chunkflow.core.model.PracticeSettings
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineRecommendationChange
+import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
@@ -554,6 +556,7 @@ data class LibraryUiState(
     val collapsedDirectories: Set<String?> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    val sttRecommendationChanges: List<SttEngineRecommendationChange> = emptyList(),
     val showLanguageOnboardingDialog: Boolean = false,
     val showLanguageSettingsModal: Boolean = false,
     val currentDirectoryPath: String? = null,
@@ -1639,6 +1642,12 @@ sealed interface LibraryEvent {
 
     /** 「ブックマーク」タブ下部の再生コントローラーで無音スキップを切り替える。 */
     data object BookmarkPlayerToggleSkipSilence : LibraryEvent
+
+    /** 言語認識エンジンの推奨構成変更通知をすべて「自動（おすすめ）」に切り替えて確認済みにする。 */
+    data object ApplyRecommendedAutoForUpdatedLanguages : LibraryEvent
+
+    /** 言語認識エンジンの推奨構成変更通知を、現在の設定を維持したまま確認済みにする。 */
+    data object AcknowledgeSttRecommendationChanges : LibraryEvent
 }
 
 private data class ItemAnalysisSummary(
@@ -1660,6 +1669,7 @@ private data class LibraryRepositorySnapshot(
     val missingAudioIds: Set<MediaId> = emptySet(),
     val enabledLanguages: List<LanguageTag> = listOf(LanguageTag("ja"), LanguageTag("en")),
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    val sttRecommendationChanges: List<SttEngineRecommendationChange> = emptyList(),
     val showLanguageOnboardingDialog: Boolean = false,
     val seekBackMs: Long = 3_000L,
     val seekForwardMs: Long = 5_000L,
@@ -2017,6 +2027,10 @@ class LibraryViewModel @Inject constructor(
                 missingAudioIds = missingAudioIds,
                 enabledLanguages = orderEnabledLanguages(userSettings.enabledLanguages),
                 sttEngineByLanguage = userSettings.sttEngineByLanguage,
+                sttRecommendationChanges = SttEngineSelection.detectUpdatedLanguageRecommendations(
+                    sttEngineByLanguage = userSettings.sttEngineByLanguage,
+                    acknowledgedRevisions = userSettings.acknowledgedSttRecommendationRevisions,
+                ),
                 showLanguageOnboardingDialog = !userSettings.hasCompletedLanguageOnboarding,
                 seekBackMs = userSettings.seekBackMs,
                 seekForwardMs = userSettings.seekForwardMs,
@@ -2040,6 +2054,7 @@ class LibraryViewModel @Inject constructor(
             missingAudioIds = repoSnapshot.missingAudioIds,
             enabledLanguages = repoSnapshot.enabledLanguages,
             sttEngineByLanguage = repoSnapshot.sttEngineByLanguage,
+            sttRecommendationChanges = repoSnapshot.sttRecommendationChanges,
             showLanguageOnboardingDialog = repoSnapshot.showLanguageOnboardingDialog,
             seekBackMs = repoSnapshot.seekBackMs,
             seekForwardMs = repoSnapshot.seekForwardMs,
@@ -2836,6 +2851,31 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            LibraryEvent.ApplyRecommendedAutoForUpdatedLanguages -> {
+                val changes = uiState.value.sttRecommendationChanges
+                if (changes.isNotEmpty()) {
+                    viewModelScope.launch {
+                        for (change in changes) {
+                            userSettingsRepository.setSttEngineForLanguage(change.language, null)
+                        }
+                        userSettingsRepository.acknowledgeSttRecommendationChanges(
+                            changes.map { it.language },
+                        )
+                    }
+                }
+            }
+
+            LibraryEvent.AcknowledgeSttRecommendationChanges -> {
+                val changes = uiState.value.sttRecommendationChanges
+                if (changes.isNotEmpty()) {
+                    viewModelScope.launch {
+                        userSettingsRepository.acknowledgeSttRecommendationChanges(
+                            changes.map { it.language },
+                        )
+                    }
+                }
+            }
+
             LibraryEvent.RequestImportDirectory,
             LibraryEvent.RequestImport,
             LibraryEvent.OpenSettings,
@@ -3322,6 +3362,7 @@ class LibraryViewModel @Inject constructor(
         missingAudioIds: Set<MediaId>,
         enabledLanguages: List<LanguageTag>,
         sttEngineByLanguage: Map<LanguageTag, SttEngine>,
+        sttRecommendationChanges: List<SttEngineRecommendationChange>,
         showLanguageOnboardingDialog: Boolean,
         seekBackMs: Long,
         seekForwardMs: Long,
@@ -3448,6 +3489,7 @@ class LibraryViewModel @Inject constructor(
             collapsedDirectories = navAndSelection.collapsedDirectories,
             enabledLanguages = enabledLanguages,
             sttEngineByLanguage = sttEngineByLanguage,
+            sttRecommendationChanges = sttRecommendationChanges,
             showLanguageOnboardingDialog = showLanguageOnboardingDialog,
             showLanguageSettingsModal = dialogAndImport.showLanguageSettingsModal,
             currentDirectoryPath = navAndSelection.currentDirectoryPath,

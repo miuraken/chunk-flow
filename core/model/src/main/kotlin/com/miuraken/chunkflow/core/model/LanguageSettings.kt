@@ -32,33 +32,14 @@ object LanguageSettings {
     val ALWAYS_ENABLED_BY_DEFAULT: LanguageTag = LanguageTag("en")
 
     /**
-     * ML Kit GenAI Speech Recognition が対応している言語のコード（公式の対応表。基本モードと高度モードの和）。
+     * ML Kit GenAI Speech Recognition が対応している言語のコード（実機検証済みの対応表。基本モードと高度モードの和）。
      *
      * 端末で実際に使えるかは、実行時に確かめる（`core:media`）。ここでは一覧に出すかどうかの判定にだけ使う。
      */
-    val ML_KIT_SPEECH_LANGUAGE_CODES: Set<String> = setOf(
-        "ar",
-        "da",
-        "de",
-        "en",
-        "es",
-        "fr",
-        "hi",
-        "id",
-        "it",
-        "ja",
-        "ko",
-        "nl",
-        "pl",
-        "pt",
-        "ru",
-        "sv",
-        "th",
-        "tr",
-        "vi",
-        "zh-cn",
-        "zh-tw",
-    )
+    val ML_KIT_SPEECH_LANGUAGE_CODES: Set<String> = SupportedLanguageCatalog.ALL_ENTRIES
+        .filter { it.mlKitSupported && it.code != "zh" }
+        .map { it.code }
+        .toSet()
 
     /**
      * 言語タグを、設定で使うカタログの言語コードにそろえる。
@@ -77,9 +58,9 @@ object LanguageSettings {
     /**
      * どれかのエンジン（ML Kit・SpeechRecognizer・sherpa-onnx の Whisper）で、カタログ上は文字起こしできる言語かどうか。
      */
-    fun isSttCapable(entry: SupportedLanguageEntry): Boolean = entry.speechRecognizerSupported ||
-        entry.whisperCode != null ||
-        entry.code in ML_KIT_SPEECH_LANGUAGE_CODES
+    fun isSttCapable(entry: SupportedLanguageEntry): Boolean = entry.mlKitSupported ||
+        entry.speechRecognizerSupported ||
+        entry.whisperCode != null
 
     /**
      * 言語設定タブに並べる言語の一覧。

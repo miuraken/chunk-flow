@@ -594,6 +594,16 @@ fun LibraryScreen(
             onDismiss = { onEvent(LibraryEvent.CompleteLanguageOnboarding) },
             isFirstLaunchOnboarding = true,
         )
+    } else if (state.sttRecommendationChanges.isNotEmpty()) {
+        SttRecommendationUpdateDialog(
+            changes = state.sttRecommendationChanges,
+            onApplyRecommendedAuto = {
+                onEvent(LibraryEvent.ApplyRecommendedAutoForUpdatedLanguages)
+            },
+            onKeepCurrent = {
+                onEvent(LibraryEvent.AcknowledgeSttRecommendationChanges)
+            },
+        )
     }
 
     state.pendingImportConfig?.let { config ->

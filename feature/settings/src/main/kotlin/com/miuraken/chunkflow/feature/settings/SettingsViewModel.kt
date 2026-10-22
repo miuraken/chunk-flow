@@ -16,6 +16,7 @@ import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineRecommendationChange
 import com.miuraken.chunkflow.core.model.SttEngineSelection
 import com.miuraken.chunkflow.core.model.UserSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -166,6 +167,16 @@ data class SettingsUiState(
     /** 言語ごとの文字起こしエンジン。 */
     val sttEngineByLanguage: Map<LanguageTag, SttEngine>
         get() = settings.sttEngineByLanguage
+
+    /**
+     * ユーザーが「自動」以外に設定している言語のうち、アプリのアップデートで言語認識エンジンの状況が更新された言語一覧。
+     */
+    val sttRecommendationChanges: List<SttEngineRecommendationChange>
+        get() = SttEngineSelection.detectUpdatedLanguageRecommendations(
+            sttEngineByLanguage = settings.sttEngineByLanguage,
+            acknowledgedRevisions = settings.acknowledgedSttRecommendationRevisions,
+            modelInfoByLanguage = languageModels.associateBy { it.language },
+        )
 
     /** OpenAI 互換 API キー。 */
     val openAiApiKey: String
@@ -455,6 +466,12 @@ sealed interface SettingsEvent {
 
     /** 言語ごとの端末内音声認識モデルの状態を再取得する。 */
     data object RefreshRecognitionModels : SettingsEvent
+
+    /** 言語認識エンジンの推奨構成変更通知をすべて「自動（おすすめ）」に切り替えて確認済みにする。 */
+    data object ApplyRecommendedAutoForUpdatedLanguages : SettingsEvent
+
+    /** 言語認識エンジンの推奨構成変更通知を、現在の設定を維持したまま確認済みにする。 */
+    data object AcknowledgeSttRecommendationChanges : SettingsEvent
 }
 
 /**
@@ -1058,6 +1075,25 @@ class SettingsViewModel @Inject constructor(
                     analysisRepository.refreshRecognitionModelIssues()
                     refreshDownloadableModels()
                     refreshActiveLanguageModelsFirst()
+                }
+            }
+
+            SettingsEvent.ApplyRecommendedAutoForUpdatedLanguages -> {
+                val changes = uiState.value.sttRecommendationChanges
+                if (changes.isEmpty()) return
+                viewModelScope.launch {
+                    for (change in changes) {
+                        userSettingsRepository.setSttEngineForLanguage(change.language, null)
+                    }
+                    userSettingsRepository.acknowledgeSttRecommendationChanges(changes.map { it.language })
+                }
+            }
+
+            SettingsEvent.AcknowledgeSttRecommendationChanges -> {
+                val changes = uiState.value.sttRecommendationChanges
+                if (changes.isEmpty()) return
+                viewModelScope.launch {
+                    userSettingsRepository.acknowledgeSttRecommendationChanges(changes.map { it.language })
                 }
             }
 

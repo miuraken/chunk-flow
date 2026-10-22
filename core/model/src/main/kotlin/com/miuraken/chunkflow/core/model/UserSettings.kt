@@ -97,6 +97,8 @@ enum class PhoneticGuideKind {
  *   ADR-0011 の移行の途中の設定で、言語ごとの設定（[sttEngineByLanguage]）に切り替わったら消す。
  * @property sttEngineByLanguage 言語ごとに優先する文字起こしエンジン（ADR-0011 §2.2）。キーは [LanguageSettings.normalize] で
  *   そろえた言語。キーがない言語は自動（[SttEngine.AUTO_ORDER]）。
+ * @property acknowledgedSttRecommendationRevisions 言語ごとの文字起こしエンジン推奨カタログの変更通知を確認済みとしたリビジョン番号。
+ *   キーは [LanguageSettings.normalize] でそろえた言語。
  * @property hasCompletedLanguageOnboarding 初回起動時の言語選択ダイアログを表示・完了したかどうか（既定は `false`）。
  * @property openAiApiKey OpenAI Audio Transcriptions API 用のユーザー設定 API キー（未設定時は空文字）。
  * @property groqApiKey Groq Audio Transcriptions API（OpenAI 互換）用のユーザー設定 API キー（未設定時は空文字）。
@@ -125,6 +127,7 @@ data class UserSettings(
     val backgroundTranscriptionEnabled: Boolean = true,
     val transcriptionEngine: OnDeviceTranscriptionEngine = OnDeviceTranscriptionEngine.AUTO,
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
+    val acknowledgedSttRecommendationRevisions: Map<LanguageTag, Int> = emptyMap(),
     val hasCompletedLanguageOnboarding: Boolean = false,
     val openAiApiKey: String = "",
     val groqApiKey: String = "",
