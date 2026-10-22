@@ -2699,6 +2699,79 @@ class OnDeviceSpeechTranscriberTest {
     }
 
     @Test
+    fun `queryLanguageModelInfos_同義タグを重複排除しMLKitには対応言語の代表BCP47タグのみ問い合わせる`() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val osQueriedBatch = mutableListOf<List<String>>()
+        val mlKitQueriedBatch = mutableListOf<List<String>>()
+
+        val osGateway = object : RecognitionModelGateway {
+            override fun requestDownload(
+                bcp47LocaleTag: String,
+                onEvent: (RecognitionModelDownloadEvent) -> Unit,
+            ): Boolean = false
+
+            override suspend fun checkSupport(bcp47LocaleTags: List<String>): Map<String, RecognitionModelSupport> {
+                osQueriedBatch += bcp47LocaleTags
+                return mapOf(
+                    "en-US" to RecognitionModelSupport.INSTALLED,
+                    "ja-JP" to RecognitionModelSupport.INSTALLED,
+                    "fr-FR" to RecognitionModelSupport.INSTALLED,
+                )
+            }
+        }
+        val mlKitGateway = object : MlKitSpeechRecognitionGateway {
+            override fun isDevicePotentiallySupported(): Boolean = true
+
+            override suspend fun checkMlKitSupport(
+                bcp47LocaleTags: List<String>,
+            ): Map<String, Pair<RecognitionModelSupport, MlKitRecognitionMode?>> {
+                mlKitQueriedBatch += bcp47LocaleTags
+                return mapOf(
+                    "en-US" to (RecognitionModelSupport.INSTALLED to MlKitRecognitionMode.ADVANCED),
+                    "ja-JP" to (RecognitionModelSupport.INSTALLED to MlKitRecognitionMode.BASIC),
+                )
+            }
+
+            override suspend fun downloadModel(
+                bcp47LocaleTag: String,
+                onEvent: (RecognitionModelDownloadEvent) -> Unit,
+            ): Boolean = false
+
+            override suspend fun recognizePcm16Le(
+                pcm16LeBytes: ByteArray,
+                sampleRateHz: Int,
+                bcp47LocaleTag: String,
+                isProbe: Boolean,
+            ): SpeechRecognitionAttemptResult? = null
+        }
+
+        val transcriber = AndroidSpeechRecognizerChunkTranscriber(
+            context = context,
+            audioStreamDecoder = constantDecoder(durationSec = 1),
+            onDeviceAvailabilityChecker = { true },
+            standardAvailabilityChecker = { true },
+            modelGateway = osGateway,
+            mlKitGateway = mlKitGateway,
+        )
+
+        val requested = listOf(
+            LanguageTag("en-US"),
+            LanguageTag("en-us"),
+            LanguageTag("en"),
+            LanguageTag("ja-JP"),
+            LanguageTag("ja"),
+            LanguageTag("as"),
+        )
+        val infos = transcriber.queryLanguageModelInfos(requested)
+
+        // 要求した言語数のみが順番どおりに返り、OS 側で返された未要求言語 (fr-FR) で膨張しない
+        assertEquals(requested, infos.map { it.language })
+        assertEquals(1, mlKitQueriedBatch.size)
+        // ML Kit には as（カタログ非対応）や地域なしタグ ("en", "ja")・別地域タグ ("en-GB" 等) を送らず代表タグのみ送る
+        assertEquals(listOf("en-US", "ja-JP"), mlKitQueriedBatch.single())
+    }
+
+    @Test
     fun `SherpaOnnxModelManager_Moonshineモデルの言語別ダウンロードと個別削除および一括削除が機能する`() = runTest {
         val fakeDownloader = object : ModelArtifactDownloader {
             override suspend fun downloadVerifiedFile(

@@ -74,6 +74,11 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : MlKitSpeechRecognitionGateway {
 
+    private data class CachedTagStatus(
+        val modeAndStatus: Pair<Int, Int>?,
+        val cachedAtNanos: Long,
+    )
+
     /**
      * 正規化済み BCP-47 タグ（小文字、`'-'` 区切り）ごとに、`FeatureStatus.AVAILABLE` が確認済みの
      * `@SpeechRecognizerOptions.Mode` を保持するキャッシュ。
@@ -81,16 +86,35 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
     private val cachedAvailableModeByTag = ConcurrentHashMap<String, Int>()
 
     /**
-     * 端末単位で `MODE_ADVANCED`（AICore feature 0）が `FeatureStatus.AVAILABLE` であることが確認済みの場合はキャッシュする。
-     * `MODE_ADVANCED` の `checkStatus()` はロケールを見ずに AICore feature 0 の状態のみを返すため、
-     * ロケールごとの対応可否・言語パックのダウンロード状態は必ず `MODE_BASIC` 側で確認する。
+     * 正規化済み BCP-47 タグごとに、直近の `checkFeatureStatusForTag` の結果（未対応や未ダウンロードを含む）を
+     * 短時間（[TAG_STATUS_CACHE_TTL_NANOS]）保持するキャッシュ。
+     * 詳細文字起こし画面や設定画面を開くたびに全候補タグへ AICore IPC (`checkStatus()`) を連発するのを防ぐ。
+     */
+    private val cachedTagStatusByKey = ConcurrentHashMap<String, CachedTagStatus>()
+
+    /**
+     * 端末が AICore に対応しているかどうかのプロセス内キャッシュ。
      */
     @Volatile
-    private var cachedAdvancedFeatureAvailable: Boolean = false
+    private var cachedDeviceSupported: Boolean? = null
+
+    /**
+     * 端末単位で `MODE_ADVANCED`（AICore feature 0）の `@FeatureStatus`（`AVAILABLE` または `UNAVAILABLE`）が
+     * 確認済みの場合はキャッシュする。
+     * `MODE_ADVANCED` の `checkStatus()` はロケールを見ずに AICore feature 0 の状態のみを返すため、
+     * 端末が `UNAVAILABLE` の場合も毎回再問い合わせしないように保持する。
+     */
+    @Volatile
+    private var cachedDeviceAdvancedStatus: Int? = null
 
     private fun normalizeTagKey(bcp47LocaleTag: String): String = bcp47LocaleTag.trim().replace('_', '-').lowercase(Locale.ROOT)
 
-    override fun isDevicePotentiallySupported(): Boolean = runCatching { GenAiUtils.isAiCoreCompatible(context) }.getOrDefault(false)
+    override fun isDevicePotentiallySupported(): Boolean {
+        cachedDeviceSupported?.let { return it }
+        val supported = runCatching { GenAiUtils.isAiCoreCompatible(context) }.getOrDefault(false)
+        cachedDeviceSupported = supported
+        return supported
+    }
 
     override suspend fun checkMlKitSupport(
         bcp47LocaleTags: List<String>,
@@ -100,7 +124,7 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
         }
         val result = LinkedHashMap<String, Pair<RecognitionModelSupport, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>>(bcp47LocaleTags.size)
         for (tag in bcp47LocaleTags) {
-            val modeAndStatus = checkFeatureStatusForTag(tag, useAvailableCache = false)
+            val modeAndStatus = checkFeatureStatusForTag(tag, useAvailableCache = true)
             if (modeAndStatus == null) {
                 result[tag] = RecognitionModelSupport.UNSUPPORTED to null
             } else {
@@ -123,9 +147,11 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
             onEvent(RecognitionModelDownloadEvent.FAILED)
             return false
         }
+        val tagKey = normalizeTagKey(bcp47LocaleTag)
+        cachedTagStatusByKey.remove(tagKey)
         val basicStatus = checkSingleModeStatus(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_BASIC)
         if (basicStatus == null || basicStatus == FeatureStatus.UNAVAILABLE) {
-            cachedAvailableModeByTag.remove(normalizeTagKey(bcp47LocaleTag))
+            cachedAvailableModeByTag.remove(tagKey)
             onEvent(RecognitionModelDownloadEvent.FAILED)
             return false
         }
@@ -138,7 +164,8 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
         if (basicStatus == FeatureStatus.AVAILABLE &&
             (targetMode == SpeechRecognizerOptions.Mode.MODE_BASIC || advancedStatus == FeatureStatus.AVAILABLE)
         ) {
-            cachedAvailableModeByTag[normalizeTagKey(bcp47LocaleTag)] = targetMode
+            cachedAvailableModeByTag[tagKey] = targetMode
+            cachedTagStatusByKey[tagKey] = CachedTagStatus(targetMode to FeatureStatus.AVAILABLE, System.nanoTime())
             onEvent(RecognitionModelDownloadEvent.SUCCESS)
             return true
         }
@@ -151,6 +178,7 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
             true
         }
         if (!basicDownloaded) {
+            cachedTagStatusByKey.remove(tagKey)
             return false
         }
         val advancedDownloaded = if (
@@ -162,12 +190,13 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
             true
         }
         val resolvedMode = if (targetMode == SpeechRecognizerOptions.Mode.MODE_ADVANCED && advancedDownloaded) {
-            cachedAdvancedFeatureAvailable = true
+            cachedDeviceAdvancedStatus = FeatureStatus.AVAILABLE
             SpeechRecognizerOptions.Mode.MODE_ADVANCED
         } else {
             SpeechRecognizerOptions.Mode.MODE_BASIC
         }
-        cachedAvailableModeByTag[normalizeTagKey(bcp47LocaleTag)] = resolvedMode
+        cachedAvailableModeByTag[tagKey] = resolvedMode
+        cachedTagStatusByKey[tagKey] = CachedTagStatus(resolvedMode to FeatureStatus.AVAILABLE, System.nanoTime())
         onEvent(RecognitionModelDownloadEvent.SUCCESS)
         return true
     }
@@ -473,42 +502,66 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
             if (cachedMode != null) {
                 return cachedMode to FeatureStatus.AVAILABLE
             }
+            val cachedStatus = cachedTagStatusByKey[tagKey]
+            if (cachedStatus != null && System.nanoTime() - cachedStatus.cachedAtNanos in 0L..TAG_STATUS_CACHE_TTL_NANOS) {
+                return cachedStatus.modeAndStatus
+            }
         }
         val basicStatus = checkSingleModeStatus(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_BASIC)
         if (basicStatus == null || basicStatus == FeatureStatus.UNAVAILABLE) {
             cachedAvailableModeByTag.remove(tagKey)
+            if (basicStatus == FeatureStatus.UNAVAILABLE) {
+                cachedTagStatusByKey[tagKey] = CachedTagStatus(null, System.nanoTime())
+            } else {
+                cachedTagStatusByKey.remove(tagKey)
+            }
             return null
         }
 
         val advancedStatus = checkDeviceAdvancedStatus(bcp47LocaleTag, useAvailableCache = useAvailableCache)
         if (advancedStatus == null || advancedStatus == FeatureStatus.UNAVAILABLE) {
+            val pair = SpeechRecognizerOptions.Mode.MODE_BASIC to basicStatus
             if (basicStatus == FeatureStatus.AVAILABLE) {
                 cachedAvailableModeByTag[tagKey] = SpeechRecognizerOptions.Mode.MODE_BASIC
             } else {
                 cachedAvailableModeByTag.remove(tagKey)
             }
-            return SpeechRecognizerOptions.Mode.MODE_BASIC to basicStatus
+            if (basicStatus != FeatureStatus.DOWNLOADING) {
+                cachedTagStatusByKey[tagKey] = CachedTagStatus(pair, System.nanoTime())
+            } else {
+                cachedTagStatusByKey.remove(tagKey)
+            }
+            return pair
         }
 
         val combinedStatus = combineFeatureStatuses(basicStatus, advancedStatus)
+        val pair = SpeechRecognizerOptions.Mode.MODE_ADVANCED to combinedStatus
         if (combinedStatus == FeatureStatus.AVAILABLE) {
             cachedAvailableModeByTag[tagKey] = SpeechRecognizerOptions.Mode.MODE_ADVANCED
         } else {
             cachedAvailableModeByTag.remove(tagKey)
         }
-        return SpeechRecognizerOptions.Mode.MODE_ADVANCED to combinedStatus
+        if (combinedStatus != FeatureStatus.DOWNLOADING) {
+            cachedTagStatusByKey[tagKey] = CachedTagStatus(pair, System.nanoTime())
+        } else {
+            cachedTagStatusByKey.remove(tagKey)
+        }
+        return pair
     }
 
     private suspend fun checkDeviceAdvancedStatus(
         bcp47LocaleTag: String,
         useAvailableCache: Boolean,
     ): Int? {
-        if (useAvailableCache && cachedAdvancedFeatureAvailable) {
-            return FeatureStatus.AVAILABLE
+        if (useAvailableCache) {
+            val cached = cachedDeviceAdvancedStatus
+            if (cached == FeatureStatus.AVAILABLE || cached == FeatureStatus.UNAVAILABLE) {
+                return cached
+            }
         }
         val status = checkSingleModeStatus(bcp47LocaleTag, SpeechRecognizerOptions.Mode.MODE_ADVANCED)
-        if (status == FeatureStatus.AVAILABLE) {
-            cachedAdvancedFeatureAvailable = true
+        if (status == FeatureStatus.AVAILABLE || status == FeatureStatus.UNAVAILABLE) {
+            cachedDeviceAdvancedStatus = status
         }
         return status
     }
@@ -554,7 +607,8 @@ internal class MlKitGenAiSpeechTranscriber @Inject constructor(
     companion object {
         val ML_KIT_GENAI_ENGINE_ID: EngineId = EngineId("mlkit-genai-speech")
 
-        private const val STATUS_CHECK_TIMEOUT_MS: Long = 4_000L
+        private const val STATUS_CHECK_TIMEOUT_MS: Long = 1_500L
+        private const val TAG_STATUS_CACHE_TTL_NANOS: Long = 30_000_000_000L
         private const val RECOGNITION_TIMEOUT_MS: Long = 10_000L
         private const val DOWNLOAD_TIMEOUT_MS: Long = 180_000L
         private const val PIPE_FRAME_DURATION_MS: Int = 20

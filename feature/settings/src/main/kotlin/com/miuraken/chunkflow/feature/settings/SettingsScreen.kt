@@ -94,6 +94,7 @@ import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineLabel
 import com.miuraken.chunkflow.core.model.SttEngineSelection
 import java.util.Locale
 import kotlin.math.abs
@@ -835,7 +836,12 @@ private fun ModelDownloadsAndApiKeysSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        downloadableModels.forEachIndexed { index, modelState ->
+        val visibleModels = downloadableModels.filter { modelState ->
+            modelState.model != DownloadableSttModel.SHERPA_WHISPER_BASE ||
+                modelState.status == OnDeviceLanguageModelStatus.INSTALLED ||
+                modelState.canPurge
+        }
+        visibleModels.forEachIndexed { index, modelState ->
             if (index > 0) {
                 HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
@@ -1546,9 +1552,13 @@ private fun SttEngineAccordion(
                     modifier = Modifier.padding(bottom = 4.dp),
                 )
 
+                val selectableEngines = SttEngineSelection.selectableEnginesForLanguage(
+                    info = enrichedInfo,
+                    currentPreferred = effectivePreferred,
+                )
                 val options: List<Pair<SttEngine?, String>> = buildList {
                     add(null to autoLabel)
-                    for (engine in SttEngine.entries) {
+                    for (engine in selectableEngines) {
                         add(engine to formatSttEngineOptionLabel(enrichedInfo, engine))
                     }
                 }
@@ -1663,12 +1673,20 @@ private fun SttEngineAccordion(
 }
 
 @Composable
+private fun sttEngineLabelText(label: SttEngineLabel): String = when (label) {
+    SttEngineLabel.RECOMMENDED -> stringResource(R.string.settings_stt_label_recommended)
+    SttEngineLabel.HIGH_ACCURACY -> stringResource(R.string.settings_stt_label_high_accuracy)
+    SttEngineLabel.FAST -> stringResource(R.string.settings_stt_label_fast)
+    SttEngineLabel.SLOW -> stringResource(R.string.settings_stt_label_slow)
+}
+
+@Composable
 private fun formatSttEngineOptionLabel(
     enrichedInfo: OnDeviceLanguageModelInfo,
     engine: SttEngine,
 ): String {
     val status = enrichedInfo.statusOf(engine)
-    return when (engine) {
+    val rawLabel = when (engine) {
         SttEngine.ML_KIT -> formatEngineOptionWithStatus(
             baseName = stringResource(R.string.settings_stt_engine_mlkit_radio),
             status = status,
@@ -1746,6 +1764,12 @@ private fun formatSttEngineOptionLabel(
             }
         }
     }
+    val labels = SttEngineSelection.labelsFor(enrichedInfo.language, engine)
+    if (labels.isEmpty()) {
+        return rawLabel
+    }
+    val badgeText = labels.map { sttEngineLabelText(it) }.joinToString("・")
+    return "$rawLabel [$badgeText]"
 }
 
 @Composable

@@ -1010,10 +1010,19 @@ internal class AndroidRecognitionModelGateway(
     private val context: Context,
 ) : RecognitionModelGateway {
 
+    private data class CachedSupportSnapshot(
+        val support: RecognitionSupport,
+        val cachedAtNanos: Long,
+    )
+
+    @Volatile
+    private var cachedSnapshot: CachedSupportSnapshot? = null
+
     override fun requestDownload(
         bcp47LocaleTag: String,
         onEvent: (RecognitionModelDownloadEvent) -> Unit,
     ): Boolean {
+        cachedSnapshot = null
         val mainHandler = Handler(Looper.getMainLooper())
         return mainHandler.post {
             var recognizer: SpeechRecognizer? = null
@@ -1037,16 +1046,19 @@ internal class AndroidRecognitionModelGateway(
                         }
 
                         override fun onSuccess() {
+                            cachedSnapshot = null
                             onEvent(RecognitionModelDownloadEvent.SUCCESS)
                             release.run()
                         }
 
                         override fun onScheduled() {
+                            cachedSnapshot = null
                             onEvent(RecognitionModelDownloadEvent.SCHEDULED)
                             release.run()
                         }
 
                         override fun onError(error: Int) {
+                            cachedSnapshot = null
                             logModelInfo("modelDownload onError lang=$bcp47LocaleTag error=$error")
                             onEvent(RecognitionModelDownloadEvent.FAILED)
                             release.run()
@@ -1065,9 +1077,25 @@ internal class AndroidRecognitionModelGateway(
 
     override suspend fun checkSupport(bcp47LocaleTags: List<String>): Map<String, RecognitionModelSupport> {
         if (bcp47LocaleTags.isEmpty()) return emptyMap()
-        val support = withTimeoutOrNull(SUPPORT_CHECK_TIMEOUT_MS) { querySupportOnMainLooper() }
-            ?: return emptyMap()
-        val result = LinkedHashMap<String, RecognitionModelSupport>()
+        val nowNanos = System.nanoTime()
+        val cached = cachedSnapshot
+        val support = if (
+            cached != null &&
+            nowNanos - cached.cachedAtNanos in 0L..SUPPORT_CACHE_TTL_NANOS &&
+            cached.support.pendingOnDeviceLanguages.isEmpty()
+        ) {
+            cached.support
+        } else {
+            val queried = withTimeoutOrNull(SUPPORT_CHECK_TIMEOUT_MS) { querySupportOnMainLooper() }
+                ?: return emptyMap()
+            if (queried.pendingOnDeviceLanguages.isEmpty()) {
+                cachedSnapshot = CachedSupportSnapshot(queried, System.nanoTime())
+            } else {
+                cachedSnapshot = null
+            }
+            queried
+        }
+        val result = LinkedHashMap<String, RecognitionModelSupport>(bcp47LocaleTags.size)
         for (tag in bcp47LocaleTags) {
             result[tag] = when {
                 support.installedOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.INSTALLED
@@ -1075,18 +1103,6 @@ internal class AndroidRecognitionModelGateway(
                 support.supportedOnDeviceLanguages.containsTag(tag) -> RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
                 else -> RecognitionModelSupport.UNSUPPORTED
             }
-        }
-        // 端末側が追加で報告するオンデバイス対応言語も結果に含め、モデル管理一覧の動的更新に使えるようにする
-        for (tag in support.supportedOnDeviceLanguages) {
-            if (!result.containsKey(tag)) {
-                result[tag] = RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
-            }
-        }
-        for (tag in support.pendingOnDeviceLanguages) {
-            result[tag] = RecognitionModelSupport.PENDING
-        }
-        for (tag in support.installedOnDeviceLanguages) {
-            result[tag] = RecognitionModelSupport.INSTALLED
         }
         return result
     }
@@ -1148,6 +1164,7 @@ internal class AndroidRecognitionModelGateway(
     private companion object {
         const val MODEL_LOG_TAG: String = "ChunkFlowSpeech"
         const val MODEL_DOWNLOAD_LISTENER_TIMEOUT_MS: Long = 30L * 60L * 1_000L
+        const val SUPPORT_CACHE_TTL_NANOS: Long = 30_000_000_000L
         const val SUPPORT_CHECK_TIMEOUT_MS: Long = 5_000L
     }
 }
@@ -2170,23 +2187,26 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     override suspend fun requestSttModelDownload(language: LanguageTag, engine: com.miuraken.chunkflow.core.model.SttEngine): Boolean {
         return when (engine) {
             com.miuraken.chunkflow.core.model.SttEngine.ML_KIT -> {
-                if (!isMlKitPotentiallyAvailable()) return false
-                val gateway = mlKitGateway ?: return false
+                if (!isMlKitPotentiallyAvailable()) return requestRecognitionModelDownload(language)
+                val gateway = mlKitGateway ?: return requestRecognitionModelDownload(language)
                 val candidates = candidateBcp47TagsFor(language.value)
                 val firstTag = candidates.firstOrNull() ?: return false
-                if (!autoDownloadMlKitRequestedTags.add(firstTag.lowercase(java.util.Locale.ROOT))) return false
                 val mlKitSupport = runCatching { gateway.checkMlKitSupport(candidates) }.getOrDefault(emptyMap())
                 val targetTag = candidates.firstOrNull {
                     mlKitSupport[it]?.first != null && mlKitSupport[it]?.first != RecognitionModelSupport.UNSUPPORTED
-                } ?: candidates.firstOrNull() ?: return false
+                }
+                if (targetTag == null) {
+                    return requestRecognitionModelDownload(language)
+                }
+                autoDownloadMlKitRequestedTags.add(firstTag.lowercase(java.util.Locale.ROOT))
 
                 var success = false
-                gateway.downloadModel(targetTag, onEvent = { event ->
+                val ok = gateway.downloadModel(targetTag, onEvent = { event ->
                     if (event == RecognitionModelDownloadEvent.SUCCESS || event == RecognitionModelDownloadEvent.SCHEDULED) {
                         success = true
                     }
                 })
-                success
+                ok || success
             }
 
             com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER -> {
@@ -2412,105 +2432,98 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
     override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> {
         if (languages.isEmpty()) return emptyList()
         val mlKitAvailable = isMlKitPotentiallyAvailable()
-        val extraStatusesByLang = buildExtraEngineStatusesByLanguage(languages)
-        if (!onDeviceAvailabilityChecker() && !mlKitAvailable) {
+        val osAvailable = onDeviceAvailabilityChecker()
+
+        // 同一言語の別表記（"en", "en-US", "en-us" など）を正規化コード単位で1回だけ走査する
+        val canonicalLanguages = LinkedHashMap<String, LanguageTag>()
+        for (lang in languages) {
+            val normCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(lang.value)
+                .ifBlank { lang.value.lowercase(Locale.ROOT) }
+            canonicalLanguages.putIfAbsent(normCode, LanguageTag(normCode))
+        }
+        val uniqueCanonicalList = canonicalLanguages.values.toList()
+        val extraStatusesByCanonical = buildExtraEngineStatusesByLanguage(uniqueCanonicalList)
+
+        if (!osAvailable && !mlKitAvailable) {
             return languages.map { lang ->
+                val normCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(lang.value)
+                    .ifBlank { lang.value.lowercase(Locale.ROOT) }
+                val canonicalTag = canonicalLanguages[normCode] ?: lang
                 withSherpaAndMlKitModelFields(
                     language = lang,
                     osStatus = OnDeviceLanguageModelStatus.UNSUPPORTED,
                     resolvedBcp47Tag = candidateBcp47TagsFor(lang.value).firstOrNull(),
                     mlKitSupport = Pair(OnDeviceLanguageModelStatus.UNSUPPORTED, null),
-                    extraStatuses = extraStatusesByLang[lang].orEmpty(),
+                    extraStatuses = extraStatusesByCanonical[canonicalTag].orEmpty(),
                 )
             }
         }
-        val requestedCandidatesByLanguage = languages.associateWith { candidateBcp47TagsFor(it.value) }
-        val bcp47Tags = requestedCandidatesByLanguage.values.flatten().distinct()
+
+        val candidatesByCanonical = uniqueCanonicalList.associateWith { candidateBcp47TagsFor(it.value) }
+        val osBcp47Tags = candidatesByCanonical.values.flatten().distinct()
+
+        // ML Kit は地域なしタグ ("en" 等) や SODA 用エイリアス ("cmn-Hans-CN" 等) まで毎回 checkStatus() すると
+        // AICore IPC が直列にブロックするため、ML Kit 対応言語の代表 BCP-47 タグのみを問い合わせる
+        val mlKitCandidatesByCanonical = uniqueCanonicalList.associateWith { canonicalLang ->
+            val catalogEntry = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.findByCode(canonicalLang.value)
+            if (catalogEntry != null && (!catalogEntry.mlKitSupported || !catalogEntry.speechRecognizerSupported)) {
+                emptyList()
+            } else {
+                val primaryTag = toBcp47LocaleTag(canonicalLang.value)
+                val langKey = canonicalLang.value.trim().replace('_', '-').lowercase(Locale.ROOT)
+                val resolvedTag = resolvedBcp47TagByLangKey[langKey]
+                if (resolvedTag != null && !resolvedTag.equals(primaryTag, ignoreCase = true)) {
+                    listOf(resolvedTag, primaryTag)
+                } else {
+                    listOf(primaryTag)
+                }
+            }
+        }
+        val mlKitBcp47Tags = mlKitCandidatesByCanonical.values.flatten().distinct()
 
         var osSupport: Map<String, RecognitionModelSupport> = emptyMap()
         var mlKitSupportRaw: Map<String, Pair<RecognitionModelSupport, com.miuraken.chunkflow.core.model.MlKitRecognitionMode?>> = emptyMap()
 
-        if (onDeviceAvailabilityChecker()) {
-            osSupport = runCatching { recognitionModelGateway.checkSupport(bcp47Tags) }.getOrDefault(emptyMap())
+        if (osAvailable && osBcp47Tags.isNotEmpty()) {
+            osSupport = runCatching { recognitionModelGateway.checkSupport(osBcp47Tags) }.getOrDefault(emptyMap())
         }
-        if (mlKitAvailable) {
-            mlKitSupportRaw = runCatching { mlKitGateway?.checkMlKitSupport(bcp47Tags).orEmpty() }.getOrDefault(emptyMap())
-        }
-
-        val existingSet = languages.mapTo(mutableSetOf()) {
-            com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(it.value)
-        }
-        val discoveredLanguages = mutableListOf<LanguageTag>()
-        val discoveredBcp47ByLanguage = LinkedHashMap<LanguageTag, MutableList<String>>()
-
-        for ((bcp47Tag, modelSupport) in osSupport) {
-            if (modelSupport == RecognitionModelSupport.UNSUPPORTED) continue
-            val normalizedCode =
-                com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(bcp47Tag)
-            if (normalizedCode.isBlank() || normalizedCode == "und") continue
-            val langTag = LanguageTag(normalizedCode)
-            if (normalizedCode !in existingSet) {
-                existingSet.add(normalizedCode)
-                discoveredLanguages.add(langTag)
-            }
-            discoveredBcp47ByLanguage.getOrPut(langTag) { mutableListOf() }.add(bcp47Tag)
-        }
-        for ((bcp47Tag, pair) in mlKitSupportRaw) {
-            if (pair.first == RecognitionModelSupport.UNSUPPORTED) continue
-            val normalizedCode =
-                com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(bcp47Tag)
-            if (normalizedCode.isBlank() || normalizedCode == "und") continue
-            val langTag = LanguageTag(normalizedCode)
-            if (normalizedCode !in existingSet) {
-                existingSet.add(normalizedCode)
-                discoveredLanguages.add(langTag)
-            }
-            discoveredBcp47ByLanguage.getOrPut(langTag) { mutableListOf() }.add(bcp47Tag)
+        if (mlKitAvailable && mlKitBcp47Tags.isNotEmpty()) {
+            mlKitSupportRaw = runCatching { mlKitGateway?.checkMlKitSupport(mlKitBcp47Tags).orEmpty() }.getOrDefault(emptyMap())
         }
 
-        val allLanguages = languages + discoveredLanguages
-        val allExtraStatuses = if (discoveredLanguages.isEmpty()) {
-            extraStatusesByLang
-        } else {
-            buildExtraEngineStatusesByLanguage(allLanguages)
-        }
-        val candidatesByLanguage = allLanguages.associateWith { lang ->
-            val baseCandidates = requestedCandidatesByLanguage[lang] ?: candidateBcp47TagsFor(lang.value)
-            val extra = discoveredBcp47ByLanguage[lang].orEmpty()
-            (baseCandidates + extra).distinct()
-        }
         val currentIssues = modelIssuesState.value
-        val osAvailable = onDeviceAvailabilityChecker()
-        return allLanguages.map { language ->
-            val candidates = candidatesByLanguage[language].orEmpty()
+        val canonicalInfoByCode = LinkedHashMap<String, OnDeviceLanguageModelInfo>(uniqueCanonicalList.size)
+        for ((normCode, canonicalLang) in canonicalLanguages) {
+            val candidates = candidatesByCanonical[canonicalLang].orEmpty()
+            val mlKitCandidates = mlKitCandidatesByCanonical[canonicalLang].orEmpty()
 
             val installedTag = candidates.firstOrNull { osSupport[it] == RecognitionModelSupport.INSTALLED }
             val pendingTag = candidates.firstOrNull { osSupport[it] == RecognitionModelSupport.PENDING }
             val supportedTag = candidates.firstOrNull {
                 osSupport[it] == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
             }
-            val issue = currentIssues[language]
+            val issue = currentIssues[canonicalLang]
 
             val osStatusAndTag = when {
                 installedTag != null -> {
-                    rememberResolvedBcp47Tag(language.value, installedTag)
-                    clearModelIssue(language)
+                    rememberResolvedBcp47Tag(canonicalLang.value, installedTag)
+                    clearModelIssue(canonicalLang)
                     OnDeviceLanguageModelStatus.INSTALLED to installedTag
                 }
 
                 pendingTag != null ||
                     (
                         issue == OnDeviceRecognitionModelState.DOWNLOADING &&
-                            sherpaModelManager?.getLanguageModelStatus(language) != OnDeviceLanguageModelStatus.DOWNLOADING
+                            sherpaModelManager?.getLanguageModelStatus(canonicalLang) != OnDeviceLanguageModelStatus.DOWNLOADING
                         )
                 -> {
                     val tag = pendingTag ?: supportedTag ?: candidates.firstOrNull()
-                    if (tag != null) rememberResolvedBcp47Tag(language.value, tag)
+                    if (tag != null) rememberResolvedBcp47Tag(canonicalLang.value, tag)
                     OnDeviceLanguageModelStatus.DOWNLOADING to tag
                 }
 
                 supportedTag != null -> {
-                    rememberResolvedBcp47Tag(language.value, supportedTag)
+                    rememberResolvedBcp47Tag(canonicalLang.value, supportedTag)
                     val status = if (issue == OnDeviceRecognitionModelState.DOWNLOAD_FAILED) {
                         OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
                     } else {
@@ -2520,8 +2533,8 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 }
 
                 osSupport.isNotEmpty() || !osAvailable -> {
-                    if (isSherpaInstalledFor(language)) {
-                        clearModelIssue(language)
+                    if (isSherpaInstalledFor(canonicalLang)) {
+                        clearModelIssue(canonicalLang)
                     }
                     OnDeviceLanguageModelStatus.UNSUPPORTED to candidates.firstOrNull()
                 }
@@ -2538,9 +2551,11 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 }
             }
 
-            val mlKitInstalled = candidates.firstOrNull { mlKitSupportRaw[it]?.first == RecognitionModelSupport.INSTALLED }
-            val mlKitPending = candidates.firstOrNull { mlKitSupportRaw[it]?.first == RecognitionModelSupport.PENDING }
-            val mlKitSupported = candidates.firstOrNull { mlKitSupportRaw[it]?.first == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED }
+            val mlKitInstalled = mlKitCandidates.firstOrNull { mlKitSupportRaw[it]?.first == RecognitionModelSupport.INSTALLED }
+            val mlKitPending = mlKitCandidates.firstOrNull { mlKitSupportRaw[it]?.first == RecognitionModelSupport.PENDING }
+            val mlKitSupported = mlKitCandidates.firstOrNull {
+                mlKitSupportRaw[it]?.first == RecognitionModelSupport.SUPPORTED_NOT_INSTALLED
+            }
 
             val mlKitResolvedTag = mlKitInstalled ?: mlKitPending ?: mlKitSupported
             val mlKitMode = mlKitResolvedTag?.let { mlKitSupportRaw[it]?.second }
@@ -2551,13 +2566,24 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                 else -> OnDeviceLanguageModelStatus.UNSUPPORTED
             }
 
-            withSherpaAndMlKitModelFields(
-                language = language,
+            canonicalInfoByCode[normCode] = withSherpaAndMlKitModelFields(
+                language = canonicalLang,
                 osStatus = osStatusAndTag.first,
                 resolvedBcp47Tag = osStatusAndTag.second,
                 mlKitSupport = Pair(mlKitStatus, mlKitMode),
-                extraStatuses = allExtraStatuses[language].orEmpty(),
+                extraStatuses = extraStatusesByCanonical[canonicalLang].orEmpty(),
             )
+        }
+
+        return languages.map { requestedLang ->
+            val normCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(requestedLang.value)
+                .ifBlank { requestedLang.value.lowercase(Locale.ROOT) }
+            val baseInfo = canonicalInfoByCode[normCode]
+            if (baseInfo != null) {
+                if (baseInfo.language == requestedLang) baseInfo else baseInfo.copy(language = requestedLang)
+            } else {
+                OnDeviceLanguageModelInfo(language = requestedLang)
+            }
         }
     }
 
@@ -4766,17 +4792,32 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
 
         val effectiveTryOrder = when (activeTrialEngineOverride) {
             OnDeviceTranscriptionEngine.AUTO -> com.miuraken.chunkflow.core.model.SttEngine.AUTO_ORDER
+
             OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER)
+
             OnDeviceTranscriptionEngine.SHERPA_ONNX -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX)
+
             OnDeviceTranscriptionEngine.SHERPA_ONNX_SENSE_VOICE -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE)
+
             OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_BASE -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_BASE)
+
             OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_SMALL -> listOf(com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_WHISPER_SMALL)
+
             OnDeviceTranscriptionEngine.MOONSHINE_TINY -> listOf(com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_TINY)
+
             OnDeviceTranscriptionEngine.MOONSHINE_BASE -> listOf(com.miuraken.chunkflow.core.model.SttEngine.MOONSHINE_BASE)
+
             OnDeviceTranscriptionEngine.OPENAI_API -> listOf(com.miuraken.chunkflow.core.model.SttEngine.OPENAI_API)
+
             OnDeviceTranscriptionEngine.GROQ_API -> listOf(com.miuraken.chunkflow.core.model.SttEngine.GROQ_API)
+
             OnDeviceTranscriptionEngine.GEMINI_API -> listOf(com.miuraken.chunkflow.core.model.SttEngine.GEMINI_API)
-            OnDeviceTranscriptionEngine.ML_KIT -> listOf(com.miuraken.chunkflow.core.model.SttEngine.ML_KIT)
+
+            OnDeviceTranscriptionEngine.ML_KIT -> listOf(
+                com.miuraken.chunkflow.core.model.SttEngine.ML_KIT,
+                com.miuraken.chunkflow.core.model.SttEngine.SPEECH_RECOGNIZER,
+            )
+
             null -> tryOrder
         }
 
@@ -4828,10 +4869,13 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
                             return mlKitAttempt
                         }
                         if (mlKitAttempt?.errorCode == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) {
-                            if (language != null) {
-                                requestSttModelDownload(language, com.miuraken.chunkflow.core.model.SttEngine.ML_KIT)
-                            }
                             recordExternalDiagnostic("fallback", "Fallback from ML_KIT: ML_KIT is unavailable", true)
+                        } else if (
+                            activeTrialEngineOverride == OnDeviceTranscriptionEngine.ML_KIT &&
+                            mlKitAttempt != null &&
+                            mlKitAttempt.errorCode != SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED
+                        ) {
+                            return mlKitAttempt
                         } else if (mlKitAttempt?.errorCode != null) {
                             recordExternalDiagnostic("fallback", "Fallback from ML_KIT: ML_KIT failed with ${mlKitAttempt.errorCode}", true)
                         }

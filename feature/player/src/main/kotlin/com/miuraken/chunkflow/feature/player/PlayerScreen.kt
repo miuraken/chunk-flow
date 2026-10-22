@@ -747,6 +747,14 @@ fun PlayerScreen(
             onDismiss = { onEvent(PlayerEvent.DismissBackgroundSpeechRecognizerWarning) },
         )
     }
+
+    state.recommendedSttModelDialog?.let { recommendedDialog ->
+        RecommendedSttModelDownloadDialog(
+            dialogState = recommendedDialog,
+            onConfirm = { onEvent(PlayerEvent.ConfirmRecommendedSttModelDownload) },
+            onDismiss = { onEvent(PlayerEvent.DismissRecommendedSttModelDownload) },
+        )
+    }
 }
 
 /**

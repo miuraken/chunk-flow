@@ -118,11 +118,11 @@
     <string name="settings_model_sherpa_whisper_base">sherpa-onnx Whisper Base</string>
     <string name="settings_model_sherpa_whisper_base_desc">99言語対応・標準精度（約 %1$d MB）</string>
     <string name="settings_model_sherpa_whisper_small">sherpa-onnx Whisper Small</string>
-    <string name="settings_model_sherpa_whisper_small_desc">99言語対応・高精度（約 %1$d MB）</string>
+    <string name="settings_model_sherpa_whisper_small_desc">99言語対応・「より詳しく文字起こし」専用（高精度・低速・約 %1$d MB）</string>
     <string name="settings_model_moonshine_tiny">Moonshine ONNX Tiny</string>
-    <string name="settings_model_moonshine_tiny_desc">8言語対応・超高速（言語別 27〜118 MB）</string>
+    <string name="settings_model_moonshine_tiny_desc">韓国語向け・高速（約 69 MB）</string>
     <string name="settings_model_moonshine_base">Moonshine ONNX Base</string>
-    <string name="settings_model_moonshine_base_desc">8言語対応・高精度（言語別 61〜274 MB）</string>
+    <string name="settings_model_moonshine_base_desc">英・中・西・アラビア・ウクライナ・ベトナム語向け・高速高精度（言語別 62〜274 MB）</string>
     <string name="settings_model_available_languages">利用可能な言語: %1$s</string>
     <string name="settings_model_downloaded_languages">ダウンロード済み: %1$s</string>
     <string name="settings_speech_model_action_download_with_size">ダウンロード(%1$d MB)</string>
@@ -141,4 +141,8 @@
     <string name="settings_api_key_hide">API キーを隠す</string>
     <string name="settings_api_key_status_configured">設定済み</string>
     <string name="settings_api_key_status_not_configured">キー未設定</string>
+    <string name="settings_stt_label_recommended">おすすめ</string>
+    <string name="settings_stt_label_high_accuracy">高精度</string>
+    <string name="settings_stt_label_fast">高速</string>
+    <string name="settings_stt_label_slow">低速</string>
 </resources>

@@ -184,4 +184,95 @@ class SttEngineSelectionTest {
         assertEquals(274, base.approxSizeMbForLanguage(LanguageTag("en")))
         assertEquals(135, base.approxSizeMbForLanguage(LanguageTag("ja")))
     }
+
+    @Test
+    fun `recommendedDownloadEngineForLanguage_MLKitより明確に速く高精度な言語とMLKit非対応推奨言語のみ返す`() {
+        assertEquals(SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("zh")))
+        assertEquals(SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("zh-CN")))
+        assertEquals(SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("yue")))
+        assertEquals(SttEngine.MOONSHINE_BASE, SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("vi")))
+        assertEquals(SttEngine.MOONSHINE_BASE, SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("ar")))
+        assertEquals(SttEngine.MOONSHINE_BASE, SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("uk")))
+
+        assertNull(SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("en")))
+        assertNull(SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("ja")))
+        assertNull(SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("ko")))
+        assertNull(SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("es")))
+        assertNull(SttEngineSelection.recommendedDownloadEngineForLanguage(LanguageTag("hi")))
+    }
+
+    @Test
+    fun `selectableEnginesForLanguage_SpeechRecognizerとWhisperBaseとWhisperSmallを除外し言語別に厳選する`() {
+        // 英語: ML Kit, Moonshine Base, Whisper Tiny
+        val enEngines = SttEngineSelection.selectableEnginesForLanguage(OnDeviceLanguageModelInfo(LanguageTag("en")))
+        assertEquals(listOf(SttEngine.ML_KIT, SttEngine.MOONSHINE_BASE, SttEngine.SHERPA_ONNX), enEngines)
+        assertFalse(SttEngine.SPEECH_RECOGNIZER in enEngines)
+        assertFalse(SttEngine.SHERPA_ONNX_WHISPER_SMALL in enEngines)
+        assertFalse(SttEngine.SHERPA_ONNX_WHISPER_BASE in enEngines)
+
+        // 日本語: Moonshine を除外し ML Kit, SenseVoice, Whisper Tiny
+        val jaEngines = SttEngineSelection.selectableEnginesForLanguage(OnDeviceLanguageModelInfo(LanguageTag("ja")))
+        assertEquals(listOf(SttEngine.ML_KIT, SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.SHERPA_ONNX), jaEngines)
+
+        // 韓国語: Moonshine Base を除外し Moonshine Tiny と SenseVoice を提示（両方未インストール時）
+        val koEngines = SttEngineSelection.selectableEnginesForLanguage(OnDeviceLanguageModelInfo(LanguageTag("ko")))
+        assertEquals(
+            listOf(SttEngine.ML_KIT, SttEngine.MOONSHINE_TINY, SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.SHERPA_ONNX),
+            koEngines,
+        )
+
+        // 韓国語: SenseVoice がインストール済みなら未インストールの Moonshine Tiny は除外
+        val koWithSenseVoice = OnDeviceLanguageModelInfo(
+            language = LanguageTag("ko"),
+            extraEngineStatuses = mapOf(SttEngine.SHERPA_ONNX_SENSE_VOICE to OnDeviceLanguageModelStatus.INSTALLED),
+        )
+        assertEquals(
+            listOf(SttEngine.ML_KIT, SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.SHERPA_ONNX),
+            SttEngineSelection.selectableEnginesForLanguage(koWithSenseVoice),
+        )
+
+        // 中国語: SenseVoice がインストール済みなら未インストールの Moonshine Base は除外
+        val zhWithSenseVoice = OnDeviceLanguageModelInfo(
+            language = LanguageTag("zh-cn"),
+            extraEngineStatuses = mapOf(SttEngine.SHERPA_ONNX_SENSE_VOICE to OnDeviceLanguageModelStatus.INSTALLED),
+        )
+        assertEquals(
+            listOf(SttEngine.SHERPA_ONNX_SENSE_VOICE, SttEngine.ML_KIT, SttEngine.SHERPA_ONNX),
+            SttEngineSelection.selectableEnginesForLanguage(zhWithSenseVoice),
+        )
+    }
+
+    @Test
+    fun `detailedTrialEnginesForLanguage_より詳しく文字起こしではWhisperSmallが追加される`() {
+        val enDetailed = SttEngineSelection.detailedTrialEnginesForLanguage(OnDeviceLanguageModelInfo(LanguageTag("en")))
+        assertEquals(
+            listOf(
+                SttEngine.ML_KIT,
+                SttEngine.MOONSHINE_BASE,
+                SttEngine.SHERPA_ONNX_WHISPER_SMALL,
+                SttEngine.SHERPA_ONNX,
+            ),
+            enDetailed,
+        )
+    }
+
+    @Test
+    fun `labelsFor_言語とエンジンに応じた特徴ラベルを返す`() {
+        assertEquals(
+            listOf(SttEngineLabel.RECOMMENDED, SttEngineLabel.HIGH_ACCURACY, SttEngineLabel.FAST),
+            SttEngineSelection.labelsFor(LanguageTag("zh-cn"), SttEngine.SHERPA_ONNX_SENSE_VOICE),
+        )
+        assertEquals(
+            listOf(SttEngineLabel.HIGH_ACCURACY),
+            SttEngineSelection.labelsFor(LanguageTag("ja"), SttEngine.ML_KIT),
+        )
+        assertEquals(
+            listOf(SttEngineLabel.FAST),
+            SttEngineSelection.labelsFor(LanguageTag("ja"), SttEngine.SHERPA_ONNX_SENSE_VOICE),
+        )
+        assertEquals(
+            listOf(SttEngineLabel.HIGH_ACCURACY, SttEngineLabel.SLOW),
+            SttEngineSelection.labelsFor(LanguageTag("en"), SttEngine.SHERPA_ONNX_WHISPER_SMALL),
+        )
+    }
 }

@@ -272,4 +272,15 @@
     <string name="player_target_lang_change_confirm_ok">変更してクリア</string>
     <string name="player_target_lang_change_confirm_cancel">キャンセル</string>
     <string name="player_transcription_badge_tooltip">ここで文字起こし作業をオン・オフできます。</string>
+    <string name="player_stt_label_recommended">おすすめ</string>
+    <string name="player_stt_label_high_accuracy">高精度</string>
+    <string name="player_stt_label_fast">高速</string>
+    <string name="player_stt_label_slow">低速</string>
+    <string name="player_recommended_stt_model_dialog_title">おすすめモデルのダウンロード</string>
+    <string name="player_recommended_stt_model_dialog_message">%1$sの文字起こしには、既定のモデルよりも高速・高精度な「%2$s」（約%3$dMB）がおすすめです。ダウンロードして%1$sの既定エンジンに設定しますか？</string>
+    <string name="player_recommended_stt_model_dialog_downloading">%1$sのおすすめモデル「%2$s」（約%3$dMB）をダウンロードしています…</string>
+    <string name="player_recommended_stt_model_dialog_failed">モデルのダウンロードに失敗しました。ネットワーク接続をご確認のうえ再試行してください。</string>
+    <string name="player_recommended_stt_model_dialog_confirm">ダウンロードして設定</string>
+    <string name="player_recommended_stt_model_dialog_retry">再試行</string>
+    <string name="player_recommended_stt_model_dialog_dismiss">今はしない</string>
 </resources>

@@ -16,6 +16,7 @@ import com.miuraken.chunkflow.core.model.ChineseScript
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.DownloadableSttModel
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
@@ -634,12 +635,56 @@ data class DetailedTranscriptionDialogState(
             OnDeviceTranscriptionEngine.GEMINI_API -> SttEngine.GEMINI_API
         }
 
+        /**
+         * 指定した言語 [language] で「より詳しく文字起こし」ダイアログのエンジン選択肢として表示する
+         * キュレーション済みエンジン一覧を返す。
+         */
+        fun fromSttEngine(engine: SttEngine): OnDeviceTranscriptionEngine = when (engine) {
+            SttEngine.ML_KIT -> OnDeviceTranscriptionEngine.ML_KIT
+            SttEngine.SPEECH_RECOGNIZER -> OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER
+            SttEngine.SHERPA_ONNX -> OnDeviceTranscriptionEngine.SHERPA_ONNX
+            SttEngine.SHERPA_ONNX_SENSE_VOICE -> OnDeviceTranscriptionEngine.SHERPA_ONNX_SENSE_VOICE
+            SttEngine.SHERPA_ONNX_WHISPER_BASE -> OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_BASE
+            SttEngine.SHERPA_ONNX_WHISPER_SMALL -> OnDeviceTranscriptionEngine.SHERPA_ONNX_WHISPER_SMALL
+            SttEngine.MOONSHINE_TINY -> OnDeviceTranscriptionEngine.MOONSHINE_TINY
+            SttEngine.MOONSHINE_BASE -> OnDeviceTranscriptionEngine.MOONSHINE_BASE
+            SttEngine.OPENAI_API -> OnDeviceTranscriptionEngine.OPENAI_API
+            SttEngine.GROQ_API -> OnDeviceTranscriptionEngine.GROQ_API
+            SttEngine.GEMINI_API -> OnDeviceTranscriptionEngine.GEMINI_API
+        }
+
         internal fun enrichWithCatalog(
             info: OnDeviceLanguageModelInfo,
             language: LanguageTag,
         ): OnDeviceLanguageModelInfo = info.enrichedWithCatalog(language)
     }
+
+    /**
+     * 言語 [language] に対して「より詳しく文字起こし」ダイアログで提示するキュレーション済みエンジンの一覧を返す。
+     */
+    fun curatedEnginesForLanguage(language: LanguageTag?): List<OnDeviceTranscriptionEngine> {
+        val info = modelInfoFor(language)
+        return SttEngineSelection.detailedTrialEnginesForLanguage(info).map { fromSttEngine(it) }
+    }
 }
+
+/**
+ * ファイルを開いて音声認識を開始した際、その言語で既定モデルより明確に高速・高精度なおすすめモデルが
+ * 未ダウンロードのときに表示する推奨ダウンロードダイアログの状態。
+ *
+ * @property language 対象の言語タグ。
+ * @property engine 推奨される文字起こしエンジン。
+ * @property sizeMb 推定ダウンロードサイズ（MB）。
+ * @property isDownloading 現在ダウンロードを実行中かどうか。
+ * @property isFailed 直前のダウンロード試行が失敗したかどうか。
+ */
+data class RecommendedSttModelDialogState(
+    val language: LanguageTag,
+    val engine: SttEngine,
+    val sizeMb: Int = DownloadableSttModel.fromEngineOrNull(engine)?.approxSizeMbForLanguage(language) ?: 0,
+    val isDownloading: Boolean = false,
+    val isFailed: Boolean = false,
+)
 
 /**
  * 詳細文字起こしの試行結果が空だったときに、モデル状態・エンジン・マイク権限に応じた具体的な理由メッセージを返す。
@@ -759,6 +804,7 @@ data class PlayerUiState(
     val lookaheadStatus: LookaheadTranscriptionStatus = LookaheadTranscriptionStatus(),
     val localTranscriptExported: Boolean = false,
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
+    val recommendedSttModelDialog: RecommendedSttModelDialogState? = null,
     val itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
     val sttEngineByLanguage: Map<LanguageTag, SttEngine> = emptyMap(),
     val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
@@ -1226,6 +1272,12 @@ sealed interface PlayerEvent {
 
     /** 拡大波形のプログレッシブ更新レンダリングが完了したことを記録する。 */
     data object MarkZoomedWaveformRenderComplete : PlayerEvent
+
+    /** おすすめ STT モデルのダウンロード確認ダイアログでダウンロードを開始し、完了後にその言語の既定エンジンへ設定する。 */
+    data object ConfirmRecommendedSttModelDownload : PlayerEvent
+
+    /** おすすめ STT モデルのダウンロード確認ダイアログを閉じる。 */
+    data object DismissRecommendedSttModelDownload : PlayerEvent
 }
 
 /** 端末内音声認識モデルの問題が残っている間、ダウンロードの完了を OS に問い合わせる間隔。 */
@@ -1284,6 +1336,7 @@ private data class LocalUiSnapshot(
     val clearingChunkIds: Set<ChunkId> = emptySet(),
     val manuallyClearedChunkIds: Set<ChunkId> = emptySet(),
     val detailedTranscriptionDialog: DetailedTranscriptionDialogState? = null,
+    val recommendedSttModelDialog: RecommendedSttModelDialogState? = null,
     val hasRecordAudioPermission: Boolean = true,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLookaheadEnabled: Boolean = false,
@@ -1349,6 +1402,7 @@ class PlayerViewModel @Inject constructor(
     private var transcriptionBadgeTooltipJob: Job? = null
     private val languageDetectionObservedRunningMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private val shownTranscriptionBadgeTooltipMediaIds = mutableSetOf<MediaId>()
+    private val promptedRecommendedModelLanguages = mutableSetOf<String>()
 
     private fun isLookaheadActivelyRunningInRepo(status: LookaheadTranscriptionStatus): Boolean = status.enabled &&
         (status.backgroundEnabled || status.inFlightChunkId != null || status.queuedChunkIds.isNotEmpty())
@@ -3118,10 +3172,20 @@ class PlayerViewModel @Inject constructor(
                         } else {
                             val withInfos = current.copy(languageModelInfos = mergedInfos)
                             val lang = withInfos.languageOverride ?: initialLanguage
+                            val nextEngine = if (
+                                current.engine == fallbackDialog.engine &&
+                                current.languageOverride == fallbackDialog.languageOverride &&
+                                !current.isRunning &&
+                                !current.hasAttempted
+                            ) {
+                                withInfos.selectDefaultEngineForLanguage(lang)
+                            } else {
+                                current.engine
+                            }
                             state.copy(
                                 languageModelInfos = mergedInfos,
                                 detailedTranscriptionDialog = withInfos.copy(
-                                    engine = withInfos.selectDefaultEngineForLanguage(lang),
+                                    engine = nextEngine,
                                 ),
                             )
                         }
@@ -3434,12 +3498,84 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            PlayerEvent.ConfirmRecommendedSttModelDownload -> {
+                val dialog = localUiState.value.recommendedSttModelDialog ?: return
+                if (dialog.isDownloading) return
+                localUiState.update { current ->
+                    current.copy(
+                        recommendedSttModelDialog = current.recommendedSttModelDialog?.copy(isDownloading = true),
+                    )
+                }
+                viewModelScope.launch {
+                    val downloaded = analysisRepository.requestSttModelDownload(dialog.language, dialog.engine)
+                    if (downloaded) {
+                        userSettingsRepository.setSttEngineForLanguage(dialog.language, dialog.engine)
+                    }
+                    val queryLanguages = buildDetailedQueryLanguages(
+                        languagePair = uiState.value.languagePair,
+                        extraLanguage = dialog.language,
+                    )
+                    val refreshedInfos = analysisRepository.queryLanguageModelInfos(queryLanguages)
+                    localUiState.update { current ->
+                        current.copy(
+                            recommendedSttModelDialog = null,
+                            languageModelInfos = current.languageModelInfos + refreshedInfos.associateBy { it.language },
+                        )
+                    }
+                }
+            }
+
+            PlayerEvent.DismissRecommendedSttModelDownload -> {
+                localUiState.update { current ->
+                    current.copy(recommendedSttModelDialog = null)
+                }
+            }
+
             PlayerEvent.Back -> close()
         }
     }
 
     override fun onCleared() {
         close()
+    }
+
+    private suspend fun maybePromptRecommendedSttModelOnRecognitionStart(mediaId: MediaId) {
+        val pair = uiState.value.languagePair
+            ?: libraryRepository.observeItem(mediaId).firstOrNull()?.languagePair
+            ?: return
+        val settings = userSettingsRepository.settings.firstOrNull()
+        val candidates = listOfNotNull(pair.target, pair.base).distinct()
+        for (lang in candidates) {
+            val recommended = SttEngineSelection.recommendedDownloadEngineForLanguage(lang) ?: continue
+            val normCode = SupportedLanguageCatalog.normalizeToModelManagementCode(lang.value)
+            if (normCode in promptedRecommendedModelLanguages) continue
+            val normalizedTag = LanguageSettings.normalize(lang)
+            if (settings != null &&
+                (settings.sttEngineByLanguage[normalizedTag] != null || settings.sttEngineByLanguage[LanguageTag(normCode)] != null)
+            ) {
+                continue
+            }
+            val queryTags = listOf(lang, LanguageTag(normCode)).distinct()
+            val infos = analysisRepository.queryLanguageModelInfos(queryTags)
+            val info = infos.firstOrNull()
+            val status = info?.statusOf(recommended)
+            if (status == OnDeviceLanguageModelStatus.NOT_INSTALLED) {
+                promptedRecommendedModelLanguages.add(normCode)
+                localUiState.update { current ->
+                    if (current.recommendedSttModelDialog != null) {
+                        current
+                    } else {
+                        current.copy(
+                            recommendedSttModelDialog = RecommendedSttModelDialogState(
+                                language = LanguageTag(normCode),
+                                engine = recommended,
+                            ),
+                        )
+                    }
+                }
+                break
+            }
+        }
     }
 
     private fun buildDetailedQueryLanguages(
@@ -3818,6 +3954,7 @@ class PlayerViewModel @Inject constructor(
         } else {
             lookaheadLoopJob = viewModelScope.launch {
                 analysisRepository.setLookaheadEnabled(mediaId, true)
+                maybePromptRecommendedSttModelOnRecognitionStart(mediaId)
                 val requestedStartIds = mutableSetOf<ChunkId?>()
                 val initialChunks = if (uiState.value.mediaId == mediaId) uiState.value.chunks else emptyList()
                 val statusNow = playbackController.status.value
@@ -4290,6 +4427,7 @@ class PlayerViewModel @Inject constructor(
             lookaheadStatus = effectiveLookaheadStatus,
             localTranscriptExported = local.localTranscriptExported,
             detailedTranscriptionDialog = local.detailedTranscriptionDialog,
+            recommendedSttModelDialog = local.recommendedSttModelDialog,
             itemSttOverride = itemSttOverride,
             sttEngineByLanguage = settings.sttEngineByLanguage,
             languageModelInfos = local.languageModelInfos,

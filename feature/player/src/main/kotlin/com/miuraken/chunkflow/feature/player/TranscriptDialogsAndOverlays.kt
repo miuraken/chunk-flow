@@ -68,6 +68,10 @@ import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.OnDeviceLanguageModelStatus
 import com.miuraken.chunkflow.core.model.OnDeviceRecognitionModelState
 import com.miuraken.chunkflow.core.model.OnDeviceTranscriptionEngine
+import com.miuraken.chunkflow.core.model.SttEngine
+import com.miuraken.chunkflow.core.model.SttEngineLabel
+import com.miuraken.chunkflow.core.model.SttEngineSelection
+import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import com.miuraken.chunkflow.core.model.TranscriptionDiagnosticEntry
 import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.model.Waveform
@@ -264,19 +268,14 @@ internal fun DetailedChunkTranscriptionDialog(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                val coreEngines = setOf(
-                    OnDeviceTranscriptionEngine.ML_KIT,
-                    OnDeviceTranscriptionEngine.ANDROID_SPEECH_RECOGNIZER,
-                    OnDeviceTranscriptionEngine.SHERPA_ONNX,
-                )
-                for (engine in DetailedTranscriptionDialogState.ENGINE_OPTIONS) {
+                val curatedOptions = remember(dialogState, selectedLanguage, selectedEngine) {
+                    val base = dialogState.curatedEnginesForLanguage(selectedLanguage)
+                    if (selectedEngine in base) base else base + selectedEngine
+                }
+                for (engine in curatedOptions) {
                     val status = dialogState.engineStatus(selectedLanguage, engine)
                     val isEngineEnabled = dialogState.isEngineEnabled(selectedLanguage, engine)
                     val isDownloading = status == OnDeviceLanguageModelStatus.DOWNLOADING
-                    // 基本 3 エンジンは常に表示し、追加エンジンは対応言語・利用可能（または選択中）のとき表示する。
-                    if (engine !in coreEngines && !isEngineEnabled && !isDownloading && selectedEngine != engine) {
-                        continue
-                    }
                     val labelRes = when (engine) {
                         OnDeviceTranscriptionEngine.ML_KIT,
                         OnDeviceTranscriptionEngine.AUTO,
@@ -312,7 +311,21 @@ internal fun DetailedChunkTranscriptionDialog(
                         OnDeviceTranscriptionEngine.GEMINI_API ->
                             R.string.player_detailed_transcribe_engine_gemini_api
                     }
-                    val baseLabel = stringResource(labelRes)
+                    val sttEngine = DetailedTranscriptionDialogState.toSttEngine(engine)
+                    val badgeLabels = SttEngineSelection.labelsFor(selectedLanguage, sttEngine).map { badge ->
+                        when (badge) {
+                            SttEngineLabel.RECOMMENDED -> stringResource(R.string.player_stt_label_recommended)
+                            SttEngineLabel.HIGH_ACCURACY -> stringResource(R.string.player_stt_label_high_accuracy)
+                            SttEngineLabel.FAST -> stringResource(R.string.player_stt_label_fast)
+                            SttEngineLabel.SLOW -> stringResource(R.string.player_stt_label_slow)
+                        }
+                    }
+                    val rawBaseLabel = stringResource(labelRes)
+                    val baseLabel = if (badgeLabels.isNotEmpty()) {
+                        "$rawBaseLabel [${badgeLabels.joinToString("・")}]"
+                    } else {
+                        rawBaseLabel
+                    }
                     val chipLabel = when (status) {
                         OnDeviceLanguageModelStatus.INSTALLED,
                         OnDeviceLanguageModelStatus.DOWNLOADING,
@@ -1187,4 +1200,72 @@ private fun DiagnosticEntryCard(
             )
         }
     }
+}
+
+@Composable
+internal fun RecommendedSttModelDownloadDialog(
+    dialogState: RecommendedSttModelDialogState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val languageLabel = SupportedLanguageCatalog.findByCode(dialogState.language.value)?.japaneseName
+        ?: dialogState.language.value
+    val modelName = dialogState.engine.downloadableModel?.displayName ?: dialogState.engine.name
+    val approxMb = dialogState.sizeMb.coerceAtLeast(1)
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!dialogState.isDownloading) {
+                onDismiss()
+            }
+        },
+        title = {
+            Text(text = stringResource(R.string.player_recommended_stt_model_dialog_title))
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (dialogState.isDownloading) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        ChunkFlowLoadingIndicator(modifier = Modifier.size(24.dp))
+                        Text(
+                            text = stringResource(
+                                R.string.player_recommended_stt_model_dialog_downloading,
+                                languageLabel,
+                                modelName,
+                                approxMb,
+                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                } else {
+                    Text(
+                        text = stringResource(
+                            R.string.player_recommended_stt_model_dialog_message,
+                            languageLabel,
+                            modelName,
+                            approxMb,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (!dialogState.isDownloading) {
+                FilledTonalButton(onClick = onConfirm) {
+                    Text(text = stringResource(R.string.player_recommended_stt_model_dialog_confirm))
+                }
+            }
+        },
+        dismissButton = {
+            if (!dialogState.isDownloading) {
+                TextButton(onClick = onDismiss) {
+                    Text(text = stringResource(R.string.player_recommended_stt_model_dialog_dismiss))
+                }
+            }
+        },
+    )
 }

@@ -1989,7 +1989,7 @@ class DefaultAnalysisRepository(
         }
     }
 
-    override suspend fun refreshRecognitionModelIssues() {
+    override suspend fun refreshRecognitionModelIssues(): Unit = withContext(ioDispatcher) {
         try {
             onDeviceChunkTranscriber.refreshRecognitionModelIssues()
         } catch (ce: CancellationException) {
@@ -1999,13 +1999,15 @@ class DefaultAnalysisRepository(
         }
     }
 
-    override suspend fun queryDownloadableModelStates(): List<com.miuraken.chunkflow.core.model.DownloadableSttModelState> = try {
-        onDeviceChunkTranscriber.queryDownloadableModelStates()
-    } catch (ce: CancellationException) {
-        throw ce
-    } catch (_: Exception) {
-        com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.map {
-            com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = it)
+    override suspend fun queryDownloadableModelStates(): List<com.miuraken.chunkflow.core.model.DownloadableSttModelState> = withContext(ioDispatcher) {
+        try {
+            onDeviceChunkTranscriber.queryDownloadableModelStates()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            com.miuraken.chunkflow.core.model.DownloadableSttModel.entries.map {
+                com.miuraken.chunkflow.core.model.DownloadableSttModelState(model = it)
+            }
         }
     }
 
@@ -2042,12 +2044,14 @@ class DefaultAnalysisRepository(
         }
     }
 
-    override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = try {
-        onDeviceChunkTranscriber.queryLanguageModelInfos(languages)
-    } catch (ce: CancellationException) {
-        throw ce
-    } catch (_: Exception) {
-        languages.map { OnDeviceLanguageModelInfo(language = it) }
+    override suspend fun queryLanguageModelInfos(languages: List<LanguageTag>): List<OnDeviceLanguageModelInfo> = withContext(ioDispatcher) {
+        try {
+            onDeviceChunkTranscriber.queryLanguageModelInfos(languages)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            languages.map { OnDeviceLanguageModelInfo(language = it) }
+        }
     }
 
     /**
