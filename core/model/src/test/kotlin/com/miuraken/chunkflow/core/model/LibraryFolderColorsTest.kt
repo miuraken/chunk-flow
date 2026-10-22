@@ -49,4 +49,19 @@ class LibraryFolderColorsTest {
         assertNull(LibraryFolderColors.resolveIndex(null, null, ordinals))
         assertNull(LibraryFolderColors.resolveIndex(null, LanguageTag(""), ordinals))
     }
+
+    @Test
+    fun `orderedPaletteIndices_折りたたみ範囲外の色を選んだら先頭に移動し既定の色も1行目に残す`() {
+        val normal = LibraryFolderColors.orderedPaletteIndices(selectedIndex = 2, defaultIndex = 0)
+        assertEquals((0 until LibraryFolderColors.PALETTE_SIZE).toList(), normal)
+
+        val hiddenSelected = LibraryFolderColors.orderedPaletteIndices(selectedIndex = 12, defaultIndex = 0)
+        assertEquals(12, hiddenSelected.first())
+        assertTrue(0 in hiddenSelected.take(LibraryFolderColors.COLLAPSED_SWATCH_COUNT))
+        assertEquals(LibraryFolderColors.PALETTE_SIZE, hiddenSelected.distinct().size)
+
+        val hiddenBoth = LibraryFolderColors.orderedPaletteIndices(selectedIndex = 14, defaultIndex = 11)
+        assertEquals(14, hiddenBoth.first())
+        assertTrue(11 in hiddenBoth.take(LibraryFolderColors.COLLAPSED_SWATCH_COUNT))
+    }
 }
