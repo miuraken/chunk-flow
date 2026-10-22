@@ -39,8 +39,25 @@ interface CourseFolderDao {
      */
     @Transaction
     suspend fun upsert(folder: CourseFolderEntity) {
-        val preservedColor = if (folder.colorIndex == null) getByPath(folder.coursePath)?.colorIndex else null
-        upsertRow(if (preservedColor != null) folder.copy(colorIndex = preservedColor) else folder)
+        val existing = getByPath(folder.coursePath)
+        val preservedColor = if (folder.colorIndex == null) existing?.colorIndex else folder.colorIndex
+        val preservedTargetStt = if (folder.targetSttEngine == null && folder.baseSttEngine == null) {
+            existing?.targetSttEngine
+        } else {
+            folder.targetSttEngine
+        }
+        val preservedBaseStt = if (folder.targetSttEngine == null && folder.baseSttEngine == null) {
+            existing?.baseSttEngine
+        } else {
+            folder.baseSttEngine
+        }
+        upsertRow(
+            folder.copy(
+                colorIndex = preservedColor,
+                targetSttEngine = preservedTargetStt,
+                baseSttEngine = preservedBaseStt,
+            ),
+        )
         assignLanguageColorIfAbsent(folder.targetLang)
     }
 
@@ -59,6 +76,14 @@ interface CourseFolderDao {
      */
     @Query("UPDATE course_folder SET color_index = :colorIndex WHERE course_path = :coursePath")
     suspend fun updateColorIndex(coursePath: String, colorIndex: Int?): Int
+
+    /**
+     * フォルダの音声認識エンジンの上書き設定を書き換える。両方 `null` で全体設定に従う状態に戻す。
+     *
+     * @return 書き換えた行の数（フォルダの行がなければ 0）。
+     */
+    @Query("UPDATE course_folder SET target_stt_engine = :targetEngine, base_stt_engine = :baseEngine WHERE course_path = :coursePath")
+    suspend fun updateSttOverride(coursePath: String, targetEngine: String?, baseEngine: String?): Int
 
     /** 対象言語ごとの色の順番を、順番の昇順で購読する。 */
     @Query("SELECT * FROM language_color ORDER BY ordinal ASC")

@@ -957,6 +957,29 @@ class DefaultLibraryRepository(
         }
     }
 
+    override suspend fun setCourseFolderSttOverride(
+        coursePath: String,
+        sttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
+    ) {
+        withContext(ioDispatcher) {
+            val normalizedPath = sanitizeCoursePath(coursePath).takeIf { it.isNotBlank() } ?: return@withContext
+            val targetName = sttOverride.targetEngine?.name
+            val baseName = sttOverride.baseEngine?.name
+            if (courseFolderDao.getByPath(normalizedPath) != null) {
+                courseFolderDao.updateSttOverride(normalizedPath, targetName, baseName)
+                return@withContext
+            }
+            if (sttOverride.isEmpty) return@withContext
+            val implicitFolder = buildImplicitCourseFolderEntity(normalizedPath) ?: return@withContext
+            courseFolderDao.upsert(
+                implicitFolder.copy(
+                    targetSttEngine = targetName,
+                    baseSttEngine = baseName,
+                ),
+            )
+        }
+    }
+
     /**
      * 設定の行がなく、ファイル（または子フォルダの行）だけから見えているフォルダ [normalizedPath] の行を組み立てる。
      *
@@ -2777,6 +2800,7 @@ class DefaultLibraryRepository(
         override suspend fun upsertRow(folder: CourseFolderEntity) = Unit
         override suspend fun deleteByPath(coursePath: String) = Unit
         override suspend fun updateColorIndex(coursePath: String, colorIndex: Int?): Int = 0
+        override suspend fun updateSttOverride(coursePath: String, targetEngine: String?, baseEngine: String?): Int = 0
         override fun observeLanguageColors(): Flow<List<LanguageColorEntity>> = flowOf(emptyList())
         override suspend fun getLanguageColor(language: String): LanguageColorEntity? = null
         override suspend fun getMaxLanguageColorOrdinal(): Int? = null

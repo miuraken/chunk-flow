@@ -50,7 +50,7 @@ import com.miuraken.chunkflow.core.model.LibraryFolderColors
         TagEntity::class,
         MediaItemTagEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -220,6 +220,14 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             }
         }
 
+        /** バージョン 8 から 9 へのマイグレーション（フォルダ単位の音声認識エンジン上書き `course_folder.target_stt_engine` / `base_stt_engine` を追加）。 */
+        val MIGRATION_8_9: Migration = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `course_folder` ADD COLUMN `target_stt_engine` TEXT")
+                db.execSQL("ALTER TABLE `course_folder` ADD COLUMN `base_stt_engine` TEXT")
+            }
+        }
+
         /** アプリで使うすべてのマイグレーション（古い順）。データベースを開くときに渡す。 */
         val ALL_MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2,
@@ -229,6 +237,7 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             MIGRATION_5_6,
             MIGRATION_6_7,
             MIGRATION_7_8,
+            MIGRATION_8_9,
         )
 
         /**
