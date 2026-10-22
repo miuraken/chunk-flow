@@ -242,7 +242,14 @@ internal fun ResegmentSheetContent(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = stringResource(R.string.player_segmentation_use_global),
+                        // 内包するフォルダの設定が全体設定から変わっていれば、フォルダの設定にフォールバックする
+                        text = stringResource(
+                            if (folderSttOverride.isEmpty) {
+                                R.string.player_segmentation_use_global
+                            } else {
+                                R.string.player_file_settings_stt_follow_folder
+                            },
+                        ),
                         style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium,
                     )
@@ -252,7 +259,7 @@ internal fun ResegmentSheetContent(
                 val targetLang = languagePair?.target?.takeIf { it.value.isNotBlank() }
                 if (targetLang != null) {
                     val targetInfo = resolveLanguageModelInfoForItem(targetLang, languageModelInfos)
-                    val targetGlobalDefault = folderSttOverride.targetEngine
+                    val targetFallbackEngine = folderSttOverride.targetEngine
                         ?: resolveConfiguredDefaultEngineForLanguage(
                             rawCode = targetLang.value,
                             sttEngineByLanguage = sttEngineByLanguage,
@@ -264,7 +271,8 @@ internal fun ResegmentSheetContent(
                             formatLanguageDisplayName(targetLang),
                         ),
                         info = targetInfo,
-                        globalDefaultEngine = targetGlobalDefault,
+                        fallbackEngine = targetFallbackEngine,
+                        followsFolderSetting = folderSttOverride.targetEngine != null,
                         preferredEngine = if (useGlobalSttModels) null else itemSttOverride.targetEngine,
                         enabled = sttAccordionEnabled,
                         onPreferredEngineChange = onChangeTargetEngine,
@@ -278,7 +286,7 @@ internal fun ResegmentSheetContent(
                 val baseLang = languagePair?.base?.takeIf { it.value.isNotBlank() }
                 if (baseLang != null) {
                     val baseInfo = resolveLanguageModelInfoForItem(baseLang, languageModelInfos)
-                    val baseGlobalDefault = folderSttOverride.baseEngine
+                    val baseFallbackEngine = folderSttOverride.baseEngine
                         ?: resolveConfiguredDefaultEngineForLanguage(
                             rawCode = baseLang.value,
                             sttEngineByLanguage = sttEngineByLanguage,
@@ -290,7 +298,8 @@ internal fun ResegmentSheetContent(
                             formatLanguageDisplayName(baseLang),
                         ),
                         info = baseInfo,
-                        globalDefaultEngine = baseGlobalDefault,
+                        fallbackEngine = baseFallbackEngine,
+                        followsFolderSetting = folderSttOverride.baseEngine != null,
                         preferredEngine = if (useGlobalSttModels) null else itemSttOverride.baseEngine,
                         enabled = sttAccordionEnabled,
                         onPreferredEngineChange = onChangeBaseEngine,
@@ -683,11 +692,22 @@ private fun resolveSherpaTinySizeMb(sizeBytes: Long): Int {
     return ((sizeBytes + 512L * 1024L) / (1024L * 1024L)).toInt().coerceAtLeast(1)
 }
 
+/**
+ * ファイルの設定の「音声認識モデルの管理」の、言語 1 つ分のアコーディオン。
+ *
+ * 先頭の選択肢（ファイルでは上書きしない）は、内包するフォルダの設定がこの言語のエンジンを上書きしていれば
+ * （[followsFolderSetting]）「フォルダー設定に従う (エンジン)」、していなければ「全体設定に従う (エンジン)」と表示する
+ * （ファイル個別設定 ＞ フォルダ設定 ＞ 全体設定）。
+ *
+ * @param fallbackEngine ファイルで上書きしないときに使われるエンジン（フォルダの設定、なければ全体設定のエンジン）。
+ * @param followsFolderSetting この言語で、内包するフォルダの設定がエンジンを上書きしているかどうか。
+ */
 @Composable
 private fun ItemSttEngineAccordion(
     headerTitle: String,
     info: OnDeviceLanguageModelInfo,
-    globalDefaultEngine: SttEngine,
+    fallbackEngine: SttEngine,
+    followsFolderSetting: Boolean,
     preferredEngine: SttEngine?,
     enabled: Boolean,
     onPreferredEngineChange: (SttEngine?) -> Unit,
@@ -700,13 +720,27 @@ private fun ItemSttEngineAccordion(
     val expanded = rememberSaveable { mutableStateOf(initialExpanded) }
     val enrichedInfo = DetailedTranscriptionDialogState.enrichWithCatalog(info, info.language)
     val anyEngineSupported = SttEngineSelection.isAnyEngineSupported(enrichedInfo)
-    val followGlobalLabel = if (anyEngineSupported) {
-        stringResource(
-            R.string.player_file_settings_stt_follow_global_with_resolved,
-            itemSttEngineDisplayName(globalDefaultEngine),
+    val followGlobalLabel = when {
+        anyEngineSupported && followsFolderSetting -> stringResource(
+            R.string.player_file_settings_stt_follow_folder_with_resolved,
+            itemSttEngineDisplayName(fallbackEngine),
         )
-    } else {
-        "${stringResource(R.string.player_segmentation_use_global)} (${stringResource(R.string.player_file_settings_stt_status_unsupported)})"
+
+        anyEngineSupported -> stringResource(
+            R.string.player_file_settings_stt_follow_global_with_resolved,
+            itemSttEngineDisplayName(fallbackEngine),
+        )
+
+        else -> {
+            val followLabel = stringResource(
+                if (followsFolderSetting) {
+                    R.string.player_file_settings_stt_follow_folder
+                } else {
+                    R.string.player_segmentation_use_global
+                },
+            )
+            "$followLabel (${stringResource(R.string.player_file_settings_stt_status_unsupported)})"
+        }
     }
     val effectivePreferred = preferredEngine?.takeIf { isItemSttEngineSelectable(enrichedInfo, it) }
     val currentEngineLabel = when {

@@ -1,5 +1,6 @@
 package com.miuraken.chunkflow.feature.player
 
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import com.android.tools.screenshot.PreviewTest
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
@@ -7,10 +8,15 @@ import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.ItemSttOverride
+import com.miuraken.chunkflow.core.model.LanguagePair
+import com.miuraken.chunkflow.core.model.LanguageTag
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.PracticeSettings
+import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.StageStatus
+import com.miuraken.chunkflow.core.model.SttEngine
 import com.miuraken.chunkflow.core.model.TranscriptionStep
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.testing.fake.FakePositionProvider
@@ -186,5 +192,44 @@ fun PlayerScreenTranscriptionProgressScreenshot() {
             positionProvider = FakePositionProvider(2_000L),
             onEvent = {},
         )
+    }
+}
+
+/**
+ * ファイルの設定の「文字起こし」タブ: 内包するフォルダの設定が学習対象言語のエンジンを上書きしているので、
+ * チェックボックスと学習対象言語のアコーディオンが「フォルダー設定に従う」になる（ベース言語は「全体設定に従う」）。
+ */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun PlayerFileSettingsFollowFolderScreenshot() {
+    ChunkFlowTheme {
+        Surface {
+            ResegmentSheetContent(
+                initialParams = SegmentationParams(),
+                useGlobalSegmentation = true,
+                languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+                itemSttOverride = ItemSttOverride.NONE,
+                folderSttOverride = ItemSttOverride(targetEngine = SttEngine.SHERPA_ONNX_SENSE_VOICE),
+                sttEngineByLanguage = emptyMap(),
+                languageModelInfos = emptyMap(),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onChangeLanguages = {},
+                onChangeTargetEngine = {},
+                onChangeBaseEngine = {},
+                transcriptOffsetMs = 0,
+                onAdjustTranscriptOffset = {},
+                onAutoAlignTranscriptOffset = {},
+                onImportTranscript = {},
+                onExportTranscript = {},
+                onResetTranscripts = {},
+                onOpenDiagnostics = {},
+                onToggleUseGlobalSegmentation = {},
+                onApply = {},
+                onOpenGlobalSettings = {},
+                onClose = {},
+                initialTabIndex = 1,
+            )
+        }
     }
 }

@@ -302,8 +302,6 @@
     <string name="player_file_settings_stt_follow_global_with_resolved">Follow global settings (%1$s)</string>
     <string name="player_file_settings_stt_follow_folder">Follow folder settings</string>
     <string name="player_file_settings_stt_follow_folder_with_resolved">Follow folder settings (%1$s)</string>
-    <string name="player_missing_language_hint_prefix">If you cannot find the language you want, add it from </string>
-    <string name="player_missing_language_hint_suffix">.</string>
     <string name="player_file_settings_stt_engine_mlkit_radio">ML Kit Gen AI</string>
     <string name="player_file_settings_stt_engine_speech_recognizer">SpeechRecognizer</string>
     <string name="player_file_settings_stt_engine_sherpa_onnx">sherpa-onnx Whisper Tiny</string>

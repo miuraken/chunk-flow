@@ -75,7 +75,8 @@
     <string name="library_edit_stt_engine_mlkit">ML Kit</string>
     <string name="library_edit_stt_engine_speech_recognizer">SpeechRecognizer (Google)</string>
     <string name="library_edit_stt_engine_sherpa_onnx">sherpa-onnx (SenseVoice)</string>
-    <string name="library_missing_language_hint">If the language you want is not listed, add it from Global Settings &gt; Languages.</string>
+    <!-- %1$s is replaced with the "⚙ Global Settings (Languages)" link (library_open_global_language_settings) -->
+    <string name="library_missing_language_hint_with_link">If the language you want is not listed, add it from %1$s.</string>
     <string name="library_open_global_language_settings">Global Settings (Languages)</string>
     <string name="library_edit_transcript_section_title">Transcript</string>
     <string name="library_edit_import_transcript_button">Import transcript from file</string>
@@ -171,17 +172,17 @@
     <string name="library_files_sort_option_format">%1$s (%2$s)</string>
     <string name="library_folder_kind_real">Real folder</string>
     <string name="library_folder_kind_virtual">Virtual</string>
-    <string name="library_folder_color_title">Folder color</string>
-    <string name="library_folder_color_reset">Reset to default</string>
     <string name="library_folder_color_swatch_cd">Color %1$d</string>
     <string name="library_folder_color_swatch_default_cd">Color %1$d (default)</string>
-    <string name="library_folder_color_default_hint">Using the default color for the target language</string>
-    <string name="library_folder_color_custom_hint">This folder uses its own color</string>
+    <string name="library_folder_color_expand_cd">Show more colors</string>
+    <string name="library_folder_color_collapse_cd">Show fewer colors</string>
+    <string name="library_folder_color_expanded_state">Expanded</string>
+    <string name="library_folder_color_collapsed_state">Collapsed</string>
     <string name="library_import_config_folder_label">Folder</string>
     <string name="library_import_config_new_virtual_folder_option">New virtual folder</string>
     <string name="library_import_config_new_virtual_folder_dialog_title">Create new virtual folder</string>
     <string name="library_import_config_new_virtual_folder_name_label">New virtual folder name</string>
-    <string name="library_edit_real_folder_dialog_title">Folder settings: %1$s</string>
+    <string name="library_folder_settings_name_placeholder">Folder name</string>
     <string name="library_bookmarks_open_in_player_cd">Go to this chunk in file</string>
     <string name="library_import_done_single_into_folder">Added "%1$s" to "%2$s"</string>
     <string name="library_import_done_multiple_into_folder">Added %1$d files to "%2$s"</string>

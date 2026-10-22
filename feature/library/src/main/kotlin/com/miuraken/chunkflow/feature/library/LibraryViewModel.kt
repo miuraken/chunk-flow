@@ -368,7 +368,7 @@ sealed interface LibraryFolderColorChoice {
     /** 色を変えない。 */
     data object Unchanged : LibraryFolderColorChoice
 
-    /** 指定を外し、対象言語の既定の色に戻す（「デフォルトに戻す」）。 */
+    /** 指定を外し、対象言語の既定の色に戻す（フォルダの設定のシートでデフォルトの色の見本を選んだとき）。 */
     data object LanguageDefault : LibraryFolderColorChoice
 
     /** パレットの番号 [index] の色にする。 */
@@ -1926,12 +1926,9 @@ class LibraryViewModel @Inject constructor(
                     itemSttOverrideRepository.observe(item.id),
                     libraryRepository.observeCourseFolders(),
                 ) { itemOverride, folders ->
-                    val folderOverride = item.course?.trim('/')?.takeIf { it.isNotBlank() }?.let { coursePath ->
-                        folders.firstOrNull { it.coursePath.trim('/') == coursePath }?.sttOverride
-                    } ?: ItemSttOverride.NONE
-                    ItemSttOverride(
-                        targetEngine = itemOverride.targetEngine ?: folderOverride.targetEngine,
-                        baseEngine = itemOverride.baseEngine ?: folderOverride.baseEngine,
+                    // ファイル個別設定 ＞ フォルダ設定（近いフォルダを言語ごとに優先）＞ 全体設定
+                    itemOverride.withFolderFallback(
+                        LibraryCourseFolder.resolveSttOverride(item.course, item.languagePair, folders),
                     )
                 }
             }

@@ -233,6 +233,49 @@ private fun PlayerFileSettingsTranscriptTabPreview() {
     }
 }
 
+/**
+ * ファイルの設定の「文字起こし」タブで、内包するフォルダの設定が学習対象言語のエンジンを上書きしている状態。
+ * チェックボックスと学習対象言語のアコーディオンが「フォルダー設定に従う」になる（ベース言語は「全体設定に従う」のまま）。
+ */
+@ChunkFlowPreviews
+@Composable
+private fun PlayerFileSettingsFollowFolderPreview() {
+    ChunkFlowTheme {
+        Surface {
+            ResegmentSheetContent(
+                initialParams = SegmentationParams(),
+                useGlobalSegmentation = true,
+                languagePair = LanguagePair(
+                    target = LanguageTag("ko"),
+                    base = LanguageTag("ja"),
+                ),
+                itemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
+                folderSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride(
+                    targetEngine = com.miuraken.chunkflow.core.model.SttEngine.SHERPA_ONNX_SENSE_VOICE,
+                ),
+                sttEngineByLanguage = emptyMap(),
+                languageModelInfos = emptyMap(),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onChangeLanguages = {},
+                onChangeTargetEngine = {},
+                onChangeBaseEngine = {},
+                transcriptOffsetMs = 0,
+                onAdjustTranscriptOffset = {},
+                onAutoAlignTranscriptOffset = {},
+                onImportTranscript = {},
+                onExportTranscript = {},
+                onResetTranscripts = {},
+                onOpenDiagnostics = {},
+                onToggleUseGlobalSegmentation = {},
+                onApply = {},
+                onOpenGlobalSettings = {},
+                onClose = {},
+                initialTabIndex = 1,
+            )
+        }
+    }
+}
+
 /** ファイル全体リピート（「🔁リピート」青バッジ）と「無音スキップ」ON、再生設定「⚙️」アイコンのプレビュー。 */
 @ChunkFlowPreviews
 @Composable

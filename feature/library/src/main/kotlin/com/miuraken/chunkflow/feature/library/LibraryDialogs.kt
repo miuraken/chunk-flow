@@ -49,10 +49,11 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
-import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintText
 import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
 import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
@@ -285,24 +286,7 @@ internal fun LanguagePairDropdownSection(
         }
     }
 
-    MissingLanguageHintText(
-        text = stringResource(R.string.library_missing_language_hint),
-    )
-
-    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-    OutlinedButton(
-        onClick = onOpenLanguageSettings,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Icon(
-            imageVector = ChunkFlowIcons.Settings,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(text = stringResource(R.string.library_open_global_language_settings))
-    }
+    MissingLanguageHintWithSettingsLink(onOpenLanguageSettings = onOpenLanguageSettings)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -803,6 +787,14 @@ private fun DeleteFromLibraryButton(
     }
 }
 
+/**
+ * フォルダの設定のシート（フォルダ名・色・言語ペア・音声認識モデルをフォルダ単位で設定する）。
+ *
+ * 上から、見出し（Tune のアイコンとフォルダ名の入力欄。仮想フォルダには「仮想」のバッジ）→ 色 → 言語（学習対象・ベース）と
+ * 案内文 → 音声認識モデルの管理 → キャンセル / 保存 → フォルダを削除 の順に並べる。
+ *
+ * @param initialColorsExpanded 色の欄をはじめから全色に広げておくかどうか（プレビュー用）。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun EditDirectoryMetadataDialog(
@@ -825,6 +817,7 @@ internal fun EditDirectoryMetadataDialog(
     onOpenLanguageSettings: () -> Unit = {},
     onDelete: (() -> Unit)? = null,
     languageColorOrdinals: Map<LanguageTag, Int> = emptyMap(),
+    initialColorsExpanded: Boolean = false,
 ) {
     var colorIndex by remember(directoryEdit) { mutableStateOf(directoryEdit.colorIndex) }
     var courseText by remember(directoryEdit) {
@@ -846,32 +839,39 @@ internal fun EditDirectoryMetadataDialog(
         mutableStateOf(directoryEdit.initialSttOverride.baseEngine)
     }
 
-    val folderDisplayName = directoryEdit.currentCourse?.substringAfterLast('/').orEmpty()
+    val isVirtualFolder = directoryEdit.currentCourse != null && !directoryEdit.isRealFolder
 
     val content: @Composable () -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp)
-                .verticalScroll(rememberScrollState()),
+                // 色の欄は左右の余白へ少しはみ出して描くので、余白はスクロールの内側に取る（切り抜かれないように）
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (directoryEdit.isRealFolder) {
-                Text(
-                    text = stringResource(
-                        R.string.library_edit_real_folder_dialog_title,
-                        folderDisplayName,
-                    ),
-                    style = MaterialTheme.typography.titleLarge,
+            FolderSettingsHeader(
+                folderName = courseText,
+                onFolderNameChange = { courseText = it },
+                isVirtualFolder = isVirtualFolder,
+            )
+
+            if (directoryEdit.currentCourse != null) {
+                // 「デフォルト」の色は、シートで選んでいる対象言語の色（ADR 0013）
+                val defaultColorIndex = LibraryFolderColors.resolveIndex(
+                    colorIndex = null,
+                    targetLanguage = normalizeDialogLanguageCode(targetLangText)
+                        .takeIf { it.isNotBlank() }
+                        ?.let { LanguageTag(it) },
+                    languageOrdinals = languageColorOrdinals,
+                )
+                FolderColorPicker(
+                    selectedIndex = colorIndex,
+                    defaultIndex = defaultColorIndex,
+                    onSelect = { colorIndex = it },
+                    initialExpanded = initialColorsExpanded,
                 )
             }
-            OutlinedTextField(
-                value = courseText,
-                onValueChange = { courseText = it },
-                label = { Text(text = stringResource(R.string.library_edit_course_label)) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
 
             LanguagePairDropdownSection(
                 targetLangCode = targetLangText,
@@ -909,23 +909,6 @@ internal fun EditDirectoryMetadataDialog(
                 onDeleteLanguageSttModel = onDeleteLanguageSttModel,
                 onPurgeDownloadableModel = onPurgeDownloadableModel,
             )
-
-            if (directoryEdit.currentCourse != null) {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-                // 「デフォルト」の色は、シートで選んでいる対象言語の色（ADR 0013）
-                val defaultColorIndex = LibraryFolderColors.resolveIndex(
-                    colorIndex = null,
-                    targetLanguage = normalizeDialogLanguageCode(targetLangText)
-                        .takeIf { it.isNotBlank() }
-                        ?.let { LanguageTag(it) },
-                    languageOrdinals = languageColorOrdinals,
-                )
-                FolderColorPicker(
-                    selectedIndex = colorIndex,
-                    defaultIndex = defaultColorIndex,
-                    onSelect = { colorIndex = it },
-                )
-            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -993,6 +976,44 @@ internal fun EditDirectoryMetadataDialog(
     }
 }
 
+/**
+ * フォルダの設定のシートの見出し。Tune のアイコン（飾り）と、フォルダ名を編集する入力欄（ラベルなし・1 行）を並べ、
+ * 仮想フォルダ（[isVirtualFolder]）なら入力欄の右に「仮想」のバッジを出す。
+ *
+ * 入力欄には見えるラベルがないので、読み上げ用の名前（「フォルダ名」）を付ける。空のときだけ同じ文言を placeholder に出す。
+ */
+@Composable
+private fun FolderSettingsHeader(
+    folderName: String,
+    onFolderNameChange: (String) -> Unit,
+    isVirtualFolder: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val folderNameLabel = stringResource(R.string.library_folder_settings_name_placeholder)
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(
+            imageVector = ChunkFlowIcons.Tune,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(32.dp),
+        )
+        OutlinedTextField(
+            value = folderName,
+            onValueChange = onFolderNameChange,
+            singleLine = true,
+            placeholder = { Text(text = folderNameLabel) },
+            modifier = Modifier
+                .weight(1f)
+                .semantics { contentDescription = folderNameLabel },
+        )
+        FolderKindBadge(isRealFolder = !isVirtualFolder)
+    }
+}
+
 private const val DEFAULT_FOLDER_SHERPA_TINY_SIZE_MB = 113
 
 private fun resolveFolderSherpaTinySizeMb(sizeBytes: Long): Int {
@@ -1022,11 +1043,14 @@ internal fun isFolderSttEngineSelectable(
     return info.statusOf(engine) != OnDeviceLanguageModelStatus.UNSUPPORTED
 }
 
+/**
+ * 音声認識モデルのアコーディオンの見出しに出す言語名（例: `ヒンディー語 (hi)`）。
+ *
+ * ファイルの設定（プレイヤーのファイル個別設定）の見出しと同じ書き方にする。カタログにない言語はコードだけを返す。
+ */
 private fun formatFolderLanguageDisplayName(tag: LanguageTag): String {
-    val normCode = normalizeDialogLanguageCode(tag.value)
-    return ALPHABETICAL_LANGUAGE_OPTIONS.firstOrNull { it.code == normCode }?.label
-        ?: SupportedLanguageCatalog.findByCode(tag.value)?.japaneseName
-        ?: tag.value
+    val entry = SupportedLanguageCatalog.findByCode(tag.value) ?: return tag.value
+    return "${entry.japaneseName} (${tag.value})"
 }
 
 @Composable
@@ -1568,6 +1592,7 @@ private fun sttEngineShortNameForLibrary(engine: SttEngine): String = when (engi
     SttEngine.GEMINI_API -> stringResource(R.string.library_stt_engine_gemini_api)
 }
 
+/** 実フォルダ（色はデフォルトのまま）のフォルダの設定のシート。 */
 @ChunkFlowPreviews
 @Composable
 private fun EditDirectoryMetadataDialogPreview() {
@@ -1580,13 +1605,69 @@ private fun EditDirectoryMetadataDialogPreview() {
                         target = LanguageTag("ko"),
                         base = LanguageTag("ja"),
                     ),
-                    colorIndex = 3,
+                    isRealFolder = true,
                 ),
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
                 onConfirm = { _, _, _, _ -> },
                 languageColorOrdinals = mapOf(LanguageTag("ko") to 0, LanguageTag("en") to 1),
                 onDismiss = {},
                 onDelete = {},
+            )
+        }
+    }
+}
+
+/**
+ * 仮想フォルダ（「仮想」のバッジ）で、ふだん隠れている行の色（パレットの番号 9）を選んでいるフォルダの設定のシート。
+ * 選んだ色が左上に来て、デフォルトの色（番号 0）にグレーのチェックが付く。
+ */
+@ChunkFlowPreviews
+@Composable
+private fun EditDirectoryMetadataDialogVirtualFolderPreview() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "Hindi_1",
+                    initialLanguages = LanguagePair(
+                        target = LanguageTag("hi"),
+                        base = LanguageTag("en"),
+                    ),
+                    isRealFolder = false,
+                    colorIndex = 9,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("hi")),
+                onConfirm = { _, _, _, _ -> },
+                languageColorOrdinals = mapOf(LanguageTag("hi") to 0, LanguageTag("ko") to 1),
+                onDismiss = {},
+                onDelete = {},
+            )
+        }
+    }
+}
+
+/** 色の欄を ▼ で 18 色（6 色 × 3 行）に広げたフォルダの設定のシート。 */
+@ChunkFlowPreviews
+@Composable
+private fun EditDirectoryMetadataDialogColorsExpandedPreview() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "Hindi_1",
+                    initialLanguages = LanguagePair(
+                        target = LanguageTag("hi"),
+                        base = LanguageTag("en"),
+                    ),
+                    isRealFolder = false,
+                    colorIndex = 9,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("hi")),
+                onConfirm = { _, _, _, _ -> },
+                languageColorOrdinals = mapOf(LanguageTag("hi") to 0, LanguageTag("ko") to 1),
+                onDismiss = {},
+                onDelete = {},
+                initialColorsExpanded = true,
             )
         }
     }
