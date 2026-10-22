@@ -817,8 +817,13 @@ private fun LibraryDirectoryRow(
     }
 }
 
+/**
+ * 仮想フォルダに付ける「仮想」のバッジ。実フォルダ（[isRealFolder] が `true`）のときは何も表示しない。
+ *
+ * フォルダの行・開いているフォルダの見出し・フォルダの設定のシートの見出しで共通に使う。
+ */
 @Composable
-private fun FolderKindBadge(
+internal fun FolderKindBadge(
     isRealFolder: Boolean,
     modifier: Modifier = Modifier,
 ) {

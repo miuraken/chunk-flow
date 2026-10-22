@@ -415,7 +415,10 @@ fun LibraryEditTagsForSelectionDialogScreenshot() {
     }
 }
 
-/** フォルダの設定のシート: 色見本（指定した色を選択中）と「デフォルトに戻す」。 */
+/**
+ * フォルダの設定のシート（実フォルダ・色はデフォルトのまま）: Tune のアイコンとフォルダ名の入力欄、1 行 6 色と ▼、
+ * 言語の欄と「⚙ 全体設定（言語）」のリンク、音声認識モデルの管理、キャンセル / 保存、フォルダを削除。
+ */
 @PreviewTest
 @ChunkFlowPreviews
 @Composable
@@ -426,13 +429,65 @@ fun LibraryEditFolderSheetScreenshot() {
                 directoryEdit = PendingDirectoryEdit(
                     currentCourse = "ピンズラー韓国語 I",
                     initialLanguages = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
-                    colorIndex = 6,
+                    isRealFolder = true,
                 ),
                 enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
                 onConfirm = { _, _, _, _ -> },
                 onDismiss = {},
                 onDelete = {},
                 languageColorOrdinals = mapOf(LanguageTag("ko") to 0, LanguageTag("en") to 1),
+            )
+        }
+    }
+}
+
+/**
+ * フォルダの設定のシート（仮想フォルダ）: 名前欄の右に「仮想」のバッジ。ふだん隠れている行の色（パレットの番号 9）を
+ * 選んでいるので、その色が左上に来て、デフォルトの色（番号 0）にグレーのチェックが付く。
+ */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryEditFolderSheetVirtualFolderScreenshot() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "Hindi_1",
+                    initialLanguages = LanguagePair(target = LanguageTag("hi"), base = LanguageTag("en")),
+                    isRealFolder = false,
+                    colorIndex = 9,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("hi")),
+                onConfirm = { _, _, _, _ -> },
+                onDismiss = {},
+                onDelete = {},
+                languageColorOrdinals = mapOf(LanguageTag("hi") to 0, LanguageTag("ko") to 1),
+            )
+        }
+    }
+}
+
+/** フォルダの設定のシート: 色の欄を ▼ で 18 色（6 色 × 3 行。列は 1 行目とそろえる）に広げた状態。 */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryEditFolderSheetColorsExpandedScreenshot() {
+    ChunkFlowTheme {
+        Surface {
+            EditDirectoryMetadataDialog(
+                directoryEdit = PendingDirectoryEdit(
+                    currentCourse = "Hindi_1",
+                    initialLanguages = LanguagePair(target = LanguageTag("hi"), base = LanguageTag("en")),
+                    isRealFolder = false,
+                    colorIndex = 9,
+                ),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("hi")),
+                onConfirm = { _, _, _, _ -> },
+                onDismiss = {},
+                onDelete = {},
+                languageColorOrdinals = mapOf(LanguageTag("hi") to 0, LanguageTag("ko") to 1),
+                initialColorsExpanded = true,
             )
         }
     }

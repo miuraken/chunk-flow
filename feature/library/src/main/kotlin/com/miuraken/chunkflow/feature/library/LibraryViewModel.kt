@@ -368,7 +368,7 @@ sealed interface LibraryFolderColorChoice {
     /** 色を変えない。 */
     data object Unchanged : LibraryFolderColorChoice
 
-    /** 指定を外し、対象言語の既定の色に戻す（「デフォルトに戻す」）。 */
+    /** 指定を外し、対象言語の既定の色に戻す（フォルダの設定のシートでデフォルトの色の見本を選んだとき）。 */
     data object LanguageDefault : LibraryFolderColorChoice
 
     /** パレットの番号 [index] の色にする。 */
