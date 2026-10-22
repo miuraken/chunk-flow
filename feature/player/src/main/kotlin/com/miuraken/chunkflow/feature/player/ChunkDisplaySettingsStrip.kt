@@ -74,7 +74,7 @@ internal fun ChunkDisplaySettingsStrip(
         ?.lowercase(Locale.ROOT)
 
     val languageFilter = state.practice.languageFilter
-    val isHideTargetLangOn = state.blindMode != BlindMode.OFF
+    val isTargetTextVisible = state.blindMode == BlindMode.OFF
     val isReadingOn = state.showTargetRomanization
     val isBookmarksOnlyOn = state.practice.bookmarksOnly
 
@@ -307,7 +307,7 @@ internal fun ChunkDisplaySettingsStrip(
                 }
             }
 
-            // 2〜5. 表示トグル（隠す / 読み / 翻訳 / 🔖）。Chip ではなく連結トグル群で描く（調査 §3.2 C1）。
+            // 2〜5. 表示トグル（本文 / 読み / 翻訳 / 🔖）。Chip ではなく連結トグル群で描く（調査 §3.2 C1）。
             val blindChipLabel = stringResource(R.string.player_chip_blind_target)
             val readingLabel = stringResource(R.string.player_chip_reading)
             val translateLabel = stringResource(R.string.player_chip_translate)
@@ -316,10 +316,10 @@ internal fun ChunkDisplaySettingsStrip(
                 add(
                     ChunkFlowToggleButtonItem(
                         label = blindChipLabel,
-                        checked = isHideTargetLangOn,
+                        checked = isTargetTextVisible,
                         enabled = state.hasTranscript,
                         onCheckedChange = { checked ->
-                            val nextBlindMode = if (checked) BlindMode.HIDE_TARGET_ONLY else BlindMode.OFF
+                            val nextBlindMode = if (checked) BlindMode.OFF else BlindMode.HIDE_TARGET_ONLY
                             onEvent(PlayerEvent.SetBlindMode(nextBlindMode))
                         },
                     ),

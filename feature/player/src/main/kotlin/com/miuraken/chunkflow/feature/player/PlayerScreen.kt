@@ -426,6 +426,8 @@ fun PlayerScreen(
                             hasChunks = state.chunks.isNotEmpty(),
                             hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
                             hasNextCheckedChunk = state.hasNextCheckedChunk,
+                            hasPreviousBookmarkedChunk = state.hasPreviousBookmarkedChunk,
+                            hasNextBookmarkedChunk = state.hasNextBookmarkedChunk,
                             hasNextMediaItem = state.nextMediaId != null,
                             onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
                             onSeekBack = { onEvent(PlayerEvent.SeekBack) },
@@ -437,6 +439,8 @@ fun PlayerScreen(
                             onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
                             onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
                             onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
+                            onSeekToPreviousBookmarkedChunk = { onEvent(PlayerEvent.SeekToPreviousBookmarkedChunk) },
+                            onSeekToNextBookmarkedChunk = { onEvent(PlayerEvent.SeekToNextBookmarkedChunk) },
                             onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
                             onToggleFloatingControls = { showFloatingControls = !showFloatingControls },
                         )
@@ -567,6 +571,8 @@ fun PlayerScreen(
                                 hasChunks = state.chunks.isNotEmpty(),
                                 hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
                                 hasNextCheckedChunk = state.hasNextCheckedChunk,
+                                hasPreviousBookmarkedChunk = state.hasPreviousBookmarkedChunk,
+                                hasNextBookmarkedChunk = state.hasNextBookmarkedChunk,
                                 hasNextMediaItem = state.nextMediaId != null,
                                 onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
                                 onSeekBack = { onEvent(PlayerEvent.SeekBack) },
@@ -578,6 +584,8 @@ fun PlayerScreen(
                                 onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
                                 onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
                                 onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
+                                onSeekToPreviousBookmarkedChunk = { onEvent(PlayerEvent.SeekToPreviousBookmarkedChunk) },
+                                onSeekToNextBookmarkedChunk = { onEvent(PlayerEvent.SeekToNextBookmarkedChunk) },
                                 onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
                                 onToggleFloatingControls = { showFloatingControls = !showFloatingControls },
                             )
@@ -650,6 +658,14 @@ fun PlayerScreen(
                 onSetSpeed = { speed -> onEvent(PlayerEvent.SetCustomSpeed(speed)) },
                 onAdjustSpeed = { delta -> onEvent(PlayerEvent.AdjustCustomSpeed(delta)) },
                 onClose = { showSpeedSheet = false },
+                baseLanguageSpeedEnabled = state.baseLanguageSpeedEnabled,
+                baseLanguageSpeed = state.baseLanguageSpeed,
+                onBaseLanguageSpeedEnabledChange = { enabled ->
+                    onEvent(PlayerEvent.SetBaseLanguageSpeedEnabled(enabled))
+                },
+                onBaseLanguageSpeedChange = { speed ->
+                    onEvent(PlayerEvent.SetBaseLanguageSpeed(speed))
+                },
             )
         }
     }
@@ -773,6 +789,8 @@ private fun FloatingTransportContent(
         hasChunks = state.chunks.isNotEmpty(),
         hasPreviousCheckedChunk = state.hasPreviousCheckedChunk,
         hasNextCheckedChunk = state.hasNextCheckedChunk,
+        hasPreviousBookmarkedChunk = state.hasPreviousBookmarkedChunk,
+        hasNextBookmarkedChunk = state.hasNextBookmarkedChunk,
         hasNextMediaItem = state.nextMediaId != null,
         onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
         onSeekBack = { onEvent(PlayerEvent.SeekBack) },
@@ -784,6 +802,8 @@ private fun FloatingTransportContent(
         onSeekToFileStart = { onEvent(PlayerEvent.SeekToFileStart) },
         onSeekToPreviousCheckedChunk = { onEvent(PlayerEvent.SeekToPreviousCheckedChunk) },
         onSeekToNextCheckedChunk = { onEvent(PlayerEvent.SeekToNextCheckedChunk) },
+        onSeekToPreviousBookmarkedChunk = { onEvent(PlayerEvent.SeekToPreviousBookmarkedChunk) },
+        onSeekToNextBookmarkedChunk = { onEvent(PlayerEvent.SeekToNextBookmarkedChunk) },
         onOpenNextMediaItem = { onEvent(PlayerEvent.OpenNextMediaItem) },
         onToggleFloatingControls = onCloseFloatingControls,
     )
@@ -982,6 +1002,10 @@ private fun PlayerWaveform(
         autoPauseScope = state.practice.autoPauseScope,
         speed = state.speed,
         autoPauseEndsAtMs = state.autoPauseEndsAtMs,
+        editingBoundaryChunk = state.editingBoundaryChunk,
+        onMoveChunkBoundary = { chunkId, newStartMs, newEndMs ->
+            onEvent(PlayerEvent.MoveChunkBoundary(chunkId, newStartMs, newEndMs))
+        },
         modifier = modifier,
     )
 }

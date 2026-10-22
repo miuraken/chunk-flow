@@ -825,10 +825,22 @@ data class PlayerUiState(
     val isZoomedWaveformRenderComplete: Boolean = false,
     val baseWaveformChunks: List<ChunkUi> = emptyList(),
     val waveformRenderGeneration: Long = 0L,
+    val baseLanguageSpeedEnabled: Boolean = false,
+    val baseLanguageSpeed: Float = 1.0f,
+    val isChunkBoundaryEditMode: Boolean = false,
 ) {
     /** 全体波形・拡大波形の両方のレンダリングが完成しているかどうか。 */
     val isWaveformRenderComplete: Boolean
         get() = isOverviewWaveformRenderComplete && isZoomedWaveformRenderComplete
+
+    /** 範囲変更モードが有効で、かつチャンクが 1 つだけ選択されているときの対象チャンク。 */
+    val editingBoundaryChunk: ChunkUi?
+        get() {
+            if (!isChunkBoundaryEditMode) return null
+            if (practice.loop is LoopMode.AbRange) return null
+            val selected = chunks.filter { it.isRepeatChecked }
+            return selected.singleOrNull()
+        }
 
     /** 文字起こしテキストを持つチャンクが 1 件以上あるかどうか。 */
     val hasTranscript: Boolean
@@ -953,26 +965,45 @@ data class PlayerUiState(
                 (chunk.language == null || chunk.language.value.isBlank() || chunk.language.value == "und")
         }
 
-    /** 現在位置より前にチェック済み（またはブックマーク済み）のチャンクがあるかどうか。 */
+    /** 現在位置より前にチェック済みの有効チャンクがあるかどうか。 */
     val hasPreviousCheckedChunk: Boolean
         get() {
             val idx = activeChunkIndex ?: 0
             if (idx <= 0 || chunks.isEmpty()) return false
-            val useRepeatChecked = chunks.any { it.isRepeatChecked }
             return chunks.subList(0, idx.coerceAtMost(chunks.size)).any { chunk ->
-                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+                chunk.isRepeatChecked && !chunk.isSkipped
             }
         }
 
-    /** 現在位置より後ろにチェック済み（またはブックマーク済み）のチャンクがあるかどうか。 */
+    /** 現在位置より後ろにチェック済みの有効チャンクがあるかどうか。 */
     val hasNextCheckedChunk: Boolean
         get() {
             if (chunks.isEmpty()) return false
             val startIdx = (activeChunkIndex ?: -1) + 1
             if (startIdx !in chunks.indices) return false
-            val useRepeatChecked = chunks.any { it.isRepeatChecked }
             return chunks.subList(startIdx, chunks.size).any { chunk ->
-                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+                chunk.isRepeatChecked && !chunk.isSkipped
+            }
+        }
+
+    /** 現在位置より前にしおり（ブックマーク）付きの有効チャンクがあるかどうか。 */
+    val hasPreviousBookmarkedChunk: Boolean
+        get() {
+            val idx = activeChunkIndex ?: 0
+            if (idx <= 0 || chunks.isEmpty()) return false
+            return chunks.subList(0, idx.coerceAtMost(chunks.size)).any { chunk ->
+                chunk.isBookmarked && !chunk.isSkipped
+            }
+        }
+
+    /** 現在位置より後ろにしおり（ブックマーク）付きの有効チャンクがあるかどうか。 */
+    val hasNextBookmarkedChunk: Boolean
+        get() {
+            if (chunks.isEmpty()) return false
+            val startIdx = (activeChunkIndex ?: -1) + 1
+            if (startIdx !in chunks.indices) return false
+            return chunks.subList(startIdx, chunks.size).any { chunk ->
+                chunk.isBookmarked && !chunk.isSkipped
             }
         }
 
@@ -1032,6 +1063,12 @@ sealed interface PlayerEvent {
     /** 指定速度（1x 以外のトグル対象速度）を [delta]（例: `-0.05f` / `+0.05f`）だけ増減し、その速度で再生する。 */
     data class AdjustCustomSpeed(val delta: Float) : PlayerEvent
 
+    /** ベース言語のみ別の速度で再生するかどうかを切り替える。 */
+    data class SetBaseLanguageSpeedEnabled(val enabled: Boolean) : PlayerEvent
+
+    /** ベース言語の再生速度を変更する。 */
+    data class SetBaseLanguageSpeed(val speed: Float) : PlayerEvent
+
     /** リピートモードを変更する（F6.1、F6.2）。 */
     data class SetLoopMode(val loopMode: LoopMode) : PlayerEvent
 
@@ -1070,6 +1107,15 @@ sealed interface PlayerEvent {
 
     /** チャンクの選択（チェックボックス）をすべて外す。 */
     data object ClearChunkSelection : PlayerEvent
+
+    /** 1 つのチャンクを選択しているときの「範囲変更」モードを切り替える。 */
+    data object ToggleChunkBoundaryEditMode : PlayerEvent
+
+    /** 1 つのチャンクを選択しているときに、開始または終了の境界を [deltaMs]（例: `-100L` / `+100L`）だけ調整する。 */
+    data class NudgeSelectedChunkBoundary(
+        val isStart: Boolean,
+        val deltaMs: Long,
+    ) : PlayerEvent
 
     /** 拡大波形で選択された範囲（[LoopMode.AbRange]）を解除し、選択範囲の中央へ再生位置を移動する。 */
     data object ClearWaveformRangeToCenter : PlayerEvent
@@ -1265,11 +1311,17 @@ sealed interface PlayerEvent {
     /** ファイルの先頭（最初の有効チャンクまたは 0ms）へ移動する。 */
     data object SeekToFileStart : PlayerEvent
 
-    /** 現在位置より前のチェック項目（選択チャンクまたはブックマーク）へ移動する。 */
+    /** 現在位置より前のチェック項目（選択チャンク）へ移動する。 */
     data object SeekToPreviousCheckedChunk : PlayerEvent
 
-    /** 現在位置より後ろのチェック項目（選択チャンクまたはブックマーク）へ移動する。 */
+    /** 現在位置より後ろのチェック項目（選択チャンク）へ移動する。 */
     data object SeekToNextCheckedChunk : PlayerEvent
+
+    /** 現在位置より前のしおり（ブックマーク）付きチャンクへ移動する。 */
+    data object SeekToPreviousBookmarkedChunk : PlayerEvent
+
+    /** 現在位置より後ろのしおり（ブックマーク）付きチャンクへ移動する。 */
+    data object SeekToNextBookmarkedChunk : PlayerEvent
 
     /** 同じフォルダ（コース）内の次の教材ファイルを開いて再生する。 */
     data object OpenNextMediaItem : PlayerEvent
@@ -1354,6 +1406,7 @@ private data class LocalUiSnapshot(
     val completedZoomedSignature: WaveformRenderSignature? = null,
     val baseWaveformChunks: List<ChunkUi> = emptyList(),
     val waveformRenderGeneration: Long = 0L,
+    val isChunkBoundaryEditMode: Boolean = false,
 )
 
 /**
@@ -2048,7 +2101,73 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.AdjustCustomSpeed -> setCustomSpeed(uiState.value.customSpeed + event.delta)
 
+            is PlayerEvent.SetBaseLanguageSpeedEnabled -> {
+                viewModelScope.launch {
+                    userSettingsRepository.setBaseLanguageSpeedEnabled(event.enabled)
+                }
+            }
+
+            is PlayerEvent.SetBaseLanguageSpeed -> {
+                val rounded = roundSpeed(event.speed)
+                viewModelScope.launch {
+                    userSettingsRepository.setBaseLanguageSpeed(rounded)
+                }
+            }
+
+            PlayerEvent.ToggleChunkBoundaryEditMode -> {
+                val selectedIds = playbackController.practice.value.repeatChunkIds
+                if (selectedIds.size == 1 && playbackController.practice.value.loop !is LoopMode.AbRange) {
+                    localUiState.update { it.copy(isChunkBoundaryEditMode = !it.isChunkBoundaryEditMode) }
+                } else {
+                    localUiState.update { it.copy(isChunkBoundaryEditMode = false) }
+                }
+            }
+
+            is PlayerEvent.NudgeSelectedChunkBoundary -> {
+                val id = resolveActiveMediaId() ?: return
+                val targetChunk = uiState.value.chunks.filter { it.isRepeatChecked }.singleOrNull() ?: return
+                val chunks = uiState.value.chunks
+                val targetIndex = chunks.indexOfFirst { it.id == targetChunk.id }
+                if (targetIndex < 0) return
+                val durationMs = uiState.value.durationMs.takeIf { it > 0L } ?: chunks.lastOrNull()?.endMs ?: return
+                val minChunkLengthMs = 100L
+                val prevChunk = chunks.getOrNull(targetIndex - 1)
+                val nextChunk = chunks.getOrNull(targetIndex + 1)
+                val minAllowedStartMs = when {
+                    prevChunk == null -> 0L
+                    prevChunk.endMs == targetChunk.startMs -> prevChunk.startMs + minChunkLengthMs
+                    else -> prevChunk.endMs
+                }
+                val maxAllowedEndMs = when {
+                    nextChunk == null -> durationMs
+                    nextChunk.startMs == targetChunk.endMs -> (nextChunk.endMs - minChunkLengthMs).coerceAtMost(durationMs)
+                    else -> nextChunk.startMs
+                }
+                val newStartMs: Long
+                val newEndMs: Long
+                if (event.isStart) {
+                    val maxStart = (targetChunk.endMs - minChunkLengthMs).coerceAtLeast(minAllowedStartMs)
+                    newStartMs = (targetChunk.startMs + event.deltaMs).coerceIn(minAllowedStartMs, maxStart)
+                    newEndMs = targetChunk.endMs
+                } else {
+                    val minEnd = (targetChunk.startMs + minChunkLengthMs).coerceAtMost(maxAllowedEndMs)
+                    newStartMs = targetChunk.startMs
+                    newEndMs = (targetChunk.endMs + event.deltaMs).coerceIn(minEnd, maxAllowedEndMs)
+                }
+                if (newStartMs != targetChunk.startMs || newEndMs != targetChunk.endMs) {
+                    moveChunkBoundaryPreservingSelection(
+                        mediaId = id,
+                        chunkId = targetChunk.id,
+                        newStartMs = newStartMs,
+                        newEndMs = newEndMs,
+                    )
+                }
+            }
+
             is PlayerEvent.SetLoopMode -> {
+                if (event.loopMode is LoopMode.AbRange || event.loopMode is LoopMode.Off) {
+                    localUiState.update { it.copy(isChunkBoundaryEditMode = false) }
+                }
                 updatePracticeWithCheckedFallback {
                     it.copy(
                         loop = event.loopMode,
@@ -2214,6 +2333,8 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.ToggleBookmark -> {
                 val id = resolveActiveMediaId() ?: return
+                val targetChunk = uiState.value.chunks.firstOrNull { it.id == event.chunkId }
+                if (targetChunk?.isSkipped == true) return
                 viewModelScope.launch {
                     val added = analysisRepository.toggleChunkBookmark(id, event.chunkId)
                     if (!added) {
@@ -2230,6 +2351,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.ToggleChunkRepeat -> {
+                localUiState.update { it.copy(isChunkBoundaryEditMode = false) }
                 updatePracticeWithCheckedFallback { current ->
                     val isUnchecking = event.chunkId in current.repeatChunkIds
                     val nextIds = if (isUnchecking) {
@@ -2260,6 +2382,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetChunkSelected -> {
+                localUiState.update { it.copy(isChunkBoundaryEditMode = false) }
                 updatePracticeWithCheckedFallback { current ->
                     val nextIds = if (event.selected) {
                         current.repeatChunkIds + event.chunkId
@@ -2293,6 +2416,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             PlayerEvent.ClearChunkSelection -> {
+                localUiState.update { it.copy(isChunkBoundaryEditMode = false) }
                 updatePracticeWithCheckedFallback { current ->
                     if (current.repeatChunkIds.isEmpty() && current.temporaryRepeatChunkId == null) {
                         current
@@ -2798,14 +2922,12 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.MoveChunkBoundary -> {
                 val id = resolveActiveMediaId() ?: return
-                viewModelScope.launch {
-                    analysisRepository.moveChunkBoundary(
-                        id = id,
-                        chunkId = event.chunkId,
-                        newStartMs = event.newStartMs,
-                        newEndMs = event.newEndMs,
-                    )
-                }
+                moveChunkBoundaryPreservingSelection(
+                    mediaId = id,
+                    chunkId = event.chunkId,
+                    newStartMs = event.newStartMs,
+                    newEndMs = event.newEndMs,
+                )
             }
 
             is PlayerEvent.DeleteChunk -> {
@@ -3467,6 +3589,10 @@ class PlayerViewModel @Inject constructor(
             PlayerEvent.SeekToPreviousCheckedChunk -> seekToCheckedChunk(direction = -1)
 
             PlayerEvent.SeekToNextCheckedChunk -> seekToCheckedChunk(direction = 1)
+
+            PlayerEvent.SeekToPreviousBookmarkedChunk -> seekToBookmarkedChunk(direction = -1)
+
+            PlayerEvent.SeekToNextBookmarkedChunk -> seekToBookmarkedChunk(direction = 1)
 
             PlayerEvent.OpenNextMediaItem -> {
                 val nextId = uiState.value.nextMediaId ?: return
@@ -4212,6 +4338,52 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    private fun moveChunkBoundaryPreservingSelection(
+        mediaId: MediaId,
+        chunkId: ChunkId,
+        newStartMs: Long,
+        newEndMs: Long,
+    ) {
+        viewModelScope.launch {
+            withContext(NonCancellable) {
+                val currentChunks = uiState.value.chunks
+                val currentPractice = playbackController.practice.value
+                val currentRepeatIds = currentPractice.repeatChunkIds
+                val selectedIndices = if (currentRepeatIds.isNotEmpty()) {
+                    currentChunks.mapIndexedNotNull { idx, c ->
+                        idx.takeIf { c.id in currentRepeatIds }
+                    }.toSet()
+                } else {
+                    emptySet()
+                }
+                val tempSelectedIndex = currentPractice.temporaryRepeatChunkId?.let { tempId ->
+                    currentChunks.indexOfFirst { it.id == tempId }.takeIf { it >= 0 }
+                }
+                analysisRepository.moveChunkBoundary(
+                    id = mediaId,
+                    chunkId = chunkId,
+                    newStartMs = newStartMs,
+                    newEndMs = newEndMs,
+                )
+                if (selectedIndices.isNotEmpty()) {
+                    val updatedChunks = analysisRepository.observeChunks(mediaId).first()
+                    val preservedIds = selectedIndices.mapNotNull { idx ->
+                        updatedChunks.getOrNull(idx)?.id
+                    }.toSet()
+                    val preservedTempId = tempSelectedIndex?.let { idx ->
+                        updatedChunks.getOrNull(idx)?.id
+                    }?.takeIf { it in preservedIds }
+                    updatePracticeWithCheckedFallback { current ->
+                        current.copy(
+                            repeatChunkIds = preservedIds,
+                            temporaryRepeatChunkId = preservedTempId,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun seekToCheckedChunk(direction: Int) {
         requestAutoFollowResume()
         val chunks = uiState.value.chunks
@@ -4220,16 +4392,39 @@ class PlayerViewModel @Inject constructor(
         val currentIdx = uiState.value.activeChunkIndex
             ?: chunks.indexOfFirst { posMs in it.startMs..it.endMs }.takeIf { it >= 0 }
             ?: if (direction < 0) chunks.size else -1
-        val useRepeatChecked = chunks.any { it.isRepeatChecked }
         val target = if (direction < 0) {
             val endExclusive = currentIdx.coerceIn(0, chunks.size)
             chunks.subList(0, endExclusive).lastOrNull { chunk ->
-                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+                chunk.isRepeatChecked && !chunk.isSkipped
             }
         } else {
             val startInclusive = (currentIdx + 1).coerceIn(0, chunks.size)
             chunks.subList(startInclusive, chunks.size).firstOrNull { chunk ->
-                if (useRepeatChecked) chunk.isRepeatChecked else chunk.isBookmarked
+                chunk.isRepeatChecked && !chunk.isSkipped
+            }
+        }
+        if (target != null) {
+            seekToChunk(target.id)
+        }
+    }
+
+    private fun seekToBookmarkedChunk(direction: Int) {
+        requestAutoFollowResume()
+        val chunks = uiState.value.chunks
+        if (chunks.isEmpty()) return
+        val posMs = playbackController.position.currentPositionMs()
+        val currentIdx = uiState.value.activeChunkIndex
+            ?: chunks.indexOfFirst { posMs in it.startMs..it.endMs }.takeIf { it >= 0 }
+            ?: if (direction < 0) chunks.size else -1
+        val target = if (direction < 0) {
+            val endExclusive = currentIdx.coerceIn(0, chunks.size)
+            chunks.subList(0, endExclusive).lastOrNull { chunk ->
+                chunk.isBookmarked && !chunk.isSkipped
+            }
+        } else {
+            val startInclusive = (currentIdx + 1).coerceIn(0, chunks.size)
+            chunks.subList(startInclusive, chunks.size).firstOrNull { chunk ->
+                chunk.isBookmarked && !chunk.isSkipped
             }
         }
         if (target != null) {
@@ -4299,7 +4494,7 @@ class PlayerViewModel @Inject constructor(
         }
         val chunkUis = analysis.chunks.map { chunk ->
             val transcript = analysis.transcripts[chunk.id]
-            val isBookmarked = analysis.bookmarks.any { bookmark ->
+            val isBookmarked = !chunk.isSkipped && analysis.bookmarks.any { bookmark ->
                 (bookmark.positionMs >= chunk.startMs && bookmark.positionMs < chunk.endMs) ||
                     bookmark.positionMs == chunk.startMs
             }
@@ -4395,6 +4590,10 @@ class PlayerViewModel @Inject constructor(
             chunkUis.map { it.copy(language = null, text = null) }
         }
 
+        val isChunkBoundaryEditMode = local.isChunkBoundaryEditMode &&
+            practice.repeatChunkIds.size == 1 &&
+            practice.loop !is LoopMode.AbRange
+
         return PlayerUiState(
             mediaId = resolvedMediaId,
             title = item?.title.orEmpty(),
@@ -4404,6 +4603,8 @@ class PlayerViewModel @Inject constructor(
             durationMs = resolvedDurationMs,
             speed = status.speed,
             customSpeed = resolvedCustomSpeed,
+            baseLanguageSpeedEnabled = settings.baseLanguageSpeedEnabled,
+            baseLanguageSpeed = settings.baseLanguageSpeed,
             seekBackMs = settings.seekBackMs,
             seekForwardMs = settings.seekForwardMs,
             practice = practice,
@@ -4450,6 +4651,7 @@ class PlayerViewModel @Inject constructor(
             isZoomedWaveformRenderComplete = isZoomedWaveformRenderComplete,
             baseWaveformChunks = resolvedBaseWaveformChunks,
             waveformRenderGeneration = local.waveformRenderGeneration,
+            isChunkBoundaryEditMode = isChunkBoundaryEditMode,
         )
     }
 

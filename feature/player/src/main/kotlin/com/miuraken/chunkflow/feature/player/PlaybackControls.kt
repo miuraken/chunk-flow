@@ -69,6 +69,10 @@ internal fun PlayerTransportControls(
     onSeekToNextCheckedChunk: () -> Unit,
     onOpenNextMediaItem: () -> Unit,
     modifier: Modifier = Modifier,
+    hasPreviousBookmarkedChunk: Boolean = false,
+    hasNextBookmarkedChunk: Boolean = false,
+    onSeekToPreviousBookmarkedChunk: () -> Unit = {},
+    onSeekToNextBookmarkedChunk: () -> Unit = {},
     onToggleFloatingControls: () -> Unit = {},
 ) {
     var activeOverlay by remember { mutableStateOf<TransportOverlayMenu?>(null) }
@@ -108,7 +112,7 @@ internal fun PlayerTransportControls(
             }
         }
 
-        // 2. 前のチャンク（長押し: ファイルの先頭 / 前のチェック済みチャンク）
+        // 2. 前のチャンク（長押し: ファイルの先頭 / 前のしおり / 前のチェック済みチャンク）
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
             ChunkFlowTransportButton(
                 icon = ChunkFlowIcons.SkipPrevious,
@@ -141,6 +145,19 @@ internal fun PlayerTransportControls(
                     FilledTonalButton(
                         onClick = {
                             activeOverlay = null
+                            onSeekToPreviousBookmarkedChunk()
+                        },
+                        enabled = hasPreviousBookmarkedChunk,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.player_long_press_prev_bookmarked),
+                            maxLines = 1,
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            activeOverlay = null
                             onSeekToPreviousCheckedChunk()
                         },
                         enabled = hasPreviousCheckedChunk,
@@ -163,7 +180,7 @@ internal fun PlayerTransportControls(
             size = PlayPauseButtonSize,
         )
 
-        // 4. 次のチャンク（長押し: 次のチェック済みチャンク / 次のファイル）
+        // 4. 次のチャンク（長押し: 次のしおり / 次のチェック済みチャンク / 次のファイル）
         Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
             ChunkFlowTransportButton(
                 icon = ChunkFlowIcons.SkipNext,
@@ -181,6 +198,19 @@ internal fun PlayerTransportControls(
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    FilledTonalButton(
+                        onClick = {
+                            activeOverlay = null
+                            onSeekToNextBookmarkedChunk()
+                        },
+                        enabled = hasNextBookmarkedChunk,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.player_long_press_next_bookmarked),
+                            maxLines = 1,
+                        )
+                    }
                     FilledTonalButton(
                         onClick = {
                             activeOverlay = null

@@ -62,7 +62,7 @@
     <string name="player_chip_translate">翻訳</string>
     <string name="player_chip_bookmarks_only_cd">ブックマークしたチャンクのみ表示</string>
     <string name="player_chip_blind_off">ブラインド: OFF</string>
-    <string name="player_chip_blind_target">隠す</string>
+    <string name="player_chip_blind_target">本文</string>
     <string name="player_chip_blind_all">すべて隠す</string>
 
     <string name="player_chip_source_imported">区切り: 文字起こし</string>
@@ -222,9 +222,16 @@
     <string name="player_detailed_transcribe_apply">この結果を反映</string>
 <string name="player_settings_target_stt_engine_label">文字起こしエンジン (学習対象言語)</string><string name="player_settings_base_stt_engine_label">文字起こしエンジン (ベース言語)</string><string name="player_settings_stt_engine_default">言語の設定に従う（既定）</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string>    <string name="player_seek_preset_seconds_format">%1$d秒</string>
     <string name="player_long_press_file_start">ファイル先頭へ</string>
+    <string name="player_long_press_prev_bookmarked">一つ前のしおりへ</string>
     <string name="player_long_press_prev_checked">一つ前のチェック項目へ</string>
+    <string name="player_long_press_next_bookmarked">一つあとのしおりへ</string>
     <string name="player_long_press_next_checked">一つ後のチェック項目へ</string>
     <string name="player_long_press_next_file">次のファイルへ</string>
+    <string name="player_selection_edit_range">範囲変更</string>
+    <string name="player_edit_range_start_minus">開始を100ms早める</string>
+    <string name="player_edit_range_start_plus">開始を100ms遅める</string>
+    <string name="player_edit_range_end_minus">終了を100ms早める</string>
+    <string name="player_edit_range_end_plus">終了を100ms遅める</string>
     <string name="player_detailed_transcribe_warning_mic_permission">SpeechRecognizer の使用にはマイク権限（RECORD_AUDIO）が必要です</string>
     <string name="player_detailed_transcribe_action_grant_mic_permission">マイク権限を許可する</string>
     <string name="player_detailed_transcribe_warning_model_download_required">選択中の言語（%1$s）とエンジンの音声認識モデルがダウンロードされていません。このままでは文字起こしに失敗します。</string>

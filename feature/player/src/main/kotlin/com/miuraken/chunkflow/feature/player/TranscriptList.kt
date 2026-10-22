@@ -473,7 +473,7 @@ fun TranscriptList(
 
     val displayedChunks = remember(chunks, bookmarksOnly) {
         chunks.mapIndexedNotNull { originalIndex, chunk ->
-            if (!bookmarksOnly || chunk.isBookmarked) {
+            if (!bookmarksOnly || (chunk.isBookmarked && !chunk.isSkipped)) {
                 originalIndex to chunk
             } else {
                 null
@@ -1208,27 +1208,32 @@ private fun TranscriptChunkRow(
     val isTargetLang = matchesLanguageRole(chunk.language, languagePair?.target)
     val isBaseLang = matchesLanguageRole(chunk.language, languagePair?.base)
 
+    val baseRowBackground = when {
+        isForcedInFlight -> colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+
+        isActive -> when {
+            isTargetLang -> langPalette.targetActiveRowBackground
+            isBaseLang -> langPalette.baseActiveRowBackground
+            else -> colorScheme.primaryContainer.copy(alpha = 0.36f)
+        }
+
+        isInLoopRange -> when {
+            isTargetLang -> langPalette.targetLoopRowBackground
+            isBaseLang -> langPalette.baseLoopRowBackground
+            else -> colorScheme.tertiaryContainer.copy(alpha = 0.28f)
+        }
+
+        isTargetLang -> langPalette.targetRowBackground
+
+        isBaseLang -> langPalette.baseRowBackground
+
+        else -> colorScheme.surface
+    }
     val rowBackground by androidx.compose.animation.animateColorAsState(
-        targetValue = when {
-            isForcedInFlight -> colorScheme.tertiaryContainer.copy(alpha = 0.45f)
-
-            isActive -> when {
-                isTargetLang -> langPalette.targetActiveRowBackground
-                isBaseLang -> langPalette.baseActiveRowBackground
-                else -> colorScheme.primaryContainer.copy(alpha = 0.36f)
-            }
-
-            isInLoopRange -> when {
-                isTargetLang -> langPalette.targetLoopRowBackground
-                isBaseLang -> langPalette.baseLoopRowBackground
-                else -> colorScheme.tertiaryContainer.copy(alpha = 0.28f)
-            }
-
-            isTargetLang -> langPalette.targetRowBackground
-
-            isBaseLang -> langPalette.baseRowBackground
-
-            else -> colorScheme.surface
+        targetValue = if (chunk.isSkipped) {
+            colorScheme.surface.copy(alpha = 0.85f)
+        } else {
+            baseRowBackground
         },
         label = "chunkRowBackground",
     )
@@ -1238,7 +1243,7 @@ private fun TranscriptChunkRow(
             isActive -> colorScheme.primary
             isInLoopRange -> colorScheme.tertiary
             else -> Color.Transparent
-        },
+        }.let { c -> if (chunk.isSkipped && c != Color.Transparent) c.copy(alpha = 0.35f) else c },
         label = "chunkIndicatorColor",
     )
 
@@ -1250,7 +1255,11 @@ private fun TranscriptChunkRow(
         chineseScript = chineseScript,
         cantoneseScript = cantoneseScript,
     )
-    val baseTextStyle = MaterialTheme.typography.bodyLarge
+    val baseTextStyle = if (chunk.isSkipped) {
+        MaterialTheme.typography.bodyMedium
+    } else {
+        MaterialTheme.typography.bodyLarge
+    }
     val localizedTextStyle = remember(baseTextStyle, localeTag) {
         if (localeTag != null) {
             baseTextStyle.copy(localeList = LocaleList(Locale(localeTag)))
@@ -1292,7 +1301,8 @@ private fun TranscriptChunkRow(
         }
     }
 
-    val bookmarkCd = if (chunk.isBookmarked) {
+    val effectiveIsBookmarked = chunk.isBookmarked && !chunk.isSkipped
+    val bookmarkCd = if (effectiveIsBookmarked) {
         stringResource(R.string.player_bookmark_toggle_remove)
     } else {
         stringResource(R.string.player_bookmark_toggle_add)
@@ -1303,12 +1313,24 @@ private fun TranscriptChunkRow(
         stringResource(R.string.player_repeat_check_add)
     }
 
+    val rowHeightModifier = if (chunk.isSkipped) {
+        Modifier.height(34.dp)
+    } else {
+        Modifier
+            .height(IntrinsicSize.Min)
+            .heightIn(min = 48.dp)
+    }
+    val contentAlphaModifier = if (chunk.isSkipped) {
+        Modifier
+    } else {
+        Modifier
+    }
+
     Box(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(IntrinsicSize.Min)
-                .heightIn(min = 48.dp)
+                .then(rowHeightModifier)
                 .background(rowBackground)
                 .combinedClickable(
                     onClick = onRowClick,
@@ -1317,7 +1339,8 @@ private fun TranscriptChunkRow(
                         menuExpanded = true
                     },
                 )
-                .padding(end = 4.dp),
+                .padding(end = 4.dp)
+                .then(contentAlphaModifier),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 左端のインジケーターバー（§7.5.5）
@@ -1334,6 +1357,7 @@ private fun TranscriptChunkRow(
                 checked = chunk.isRepeatChecked,
                 contentDescription = repeatCheckCd,
                 onToggle = onToggleRepeatChunk,
+                isMuted = chunk.isSkipped,
             )
 
             Spacer(modifier = Modifier.width(4.dp))
@@ -1341,10 +1365,11 @@ private fun TranscriptChunkRow(
             // タイムスタンプ（ブラインド中もタップで頭出し可能。normal ⇔ bold で幅が変わって右の言語バッジが動かないよう Bold 幅で領域を固定）
             val timestampText = formatDurationMs(chunk.startMs)
             val timestampStyle = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum")
+            val timestampVerticalPadding = if (chunk.isSkipped) 2.dp else 10.dp
             Box(
                 modifier = Modifier
                     .clickable(onClick = onTimestampClick)
-                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                    .padding(vertical = timestampVerticalPadding, horizontal = 4.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Text(
@@ -1357,8 +1382,12 @@ private fun TranscriptChunkRow(
                 Text(
                     text = timestampText,
                     style = timestampStyle,
-                    color = if (isActive) colorScheme.primary else colorScheme.onSurfaceVariant,
-                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                    color = when {
+                        chunk.isSkipped -> colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                        isActive -> colorScheme.primary
+                        else -> colorScheme.onSurfaceVariant
+                    },
+                    fontWeight = if (isActive && !chunk.isSkipped) FontWeight.Bold else FontWeight.Normal,
                 )
             }
 
@@ -1367,6 +1396,7 @@ private fun TranscriptChunkRow(
             ChunkLanguageBadge(
                 language = chunk.language,
                 languagePair = languagePair,
+                isMuted = chunk.isSkipped,
                 modifier = Modifier.clickable(enabled = languagePair != null) {
                     val nextLang = nextToggledChunkLanguage(chunk.language, languagePair)
                     if (nextLang != null) {
@@ -1381,19 +1411,22 @@ private fun TranscriptChunkRow(
             Spacer(modifier = Modifier.width(8.dp))
 
             val primaryTextColor = if (chunk.isSkipped) {
-                colorScheme.onSurface.copy(alpha = 0.38f)
+                colorScheme.onSurface.copy(alpha = 0.35f)
             } else {
                 colorScheme.onSurface
             }
             val secondaryTextColor = if (chunk.isSkipped) {
-                colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
             } else {
                 colorScheme.onSurfaceVariant
             }
+            val textVerticalPadding = if (chunk.isSkipped) 2.dp else 8.dp
+            val textMaxLines = if (chunk.isSkipped) 1 else Int.MAX_VALUE
+            val textOverflow = if (chunk.isSkipped) TextOverflow.Ellipsis else TextOverflow.Clip
 
             if (!displayText.isNullOrBlank() && !isForcedInFlight) {
                 val isTargetOrNoPair = isTargetLang || languagePair == null
-                val shouldShowPhonetic = showTargetRomanization && isTargetOrNoPair
+                val shouldShowPhonetic = showTargetRomanization && isTargetOrNoPair && !chunk.isSkipped
                 val phoneticReading = remember(
                     shouldShowPhonetic,
                     chunk,
@@ -1409,7 +1442,7 @@ private fun TranscriptChunkRow(
                         null
                     }
                 }
-                val translatedReading = if (showTargetTranslation && isTargetOrNoPair) {
+                val translatedReading = if (showTargetTranslation && isTargetOrNoPair && !chunk.isSkipped) {
                     chunk.translatedText?.takeIf { it.isNotBlank() }
                 } else {
                     null
@@ -1420,7 +1453,7 @@ private fun TranscriptChunkRow(
                         Column(
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(vertical = 8.dp),
+                                .padding(vertical = textVerticalPadding),
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             if (phoneticReading != null) {
@@ -1430,6 +1463,8 @@ private fun TranscriptChunkRow(
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Color.Transparent,
+                                        maxLines = textMaxLines,
+                                        overflow = textOverflow,
                                         modifier = Modifier.clearAndSetSemantics {},
                                     )
                                     Text(
@@ -1437,6 +1472,8 @@ private fun TranscriptChunkRow(
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
                                         color = primaryTextColor,
+                                        maxLines = textMaxLines,
+                                        overflow = textOverflow,
                                     )
                                 }
                             }
@@ -1445,31 +1482,40 @@ private fun TranscriptChunkRow(
                                     text = translatedReading,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = secondaryTextColor,
+                                    maxLines = textMaxLines,
+                                    overflow = textOverflow,
                                 )
                             }
                         }
                     } else {
                         Surface(
-                            color = colorScheme.surfaceContainerHighest,
+                            color = colorScheme.surfaceContainerHighest.copy(
+                                alpha = if (chunk.isSkipped) 0.45f else 1f,
+                            ),
                             contentColor = secondaryTextColor,
                             shape = MaterialTheme.shapes.small,
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(vertical = 8.dp),
+                                .padding(vertical = textVerticalPadding),
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                modifier = Modifier.padding(
+                                    horizontal = 10.dp,
+                                    vertical = if (chunk.isSkipped) 2.dp else 6.dp,
+                                ),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Icon(
                                     imageVector = ChunkFlowIcons.VisibilityOff,
                                     contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
+                                    modifier = Modifier.size(if (chunk.isSkipped) 14.dp else 16.dp),
                                 )
                                 Text(
                                     text = stringResource(R.string.player_blind_masked_hint),
                                     style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
@@ -1479,7 +1525,7 @@ private fun TranscriptChunkRow(
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(vertical = 8.dp),
+                            .padding(vertical = textVerticalPadding),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         Box {
@@ -1488,9 +1534,12 @@ private fun TranscriptChunkRow(
                                 style = localizedTextStyle,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color.Transparent,
+                                maxLines = textMaxLines,
+                                overflow = textOverflow,
                                 modifier = Modifier.clearAndSetSemantics {},
                             )
-                            if (currentActiveWord != null &&
+                            if (!chunk.isSkipped &&
+                                currentActiveWord != null &&
                                 currentActiveWord.startCharIndex in 0 until displayText.length &&
                                 currentActiveWord.endCharIndex in (currentActiveWord.startCharIndex + 1)..displayText.length
                             ) {
@@ -1512,13 +1561,17 @@ private fun TranscriptChunkRow(
                                     style = localizedTextStyle,
                                     fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
                                     color = primaryTextColor,
+                                    maxLines = textMaxLines,
+                                    overflow = textOverflow,
                                 )
                             } else {
                                 Text(
                                     text = displayText,
                                     style = localizedTextStyle,
-                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    fontWeight = if (isActive && !chunk.isSkipped) FontWeight.SemiBold else FontWeight.Normal,
                                     color = primaryTextColor,
+                                    maxLines = textMaxLines,
+                                    overflow = textOverflow,
                                 )
                             }
                         }
@@ -1544,7 +1597,7 @@ private fun TranscriptChunkRow(
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(vertical = 8.dp),
+                        .padding(vertical = textVerticalPadding),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Row(
@@ -1569,6 +1622,7 @@ private fun TranscriptChunkRow(
                                 else -> ""
                             }
                             val stageColor = when {
+                                chunk.isSkipped -> colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
                                 isForcedInFlight -> colorScheme.tertiary
                                 transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING -> colorScheme.primary
                                 else -> colorScheme.onSurfaceVariant
@@ -1576,12 +1630,14 @@ private fun TranscriptChunkRow(
                             Text(
                                 text = stageLabel,
                                 style = MaterialTheme.typography.labelMedium,
-                                fontWeight = if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
+                                fontWeight = if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING && !chunk.isSkipped) {
                                     FontWeight.SemiBold
                                 } else {
                                     FontWeight.Normal
                                 },
                                 color = stageColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         } else {
                             val chunkNumText = stringResource(R.string.player_chunk_number_format, index + 1)
@@ -1591,19 +1647,23 @@ private fun TranscriptChunkRow(
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = Color.Transparent,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.clearAndSetSemantics {},
                                 )
                                 Text(
                                     text = chunkNumText,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                    fontWeight = if (isActive && !chunk.isSkipped) FontWeight.SemiBold else FontWeight.Normal,
                                     color = primaryTextColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
                     }
 
-                    if (transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
+                    if (!chunk.isSkipped && transcriptionStage == ChunkTranscriptionStage.TRANSCRIBING) {
                         val stepProgress = inFlightStep?.progressFraction ?: 0.35f
                         LinearProgressIndicator(
                             progress = { stepProgress.coerceIn(0f, 1f) },
@@ -1641,21 +1701,22 @@ private fun TranscriptChunkRow(
 
             IconButton(
                 onClick = onToggleBookmark,
-                modifier = Modifier.size(36.dp),
+                enabled = !chunk.isSkipped,
+                modifier = Modifier.size(if (chunk.isSkipped) 28.dp else 36.dp),
             ) {
                 Icon(
-                    imageVector = if (chunk.isBookmarked) {
+                    imageVector = if (effectiveIsBookmarked) {
                         ChunkFlowIcons.Bookmark
                     } else {
                         ChunkFlowIcons.BookmarkBorder
                     },
                     contentDescription = bookmarkCd,
-                    tint = if (chunk.isBookmarked) {
-                        colorScheme.primary
-                    } else {
-                        colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                    tint = when {
+                        chunk.isSkipped -> colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
+                        effectiveIsBookmarked -> colorScheme.primary
+                        else -> colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     },
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(if (chunk.isSkipped) 16.dp else 18.dp),
                 )
             }
         }
@@ -1881,11 +1942,13 @@ internal fun ChunkLanguageBadge(
     language: LanguageTag?,
     languagePair: LanguagePair?,
     modifier: Modifier = Modifier,
+    isMuted: Boolean = false,
 ) {
     val normalizedValue = language?.value?.trim()?.takeUnless {
         it.isEmpty() || it.equals("und", ignoreCase = true)
     }
     val role = when {
+        isMuted -> LanguageBadgeRole.UNKNOWN
         matchesLanguageRole(language, languagePair?.target) -> LanguageBadgeRole.TARGET
         matchesLanguageRole(language, languagePair?.base) -> LanguageBadgeRole.BASE
         normalizedValue != null -> LanguageBadgeRole.OTHER
@@ -1906,22 +1969,24 @@ private fun RepeatChunkCheckbox(
     contentDescription: String,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
+    isMuted: Boolean = false,
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    val alpha = if (isMuted) 0.35f else 1f
     val containerColor = if (checked) {
-        colorScheme.tertiaryContainer
+        colorScheme.tertiaryContainer.copy(alpha = alpha)
     } else {
-        colorScheme.surfaceContainerLow
+        colorScheme.surfaceContainerLow.copy(alpha = alpha)
     }
     val contentColor = if (checked) {
-        colorScheme.onTertiaryContainer
+        colorScheme.onTertiaryContainer.copy(alpha = alpha)
     } else {
-        colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+        colorScheme.onSurfaceVariant.copy(alpha = 0.78f * alpha)
     }
     val boxBorderColor = if (checked) {
-        colorScheme.tertiary
+        colorScheme.tertiary.copy(alpha = alpha)
     } else {
-        colorScheme.outline.copy(alpha = 0.7f)
+        colorScheme.outline.copy(alpha = 0.7f * alpha)
     }
 
     Surface(
@@ -1941,10 +2006,10 @@ private fun RepeatChunkCheckbox(
     ) {
         Box(
             modifier = Modifier
-                .padding(horizontal = 5.dp, vertical = 5.dp)
-                .size(16.dp)
+                .padding(horizontal = if (isMuted) 4.dp else 5.dp, vertical = if (isMuted) 3.dp else 5.dp)
+                .size(if (isMuted) 14.dp else 16.dp)
                 .clip(MaterialTheme.shapes.extraSmall)
-                .background(if (checked) colorScheme.tertiary else colorScheme.surface)
+                .background(if (checked) colorScheme.tertiary.copy(alpha = alpha) else colorScheme.surface)
                 .border(1.dp, boxBorderColor, MaterialTheme.shapes.extraSmall),
             contentAlignment = Alignment.Center,
         ) {
@@ -1952,8 +2017,8 @@ private fun RepeatChunkCheckbox(
                 Icon(
                     imageVector = ChunkFlowIcons.Check,
                     contentDescription = null,
-                    tint = colorScheme.onTertiary,
-                    modifier = Modifier.size(12.dp),
+                    tint = colorScheme.onTertiary.copy(alpha = alpha),
+                    modifier = Modifier.size(if (isMuted) 10.dp else 12.dp),
                 )
             }
         }
@@ -2120,8 +2185,8 @@ internal fun resolveAutoFollowScrollTargetIndex(activeDisplayIndex: Int): Int = 
 /**
  * 「現在位置へ戻る」の矢印を下向き（↓）にするかどうか。
  *
- * 現在位置が今の表示より上にある（自動追従の位置よりも下までスクロールしている）ときは `true`（↓）、
- * 下にあるときは `false`（↑）。戻るときにリストが動く向きを示す（利用者の指定）。
+ * 現在位置が今の表示より下にある（自動追従の位置よりも上までスクロールしている）ときは `true`（↓）、
+ * 上にあるときは `false`（↑）。現在位置がある方向を示す。
  */
 internal fun isReturnToCurrentArrowDownward(
     firstVisibleItemIndex: Int,
@@ -2129,8 +2194,7 @@ internal fun isReturnToCurrentArrowDownward(
     activeDisplayIndex: Int,
 ): Boolean {
     val targetIndex = resolveAutoFollowScrollTargetIndex(activeDisplayIndex)
-    return firstVisibleItemIndex > targetIndex ||
-        (firstVisibleItemIndex == targetIndex && firstVisibleItemScrollOffset > 0)
+    return firstVisibleItemIndex < targetIndex
 }
 
 /**

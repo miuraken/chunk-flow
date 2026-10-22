@@ -62,7 +62,7 @@
     <string name="player_chip_translate">Translate</string>
     <string name="player_chip_bookmarks_only_cd">Show bookmarked chunks only</string>
     <string name="player_chip_blind_off">Blind: OFF</string>
-    <string name="player_chip_blind_target">Hide</string>
+    <string name="player_chip_blind_target">Text</string>
     <string name="player_chip_blind_all">Hide All</string>
 
     <string name="player_chip_source_imported">Chunks: Transcript</string>
@@ -222,9 +222,16 @@
     <string name="player_detailed_transcribe_apply">Apply result</string>
 <string name="player_settings_target_stt_engine_label">STT Engine (Target)</string><string name="player_settings_base_stt_engine_label">STT Engine (Base)</string><string name="player_settings_stt_engine_default">Follow language setting (Default)</string><string name="player_settings_stt_engine_mlkit">ML Kit</string><string name="player_settings_stt_engine_speech_recognizer">SpeechRecognizer</string><string name="player_settings_stt_engine_sherpa_onnx">sherpa-onnx</string>    <string name="player_seek_preset_seconds_format">%1$ds</string>
     <string name="player_long_press_file_start">Go to start of file</string>
+    <string name="player_long_press_prev_bookmarked">Previous bookmark</string>
     <string name="player_long_press_prev_checked">Previous checked chunk</string>
+    <string name="player_long_press_next_bookmarked">Next bookmark</string>
     <string name="player_long_press_next_checked">Next checked chunk</string>
     <string name="player_long_press_next_file">Next file</string>
+    <string name="player_selection_edit_range">Edit range</string>
+    <string name="player_edit_range_start_minus">Move start 100ms earlier</string>
+    <string name="player_edit_range_start_plus">Move start 100ms later</string>
+    <string name="player_edit_range_end_minus">Move end 100ms earlier</string>
+    <string name="player_edit_range_end_plus">Move end 100ms later</string>
     <string name="player_detailed_transcribe_warning_mic_permission">SpeechRecognizer requires microphone permission (RECORD_AUDIO)</string>
     <string name="player_detailed_transcribe_action_grant_mic_permission">Grant microphone permission</string>
     <string name="player_detailed_transcribe_warning_model_download_required">The speech recognition model for the selected language (%1$s) and engine is not downloaded. Transcription will fail without it.</string>

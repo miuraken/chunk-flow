@@ -642,6 +642,8 @@ fun WaveformSection(
     autoPauseScope: AutoPauseScope = AutoPauseScope.ALL_CHUNKS,
     speed: Float = 1.0f,
     autoPauseEndsAtMs: Long? = null,
+    editingBoundaryChunk: ChunkUi? = null,
+    onMoveChunkBoundary: (ChunkId, Long, Long) -> Unit = { _, _, _ -> },
 ) {
     val effectiveDurationMs = max(durationMs, waveform?.durationMs ?: 0L).coerceAtLeast(1L)
     val featureStatus = analysis[AnalysisStage.FEATURES]
@@ -916,6 +918,8 @@ fun WaveformSection(
                 onPreviousChunk = onPreviousChunk,
                 onNextChunk = onNextChunk,
                 onSeekBack = onSeekBack,
+                editingBoundaryChunk = editingBoundaryChunk,
+                onMoveChunkBoundary = onMoveChunkBoundary,
             )
         }
     }
@@ -1578,9 +1582,18 @@ private fun ZoomedWaveformCanvas(
     onPreviousChunk: () -> Unit,
     onNextChunk: () -> Unit,
     onSeekBack: () -> Unit,
+    editingBoundaryChunk: ChunkUi? = null,
+    onMoveChunkBoundary: (ChunkId, Long, Long) -> Unit = { _, _, _ -> },
 ) {
     val isInspectionMode = LocalInspectionMode.current
     val hapticFeedback = LocalHapticFeedback.current
+
+    var boundaryDragStartMs by remember(editingBoundaryChunk?.id, editingBoundaryChunk?.startMs, editingBoundaryChunk?.endMs) {
+        mutableStateOf<Long?>(null)
+    }
+    var boundaryDragEndMs by remember(editingBoundaryChunk?.id, editingBoundaryChunk?.startMs, editingBoundaryChunk?.endMs) {
+        mutableStateOf<Long?>(null)
+    }
 
     val timeline = remember(
         durationMs,
@@ -1648,6 +1661,8 @@ private fun ZoomedWaveformCanvas(
     val currentOnAbDragFinish by rememberUpdatedState(onAbDragFinish)
     val currentOnSetChunkSelected by rememberUpdatedState(onSetChunkSelected)
     val currentOnRenderComplete by rememberUpdatedState(onRenderComplete)
+    val currentEditingBoundaryChunk by rememberUpdatedState(editingBoundaryChunk)
+    val currentOnMoveChunkBoundary by rememberUpdatedState(onMoveChunkBoundary)
 
     // ピンチ操作中は既存の画像を水平方向に拡大縮小して即座に追従させ、操作が止まってから 0.2 秒（200ms）後に、
     // 表示幅に応じた解像度（15 秒 / 7.5 秒）の近傍画像を作り直す
@@ -1894,16 +1909,77 @@ private fun ZoomedWaveformCanvas(
                     },
                 )
             }
-            // ピンチで表示幅を変え、1 本指の左右ドラッグで再生位置を動かす
+            // ピンチで表示幅を変え、1 本指の左右ドラッグで再生位置を動かす（または境界編集モード時は開始/終了ハンドルをドラッグする）
             .pointerInput(durationMs) {
                 var activeScrubVirtualMs: Long? = null
+                var draggingBoundaryIsEnd: Boolean? = null
                 detectZoomAndPanGestures(
                     // パンの基準位置はジェスチャーごとに取り直す（前回のパンの終了位置に戻らないように）
-                    onGestureStart = { activeScrubVirtualMs = null },
+                    onGestureStart = { downOffset ->
+                        activeScrubVirtualMs = null
+                        draggingBoundaryIsEnd = null
+                        val editChunk = currentEditingBoundaryChunk
+                        if (editChunk != null && size.width > 0) {
+                            val tl = currentTimeline
+                            val scrubMs = currentScrubPositionMs
+                            val centerVirtualMs = if (scrubMs != null) {
+                                tl.mediaToVirtualMs(scrubMs)
+                            } else {
+                                tl.mediaToVirtualMs(
+                                    mediaMs = positionProvider.currentPositionMs(),
+                                    activeAutoPauseChunkIndex = if (currentAutoPauseEndsAtMs != null) currentActiveChunkIndex else null,
+                                    autoPauseElapsedMs = computeCurrentAutoPauseElapsedMs(),
+                                )
+                            }
+                            val liveWindowMs = currentZoomWindowMs.coerceAtLeast(1L)
+                            val windowVirtualStartMs = centerVirtualMs - liveWindowMs / 2L
+                            val pxPerMs = size.width / liveWindowMs.toFloat()
+                            val startX = (tl.mediaToVirtualMs(editChunk.startMs) - windowVirtualStartMs) * pxPerMs
+                            val endX = (tl.mediaToVirtualMs(editChunk.endMs) - windowVirtualStartMs) * pxPerMs
+                            val hitSlopPx = 24.dp.toPx()
+                            val distStart = abs(downOffset.x - startX)
+                            val distEnd = abs(downOffset.x - endX)
+                            if (distStart <= hitSlopPx || distEnd <= hitSlopPx) {
+                                draggingBoundaryIsEnd = distEnd < distStart
+                                boundaryDragStartMs = editChunk.startMs
+                                boundaryDragEndMs = editChunk.endMs
+                            }
+                        }
+                    },
                     onGesture = { pan, zoom ->
                         if (size.width > 0) {
                             val liveWindow = currentZoomWindowMs
-                            if (abs(zoom - 1f) > 0.004f) {
+                            val isEndHandle = draggingBoundaryIsEnd
+                            val editChunk = currentEditingBoundaryChunk
+                            if (isEndHandle != null && editChunk != null) {
+                                if (abs(pan.x) > 0.2f) {
+                                    val allChunks = currentChunks
+                                    val targetIndex = allChunks.indexOfFirst { it.id == editChunk.id }
+                                    val prevChunk = if (targetIndex > 0) allChunks.getOrNull(targetIndex - 1) else null
+                                    val nextChunk = if (targetIndex >= 0) allChunks.getOrNull(targetIndex + 1) else null
+                                    val minChunkLenMs = 100L
+                                    val minAllowedStartMs = when {
+                                        prevChunk == null -> 0L
+                                        prevChunk.endMs == editChunk.startMs -> prevChunk.startMs + minChunkLenMs
+                                        else -> prevChunk.endMs
+                                    }
+                                    val maxAllowedEndMs = when {
+                                        nextChunk == null -> durationMs
+                                        nextChunk.startMs == editChunk.endMs -> (nextChunk.endMs - minChunkLenMs).coerceAtMost(durationMs)
+                                        else -> nextChunk.startMs
+                                    }
+                                    val deltaMs = ((pan.x / size.width.toFloat()) * liveWindow).roundToLong()
+                                    val curStart = boundaryDragStartMs ?: editChunk.startMs
+                                    val curEnd = boundaryDragEndMs ?: editChunk.endMs
+                                    if (!isEndHandle) {
+                                        val maxStart = (curEnd - minChunkLenMs).coerceAtLeast(minAllowedStartMs)
+                                        boundaryDragStartMs = (curStart + deltaMs).coerceIn(minAllowedStartMs, maxStart)
+                                    } else {
+                                        val minEnd = (curStart + minChunkLenMs).coerceAtMost(maxAllowedEndMs)
+                                        boundaryDragEndMs = (curEnd + deltaMs).coerceIn(minEnd, maxAllowedEndMs)
+                                    }
+                                }
+                            } else if (abs(zoom - 1f) > 0.004f) {
                                 currentOnZoomWindowChange((liveWindow.toFloat() / zoom).roundToLong())
                             } else if (abs(pan.x) > 0.5f) {
                                 val tl = currentTimeline
@@ -1926,6 +2002,20 @@ private fun ZoomedWaveformCanvas(
                                 currentOnScrubChange(nextMediaMs)
                                 currentOnSeekTo(nextMediaMs)
                             }
+                        }
+                    },
+                    onGestureEnd = {
+                        val editChunk = currentEditingBoundaryChunk
+                        val startMs = boundaryDragStartMs
+                        val endMs = boundaryDragEndMs
+                        val wasDraggingBoundary = draggingBoundaryIsEnd != null
+                        draggingBoundaryIsEnd = null
+                        if (wasDraggingBoundary && editChunk != null && startMs != null && endMs != null) {
+                            if (startMs != editChunk.startMs || endMs != editChunk.endMs) {
+                                currentOnMoveChunkBoundary(editChunk.id, startMs, endMs)
+                            }
+                            boundaryDragStartMs = null
+                            boundaryDragEndMs = null
                         }
                     },
                 )
@@ -2273,6 +2363,57 @@ private fun ZoomedWaveformCanvas(
                         }
                     }
 
+                    // 5.5. チャンク境界編集モード時の開始・終了境界ハンドルを描画
+                    if (editingBoundaryChunk != null) {
+                        val dispStartMs = boundaryDragStartMs ?: editingBoundaryChunk.startMs
+                        val dispEndMs = boundaryDragEndMs ?: editingBoundaryChunk.endMs
+                        val editVirtualStart = timeline.mediaToVirtualMs(dispStartMs)
+                        val editVirtualEnd = timeline.mediaToVirtualMs(dispEndMs)
+                        val rawLeftX = (editVirtualStart - windowVirtualStartMs) * pxPerMs
+                        val rawRightX = (editVirtualEnd - windowVirtualStartMs) * pxPerMs
+                        if (rawRightX > 0f && rawLeftX < size.width) {
+                            val clampedLeft = rawLeftX.coerceIn(0f, size.width)
+                            val clampedRight = rawRightX.coerceIn(clampedLeft, size.width)
+                            drawRect(
+                                color = abLoopHighlightColor,
+                                topLeft = Offset(clampedLeft, 0f),
+                                size = Size(clampedRight - clampedLeft, size.height),
+                            )
+                            drawRect(
+                                color = abLoopBorderColor,
+                                topLeft = Offset(clampedLeft, 0f),
+                                size = Size(clampedRight - clampedLeft, size.height),
+                                style = Stroke(width = 2.dp.toPx()),
+                            )
+                            val handleBarWidthPx = 3.dp.toPx()
+                            val handleKnobWidthPx = 12.dp.toPx()
+                            val handleKnobHeightPx = 7.dp.toPx()
+                            val handleKnobRadiusPx = handleKnobHeightPx * 0.5f
+                            for (handleX in listOf(rawLeftX, rawRightX)) {
+                                if (handleX in -handleKnobWidthPx..(size.width + handleKnobWidthPx)) {
+                                    drawRoundRect(
+                                        color = abLoopBorderColor,
+                                        topLeft = Offset(handleX - handleBarWidthPx * 0.5f, 0f),
+                                        size = Size(handleBarWidthPx, size.height),
+                                        cornerRadius = CornerRadius(handleBarWidthPx * 0.5f, handleBarWidthPx * 0.5f),
+                                    )
+                                    drawRoundRect(
+                                        color = abLoopBorderColor,
+                                        topLeft = Offset(handleX - handleKnobWidthPx * 0.5f, 0f),
+                                        size = Size(handleKnobWidthPx, handleKnobHeightPx),
+                                        cornerRadius = CornerRadius(handleKnobRadiusPx, handleKnobRadiusPx),
+                                    )
+                                    drawRoundRect(
+                                        color = abLoopBorderColor,
+                                        topLeft = Offset(handleX - handleKnobWidthPx * 0.5f, (size.height - handleKnobHeightPx).coerceAtLeast(0f)),
+                                        size = Size(handleKnobWidthPx, handleKnobHeightPx),
+                                        cornerRadius = CornerRadius(handleKnobRadiusPx, handleKnobRadiusPx),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // 6. 中央の再生ヘッド
                     drawLine(
                         color = playheadColor,
@@ -2497,16 +2638,17 @@ private fun DrawScope.drawSelectionCheckBadge(
  * それに加えて、ジェスチャーの開始時に [onGestureStart] を呼ぶ。
  */
 private suspend fun PointerInputScope.detectZoomAndPanGestures(
-    onGestureStart: () -> Unit,
+    onGestureStart: (downOffset: Offset) -> Unit,
     onGesture: (pan: Offset, zoom: Float) -> Unit,
+    onGestureEnd: () -> Unit = {},
 ) {
     awaitEachGesture {
         var zoom = 1f
         var pan = Offset.Zero
         var pastTouchSlop = false
         val touchSlop = viewConfiguration.touchSlop
-        awaitFirstDown(requireUnconsumed = false)
-        onGestureStart()
+        val down = awaitFirstDown(requireUnconsumed = false)
+        onGestureStart(down.position)
         do {
             val event = awaitPointerEvent()
             val canceled = event.changes.any { it.isConsumed }
@@ -2532,6 +2674,7 @@ private suspend fun PointerInputScope.detectZoomAndPanGestures(
                 }
             }
         } while (!canceled && event.changes.any { it.pressed })
+        onGestureEnd()
     }
 }
 
