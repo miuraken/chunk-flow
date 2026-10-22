@@ -152,11 +152,10 @@ class DefaultAnalysisRepositoryFolderSttOverrideTest {
             ),
             transcriber.receivedOverrides,
         )
-        // 近いフォルダから順に調べ、両方の言語が決まったら、さらに上の「語学」は調べない
-        // （強制文字起こしの中で上書きを決め直すことがあるので、重複は除いて比べる）
+        // 近いフォルダから順に 1 回ずつ調べ、両方の言語が決まったら、さらに上の「語学」は調べない
         assertEquals(
             listOf("語学/英語/中級/Unit 1", "語学/英語/中級", "語学/英語"),
-            courseFolderDao.queriedPaths.distinct(),
+            courseFolderDao.queriedPaths,
         )
     }
 

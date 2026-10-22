@@ -2751,9 +2751,6 @@ class DefaultAnalysisRepository(
     override suspend fun retranscribeChunk(id: MediaId, chunkId: ChunkId) {
         withContext(ioDispatcher) {
             withTrackedTranscriptionJob(id) {
-                val itemSttOverride = resolveEffectiveItemSttOverride(id)
-                val engineByLanguage = userSettingsRepository?.settings?.first()?.sttEngineByLanguage ?: emptyMap()
-
                 attemptedEmptyChunkIds[id]?.remove(chunkId.value)
 
                 val allChunks = chunkDao.observeByMediaId(id.value).first()
