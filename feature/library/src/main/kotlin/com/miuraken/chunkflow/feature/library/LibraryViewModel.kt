@@ -628,94 +628,160 @@ data class LibraryUiState(
             .sortedBy { it.value }
 
     /**
-     * ファイルビュータブでファイル名キーワード・対象言語・タグ（選んだタグをすべて持つもの）でフィルタし、[fileSortOption] と [fileSortAscending] に応じて並べた全ファイル一覧。
+     * ライブラリ内のタグを、そのタグが付いているファイル数が多い順（同数なら [allTags] の順）に並べた一覧。
+     */
+    val tagsSortedByItemCount: List<String>
+        get() {
+            if (allTags.size <= 1 || items.isEmpty()) return allTags
+            val counts = HashMap<String, Int>()
+            for (model in items) {
+                for (tag in model.tags) {
+                    counts[tag] = (counts[tag] ?: 0) + 1
+                }
+            }
+            if (counts.isEmpty()) return allTags
+            val originalIndex = allTags.withIndex().associate { (i, t) -> t to i }
+            return allTags.sortedWith(
+                compareByDescending<String> { counts[it] ?: 0 }
+                    .thenBy { originalIndex[it] ?: Int.MAX_VALUE },
+            )
+        }
+
+    /**
+     * 指定された教材 [model] が現在の対象言語フィルタ（[fileTargetLanguageFilter]）およびタグフィルタ（[fileTagFilter]）に一致するかどうか。
+     */
+    internal fun matchesLanguageAndTagFilter(model: LibraryItemUiModel): Boolean {
+        val targetFilter = fileTargetLanguageFilter?.value?.lowercase()
+        val matchesLang = targetFilter == null ||
+            model.item.languagePair.target.value.lowercase() == targetFilter
+        // タグは AND（選んだタグをすべて持つファイルだけ）。名前はリポジトリがそろえた表記なのでそのまま比べる
+        val matchesTags = fileTagFilter.isEmpty() || model.tags.containsAll(fileTagFilter)
+        return matchesLang && matchesTags
+    }
+
+    /**
+     * 指定された教材リスト [list] を [fileSortOption] と [fileSortAscending] に応じてソートする。
+     */
+    internal fun sortItems(list: List<LibraryItemUiModel>): List<LibraryItemUiModel> = when (fileSortOption) {
+        LibraryFileSortOption.NAME -> list.sortedWith { a, b ->
+            val orderA = a.fileSortOrder
+            val orderB = b.fileSortOrder
+            if (orderA != null && orderB != null && orderA != orderB) {
+                val cmp = orderA.compareTo(orderB)
+                return@sortedWith if (fileSortAscending) cmp else -cmp
+            }
+            if (orderA != null && orderB == null) return@sortedWith if (fileSortAscending) -1 else 1
+            if (orderA == null && orderB != null) return@sortedWith if (fileSortAscending) 1 else -1
+            val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+            val baseCmp = if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+            if (fileSortAscending) baseCmp else -baseCmp
+        }
+
+        LibraryFileSortOption.ACCESS_TIME -> list.sortedWith { a, b ->
+            val timeA = a.lastAccessedAtEpochMs ?: 0L
+            val timeB = b.lastAccessedAtEpochMs ?: 0L
+            val timeCmp = if (fileSortAscending) {
+                timeA.compareTo(timeB)
+            } else {
+                timeB.compareTo(timeA)
+            }
+            if (timeCmp != 0) {
+                timeCmp
+            } else {
+                val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+            }
+        }
+
+        LibraryFileSortOption.ADDED_TIME -> list.sortedWith { a, b ->
+            val timeA = a.item.importedAtEpochMs
+            val timeB = b.item.importedAtEpochMs
+            val timeCmp = if (fileSortAscending) {
+                timeA.compareTo(timeB)
+            } else {
+                timeB.compareTo(timeA)
+            }
+            if (timeCmp != 0) {
+                timeCmp
+            } else {
+                val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+            }
+        }
+
+        LibraryFileSortOption.COMPLETION -> list.sortedWith { a, b ->
+            val compA = if (a.isListened) 1.0f else a.maxProgressFraction
+            val compB = if (b.isListened) 1.0f else b.maxProgressFraction
+            val compCmp = if (fileSortAscending) {
+                compA.compareTo(compB)
+            } else {
+                compB.compareTo(compA)
+            }
+            if (compCmp != 0) {
+                compCmp
+            } else {
+                val listenedCmp = if (fileSortAscending) {
+                    a.isListened.compareTo(b.isListened)
+                } else {
+                    b.isListened.compareTo(a.isListened)
+                }
+                if (listenedCmp != 0) {
+                    listenedCmp
+                } else {
+                    val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
+                    if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
+                }
+            }
+        }
+    }
+
+    /**
+     * ファイル名キーワード・対象言語・タグ（選んだタグをすべて持つもの）でフィルタし、フォルダ内部ごとに [fileSortOption] と [fileSortAscending] に応じて並べた全ファイル一覧。
      */
     val filteredAllFiles: List<LibraryItemUiModel>
         get() {
             val normalizedQuery = fileSearchQuery.trim()
-            val targetFilter = fileTargetLanguageFilter?.value?.lowercase()
             val filtered = items.filter { model ->
                 val matchesQuery = normalizedQuery.isEmpty() ||
                     model.item.title.contains(normalizedQuery, ignoreCase = true) ||
                     (model.item.course?.contains(normalizedQuery, ignoreCase = true) == true)
-                val matchesLang = targetFilter == null ||
-                    model.item.languagePair.target.value.lowercase() == targetFilter
-                // タグは AND（選んだタグをすべて持つファイルだけ）。名前はリポジトリがそろえた表記なのでそのまま比べる
-                val matchesTags = fileTagFilter.isEmpty() || model.tags.containsAll(fileTagFilter)
-                matchesQuery && matchesLang && matchesTags
+                matchesQuery && matchesLanguageAndTagFilter(model)
             }
-            return when (fileSortOption) {
-                LibraryFileSortOption.NAME -> filtered.sortedWith { a, b ->
-                    val orderA = a.fileSortOrder
-                    val orderB = b.fileSortOrder
-                    if (orderA != null && orderB != null && orderA != orderB) {
-                        val cmp = orderA.compareTo(orderB)
-                        return@sortedWith if (fileSortAscending) cmp else -cmp
-                    }
-                    if (orderA != null && orderB == null) return@sortedWith if (fileSortAscending) -1 else 1
-                    if (orderA == null && orderB != null) return@sortedWith if (fileSortAscending) 1 else -1
-                    val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                    val baseCmp = if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
-                    if (fileSortAscending) baseCmp else -baseCmp
-                }
-
-                LibraryFileSortOption.ACCESS_TIME -> filtered.sortedWith { a, b ->
-                    val timeA = a.lastAccessedAtEpochMs ?: 0L
-                    val timeB = b.lastAccessedAtEpochMs ?: 0L
-                    val timeCmp = if (fileSortAscending) {
-                        timeA.compareTo(timeB)
-                    } else {
-                        timeB.compareTo(timeA)
-                    }
-                    if (timeCmp != 0) {
-                        timeCmp
-                    } else {
-                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
-                    }
-                }
-
-                LibraryFileSortOption.ADDED_TIME -> filtered.sortedWith { a, b ->
-                    val timeA = a.item.importedAtEpochMs
-                    val timeB = b.item.importedAtEpochMs
-                    val timeCmp = if (fileSortAscending) {
-                        timeA.compareTo(timeB)
-                    } else {
-                        timeB.compareTo(timeA)
-                    }
-                    if (timeCmp != 0) {
-                        timeCmp
-                    } else {
-                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
-                    }
-                }
-
-                LibraryFileSortOption.COMPLETION -> filtered.sortedWith { a, b ->
-                    val compA = if (a.isListened) 1.0f else a.maxProgressFraction
-                    val compB = if (b.isListened) 1.0f else b.maxProgressFraction
-                    val compCmp = if (fileSortAscending) {
-                        compA.compareTo(compB)
-                    } else {
-                        compB.compareTo(compA)
-                    }
-                    if (compCmp != 0) {
-                        compCmp
-                    } else {
-                        val listenedCmp = if (fileSortAscending) {
-                            a.isListened.compareTo(b.isListened)
-                        } else {
-                            b.isListened.compareTo(a.isListened)
-                        }
-                        if (listenedCmp != 0) {
-                            listenedCmp
-                        } else {
-                            val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                            if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
-                        }
+            val rootSortOrders = buildMap {
+                for (folder in courseFolders) {
+                    val path = folder.coursePath.trim('/')
+                    val order = folder.sortOrder
+                    if (path.isNotBlank() && '/' !in path && order != null) {
+                        put(path, order)
                     }
                 }
             }
+            return filtered
+                .groupBy { effectivePathOf(it) }
+                .entries
+                .sortedWith { a, b ->
+                    val pathA = a.key
+                    val pathB = b.key
+                    if (pathA == pathB) return@sortedWith 0
+                    if (pathA == null) return@sortedWith 1
+                    if (pathB == null) return@sortedWith -1
+                    val topA = pathA.substringBefore('/')
+                    val topB = pathB.substringBefore('/')
+                    val orderA = rootSortOrders[topA]
+                    val orderB = rootSortOrders[topB]
+                    val orderCmp = when {
+                        orderA != null && orderB != null -> orderA.compareTo(orderB)
+                        orderA != null -> -1
+                        orderB != null -> 1
+                        else -> 0
+                    }
+                    if (orderCmp != 0) {
+                        orderCmp
+                    } else {
+                        compareFileNamesAscending(pathA, pathB)
+                    }
+                }
+                .flatMap { (_, dirItems) -> sortItems(dirItems) }
         }
 
     /**
@@ -1157,6 +1223,8 @@ data class LibraryUiState(
     val currentDirectories: List<LibraryDirectoryUiModel>
         get() {
             val currentPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+            val hasActiveFilter = fileTargetLanguageFilter != null || fileTagFilter.isNotEmpty()
+            val targetFilter = fileTargetLanguageFilter?.value?.lowercase()
             val rootSortOrders = if (currentPath == null) {
                 buildMap {
                     for (folder in courseFolders) {
@@ -1173,6 +1241,12 @@ data class LibraryUiState(
             val grouped = linkedMapOf<String, MutableList<LibraryItemUiModel>>()
             for (folder in courseFolders) {
                 val path = folder.coursePath.trim('/').takeIf { it.isNotBlank() } ?: continue
+                if (hasActiveFilter) {
+                    val folderMatchesLangOnly = fileTagFilter.isEmpty() &&
+                        targetFilter != null &&
+                        folder.languagePair?.target?.value?.lowercase() == targetFilter
+                    if (!folderMatchesLangOnly) continue
+                }
                 if (currentPath == null) {
                     val topSegment = path.substringBefore('/')
                     grouped.getOrPut(topSegment) { mutableListOf() }
@@ -1186,6 +1260,7 @@ data class LibraryUiState(
                 }
             }
             for (itemModel in items) {
+                if (!matchesLanguageAndTagFilter(itemModel)) continue
                 val path = effectivePathOf(itemModel) ?: continue
                 if (currentPath == null) {
                     val topSegment = path.substringBefore('/')
@@ -1218,10 +1293,7 @@ data class LibraryUiState(
                     }
                 }
                 .map { (dirFullPath, dirItems) ->
-                    val sortedItems = dirItems.sortedWith { a, b ->
-                        val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                        if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
-                    }
+                    val sortedItems = sortItems(dirItems)
                     LibraryDirectoryUiModel(
                         name = dirFullPath,
                         items = sortedItems,
@@ -1234,17 +1306,15 @@ data class LibraryUiState(
         }
 
     /**
-     * 現在開いている階層（[currentDirectoryPath]）の直下にある音声ファイル一覧（ファイル名の自然昇順）。
+     * 現在開いている階層（[currentDirectoryPath]）の直下にある音声ファイル一覧（言語・タグフィルタおよび [fileSortOption] / [fileSortAscending] によるソートを反映）。
      */
     val currentFiles: List<LibraryItemUiModel>
         get() {
             val currentPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
-            return items
-                .filter { effectivePathOf(it) == currentPath }
-                .sortedWith { a, b ->
-                    val titleCmp = compareFileNamesAscending(a.item.title, b.item.title)
-                    if (titleCmp != 0) titleCmp else a.item.id.value.compareTo(b.item.id.value)
-                }
+            val matching = items.filter {
+                effectivePathOf(it) == currentPath && matchesLanguageAndTagFilter(it)
+            }
+            return sortItems(matching)
         }
 
     /**
@@ -2520,19 +2590,23 @@ class LibraryViewModel @Inject constructor(
                 val state = uiState.value
                 when (state.selectedTab) {
                     LibraryViewTab.FOLDERS -> {
-                        val fileIds = state.currentFiles.mapTo(linkedSetOf()) { it.item.id }
-                        val dirPaths = state.currentDirectories.mapNotNullTo(linkedSetOf()) {
-                            it.name?.trim('/')?.takeIf { p -> p.isNotEmpty() }
-                        }
-                        if (fileIds.isNotEmpty() &&
-                            (selectedDirectoryPaths.value.isEmpty() || selectedItemIds.value.isNotEmpty())
-                        ) {
-                            selectedItemIds.update { it + fileIds }
-                            if (selectedDirectoryPaths.value.isNotEmpty()) {
+                        if (state.fileSearchQuery.trim().isNotEmpty()) {
+                            selectedItemIds.value = state.filteredAllFiles.mapTo(linkedSetOf()) { it.item.id }
+                        } else {
+                            val fileIds = state.currentFiles.mapTo(linkedSetOf()) { it.item.id }
+                            val dirPaths = state.currentDirectories.mapNotNullTo(linkedSetOf()) {
+                                it.name?.trim('/')?.takeIf { p -> p.isNotEmpty() }
+                            }
+                            if (fileIds.isNotEmpty() &&
+                                (selectedDirectoryPaths.value.isEmpty() || selectedItemIds.value.isNotEmpty())
+                            ) {
+                                selectedItemIds.update { it + fileIds }
+                                if (selectedDirectoryPaths.value.isNotEmpty()) {
+                                    selectedDirectoryPaths.update { it + dirPaths }
+                                }
+                            } else {
                                 selectedDirectoryPaths.update { it + dirPaths }
                             }
-                        } else {
-                            selectedDirectoryPaths.update { it + dirPaths }
                         }
                     }
 
@@ -3593,11 +3667,23 @@ class LibraryViewModel @Inject constructor(
         // どのファイルにも付いていないタグ（消えたタグ）は、絞り込みから外して扱う
         val tagNames = tags.toHashSet()
         val effectiveTagFilter = navAndSelection.fileTagFilter.filterTo(LinkedHashSet()) { it in tagNames }
+        // タグが付いているファイル数が多い順（同数なら作成順）に並べる
+        val tagCounts = HashMap<String, Int>()
+        for (model in uiItems) {
+            for (tag in model.tags) {
+                tagCounts[tag] = (tagCounts[tag] ?: 0) + 1
+            }
+        }
+        val tagOriginalOrder = tags.withIndex().associate { (index, tag) -> tag to index }
+        val sortedTags = tags.sortedWith(
+            compareByDescending<String> { tagCounts[it] ?: 0 }
+                .thenBy { tagOriginalOrder[it] ?: Int.MAX_VALUE },
+        )
 
         return LibraryUiState(
             items = uiItems,
             courseFolders = courseFolders,
-            allTags = tags,
+            allTags = sortedTags,
             folderLanguageColorOrdinals = folderLanguageColorOrdinals,
             importState = dialogAndImport.importState,
             miniPlayer = miniPlayer,

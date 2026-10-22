@@ -417,7 +417,7 @@ internal fun LibraryFilesTabContent(
 }
 
 @Composable
-private fun LanguageFilterPillChip(
+internal fun LanguageFilterPillChip(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,

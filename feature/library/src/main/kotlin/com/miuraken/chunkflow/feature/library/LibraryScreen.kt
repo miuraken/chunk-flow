@@ -237,16 +237,29 @@ fun LibraryScreen(
     var showCreatePlaylistDialog by rememberSaveable { mutableStateOf(false) }
     var showAddToPlaylistDialog by rememberSaveable { mutableStateOf(false) }
     var showEditTagsDialog by rememberSaveable { mutableStateOf(false) }
+    var isSearchExpanded by rememberSaveable { mutableStateOf(false) }
 
     val currentDirs = state.currentDirectories
     val currentFiles = state.currentFiles
 
+    val isOnFoldersOrFilesTab =
+        state.selectedTab == LibraryViewTab.FOLDERS || state.selectedTab == LibraryViewTab.FILES
+    val isSearchOpen =
+        isOnFoldersOrFilesTab && (isSearchExpanded || state.fileSearchQuery.isNotEmpty())
     val canNavigateBack = state.isSelectionMode ||
-        (state.selectedTab == LibraryViewTab.FOLDERS && state.currentDirectoryPath != null) ||
+        isSearchOpen ||
+        (isOnFoldersOrFilesTab && state.currentDirectoryPath != null) ||
         (state.selectedTab == LibraryViewTab.PLAYLISTS && state.activePlaylist != null)
 
     BackHandler(enabled = canNavigateBack) {
-        onEvent(LibraryEvent.NavigateUp)
+        if (!state.isSelectionMode && isSearchOpen) {
+            if (state.fileSearchQuery.isNotEmpty()) {
+                onEvent(LibraryEvent.UpdateFileSearchQuery(""))
+            }
+            isSearchExpanded = false
+        } else {
+            onEvent(LibraryEvent.NavigateUp)
+        }
     }
 
     LaunchedEffect(state.currentDirectoryPath, currentFiles.size) {
@@ -270,24 +283,34 @@ fun LibraryScreen(
         onDismiss = { onEvent(LibraryEvent.DismissImportStatus) },
     )
 
+    val visibleTabs = remember {
+        listOf(
+            LibraryViewTab.FOLDERS,
+            LibraryViewTab.PLAYLISTS,
+            LibraryViewTab.BOOKMARKS,
+        )
+    }
+
     NavigationSuiteScaffold(
         modifier = modifier,
         navigationSuiteItems = {
-            LibraryViewTab.entries.forEach { tab ->
+            visibleTabs.forEach { tab ->
                 val labelRes = when (tab) {
-                    LibraryViewTab.FOLDERS -> R.string.library_tab_folders
-                    LibraryViewTab.FILES -> R.string.library_tab_files
+                    LibraryViewTab.FOLDERS, LibraryViewTab.FILES -> R.string.library_tab_files
                     LibraryViewTab.PLAYLISTS -> R.string.library_tab_playlists
                     LibraryViewTab.BOOKMARKS -> R.string.library_tab_bookmarks
                 }
                 val iconVector = when (tab) {
-                    LibraryViewTab.FOLDERS -> ChunkFlowIcons.Folder
-                    LibraryViewTab.FILES -> ChunkFlowIcons.AudioFile
+                    LibraryViewTab.FOLDERS, LibraryViewTab.FILES -> ChunkFlowIcons.AudioFile
                     LibraryViewTab.PLAYLISTS -> ChunkFlowIcons.QueueMusic
                     LibraryViewTab.BOOKMARKS -> ChunkFlowIcons.Bookmark
                 }
+                val isTabSelected = when (tab) {
+                    LibraryViewTab.FOLDERS -> isOnFoldersOrFilesTab
+                    else -> state.selectedTab == tab
+                }
                 item(
-                    selected = state.selectedTab == tab,
+                    selected = isTabSelected,
                     onClick = { onEvent(LibraryEvent.SelectTab(tab)) },
                     icon = {
                         Icon(
@@ -445,6 +468,26 @@ fun LibraryScreen(
                                     LibrarySelectionActions(actions = selectionActions)
                                     Spacer(modifier = Modifier.width(8.dp))
                                 } else {
+                                    IconButton(
+                                        onClick = {
+                                            if (!isOnFoldersOrFilesTab) {
+                                                onEvent(LibraryEvent.SelectTab(LibraryViewTab.FOLDERS))
+                                                isSearchExpanded = true
+                                            } else if (isSearchExpanded || state.fileSearchQuery.isNotEmpty()) {
+                                                if (state.fileSearchQuery.isNotEmpty()) {
+                                                    onEvent(LibraryEvent.UpdateFileSearchQuery(""))
+                                                }
+                                                isSearchExpanded = false
+                                            } else {
+                                                isSearchExpanded = true
+                                            }
+                                        },
+                                    ) {
+                                        Icon(
+                                            imageVector = ChunkFlowIcons.Search,
+                                            contentDescription = stringResource(R.string.library_files_search_placeholder),
+                                        )
+                                    }
                                     IconButton(onClick = { onEvent(LibraryEvent.RequestImportDirectory) }) {
                                         Icon(
                                             imageVector = ChunkFlowIcons.CreateNewFolder,
@@ -517,19 +560,13 @@ fun LibraryScreen(
                     )
                 } else {
                     when (state.selectedTab) {
-                        LibraryViewTab.FOLDERS -> {
+                        LibraryViewTab.FOLDERS, LibraryViewTab.FILES -> {
                             LibraryFoldersTabContent(
                                 state = state,
                                 listState = listState,
                                 onEvent = onEvent,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-
-                        LibraryViewTab.FILES -> {
-                            LibraryFilesTabContent(
-                                state = state,
-                                onEvent = onEvent,
+                                isSearchExpanded = isSearchExpanded,
+                                onSearchExpandedChange = { isSearchExpanded = it },
                                 modifier = Modifier.weight(1f),
                             )
                         }

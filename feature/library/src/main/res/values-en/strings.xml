@@ -214,4 +214,20 @@
     <string name="transcript_export_failed">Failed to export transcript</string>
     <string name="library_mini_player_expand_cd">Expand playback controls</string>
     <string name="library_mini_player_collapse_cd">Collapse to mini player</string>
+    <string name="library_stt_recommendation_update_title">Speech recognition engine recommendations updated</string>
+    <string name="library_stt_recommendation_update_message">Following the app update, the speech recognition engine status and recommended settings for languages with manual settings (other than Auto) have been updated.</string>
+    <string name="library_stt_recommendation_update_item_format">• %1$s: Current %2$s → Recommended: Auto (%3$s)</string>
+    <string name="library_stt_recommendation_update_switch_to_auto">Switch to Auto (Recommended)</string>
+    <string name="library_stt_recommendation_update_keep_current">Keep current settings</string>
+    <string name="library_stt_engine_mlkit">ML Kit GenAI</string>
+    <string name="library_stt_engine_speech_recognizer">System Default (SpeechRecognizer)</string>
+    <string name="library_stt_engine_sherpa_onnx">sherpa-onnx Whisper Tiny</string>
+    <string name="library_stt_engine_sherpa_sense_voice">sherpa-onnx SenseVoice Small</string>
+    <string name="library_stt_engine_sherpa_whisper_base">sherpa-onnx Whisper Base</string>
+    <string name="library_stt_engine_sherpa_whisper_small">sherpa-onnx Whisper Small</string>
+    <string name="library_stt_engine_moonshine_tiny">Moonshine ONNX Tiny</string>
+    <string name="library_stt_engine_moonshine_base">Moonshine ONNX Base</string>
+    <string name="library_stt_engine_openai_api">OpenAI-compatible API</string>
+    <string name="library_stt_engine_groq_api">Groq-compatible API</string>
+    <string name="library_stt_engine_gemini_api">Gemini API</string>
 </resources>

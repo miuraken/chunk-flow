@@ -2066,4 +2066,75 @@ class LibraryViewModelTest {
         assertEquals(LibraryViewTab.FOLDERS, viewModel.uiState.value.selectedTab)
         assertEquals("MyFolder", viewModel.uiState.value.currentDirectoryPath)
     }
+
+    @Test
+    fun `フォルダタブ統合_言語とタグの絞り込みとフォルダ内ソートおよびタグ件数順ソートが反映される`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val enPair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
+        val zhPair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja"))
+        val item1 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-1"),
+            title = "Lesson 1",
+            course = "EnglishCourse",
+            languagePair = enPair,
+            durationMs = 10_000L,
+        )
+        val item2 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-2"),
+            title = "Lesson 2",
+            course = "EnglishCourse",
+            languagePair = enPair,
+            durationMs = 30_000L,
+        )
+        val item3 = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("item-3"),
+            title = "Lesson 3",
+            course = "ChineseCourse",
+            languagePair = zhPair,
+            durationMs = 20_000L,
+        )
+        val repo = FakeLibraryRepository(initialItems = listOf(item1, item2, item3))
+        repo.setItemTags(item1.id, listOf("rare", "popular"))
+        repo.setItemTags(item2.id, listOf("popular"))
+        repo.setItemTags(item3.id, listOf("popular"))
+
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // 1. タグはアイテム数が多い順（popular: 3件, rare: 1件）に左から並ぶ
+        assertEquals(listOf("popular", "rare"), viewModel.uiState.value.allTags)
+        assertEquals(listOf("popular", "rare"), viewModel.uiState.value.tagsSortedByItemCount)
+
+        // 2. 言語フィルタ（zh）を適用するとルートフォルダ一覧が ChineseCourse のみに絞られる
+        viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(LanguageTag("zh")))
+        assertEquals(
+            listOf("ChineseCourse"),
+            viewModel.uiState.value.currentDirectories.map { it.name },
+        )
+
+        // 3. 言語フィルタを解除して EnglishCourse に入り、名称降順ソートを適用すると currentFiles がソートされる
+        viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null))
+        viewModel.onEvent(LibraryEvent.OpenDirectory("EnglishCourse"))
+        assertEquals(
+            listOf(item1.id, item2.id),
+            viewModel.uiState.value.currentFiles.map { it.item.id },
+        )
+        viewModel.onEvent(
+            LibraryEvent.SelectFileSortOption(
+                sortOption = LibraryFileSortOption.NAME,
+                ascending = false,
+            ),
+        )
+        assertEquals(
+            listOf(item2.id, item1.id),
+            viewModel.uiState.value.currentFiles.map { it.item.id },
+        )
+
+        // 4. タグフィルタ（rare）を適用すると currentFiles が item1 のみに絞られる
+        viewModel.onEvent(LibraryEvent.ToggleFileTagFilter("rare"))
+        assertEquals(
+            listOf(item1.id),
+            viewModel.uiState.value.currentFiles.map { it.item.id },
+        )
+    }
 }
