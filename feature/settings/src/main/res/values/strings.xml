@@ -132,7 +132,7 @@
     <string name="settings_groq_api_key_label">Groq 互換 API キー</string>
     <string name="settings_groq_api_key_placeholder">gsk_…</string>
     <string name="settings_gemini_api_key_label">Gemini API キー</string>
-    <string name="settings_gemini_api_key_placeholder">AIza…</string>
+    <string name="settings_gemini_api_key_placeholder">AIza… / AQ.…</string>
     <string name="settings_api_key_save">保存</string>
     <string name="settings_api_key_clear">クリア</string>
     <string name="settings_api_key_show">API キーを表示</string>

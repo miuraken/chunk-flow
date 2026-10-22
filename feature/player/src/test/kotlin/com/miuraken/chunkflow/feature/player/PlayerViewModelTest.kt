@@ -2054,7 +2054,7 @@ class PlayerViewModelTest {
             text = "",
             language = LanguageTag("ko"),
             engineId = com.miuraken.chunkflow.core.model.EngineId("gemini-2.5-flash"),
-            errorMessage = "Gemini API のキー形式または認証が無効です（HTTP 401）。Google AI Studio で発行した Gemini API キー（通常「AIza」で始まる文字列）を設定画面で入力し、「保存」を押してください。",
+            errorMessage = "Gemini API の認証またはリクエストに失敗しました（HTTP 401）。設定画面の Gemini API キー（AIza… または AQ.…）に誤りがないか、キーが無効化・期限切れ・API 制限されていないか確認してください。",
         )
         viewModel.onEvent(
             PlayerEvent.RunDetailedTranscriptionTrial(
@@ -2065,7 +2065,7 @@ class PlayerViewModelTest {
             ),
         )
         assertEquals(
-            "Gemini API のキー形式または認証が無効です（HTTP 401）。Google AI Studio で発行した Gemini API キー（通常「AIza」で始まる文字列）を設定画面で入力し、「保存」を押してください。",
+            "Gemini API の認証またはリクエストに失敗しました（HTTP 401）。設定画面の Gemini API キー（AIza… または AQ.…）に誤りがないか、キーが無効化・期限切れ・API 制限されていないか確認してください。",
             viewModel.uiState.value.detailedTranscriptionDialog?.trialEmptyMessage,
         )
     }

@@ -246,6 +246,13 @@ internal class CloudSpeechTranscriber @Inject constructor(
         }
     }
 
+    /**
+     * `AQ.` から始まる Gemini API キー（Google AI Studio Auth Key または Vertex AI Express Mode Key）について、
+     * 成功が確認されたエンドポイント URL をキーのハッシュごとに保持するキャッシュ。
+     */
+    @Volatile
+    private var resolvedGeminiEndpointByKeyHash: Pair<Int, String>? = null
+
     private fun callGeminiGenerateContent(
         apiKey: String,
         wavBytes: ByteArray,
@@ -255,23 +262,27 @@ internal class CloudSpeechTranscriber @Inject constructor(
         val prompt = "Transcribe the speech in this audio clip accurately in ${language.value}. " +
             "Return ONLY the verbatim transcription text without any explanations, timestamps, or formatting."
 
+        // AI Studio (generativelanguage.googleapis.com) と Vertex AI Express (aiplatform.googleapis.com) の
+        // 両方で共通して受け付けられる ProtoJSON 形式（role = "user"、inlineData / mimeType）。
         val payload = JSONObject().apply {
             put(
                 "contents",
                 JSONArray().put(
-                    JSONObject().put(
-                        "parts",
-                        JSONArray()
-                            .put(
-                                JSONObject().put(
-                                    "inline_data",
-                                    JSONObject()
-                                        .put("mime_type", "audio/wav")
-                                        .put("data", base64Audio),
-                                ),
-                            )
-                            .put(JSONObject().put("text", prompt)),
-                    ),
+                    JSONObject()
+                        .put("role", "user")
+                        .put(
+                            "parts",
+                            JSONArray()
+                                .put(
+                                    JSONObject().put(
+                                        "inlineData",
+                                        JSONObject()
+                                            .put("mimeType", "audio/wav")
+                                            .put("data", base64Audio),
+                                    ),
+                                )
+                                .put(JSONObject().put("text", prompt)),
+                        ),
                 ),
             )
             put(
@@ -282,87 +293,93 @@ internal class CloudSpeechTranscriber @Inject constructor(
         }
 
         val bodyBytes = payload.toString().toByteArray(Charsets.UTF_8)
-        val connection = (URL(GEMINI_GENERATE_CONTENT_URL).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            doOutput = true
-            doInput = true
-            useCaches = false
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("x-goog-api-key", apiKey)
-            setFixedLengthStreamingMode(bodyBytes.size)
-        }
+        val cachedUrl = resolvedGeminiEndpointByKeyHash
+            ?.takeIf { (hash, _) -> hash == apiKey.hashCode() }
+            ?.second
+        val candidateUrls = resolveGeminiCandidateUrls(apiKey, cachedUrl)
 
-        return try {
-            connection.outputStream.use { out ->
-                out.write(bodyBytes)
-                out.flush()
+        var lastHttpCode: Int? = null
+        for ((index, endpointUrl) in candidateUrls.withIndex()) {
+            val connection = (URL(endpointUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                doOutput = true
+                doInput = true
+                useCaches = false
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("x-goog-api-key", apiKey)
+                setFixedLengthStreamingMode(bodyBytes.size)
             }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                logInfo("Gemini API returned HTTP $code")
-                return OnDeviceChunkTranscriptionResult(
-                    text = "",
-                    language = language,
-                    engineId = GEMINI_ENGINE_ID,
-                    errorMessage = formatCloudHttpErrorMessage(
-                        providerLabel = "Gemini API",
-                        httpCode = code,
-                        apiKey = apiKey,
-                        isGemini = true,
-                    ),
-                )
-            }
-            val responseText = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val json = JSONObject(responseText)
-            val candidates = json.optJSONArray("candidates") ?: return null
-            if (candidates.length() == 0) return null
-            val firstCandidate = candidates.optJSONObject(0) ?: return null
-            val content = firstCandidate.optJSONObject("content") ?: return null
-            val parts = content.optJSONArray("parts") ?: return null
-            val sb = StringBuilder()
-            for (i in 0 until parts.length()) {
-                val partText = parts.optJSONObject(i)?.optString("text", "").orEmpty()
-                if (partText.isNotEmpty()) {
-                    sb.append(partText)
+
+            try {
+                connection.outputStream.use { out ->
+                    out.write(bodyBytes)
+                    out.flush()
                 }
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    logInfo("Gemini API returned HTTP $code (attempt=${index + 1}/${candidateUrls.size})")
+                    lastHttpCode = code
+                    // AQ. キーで最初のエンドポイントが認証/権限エラー (400/401/403) を返した場合はもう一方のエンドポイントを試す
+                    if (code in setOf(400, 401, 403) && index + 1 < candidateUrls.size) {
+                        continue
+                    }
+                    return OnDeviceChunkTranscriptionResult(
+                        text = "",
+                        language = language,
+                        engineId = GEMINI_ENGINE_ID,
+                        errorMessage = formatCloudHttpErrorMessage(
+                            providerLabel = "Gemini API",
+                            httpCode = code,
+                            apiKey = apiKey,
+                            isGemini = true,
+                        ),
+                    )
+                }
+
+                if (apiKey.startsWith("AQ.")) {
+                    resolvedGeminiEndpointByKeyHash = apiKey.hashCode() to endpointUrl
+                }
+                val responseText = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val json = JSONObject(responseText)
+                val candidates = json.optJSONArray("candidates") ?: return null
+                if (candidates.length() == 0) return null
+                val firstCandidate = candidates.optJSONObject(0) ?: return null
+                val content = firstCandidate.optJSONObject("content") ?: return null
+                val parts = content.optJSONArray("parts") ?: return null
+                val sb = StringBuilder()
+                for (i in 0 until parts.length()) {
+                    val partText = parts.optJSONObject(i)?.optString("text", "").orEmpty()
+                    if (partText.isNotEmpty()) {
+                        sb.append(partText)
+                    }
+                }
+                val text = sb.toString().trim()
+                if (text.isEmpty()) return null
+                return OnDeviceChunkTranscriptionResult(
+                    text = text,
+                    language = language,
+                    confidence = 0.92f,
+                    engineId = GEMINI_ENGINE_ID,
+                )
+            } finally {
+                connection.disconnect()
             }
-            val text = sb.toString().trim()
-            if (text.isEmpty()) return null
-            OnDeviceChunkTranscriptionResult(
-                text = text,
-                language = language,
-                confidence = 0.92f,
-                engineId = GEMINI_ENGINE_ID,
-            )
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun formatCloudHttpErrorMessage(
-        providerLabel: String,
-        httpCode: Int,
-        apiKey: String,
-        isGemini: Boolean,
-    ): String = when (httpCode) {
-        400, 401, 403 -> if (isGemini && !apiKey.startsWith("AIza")) {
-            "Gemini API の認証に失敗しました（HTTP $httpCode）。現在入力されているキーは Google AI Studio の Gemini API キー形式（AIza… で始まる文字列）ではありません。Google AI Studio で発行した Gemini API キーを設定画面で入力し、「保存」を押してください。"
-        } else if (isGemini) {
-            "Gemini API の認証またはリクエストに失敗しました（HTTP $httpCode）。Google AI Studio で発行した有効な Gemini API キー（AIza…）が設定・保存されているか確認してください。"
-        } else {
-            "$providerLabel の認証またはリクエストに失敗しました（HTTP $httpCode）。有効な API キーが設定画面で入力・保存されているか確認してください。"
         }
 
-        429 ->
-            "$providerLabel の利用上限（レート制限 / クォータ上限: HTTP 429）に達しました。しばらく待ってから再試行するか、利用プラン・残高を確認してください。"
-
-        in 500..599 ->
-            "$providerLabel サーバー側で一時的なエラーが発生しました（HTTP $httpCode）。しばらく待ってから再試行してください。"
-
-        else ->
-            "$providerLabel の呼び出しに失敗しました（HTTP $httpCode）。設定画面の API キーや通信環境を確認してください。"
+        val finalCode = lastHttpCode ?: 401
+        return OnDeviceChunkTranscriptionResult(
+            text = "",
+            language = language,
+            engineId = GEMINI_ENGINE_ID,
+            errorMessage = formatCloudHttpErrorMessage(
+                providerLabel = "Gemini API",
+                httpCode = finalCode,
+                apiKey = apiKey,
+                isGemini = true,
+            ),
+        )
     }
 
     private fun wrapPcm16LeAsWav(
@@ -411,11 +428,65 @@ internal class CloudSpeechTranscriber @Inject constructor(
         private const val GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
         private const val GROQ_MODEL = "whisper-large-v3-turbo"
 
-        private const val GEMINI_GENERATE_CONTENT_URL =
+        internal const val GEMINI_GENERATE_CONTENT_URL =
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+        internal const val GEMINI_VERTEX_EXPRESS_GENERATE_CONTENT_URL =
+            "https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-2.5-flash:generateContent"
 
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 30_000
         private const val MAX_WAV_BYTES = 16 * 1024 * 1024 // 16 MB 上限
+
+        /**
+         * Gemini API キーのプレフィックスに応じて試行するエンドポイント URL の順序を返す。
+         *
+         * - `AIza...`: Google AI Studio 標準キー → `generativelanguage.googleapis.com` のみ
+         * - `AQ....`: Google AI Studio の新形式キー（Auth Key）と Vertex AI Express Mode キーの両方が存在するため、
+         *   両方（AI Studio → Vertex AI Express）を順に試行し、成功したエンドポイントをキャッシュする。
+         */
+        internal fun resolveGeminiCandidateUrls(
+            apiKey: String,
+            cachedUrl: String? = null,
+        ): List<String> {
+            if (!apiKey.startsWith("AQ.")) {
+                return listOf(GEMINI_GENERATE_CONTENT_URL)
+            }
+            return when (cachedUrl) {
+                GEMINI_VERTEX_EXPRESS_GENERATE_CONTENT_URL -> listOf(
+                    GEMINI_VERTEX_EXPRESS_GENERATE_CONTENT_URL,
+                    GEMINI_GENERATE_CONTENT_URL,
+                )
+
+                else -> listOf(
+                    GEMINI_GENERATE_CONTENT_URL,
+                    GEMINI_VERTEX_EXPRESS_GENERATE_CONTENT_URL,
+                )
+            }
+        }
+
+        internal fun formatCloudHttpErrorMessage(
+            providerLabel: String,
+            httpCode: Int,
+            apiKey: String,
+            isGemini: Boolean,
+        ): String = when (httpCode) {
+            400, 401, 403 -> if (isGemini && !apiKey.startsWith("AIza") && !apiKey.startsWith("AQ.")) {
+                "Gemini API の認証に失敗しました（HTTP $httpCode）。現在入力されているキーは Gemini API キーの形式（AIza… または AQ.… で始まる文字列）ではありません。設定画面で有効な Gemini API キーを入力し、「保存」を押してください。"
+            } else if (isGemini) {
+                "Gemini API の認証またはリクエストに失敗しました（HTTP $httpCode）。設定画面の Gemini API キー（AIza… または AQ.…）に誤りがないか、キーが無効化・期限切れ・API 制限されていないか確認してください。"
+            } else {
+                "$providerLabel の認証またはリクエストに失敗しました（HTTP $httpCode）。有効な API キーが設定画面で入力・保存されているか確認してください。"
+            }
+
+            429 ->
+                "$providerLabel の利用上限（レート制限 / クォータ上限: HTTP 429）に達しました。しばらく待ってから再試行するか、利用プラン・残高を確認してください。"
+
+            in 500..599 ->
+                "$providerLabel サーバー側で一時的なエラーが発生しました（HTTP $httpCode）。しばらく待ってから再試行してください。"
+
+            else ->
+                "$providerLabel の呼び出しに失敗しました（HTTP $httpCode）。設定画面の API キーや通信環境を確認してください。"
+        }
     }
 }
