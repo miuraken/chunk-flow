@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.data.library.ImportError
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowWavyLinearProgress
@@ -67,6 +68,17 @@ internal fun ImportStatusBanner(
                     text = stringResource(R.string.library_importing),
                     style = MaterialTheme.typography.bodyMedium,
                 )
+                val currentFileName = importState.currentFileName?.takeIf { it.isNotBlank() }
+                if (currentFileName != null) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = currentFileName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 val fraction = importState.fraction
                 if (fraction != null) {

@@ -315,7 +315,15 @@ class DefaultLibraryRepository(
                 }
             }
 
-            emit(ImportProgress.Copying(fraction = index.toFloat() / totalAudio.coerceAtLeast(1).toFloat()))
+            val currentFileName = meta?.displayName?.trim()?.takeIf { it.isNotBlank() }
+                ?: sanitizeDisplayName(uri.lastPathSegment).takeIf { it.isNotBlank() }
+
+            emit(
+                ImportProgress.Copying(
+                    fraction = index.toFloat() / totalAudio.coerceAtLeast(1).toFloat(),
+                    currentFileName = currentFileName,
+                ),
+            )
 
             val tempId = UUID.randomUUID().toString()
             val tempFile = mediaFileLocator.tempFileFor(tempId)
@@ -329,7 +337,14 @@ class DefaultLibraryRepository(
                     tempFile = tempFile,
                     fileIndex = index,
                     totalFiles = totalAudio.coerceAtLeast(1),
-                    onProgress = { fraction -> emit(ImportProgress.Copying(fraction)) },
+                    onProgress = { fraction ->
+                        emit(
+                            ImportProgress.Copying(
+                                fraction = fraction,
+                                currentFileName = currentFileName,
+                            ),
+                        )
+                    },
                 )
             } catch (ce: CancellationException) {
                 tempFile.delete()
@@ -477,7 +492,15 @@ class DefaultLibraryRepository(
                 continue
             }
 
-            emit(ImportProgress.Copying(fraction = index.toFloat() / totalAudio.coerceAtLeast(1).toFloat()))
+            val currentFileName = candidate.meta?.displayName?.trim()?.takeIf { it.isNotBlank() }
+                ?: sanitizeDisplayName(candidate.uri.lastPathSegment).takeIf { it.isNotBlank() }
+
+            emit(
+                ImportProgress.Copying(
+                    fraction = index.toFloat() / totalAudio.coerceAtLeast(1).toFloat(),
+                    currentFileName = currentFileName,
+                ),
+            )
 
             val folderLangs = candidate.course?.let { courseFolderDao.getByPath(it)?.toExternalModel()?.languagePair }
                 ?: effectiveLanguages
@@ -488,7 +511,14 @@ class DefaultLibraryRepository(
                 languages = folderLangs,
                 fileIndex = index,
                 totalFiles = totalAudio.coerceAtLeast(1),
-                onProgress = { fraction -> emit(ImportProgress.Copying(fraction)) },
+                onProgress = { fraction ->
+                    emit(
+                        ImportProgress.Copying(
+                            fraction = fraction,
+                            currentFileName = currentFileName,
+                        ),
+                    )
+                },
             )
 
             when (outcome) {
@@ -2068,6 +2098,12 @@ class DefaultLibraryRepository(
         }
 
         if (explicitRootCourse != null) return explicitRootCourse
+        val authority = uri.authority.orEmpty().lowercase(Locale.ROOT)
+        if (authority.contains("com.google.android.apps.docs") ||
+            authority.contains("google.android.apps.docs")
+        ) {
+            return LibraryCourseFolder.DEFAULT_GOOGLE_DRIVE_COURSE
+        }
         if (docId == null) return null
 
         val pathPart = docId.substringAfter(':', docId)

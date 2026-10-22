@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -65,6 +66,7 @@ import androidx.core.net.toUri
 import com.miuraken.chunkflow.core.designsystem.component.language.LanguagePairBadge
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
+import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowFolderPalette
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowLanguagePalette
 import com.miuraken.chunkflow.core.designsystem.util.formatDurationMs
 import com.miuraken.chunkflow.core.model.MediaId
@@ -228,6 +230,7 @@ internal fun LibraryItemRow(
     onToggleFavoriteClick: (() -> Unit)? = null,
     onRemoveFromPlaylistClick: (() -> Unit)? = null,
     dragHandle: (@Composable () -> Unit)? = null,
+    folderColorIndex: Int? = itemModel.folderColorIndex,
 ) {
     val item = itemModel.item
     val formattedDuration = formatDurationMs(item.durationMs)
@@ -236,6 +239,12 @@ internal fun LibraryItemRow(
     )
     val removeFromPlaylistCd = stringResource(R.string.library_playlist_remove_item_cd)
     val langPalette = chunkFlowLanguagePalette()
+    val folderPalette = chunkFlowFolderPalette()
+    val folderStripColor = if (isSelected) {
+        folderPalette.selectedContainerOrNull(folderColorIndex)
+    } else {
+        folderPalette.containerOrNull(folderColorIndex)
+    }
     val maxPercent = itemModel.maxProgressPercent
     // 既習（95% 超）の教材は、進捗バーを緑系にして一目でわかるようにする。
     val isCompleted = maxPercent > COMPLETED_PROGRESS_PERCENT_THRESHOLD
@@ -243,13 +252,22 @@ internal fun LibraryItemRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .drawBehind {
+                if (folderStripColor != null) {
+                    drawRect(
+                        color = folderStripColor,
+                        topLeft = Offset.Zero,
+                        size = Size(width = 30.dp.toPx(), height = size.height),
+                    )
+                }
+            }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
             )
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -267,7 +285,7 @@ internal fun LibraryItemRow(
                 mediaId = item.id,
                 localFilePath = item.localFilePath,
                 sourceUri = item.sourceUri,
-                modifier = Modifier.size(40.dp),
+                modifier = Modifier.size(34.dp),
             )
         }
 
@@ -276,20 +294,20 @@ internal fun LibraryItemRow(
         ) {
             Text(
                 text = item.title,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                    .padding(top = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     LanguagePairBadge(pair = item.languagePair)
@@ -413,6 +431,7 @@ internal fun LibraryItemRow(
                         IconToggleButton(
                             checked = isFavorite,
                             onCheckedChange = { onToggleFavoriteClick() },
+                            modifier = Modifier.size(30.dp),
                         ) {
                             Icon(
                                 imageVector = if (isFavorite) {
@@ -426,23 +445,32 @@ internal fun LibraryItemRow(
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
                                 },
+                                modifier = Modifier.size(18.dp),
                             )
                         }
                     }
-                    IconButton(onClick = onEditMetadataClick) {
+                    IconButton(
+                        onClick = onEditMetadataClick,
+                        modifier = Modifier.size(30.dp),
+                    ) {
                         Icon(
                             imageVector = ChunkFlowIcons.Tune,
                             contentDescription = stringResource(R.string.library_item_settings_cd),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                 }
                 if (onRemoveFromPlaylistClick != null) {
-                    IconButton(onClick = onRemoveFromPlaylistClick) {
+                    IconButton(
+                        onClick = onRemoveFromPlaylistClick,
+                        modifier = Modifier.size(30.dp),
+                    ) {
                         Icon(
                             imageVector = ChunkFlowIcons.Close,
                             contentDescription = removeFromPlaylistCd,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                 }

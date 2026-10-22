@@ -3,9 +3,22 @@ package com.miuraken.chunkflow.feature.library
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.DocumentsContract
+import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import java.io.File
 import java.net.URLDecoder
 import java.net.URLEncoder
+
+/**
+ * 指定された [uri] が Google Drive の SAF ドキュメント URI かどうかを判定する。
+ */
+internal fun isGoogleDriveUri(uri: Uri): Boolean {
+    val auth = uri.authority.orEmpty().lowercase()
+    if (auth.contains("com.google.android.apps.docs") || auth.contains("google.android.apps.docs")) {
+        return true
+    }
+    val raw = uri.toString().lowercase()
+    return raw.contains("com.google.android.apps.docs") || raw.contains("google.android.apps.docs")
+}
 
 /**
  * SAF のファイル選択ダイアログ（`EXTRA_INITIAL_URI`）で既定のフォールバック先とする sdcard ルートのドキュメント URI 文字列。
@@ -137,6 +150,9 @@ internal fun extractParentFolderNameFromUri(
     uri: Uri,
     contentResolver: ContentResolver? = null,
 ): String? {
+    if (isGoogleDriveUri(uri)) {
+        return LibraryCourseFolder.DEFAULT_GOOGLE_DRIVE_COURSE
+    }
     val docId = extractDocumentIdFromUri(uri)
     if (docId != null) {
         if (docId.startsWith("raw:")) {
@@ -209,6 +225,9 @@ internal fun extractParentDirectoryUriFromFileUri(
     uri: Uri,
     contentResolver: ContentResolver? = null,
 ): String? {
+    if (isGoogleDriveUri(uri)) {
+        return null
+    }
     val docId = extractDocumentIdFromUri(uri)
     if (docId != null) {
         if (docId.startsWith("raw:")) {

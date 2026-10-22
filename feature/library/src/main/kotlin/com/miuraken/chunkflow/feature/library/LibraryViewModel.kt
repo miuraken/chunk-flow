@@ -152,6 +152,11 @@ data class LibraryItemUiModel(
     val accessCount: Int = 0,
     val fileSortOrder: Int? = null,
     val tags: List<String> = emptyList(),
+    val folderColorIndex: Int? = LibraryFolderColors.resolveIndex(
+        colorIndex = null,
+        targetLanguage = item.languagePair.target,
+        languageOrdinals = emptyMap(),
+    ),
 ) {
     /** 前回の再生位置（ミリ秒）。 */
     val lastPositionMs: Long
@@ -255,8 +260,12 @@ sealed interface LibraryImportUiState {
      * ファイルをコピー・検証中。
      *
      * @property fraction 進捗（0..1）。不明なら `null`。
+     * @property currentFileName 現在処理中のファイル名。
      */
-    data class Copying(val fraction: Float?) : LibraryImportUiState
+    data class Copying(
+        val fraction: Float?,
+        val currentFileName: String? = null,
+    ) : LibraryImportUiState
 
     /**
      * 取り込みが完了した。
@@ -747,6 +756,7 @@ data class LibraryUiState(
     fun folderColorIndexFor(dirPath: String?): Int? {
         val normalized = dirPath?.trim('/')?.takeIf { it.isNotBlank() } ?: return null
         val folder = courseFolders.firstOrNull { it.coursePath.trim('/') == normalized }
+            ?: courseFolders.firstOrNull { it.coursePath.trim('/') == normalized.substringBefore('/') }
         val targetLanguage = folder?.languagePair?.target
             ?: itemsInDirectoryTree(normalized).firstOrNull()?.item?.languagePair?.target
         return LibraryFolderColors.resolveIndex(
@@ -938,7 +948,11 @@ data class LibraryUiState(
      */
     fun isRealFolder(dirPath: String?): Boolean {
         val normalized = dirPath?.trim('/')?.takeIf { it.isNotBlank() } ?: return false
-        if (normalized == LibraryCourseFolder.DEFAULT_IMPORTED_COURSE || normalized == "imported") {
+        if (
+            normalized == LibraryCourseFolder.DEFAULT_IMPORTED_COURSE ||
+            normalized == LibraryCourseFolder.DEFAULT_GOOGLE_DRIVE_COURSE ||
+            normalized == "imported"
+        ) {
             return false
         }
         val matchingFolders = courseFolders.filter { folder ->
@@ -1877,6 +1891,7 @@ class LibraryViewModel @Inject constructor(
                             emptyList()
                         } else {
                             sortedChunks.mapIndexedNotNull { idx, chunk ->
+                                if (chunk.isSkipped) return@mapIndexedNotNull null
                                 val matchingBookmark = bookmarks.firstOrNull { bm ->
                                     (bm.positionMs >= chunk.startMs && bm.positionMs < chunk.endMs) ||
                                         bm.positionMs == chunk.startMs
@@ -2101,10 +2116,15 @@ class LibraryViewModel @Inject constructor(
             is LibraryEvent.ImportUris -> {
                 if (event.uris.isNotEmpty()) {
                     val firstUri = event.uris.first()
-                    val resolvedParentDirUri = event.parentDirectoryUri
-                        ?.trim()
-                        ?.takeIf { it.isNotBlank() }
-                        ?: extractParentDirectoryUriFromFileUri(firstUri)
+                    val isDriveUri = isGoogleDriveUri(firstUri)
+                    val resolvedParentDirUri = if (isDriveUri) {
+                        null
+                    } else {
+                        event.parentDirectoryUri
+                            ?.trim()
+                            ?.takeIf { it.isNotBlank() }
+                            ?: extractParentDirectoryUriFromFileUri(firstUri)
+                    }
                     val normalizedParentSafUri = resolvedParentDirUri?.let {
                         resolveSafDirectoryUriAndLocalPathFromFolderUri(it)?.first ?: it
                     }
@@ -2119,12 +2139,16 @@ class LibraryViewModel @Inject constructor(
                                     )
                         }?.coursePath
                     }
-                    val resolvedParentFolder = matchingRealFolderCourse
-                        ?: event.parentFolderName
-                            ?.trim()
-                            ?.trim('/')
-                            ?.takeIf { it.isNotBlank() }
-                        ?: extractParentFolderNameFromUri(firstUri)
+                    val resolvedParentFolder = if (isDriveUri) {
+                        LibraryCourseFolder.DEFAULT_GOOGLE_DRIVE_COURSE
+                    } else {
+                        matchingRealFolderCourse
+                            ?: event.parentFolderName
+                                ?.trim()
+                                ?.trim('/')
+                                ?.takeIf { it.isNotBlank() }
+                            ?: extractParentFolderNameFromUri(firstUri)
+                    }
                     val initialCourse = resolvedParentFolder ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
                     pendingImportConfig.value = PendingImportConfig(
                         uris = event.uris,
@@ -2167,6 +2191,9 @@ class LibraryViewModel @Inject constructor(
                         ?: LibraryCourseFolder.DEFAULT_IMPORTED_COURSE
                     val parentFolder = config.parentFolderName?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
                     val isParentRealFolder = parentFolder != null &&
+                        parentFolder != LibraryCourseFolder.DEFAULT_GOOGLE_DRIVE_COURSE &&
+                        parentFolder != LibraryCourseFolder.DEFAULT_IMPORTED_COURSE &&
+                        config.uris.none(::isGoogleDriveUri) &&
                         targetCourse.trim('/') == parentFolder
                     importUris(
                         uris = config.uris,
@@ -3153,7 +3180,10 @@ class LibraryViewModel @Inject constructor(
                     }
                 }
                 importState.value = when (progress) {
-                    is ImportProgress.Copying -> LibraryImportUiState.Copying(progress.fraction)
+                    is ImportProgress.Copying -> LibraryImportUiState.Copying(
+                        fraction = progress.fraction,
+                        currentFileName = progress.currentFileName,
+                    )
 
                     is ImportProgress.Done -> LibraryImportUiState.Done(
                         addedCount = progress.mediaIds.size,
@@ -3205,7 +3235,10 @@ class LibraryViewModel @Inject constructor(
                 }
                 when (progress) {
                     is ImportProgress.Copying -> {
-                        importState.value = LibraryImportUiState.Copying(progress.fraction)
+                        importState.value = LibraryImportUiState.Copying(
+                            fraction = progress.fraction,
+                            currentFileName = progress.currentFileName,
+                        )
                     }
 
                     is ImportProgress.Done -> {
@@ -3381,6 +3414,18 @@ class LibraryViewModel @Inject constructor(
             val transcriptStatus = summary?.transcriptStatus ?: LibraryTranscriptStatus.NONE
             val posMs = state?.positionMs ?: 0L
             val maxPosMs = maxOf(state?.maxPositionMs ?: 0L, posMs)
+            val normalizedCourse = audioItem.course?.trim('/')?.takeIf { it.isNotBlank() }
+            val matchedFolder = if (normalizedCourse != null) {
+                courseFolders.firstOrNull { it.coursePath.trim('/') == normalizedCourse }
+                    ?: courseFolders.firstOrNull { it.coursePath.trim('/') == normalizedCourse.substringBefore('/') }
+            } else {
+                null
+            }
+            val folderColorIndex = LibraryFolderColors.resolveIndex(
+                colorIndex = matchedFolder?.colorIndex,
+                targetLanguage = matchedFolder?.languagePair?.target ?: audioItem.languagePair.target,
+                languageOrdinals = folderLanguageColorOrdinals,
+            )
             LibraryItemUiModel(
                 item = audioItem,
                 positionMs = posMs,
@@ -3404,6 +3449,7 @@ class LibraryViewModel @Inject constructor(
                 accessCount = state?.accessCount ?: 0,
                 fileSortOrder = state?.fileSortOrder,
                 tags = itemTags[audioItem.id].orEmpty(),
+                folderColorIndex = folderColorIndex,
             )
         }
         val activeMediaId = playbackStatus.mediaId

@@ -34,5 +34,8 @@ data class LibraryCourseFolder(
     companion object {
         /** 単一・複数ファイル選択時に既定で格納される仮想ディレクトリ名。 */
         const val DEFAULT_IMPORTED_COURSE: String = "default"
+
+        /** Google Drive のファイルを取り込むときに既定で格納される仮想ディレクトリ名。 */
+        const val DEFAULT_GOOGLE_DRIVE_COURSE: String = "Google Drive から"
     }
 }

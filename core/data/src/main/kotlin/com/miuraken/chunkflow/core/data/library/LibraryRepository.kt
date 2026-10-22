@@ -338,8 +338,12 @@ sealed interface ImportProgress {
      * コピー中。
      *
      * @property fraction 進捗（0..1）。不明なら `null`。
+     * @property currentFileName 現在処理中のファイル名（不明なら `null`）。
      */
-    data class Copying(val fraction: Float?) : ImportProgress
+    data class Copying(
+        val fraction: Float?,
+        val currentFileName: String? = null,
+    ) : ImportProgress
 
     /**
      * 完了した。
