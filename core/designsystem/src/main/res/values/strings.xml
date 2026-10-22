@@ -16,6 +16,8 @@
 
     <!-- 再生速度シート（SpeedSheetContent） -->
     <string name="designsystem_playback_speed_section_title">再生速度</string>
+    <string name="designsystem_playback_base_language_speed_label">ベース言語のみ別の速度で再生する</string>
+    <string name="designsystem_playback_default_speed_label">もうひとつの再生速度</string>
     <string name="designsystem_playback_speed_decrease_cd">再生速度を 0.05 倍下げる</string>
     <string name="designsystem_playback_speed_increase_cd">再生速度を 0.05 倍上げる</string>
     <string name="designsystem_playback_speed_slider_cd">再生速度スライダー</string>

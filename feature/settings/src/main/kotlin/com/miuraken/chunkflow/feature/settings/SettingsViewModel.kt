@@ -1198,11 +1198,7 @@ internal fun isSttEngineSelectableInSettings(
         return SttEngineSelection.isAnyEngineSupported(enriched)
     }
     val status = enriched.statusOf(engine)
-    if (engine.isCloudApi || engine.downloadableModel != null) {
-        return status == OnDeviceLanguageModelStatus.INSTALLED
-    }
-    return status != OnDeviceLanguageModelStatus.UNSUPPORTED &&
-        status != OnDeviceLanguageModelStatus.CHECKING
+    return status == OnDeviceLanguageModelStatus.INSTALLED
 }
 
 /**

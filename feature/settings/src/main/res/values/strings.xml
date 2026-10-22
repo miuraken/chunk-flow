@@ -6,6 +6,7 @@
     <string name="settings_tab_segmentation">分割</string>
     <string name="settings_tab_transcription">文字起こし</string>
     <string name="settings_section_playback">再生設定</string>
+    <string name="settings_section_playback_speed">再生速度</string>
     <string name="settings_seek_back_label">巻き戻し秒数</string>
     <string name="settings_seek_forward_label">早送り秒数</string>
     <string name="settings_seconds_format">%1$d秒</string>

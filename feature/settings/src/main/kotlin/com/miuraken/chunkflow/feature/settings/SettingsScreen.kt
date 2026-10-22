@@ -395,34 +395,11 @@ private fun PlaybackSettingsSection(
             },
             compact = true,
         )
+    }
 
-        Spacer(modifier = Modifier.height(4.dp))
+    SettingsSectionDivider()
 
-        val baseLanguageSpeedLabel = stringResource(R.string.settings_base_language_speed_label)
-        SettingsCheckboxHeader(
-            label = baseLanguageSpeedLabel,
-            checked = baseLanguageSpeedEnabled,
-            onCheckedChange = { onEvent(SettingsEvent.SetBaseLanguageSpeedEnabled(it)) },
-            value = formatSpeed(baseLanguageSpeed),
-        )
-
-        SettingsSlider(
-            value = baseLanguageSpeed,
-            onValueChange = { onEvent(SettingsEvent.SetBaseLanguageSpeed(it)) },
-            valueRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
-            // 0.05 刻み（0.5〜3.0 で 49 段）。チェックボックスがオフのあいだは操作できない
-            steps = speedSliderSteps(),
-            enabled = baseLanguageSpeedEnabled,
-            modifier = Modifier
-                .fillMaxWidth()
-                .semantics {
-                    contentDescription = baseLanguageSpeedLabel
-                    stateDescription = formatSpeed(baseLanguageSpeed)
-                },
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
+    SettingsSection(title = stringResource(R.string.settings_section_playback_speed)) {
         val defaultSpeedLabel = stringResource(R.string.settings_default_speed_label)
         SettingsItemHeader(
             label = defaultSpeedLabel,
@@ -458,6 +435,31 @@ private fun PlaybackSettingsSection(
                 compact = true,
             )
         }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        val baseLanguageSpeedLabel = stringResource(R.string.settings_base_language_speed_label)
+        SettingsCheckboxHeader(
+            label = baseLanguageSpeedLabel,
+            checked = baseLanguageSpeedEnabled,
+            onCheckedChange = { onEvent(SettingsEvent.SetBaseLanguageSpeedEnabled(it)) },
+            value = formatSpeed(baseLanguageSpeed),
+        )
+
+        SettingsSlider(
+            value = baseLanguageSpeed,
+            onValueChange = { onEvent(SettingsEvent.SetBaseLanguageSpeed(it)) },
+            valueRange = ItemState.MIN_SPEED..ItemState.MAX_SPEED,
+            // 0.05 刻み（0.5〜3.0 で 49 段）。チェックボックスがオフのあいだは操作できない
+            steps = speedSliderSteps(),
+            enabled = baseLanguageSpeedEnabled,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    contentDescription = baseLanguageSpeedLabel
+                    stateDescription = formatSpeed(baseLanguageSpeed)
+                },
+        )
     }
 
     SettingsSectionDivider()
@@ -1705,6 +1707,34 @@ private fun SttEngineAccordion(
                             }
 
                             isDownloadableModelSupported &&
+                                engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
+                                ChunkFlowLoadingIndicator(
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .size(20.dp),
+                                )
+                            }
+
+                            (engine == SttEngine.ML_KIT || engine == SttEngine.SPEECH_RECOGNIZER) &&
+                                (
+                                    engineStatus == OnDeviceLanguageModelStatus.NOT_INSTALLED ||
+                                        engineStatus == OnDeviceLanguageModelStatus.DOWNLOAD_FAILED
+                                    ) -> {
+                                OutlinedButton(
+                                    onClick = { onDownloadLanguageModel(engine) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier
+                                        .padding(start = 8.dp)
+                                        .height(28.dp),
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.settings_model_action_download),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+
+                            (engine == SttEngine.ML_KIT || engine == SttEngine.SPEECH_RECOGNIZER) &&
                                 engineStatus == OnDeviceLanguageModelStatus.DOWNLOADING -> {
                                 ChunkFlowLoadingIndicator(
                                     modifier = Modifier
