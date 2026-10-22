@@ -95,6 +95,7 @@ internal fun ChunkSelectionActionStrip(
     var showMergeConfirmDialog by remember { mutableStateOf(false) }
     var showRangeMergeConfirmDialog by remember { mutableStateOf(false) }
     var showRangeDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var showUnchunkConfirmDialog by remember { mutableStateOf(false) }
     var showEditRangeMenu by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
 
@@ -230,7 +231,7 @@ internal fun ChunkSelectionActionStrip(
                     }
                 }
                 AssistChip(
-                    onClick = { onEvent(PlayerEvent.DeleteChunk(singleSelectedChunk.id)) },
+                    onClick = { showUnchunkConfirmDialog = true },
                     enabled = true,
                     label = { Text(text = stringResource(R.string.player_selection_unchunk), maxLines = 1) },
                 )
@@ -375,6 +376,33 @@ internal fun ChunkSelectionActionStrip(
             },
             dismissButton = {
                 TextButton(onClick = { showRangeDeleteConfirmDialog = false }) {
+                    Text(text = stringResource(R.string.player_chunk_edit_cancel))
+                }
+            },
+        )
+    }
+
+    if (showUnchunkConfirmDialog && singleSelectedChunk != null) {
+        AlertDialog(
+            onDismissRequest = { showUnchunkConfirmDialog = false },
+            title = {
+                Text(text = stringResource(R.string.player_unchunk_confirm_title))
+            },
+            text = {
+                Text(text = stringResource(R.string.player_unchunk_confirm_message))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showUnchunkConfirmDialog = false
+                        onEvent(PlayerEvent.DeleteChunk(singleSelectedChunk.id))
+                    },
+                ) {
+                    Text(text = stringResource(R.string.player_unchunk_confirm_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUnchunkConfirmDialog = false }) {
                     Text(text = stringResource(R.string.player_chunk_edit_cancel))
                 }
             },

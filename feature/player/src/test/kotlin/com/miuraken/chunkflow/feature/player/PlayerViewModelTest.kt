@@ -870,10 +870,10 @@ class PlayerViewModelTest {
         )
         assertEquals(ChunkOrigin.IMPORTED, analysisRepo.chunkSources[item.id])
 
-        // 2. ResetTranscripts を発火すると文字起こしがクリアされ、バナーが ResetCompleted になる
+        // 2. ResetTranscripts を発火するとチャンク分割は維持したまま文字起こしがクリアされ、バナーが ResetCompleted になる
         viewModel.onEvent(PlayerEvent.ResetTranscripts)
         assertEquals(listOf(item.id), libraryRepo.resetTranscriptMediaIds)
-        assertEquals(ChunkOrigin.AUTO, analysisRepo.chunkSources[item.id])
+        assertEquals(ChunkOrigin.IMPORTED, analysisRepo.chunkSources[item.id])
         assertFalse(viewModel.uiState.value.hasTranscript)
         assertEquals(
             TranscriptExportBannerState.ResetCompleted,
@@ -2586,7 +2586,7 @@ class PlayerViewModelTest {
         assertEquals(listOf(item.id to customParams), analysisRepo.resegmentRequests)
         assertTrue(item.id in analysisRepo.languageDetectionOnlyRequests)
 
-        // 2. 文字起こしを再投入してから「文字起こしをリセットしてファイルを削除」を実行すると、チャンク再分割と言語判定もやり直される
+        // 2. 文字起こしを再投入してから「文字起こしをすべてクリア」を実行すると、チャンク分割はそのままで文字起こしのみクリアされる
         analysisRepo.put(sample)
         analysisRepo.resegmentRequests.clear()
         analysisRepo.languageDetectionOnlyRequests.clear()
@@ -2595,8 +2595,7 @@ class PlayerViewModelTest {
         viewModel.onEvent(PlayerEvent.ResetTranscripts)
         assertEquals(listOf(item.id), libraryRepo.resetTranscriptMediaIds)
         assertFalse(viewModel.uiState.value.hasTranscript)
-        assertEquals(ChunkOrigin.AUTO, analysisRepo.chunkSources[item.id])
-        assertEquals(listOf(item.id to customParams), analysisRepo.resegmentRequests)
+        assertTrue(analysisRepo.resegmentRequests.isEmpty())
         assertEquals(listOf(item.id), analysisRepo.languageDetectionOnlyRequests)
     }
 

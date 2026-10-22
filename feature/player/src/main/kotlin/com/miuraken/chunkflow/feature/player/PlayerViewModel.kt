@@ -3247,21 +3247,9 @@ class PlayerViewModel @Inject constructor(
                 val id = resolveActiveMediaId() ?: return
                 abortActiveViewModelTranscriptionJobs()
                 viewModelScope.launch {
-                    val itemState = libraryRepository.observeItemState(id).firstOrNull()
-                    val settings = userSettingsRepository.settings.firstOrNull() ?: UserSettings()
-                    val useGlobal = localUiState.value.useGlobalSegmentationOverride
-                        ?: (itemState?.customSegmentationParams == null)
-                    val effectiveParams = if (useGlobal) {
-                        settings.defaultSegmentationParams
-                    } else {
-                        localUiState.value.customSegmentationParams
-                            ?: itemState?.customSegmentationParams
-                            ?: settings.defaultSegmentationParams
-                    }
                     val success = libraryRepository.resetTranscriptsAndDeleteFiles(id)
                     analysisRepository.clearTranscriptsForMedia(id)
-                    analysisRepository.setChunkSource(id, ChunkOrigin.AUTO)
-                    analysisRepository.resegment(id, effectiveParams)
+                    analysisRepository.startLanguageDetectionOnly(id)
                     localUiState.update { state ->
                         state.copy(
                             languageOverrides = emptyMap(),

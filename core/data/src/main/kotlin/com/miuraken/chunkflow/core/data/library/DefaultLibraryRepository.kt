@@ -842,15 +842,6 @@ class DefaultLibraryRepository(
 
     override suspend fun resetTranscriptsAndDeleteFiles(id: MediaId): Boolean = withContext(ioDispatcher) {
         analysisRepository.clearTranscriptsForMedia(id)
-        chunkDao?.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.IMPORTED.name)
-        val existingState = itemStateDao.getByMediaId(id.value)
-        if (existingState != null && existingState.chunkSource == ChunkOrigin.IMPORTED.name) {
-            itemStateDao.updateChunkSource(
-                mediaId = id.value,
-                chunkSource = ChunkOrigin.AUTO.name,
-                updatedAt = clock(),
-            )
-        }
         mediaFileLocator.deleteTranscriptFiles(id)
         true
     }

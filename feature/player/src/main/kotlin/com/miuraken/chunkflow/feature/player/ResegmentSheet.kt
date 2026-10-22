@@ -201,20 +201,11 @@ internal fun ResegmentSheetContent(
             }
 
             1 -> {
-                // 「文字起こし」タブ: 最上位にリセットボタン / 音声認識モデルの管理 / エクスポート / インポート / ログ
+                // 「文字起こし」タブ: 最上位にすべてクリアボタン / 音声認識モデルの管理 / エクスポート / インポート / ログ
                 OutlinedButton(
                     onClick = { showResetConfirmDialog = true },
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
                 ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Delete,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
                     Text(text = stringResource(R.string.player_transcript_reset_button))
                 }
 
@@ -430,11 +421,6 @@ internal fun ResegmentSheetContent(
                 ) {
                     Text(text = stringResource(R.string.player_resegment_reset_button))
                 }
-                Text(
-                    text = stringResource(R.string.player_resegment_reset_caption),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                 Row(

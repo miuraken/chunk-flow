@@ -172,6 +172,17 @@ class FakeAnalysisRepository : AnalysisRepository {
     override suspend fun resegment(id: MediaId, params: SegmentationParams) {
         resegmentRequests += id to params
         languageDetectionOnlyRequests += id
+        update(id) { entry ->
+            val autoChunks = entry.chunksByOrigin[ChunkOrigin.AUTO]
+                ?: entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED && it.origin != ChunkOrigin.MANUAL }
+                    .ifEmpty { entry.chunks.map { it.copy(origin = ChunkOrigin.AUTO) } }
+            entry.copy(
+                chunks = autoChunks,
+                chunksByOrigin = (entry.chunksByOrigin - ChunkOrigin.IMPORTED - ChunkOrigin.MANUAL) +
+                    (ChunkOrigin.AUTO to autoChunks),
+            )
+        }
+        chunkSources[id] = ChunkOrigin.AUTO
     }
 
     override suspend fun setCustomSegmentationParams(id: MediaId, params: SegmentationParams?) {
@@ -573,16 +584,8 @@ class FakeAnalysisRepository : AnalysisRepository {
     override suspend fun clearTranscriptsForMedia(id: MediaId) {
         clearTranscriptsRequests += id
         update(id) { entry ->
-            val autoChunks = entry.chunksByOrigin[ChunkOrigin.AUTO]
-                ?: entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED && it.origin != ChunkOrigin.MANUAL }
-                    .ifEmpty { entry.chunks.filter { it.origin != ChunkOrigin.IMPORTED } }
-            entry.copy(
-                chunks = autoChunks,
-                transcripts = emptyMap(),
-                chunksByOrigin = entry.chunksByOrigin - ChunkOrigin.IMPORTED - ChunkOrigin.MANUAL,
-            )
+            entry.copy(transcripts = emptyMap())
         }
-        chunkSources[id] = ChunkOrigin.AUTO
     }
 
     override suspend fun toggleChunkBookmark(id: MediaId, chunkId: ChunkId, note: String): Boolean {

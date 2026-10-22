@@ -307,7 +307,7 @@ internal fun ChunkDisplaySettingsStrip(
                 }
             }
 
-            // 2〜5. 表示トグル（本文 / 読み / 翻訳 / 🔖）。Chip ではなく連結トグル群で描く（調査 §3.2 C1）。
+            // 2〜4. 表示トグル（本文 / 読み / 翻訳）。Chip ではなく連結トグル群で描く（調査 §3.2 C1）。
             val blindChipLabel = stringResource(R.string.player_chip_blind_target)
             val readingLabel = stringResource(R.string.player_chip_reading)
             val translateLabel = stringResource(R.string.player_chip_translate)
@@ -346,9 +346,16 @@ internal fun ChunkDisplaySettingsStrip(
                         ),
                     )
                 }
-                // 「🔖」（ブックマークしたチャンクのみ表示。1つでもブックマークがあるときのみ表示）
-                if (state.chunks.any { it.isBookmarked && !it.isSkipped }) {
-                    add(
+            }
+            ChunkFlowToggleButtonGroup(
+                items = toggleItems,
+                compact = true,
+            )
+
+            // 5. 「🔖」（ブックマークしたチャンクのみ表示。チャンクリスト内の表示切替とは別グループの独立したボタン）
+            if (state.chunks.any { it.isBookmarked && !it.isSkipped }) {
+                ChunkFlowToggleButtonGroup(
+                    items = listOf(
                         ChunkFlowToggleButtonItem(
                             label = bookmarksOnlyLabel,
                             checked = isBookmarksOnlyOn,
@@ -356,13 +363,10 @@ internal fun ChunkDisplaySettingsStrip(
                             showLabel = false,
                             onCheckedChange = { onEvent(PlayerEvent.ToggleBookmarksOnly) },
                         ),
-                    )
-                }
+                    ),
+                    compact = true,
+                )
             }
-            ChunkFlowToggleButtonGroup(
-                items = toggleItems,
-                compact = true,
-            )
         }
     }
 }

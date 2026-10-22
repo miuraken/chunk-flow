@@ -1372,6 +1372,8 @@ class DefaultAnalysisRepository(
                 newTranscriptsByIndex = emptyMap(),
                 preserveAllOldTranscripts = true,
             )
+            chunkDao.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.IMPORTED.name)
+            chunkDao.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.MANUAL.name)
 
             attemptedEmptyChunkIds.remove(id)
             pipelinedLidProcessedChunkIds.remove(id)
@@ -2989,17 +2991,6 @@ class DefaultAnalysisRepository(
             chunkTranscriptByLangCache.keys.removeIf { it.mediaId == id.value }
 
             transcriptDao.deleteByMediaId(id.value)
-            chunkDao.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.IMPORTED.name)
-            chunkDao.deleteByMediaIdAndOrigin(id.value, ChunkOrigin.MANUAL.name)
-
-            val existingState = itemStateDao.getByMediaId(id.value)
-            if (existingState != null && existingState.chunkSource != ChunkOrigin.AUTO.name) {
-                itemStateDao.updateChunkSource(
-                    mediaId = id.value,
-                    chunkSource = ChunkOrigin.AUTO.name,
-                    updatedAt = clock(),
-                )
-            }
 
             lookaheadStateFor(id).update {
                 it.copy(
