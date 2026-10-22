@@ -5,7 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
@@ -152,13 +151,7 @@ fun TranscriptExportRoute(
             when (effect) {
                 is TranscriptExportEffect.WriteToClipboard -> {
                     val success = writeTextToClipboard(context, effect.label, effect.text)
-                    viewModel.onEvent(
-                        TranscriptExportEvent.ClipboardWriteFinished(
-                            success = success,
-                            // Android 13 以上はシステムがコピーしたことを表示するので、画面では重ねて知らせない
-                            showConfirmation = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU,
-                        ),
-                    )
+                    viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = success))
                 }
             }
         }
@@ -445,18 +438,6 @@ private fun TranscriptExportResultBanner(
                 result.count,
                 result.format.name,
             ) to false
-        }
-
-        is TranscriptExportResultState.CopiedToClipboard -> {
-            if (result.count > 1) {
-                stringResource(
-                    R.string.transcript_export_copied_multiple,
-                    result.count,
-                    result.format.name,
-                ) to false
-            } else {
-                stringResource(R.string.transcript_export_copied_single, result.format.name) to false
-            }
         }
 
         TranscriptExportResultState.ClipboardTooLarge -> {

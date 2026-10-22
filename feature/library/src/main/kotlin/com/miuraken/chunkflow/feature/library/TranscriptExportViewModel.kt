@@ -44,17 +44,6 @@ sealed interface TranscriptExportResultState {
         val format: TranscriptExportFormat,
     ) : TranscriptExportResultState
 
-    /**
-     * クリップボードにコピーした（Android 12 以下でだけ表示する。Android 13 以上はシステムがコピーを知らせるため出さない）。
-     *
-     * @property count コピーしたファイル数。
-     * @property format コピーしたフォーマット。
-     */
-    data class CopiedToClipboard(
-        val count: Int,
-        val format: TranscriptExportFormat,
-    ) : TranscriptExportResultState
-
     /** 文字数が多すぎて、クリップボードにコピーできなかった（[TranscriptExportViewModel.MAX_CLIPBOARD_CHARS]）。 */
     data object ClipboardTooLarge : TranscriptExportResultState
 
@@ -132,14 +121,11 @@ sealed interface TranscriptExportEvent {
 
     /**
      * 画面がクリップボードへの書き込み（[TranscriptExportEffect.WriteToClipboard]）を終えた。
+     * コピーしたことはシステム（Android 13 以上）が画面に表示するので、成功したときアプリからは何も表示しない。
      *
      * @property success 書き込めたかどうか。
-     * @property showConfirmation コピーしたことを画面に表示するか（Android 13 以上はシステムが表示するので `false`）。
      */
-    data class ClipboardWriteFinished(
-        val success: Boolean,
-        val showConfirmation: Boolean,
-    ) : TranscriptExportEvent
+    data class ClipboardWriteFinished(val success: Boolean) : TranscriptExportEvent
 
     /** エクスポート結果通知バナーを閉じる。 */
     data object DismissExportResult : TranscriptExportEvent
@@ -183,9 +169,6 @@ class TranscriptExportViewModel @Inject constructor(
     val effects: Flow<TranscriptExportEffect> = _effects.receiveAsFlow()
 
     private var loadJob: Job? = null
-
-    /** 画面に書き込みを頼んだクリップボードのコピー（結果の表示に使う）。 */
-    private var pendingClipboardCopy: PendingClipboardCopy? = null
 
     /**
      * エクスポート対象の [mediaIds] を設定し、先頭ファイルの各フォーマットのプレビューを読み込む。
@@ -287,20 +270,13 @@ class TranscriptExportViewModel @Inject constructor(
             TranscriptExportEvent.CopyToClipboard -> copyToClipboard()
 
             is TranscriptExportEvent.ClipboardWriteFinished -> {
-                val pending = pendingClipboardCopy
-                pendingClipboardCopy = null
                 _uiState.update { current ->
                     current.copy(
                         isCopyingToClipboard = false,
-                        exportResult = when {
-                            !event.success -> TranscriptExportResultState.Failed
-
-                            event.showConfirmation && pending != null -> TranscriptExportResultState.CopiedToClipboard(
-                                count = pending.count,
-                                format = pending.format,
-                            )
-
-                            else -> TranscriptExportResultState.Idle
+                        exportResult = if (event.success) {
+                            TranscriptExportResultState.Idle
+                        } else {
+                            TranscriptExportResultState.Failed
                         },
                     )
                 }
@@ -337,7 +313,6 @@ class TranscriptExportViewModel @Inject constructor(
                 ClipboardText.TooLarge -> finishClipboardCopyWithoutWriting(TranscriptExportResultState.ClipboardTooLarge)
 
                 is ClipboardText.Ready -> {
-                    pendingClipboardCopy = PendingClipboardCopy(count = built.fileCount, format = format)
                     _effects.send(
                         TranscriptExportEffect.WriteToClipboard(
                             label = CLIPBOARD_LABEL,
@@ -371,7 +346,7 @@ class TranscriptExportViewModel @Inject constructor(
             return when {
                 text.isBlank() -> ClipboardText.Empty
                 text.length > MAX_CLIPBOARD_CHARS -> ClipboardText.TooLarge
-                else -> ClipboardText.Ready(text = text, fileCount = 1)
+                else -> ClipboardText.Ready(text = text)
             }
         }
         val titles = libraryRepository.observeItems().firstOrNull().orEmpty().associate { it.id to it.title }
@@ -386,7 +361,7 @@ class TranscriptExportViewModel @Inject constructor(
             fileCount += 1
             if (builder.length > MAX_CLIPBOARD_CHARS) return ClipboardText.TooLarge
         }
-        return if (fileCount == 0) ClipboardText.Empty else ClipboardText.Ready(builder.toString(), fileCount)
+        return if (fileCount == 0) ClipboardText.Empty else ClipboardText.Ready(builder.toString())
     }
 
     /** クリップボードに書き込む文字列を作った結果。 */
@@ -398,14 +373,8 @@ class TranscriptExportViewModel @Inject constructor(
         data object TooLarge : ClipboardText
 
         /** 書き込める。 */
-        data class Ready(val text: String, val fileCount: Int) : ClipboardText
+        data class Ready(val text: String) : ClipboardText
     }
-
-    /** 画面に書き込みを頼んだクリップボードのコピーの中身（結果の表示用）。 */
-    private data class PendingClipboardCopy(
-        val count: Int,
-        val format: TranscriptExportFormat,
-    )
 
     companion object {
         /** プレビューに表示する最大行数（標準フォーマット）。 */

@@ -19,7 +19,9 @@ class FakeUserSettingsRepositoryTest {
         repo.setDefaultLanguagePair(LanguagePair(target = LanguageTag("zh"), base = LanguageTag("en")))
         repo.setChineseScript(ChineseScript.HANT)
         repo.setCantoneseScript(ChineseScript.HANS)
-        repo.setDefaultSpeed(1.5f)
+        repo.setDefaultSpeed(3.0f)
+        repo.setBaseLanguageSpeedEnabled(true)
+        repo.setBaseLanguageSpeed(1.25f)
         repo.setSeekBackMs(4_000L)
         repo.setSeekForwardMs(8_000L)
         repo.setDefaultAutoPause(AutoPause.Fixed(pauseMs = 2_000L))
@@ -29,13 +31,16 @@ class FakeUserSettingsRepositoryTest {
         assertEquals(LanguagePair(target = LanguageTag("zh"), base = LanguageTag("en")), current.defaultLanguagePair)
         assertEquals(ChineseScript.HANT, current.chineseScript)
         assertEquals(ChineseScript.HANS, current.cantoneseScript)
-        assertEquals(1.5f, current.defaultSpeed)
+        assertEquals(3.0f, current.defaultSpeed)
+        assertEquals(true, current.baseLanguageSpeedEnabled)
+        assertEquals(1.25f, current.baseLanguageSpeed)
         assertEquals(4_000L, current.seekBackMs)
         assertEquals(8_000L, current.seekForwardMs)
         assertEquals(AutoPause.Fixed(pauseMs = 2_000L), current.defaultAutoPause)
         assertEquals(segParams, current.defaultSegmentationParams)
 
-        assertFailsWith<IllegalArgumentException> { repo.setDefaultSpeed(3.0f) }
+        assertFailsWith<IllegalArgumentException> { repo.setDefaultSpeed(3.5f) }
+        assertFailsWith<IllegalArgumentException> { repo.setBaseLanguageSpeed(3.5f) }
         assertFailsWith<IllegalArgumentException> { repo.setSeekBackMs(0L) }
     }
 }

@@ -183,8 +183,6 @@
     <string name="transcript_export_clipboard_button">クリップボードにエクスポート</string>
     <string name="transcript_export_done_single">文字起こしを書き出しました（%1$s）</string>
     <string name="transcript_export_done_multiple">%1$d 件の文字起こしファイルをフォルダに書き出しました（%2$s）</string>
-    <string name="transcript_export_copied_single">文字起こしをクリップボードにコピーしました（%1$s）</string>
-    <string name="transcript_export_copied_multiple">%1$d 件の文字起こしをクリップボードにコピーしました（%2$s）</string>
     <string name="transcript_export_clipboard_too_large">文字数が多すぎるため、クリップボードにコピーできません。「ファイルにエクスポート」をお使いください。</string>
     <string name="transcript_export_failed">文字起こしの書き出しに失敗しました</string>
     <string name="library_mini_player_expand_cd">再生コントローラーを展開</string>

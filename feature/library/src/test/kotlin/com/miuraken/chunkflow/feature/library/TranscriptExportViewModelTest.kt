@@ -50,7 +50,7 @@ class TranscriptExportViewModelTest {
     }
 
     @Test
-    fun `クリップボード_1ファイルは選んだ形式の全文を書き込みAndroid12以下でだけコピーしたことを表示する`() = runTest {
+    fun `クリップボード_1ファイルは選んだ形式の全文を書き込みシステムがコピー完了を表示する`() = runTest {
         val sampleKo = SampleMaterials.jaKo
         val repo = FakeLibraryRepository(initialItems = listOf(sampleKo.item))
         val tsv = "startMs\tendMs\tlang\ttext\n0\t1500\tko\t안녕하세요\n"
@@ -71,23 +71,15 @@ class TranscriptExportViewModelTest {
             viewModel.effects.first(),
         )
 
-        viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = true, showConfirmation = true))
+        // Android 13 以上（minSdk 34）ではシステムが標準のコピー完了オーバーレイを出すため、画面バナーは Idle のまま
+        viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = true))
         assertFalse(viewModel.uiState.value.isCopyingToClipboard)
-        assertEquals(
-            TranscriptExportResultState.CopiedToClipboard(count = 1, format = TranscriptExportFormat.TSV),
-            viewModel.uiState.value.exportResult,
-        )
-
-        // Android 13 以上（showConfirmation = false）はシステムが知らせるので、画面には出さない
-        viewModel.onEvent(TranscriptExportEvent.CopyToClipboard)
-        viewModel.effects.first()
-        viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = true, showConfirmation = false))
         assertEquals(TranscriptExportResultState.Idle, viewModel.uiState.value.exportResult)
 
         // 書き込めなかったら失敗を表示する
         viewModel.onEvent(TranscriptExportEvent.CopyToClipboard)
         viewModel.effects.first()
-        viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = false, showConfirmation = false))
+        viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = false))
         assertEquals(TranscriptExportResultState.Failed, viewModel.uiState.value.exportResult)
     }
 
@@ -114,11 +106,8 @@ class TranscriptExportViewModelTest {
             ),
             effect,
         )
-        viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = true, showConfirmation = true))
-        assertEquals(
-            TranscriptExportResultState.CopiedToClipboard(count = 2, format = TranscriptExportFormat.SRT),
-            viewModel.uiState.value.exportResult,
-        )
+        viewModel.onEvent(TranscriptExportEvent.ClipboardWriteFinished(success = true))
+        assertEquals(TranscriptExportResultState.Idle, viewModel.uiState.value.exportResult)
 
         // 上限を超えると書き込みを頼まず、長すぎることを表示する
         repo.exportedTranscriptTexts[sampleZh.item.id to TranscriptExportFormat.SRT] =
