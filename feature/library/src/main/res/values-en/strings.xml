@@ -75,7 +75,8 @@
     <string name="library_edit_stt_engine_mlkit">ML Kit</string>
     <string name="library_edit_stt_engine_speech_recognizer">SpeechRecognizer (Google)</string>
     <string name="library_edit_stt_engine_sherpa_onnx">sherpa-onnx (SenseVoice)</string>
-    <string name="library_missing_language_hint">If the language you want is not listed, add it from Global Settings &gt; Languages.</string>
+    <!-- %1$s is replaced with the "⚙ Global Settings (Languages)" link (library_open_global_language_settings) -->
+    <string name="library_missing_language_hint_with_link">If the language you want is not listed, add it from %1$s.</string>
     <string name="library_open_global_language_settings">Global Settings (Languages)</string>
     <string name="library_edit_transcript_section_title">Transcript</string>
     <string name="library_edit_import_transcript_button">Import transcript from file</string>

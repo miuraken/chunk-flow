@@ -52,7 +52,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
-import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintText
 import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
 import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
@@ -285,24 +284,7 @@ internal fun LanguagePairDropdownSection(
         }
     }
 
-    MissingLanguageHintText(
-        text = stringResource(R.string.library_missing_language_hint),
-    )
-
-    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-    OutlinedButton(
-        onClick = onOpenLanguageSettings,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Icon(
-            imageVector = ChunkFlowIcons.Settings,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(text = stringResource(R.string.library_open_global_language_settings))
-    }
+    MissingLanguageHintWithSettingsLink(onOpenLanguageSettings = onOpenLanguageSettings)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
