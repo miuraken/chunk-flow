@@ -33,6 +33,28 @@ data class LibraryCourseFolder(
     val colorIndex: Int? = null,
     val sttOverride: ItemSttOverride = ItemSttOverride.NONE,
 ) {
+    /**
+     * このフォルダの音声認識エンジンの上書きのうち、言語ペア [itemLanguages] のファイルに効く部分を返す。
+     *
+     * フォルダの上書きは、フォルダの設定のシートで選んだ言語ペア（[languagePair]）に対するエンジンの指定なので、
+     * 役割（学習対象 / ベース）ごとに、ファイルの言語がフォルダの言語と同じときだけ効く
+     * （[LanguageSettings.normalize] でそろえて比べる）。[itemLanguages] が `null` なら上書きをそのまま返す。
+     */
+    fun sttOverrideFor(itemLanguages: LanguagePair?): ItemSttOverride {
+        if (itemLanguages == null || sttOverride.isEmpty) return sttOverride
+        val targetMatches = LanguageSettings.normalize(languagePair.target) ==
+            LanguageSettings.normalize(itemLanguages.target)
+        val folderBase = languagePair.base
+        val itemBase = itemLanguages.base
+        val baseMatches = folderBase != null &&
+            itemBase != null &&
+            LanguageSettings.normalize(folderBase) == LanguageSettings.normalize(itemBase)
+        return ItemSttOverride(
+            targetEngine = sttOverride.targetEngine?.takeIf { targetMatches },
+            baseEngine = sttOverride.baseEngine?.takeIf { baseMatches },
+        )
+    }
+
     companion object {
         /** 単一・複数ファイル選択時に既定で格納される仮想ディレクトリ名。 */
         const val DEFAULT_IMPORTED_COURSE: String = "default"
@@ -51,45 +73,50 @@ data class LibraryCourseFolder(
         }
 
         /**
-         * フォルダ [course] に入っているファイルに効く、フォルダ単位の音声認識エンジンの上書きを返す。
+         * フォルダ [course] に入っている、言語ペア [itemLanguages] のファイルに効く、フォルダ単位の音声認識エンジンの
+         * 上書きを返す。
          *
-         * - 近いフォルダの設定を優先する。言語（学習対象 / ベース）ごとに、そのフォルダが上書きしていなければ
-         *   親フォルダの設定を使う。
-         * - どのフォルダも上書きしていなければ [ItemSttOverride.NONE]（全体設定に従う）。
+         * - 近いフォルダの設定を優先する。言語の役割（学習対象 / ベース）ごとに、そのフォルダが上書きしていなければ
+         *   （またはフォルダの言語がファイルの言語と違えば。[sttOverrideFor]）親フォルダの設定を使う。
+         * - どのフォルダも効かなければ [ItemSttOverride.NONE]（全体設定に従う）。
          * - ファイル個別の設定は含まない。呼び出し側で `itemOverride.withFolderFallback(結果)` のように合成する
          *   （ファイル個別設定 ＞ フォルダ設定 ＞ 全体設定）。
          *
          * @param course ファイルのフォルダのパス（`AudioItem.course`）。
-         * @param overrideOf フォルダのパス（[selfAndAncestorPaths] の形）から、そのフォルダの上書き設定を返す。
+         * @param itemLanguages ファイルの言語ペア。`null` ならフォルダの言語と比べない。
+         * @param folderOf フォルダのパス（[selfAndAncestorPaths] の形）から、そのフォルダの設定を返す。
          *   設定の行がなければ `null`。
          */
         inline fun resolveSttOverride(
             course: String?,
-            overrideOf: (path: String) -> ItemSttOverride?,
+            itemLanguages: LanguagePair?,
+            folderOf: (path: String) -> LibraryCourseFolder?,
         ): ItemSttOverride {
             var resolved = ItemSttOverride.NONE
             for (path in selfAndAncestorPaths(course)) {
-                val folderOverride = overrideOf(path) ?: continue
-                resolved = resolved.withFolderFallback(folderOverride)
+                val folder = folderOf(path) ?: continue
+                resolved = resolved.withFolderFallback(folder.sttOverrideFor(itemLanguages))
                 if (resolved.targetEngine != null && resolved.baseEngine != null) break
             }
             return resolved
         }
 
         /**
-         * フォルダの設定の一覧 [folders] から、フォルダ [course] のファイルに効く音声認識エンジンの上書きを返す。
+         * フォルダの設定の一覧 [folders] から、フォルダ [course] に入っている言語ペア [itemLanguages] のファイルに効く
+         * 音声認識エンジンの上書きを返す。
          *
-         * 決め方は `resolveSttOverride(course, overrideOf)` と同じ（近いフォルダ優先、言語ごとに親フォルダへ）。
+         * 決め方は `resolveSttOverride(course, itemLanguages, folderOf)` と同じ。
          */
         fun resolveSttOverride(
             course: String?,
+            itemLanguages: LanguagePair?,
             folders: Collection<LibraryCourseFolder>,
         ): ItemSttOverride {
             if (folders.isEmpty()) return ItemSttOverride.NONE
-            val overrideByPath = folders.associate { folder ->
-                selfAndAncestorPaths(folder.coursePath).firstOrNull().orEmpty() to folder.sttOverride
+            val folderByPath = folders.associateBy { folder ->
+                selfAndAncestorPaths(folder.coursePath).firstOrNull().orEmpty()
             }
-            return resolveSttOverride(course) { path -> overrideByPath[path] }
+            return resolveSttOverride(course, itemLanguages) { path -> folderByPath[path] }
         }
     }
 }
