@@ -299,6 +299,12 @@ internal fun LibraryItemRow(
                         isTranscribing = itemModel.isTranscribing,
                         completedBadgeColor = chunkFlowExtendedColors().transcriptCompleted,
                     )
+                    if (itemModel.tags.isNotEmpty()) {
+                        LibraryItemTagPills(
+                            tags = itemModel.tags,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                    }
                     if (itemModel.isAnalyzing) {
                         Text(
                             text = stringResource(R.string.library_item_analyzing),
@@ -321,10 +327,6 @@ internal fun LibraryItemRow(
                             )
                         }
                     }
-                }
-
-                if (itemModel.tags.isNotEmpty()) {
-                    LibraryItemTagPills(tags = itemModel.tags)
                 }
 
                 LinearProgressIndicator(

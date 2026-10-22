@@ -46,6 +46,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -54,6 +56,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.preview.ChunkFlowPreviews
@@ -191,11 +194,11 @@ private fun TagCheckState.toToggleableState(): ToggleableState = when (this) {
 }
 
 /**
- * ファイルの行に出す小さなタグの表示。[maxVisible] 個まで並べ、残りは「+N」にまとめる。
+ * ファイルの行（言語ペアバッジ・文字起こし状況のすぐ右側）に 1 行で出す小さなタグの表示。
  *
- * 読み上げでは「タグ: A, B, C」とまとめて読む。
+ * カードの高さを増やさないよう折り返さず、横幅に収まる最大個数（最大 [maxVisible] 個）のタグピルを並べ、
+ * 収まらない残りのタグは「+N」にまとめる。読み上げでは「タグ: A, B, C」とまとめて読む。
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun LibraryItemTagPills(
     tags: List<String>,
@@ -203,19 +206,101 @@ internal fun LibraryItemTagPills(
     maxVisible: Int = MAX_VISIBLE_TAG_PILLS,
 ) {
     if (tags.isEmpty()) return
-    val visibleTags = tags.take(maxVisible)
-    val hiddenCount = tags.size - visibleTags.size
+    val candidateTags = tags.take(maxVisible)
     val description = stringResource(R.string.library_item_tags_cd, tags.joinToString(separator = ", "))
-    FlowRow(
+    SubcomposeLayout(
         modifier = modifier.clearAndSetSemantics { contentDescription = description },
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        visibleTags.forEach { tag ->
-            TagPill(text = tag, showIcon = true)
+    ) { constraints ->
+        val spacingPx = 4.dp.roundToPx()
+        val maxWidth = constraints.maxWidth
+        val relaxedConstraints = Constraints(maxHeight = constraints.maxHeight)
+        val tagPlaceables = candidateTags.mapIndexed { index, tag ->
+            subcompose("tag_$index") {
+                TagPill(text = tag, showIcon = true)
+            }.first().measure(relaxedConstraints)
         }
-        if (hiddenCount > 0) {
-            TagPill(text = stringResource(R.string.library_item_tags_more, hiddenCount), showIcon = false)
+
+        // K 個のタグ + (残りがあれば "+N") が maxWidth に収まる最大の K (1..candidateTags.size) を選ぶ
+        var chosenCount = candidateTags.size
+        var morePlaceable: Placeable? = null
+
+        for (count in candidateTags.size downTo 1) {
+            val hidden = tags.size - count
+            val candidateMore = if (hidden > 0) {
+                subcompose("more_$count") {
+                    TagPill(text = stringResource(R.string.library_item_tags_more, hidden), showIcon = false)
+                }.first().measure(relaxedConstraints)
+            } else {
+                null
+            }
+            val tagsWidth = tagPlaceables.take(count).sumOf { it.width } +
+                spacingPx * (count - 1).coerceAtLeast(0)
+            val totalWidth = if (candidateMore != null) {
+                tagsWidth + spacingPx + candidateMore.width
+            } else {
+                tagsWidth
+            }
+            if (totalWidth <= maxWidth || count == 1) {
+                chosenCount = count
+                morePlaceable = candidateMore
+                break
+            }
+        }
+
+        // count == 1 でも maxWidth を超えるときは、1 個目のタグの幅を縮めて省略記号（…）にし、"+N" も収める。
+        // 文字サイズ 200% などで 1 個目のタグを置く幅すらないときは、"# +全件数" のピル 1 個にまとめる。
+        val minFirstTagWidthPx = 44.dp.roundToPx()
+        val allPlaceables = if (chosenCount == 1) {
+            val reservedForMore = morePlaceable?.let { spacingPx + it.width } ?: 0
+            val allowedFirstWidth = (maxWidth - reservedForMore).coerceAtLeast(0)
+            if (morePlaceable != null && allowedFirstWidth < minFirstTagWidthPx) {
+                listOf(
+                    subcompose("more_all") {
+                        TagPill(
+                            text = stringResource(R.string.library_item_tags_more, tags.size),
+                            showIcon = true,
+                        )
+                    }.first().measure(
+                        Constraints(
+                            maxWidth = maxWidth.coerceAtLeast(0),
+                            maxHeight = constraints.maxHeight,
+                        ),
+                    ),
+                )
+            } else {
+                val firstPlaceable = if (tagPlaceables[0].width > allowedFirstWidth) {
+                    subcompose("tag_0_clamped") {
+                        TagPill(text = candidateTags[0], showIcon = true)
+                    }.first().measure(
+                        Constraints(
+                            maxWidth = allowedFirstWidth,
+                            maxHeight = constraints.maxHeight,
+                        ),
+                    )
+                } else {
+                    tagPlaceables[0]
+                }
+                if (morePlaceable != null) listOf(firstPlaceable, morePlaceable) else listOf(firstPlaceable)
+            }
+        } else {
+            val picked = tagPlaceables.take(chosenCount)
+            if (morePlaceable != null) picked + morePlaceable else picked
+        }
+
+        val layoutWidth = (
+            allPlaceables.sumOf { it.width } +
+                spacingPx * (allPlaceables.size - 1).coerceAtLeast(0)
+            ).coerceIn(constraints.minWidth, constraints.maxWidth)
+        val layoutHeight = (allPlaceables.maxOfOrNull { it.height } ?: 0)
+            .coerceIn(constraints.minHeight, constraints.maxHeight)
+
+        layout(layoutWidth, layoutHeight) {
+            var x = 0
+            for (placeable in allPlaceables) {
+                val y = (layoutHeight - placeable.height) / 2
+                placeable.placeRelative(x, y)
+                x += placeable.width + spacingPx
+            }
         }
     }
 }
