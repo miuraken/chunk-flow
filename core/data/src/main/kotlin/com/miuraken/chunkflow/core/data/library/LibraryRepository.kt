@@ -91,6 +91,21 @@ interface LibraryRepository {
     suspend fun rescanLocalDirectories(coursePath: String? = null): Int = 0
 
     /**
+     * 元のファイル名（[AudioItem.displayName]）をまだ持っていない教材（スキーマ 9 以前に取り込んだものなど）に、
+     * 元のファイルの `DISPLAY_NAME` を問い合わせて補う（ADR 0015）。ライブラリを開いたときに呼ぶ。
+     *
+     * - 再生や取り込みを妨げないよう、I/O の Dispatcher で 1 件ずつ問い合わせ、何件かずつまとめて保存する。
+     * - `DISPLAY_NAME` が取れなければ `local_file_path` の最後の名前を使う。どちらも取れない教材（永続的な権限が
+     *   切れているなど）は飛ばして `null` のまま残し、次の起動でまた試す。
+     * - 同時に 2 つは走らない（走っている間の呼び出しは、待たずに `0` を返す）。同じプロセスで一度問い合わせた教材は、
+     *   次の呼び出しでは問い合わせ直さない（新しく見つかった教材だけを問い合わせる）。
+     * - ログにはファイル名や URI を出さず、件数だけを出す（§8.3）。
+     *
+     * @return 元のファイル名を補った教材の数。
+     */
+    suspend fun backfillMissingDisplayNames(): Int = 0
+
+    /**
      * 新しい仮想フォルダ（ファイル単位取り込みの整理用ディレクトリ）を作成する。
      */
     suspend fun createVirtualFolder(
