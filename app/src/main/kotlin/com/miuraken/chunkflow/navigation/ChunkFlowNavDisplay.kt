@@ -15,6 +15,7 @@ import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
 import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,8 @@ import com.miuraken.chunkflow.R
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.MediaId
+import com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker
+import com.miuraken.chunkflow.core.model.UsageAnalyticsTracker
 import com.miuraken.chunkflow.feature.library.LibraryRoute
 import com.miuraken.chunkflow.feature.library.TranscriptExportRoute
 import com.miuraken.chunkflow.feature.player.PlayerRoute
@@ -54,8 +57,24 @@ import com.miuraken.chunkflow.feature.settings.SettingsTab
  */
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
-fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
+fun ChunkFlowNavDisplay(
+    modifier: Modifier = Modifier,
+    analyticsTracker: UsageAnalyticsTracker = NoOpUsageAnalyticsTracker,
+) {
     val backStack = rememberNavBackStack(LibraryKey)
+    val topKey = backStack.lastOrNull()
+    val topScreenName = when (topKey) {
+        is LibraryKey -> "library"
+        is PlayerKey -> "player"
+        is SettingsKey -> "settings"
+        is TranscriptExportKey -> "transcript_export"
+        else -> null
+    }
+    LaunchedEffect(topScreenName) {
+        if (topScreenName != null) {
+            analyticsTracker.logScreenView(topScreenName)
+        }
+    }
     val windowAdaptiveInfo = currentWindowAdaptiveInfo()
     val directive = remember(windowAdaptiveInfo) {
         calculatePaneScaffoldDirective(windowAdaptiveInfo)

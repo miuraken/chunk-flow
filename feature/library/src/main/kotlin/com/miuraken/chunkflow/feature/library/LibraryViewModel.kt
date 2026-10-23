@@ -1787,7 +1787,23 @@ class LibraryViewModel @Inject constructor(
     private val analysisRepository: AnalysisRepository,
     private val userSettingsRepository: UserSettingsRepository,
     private val itemSttOverrideRepository: ItemSttOverrideRepository,
+    private val analyticsTracker: com.miuraken.chunkflow.core.model.UsageAnalyticsTracker,
 ) : ViewModel() {
+
+    constructor(
+        libraryRepository: LibraryRepository,
+        playbackController: PlaybackController,
+        analysisRepository: AnalysisRepository,
+        userSettingsRepository: UserSettingsRepository,
+        itemSttOverrideRepository: ItemSttOverrideRepository,
+    ) : this(
+        libraryRepository = libraryRepository,
+        playbackController = playbackController,
+        analysisRepository = analysisRepository,
+        userSettingsRepository = userSettingsRepository,
+        itemSttOverrideRepository = itemSttOverrideRepository,
+        analyticsTracker = com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker,
+    )
 
     constructor(
         libraryRepository: LibraryRepository,
@@ -1800,6 +1816,7 @@ class LibraryViewModel @Inject constructor(
         analysisRepository = analysisRepository,
         userSettingsRepository = userSettingsRepository,
         itemSttOverrideRepository = FakeItemSttOverrideRepository(),
+        analyticsTracker = com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker,
     )
 
     private val importState = MutableStateFlow<LibraryImportUiState>(LibraryImportUiState.Idle)
@@ -2998,6 +3015,10 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.RequestFolderSttModelDownload -> {
+                analyticsTracker.logSttModelDownload(
+                    modelId = event.engine.name.lowercase(),
+                    language = event.language.value,
+                )
                 val normLang = LanguageSettings.normalize(event.language)
                 val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
                 languageModelInfos.update { currentMap ->
@@ -3441,6 +3462,12 @@ class LibraryViewModel @Inject constructor(
                     }
 
                     is ImportProgress.Done -> {
+                        if (progress.mediaIds.isNotEmpty()) {
+                            analyticsTracker.logMediaImport(
+                                sourceType = "directory",
+                                itemCount = progress.mediaIds.size,
+                            )
+                        }
                         val allItemsById = libraryRepository.observeItems().firstOrNull().orEmpty().associateBy { it.id }
                         val importedFiles = progress.mediaIds.map { id ->
                             val item = allItemsById[id]
@@ -3530,6 +3557,12 @@ class LibraryViewModel @Inject constructor(
                     }
 
                     is ImportProgress.Done -> {
+                        if (progress.mediaIds.isNotEmpty()) {
+                            analyticsTracker.logMediaImport(
+                                sourceType = if (treatAsRealFolder || uris.size > 1) "directory" else "single_file",
+                                itemCount = progress.mediaIds.size,
+                            )
+                        }
                         val allItemsById = libraryRepository.observeItems().firstOrNull().orEmpty().associateBy { it.id }
                         val importedFiles = progress.mediaIds.map { id ->
                             val item = allItemsById[id]

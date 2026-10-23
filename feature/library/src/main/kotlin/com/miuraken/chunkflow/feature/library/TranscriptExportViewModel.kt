@@ -156,7 +156,15 @@ sealed interface TranscriptExportEffect {
 @HiltViewModel
 class TranscriptExportViewModel @Inject constructor(
     private val libraryRepository: LibraryRepository,
+    private val analyticsTracker: com.miuraken.chunkflow.core.model.UsageAnalyticsTracker,
 ) : ViewModel() {
+
+    constructor(
+        libraryRepository: LibraryRepository,
+    ) : this(
+        libraryRepository = libraryRepository,
+        analyticsTracker = com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker,
+    )
 
     private val _uiState = MutableStateFlow(TranscriptExportUiState())
 
@@ -229,6 +237,9 @@ class TranscriptExportViewModel @Inject constructor(
                         format = format,
                         targetUri = event.uri,
                     )
+                    if (ok) {
+                        analyticsTracker.logTranscriptExport(format.name.lowercase())
+                    }
                     _uiState.update { current ->
                         current.copy(
                             exportResult = if (ok) {
@@ -252,6 +263,9 @@ class TranscriptExportViewModel @Inject constructor(
                         format = format,
                         treeUri = event.treeUri,
                     )
+                    if (count > 0) {
+                        analyticsTracker.logTranscriptExport(format.name.lowercase())
+                    }
                     _uiState.update { current ->
                         current.copy(
                             exportResult = if (count > 0) {
@@ -270,6 +284,9 @@ class TranscriptExportViewModel @Inject constructor(
             TranscriptExportEvent.CopyToClipboard -> copyToClipboard()
 
             is TranscriptExportEvent.ClipboardWriteFinished -> {
+                if (event.success) {
+                    analyticsTracker.logTranscriptExport(_uiState.value.selectedFormat.name.lowercase())
+                }
                 _uiState.update { current ->
                     current.copy(
                         isCopyingToClipboard = false,

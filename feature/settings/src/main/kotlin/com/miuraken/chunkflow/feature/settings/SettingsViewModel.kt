@@ -481,13 +481,24 @@ sealed interface SettingsEvent {
 class SettingsViewModel @Inject constructor(
     private val userSettingsRepository: UserSettingsRepository,
     private val analysisRepository: AnalysisRepository,
+    private val analyticsTracker: com.miuraken.chunkflow.core.model.UsageAnalyticsTracker,
 ) : ViewModel() {
+
+    constructor(
+        userSettingsRepository: UserSettingsRepository,
+        analysisRepository: AnalysisRepository,
+    ) : this(
+        userSettingsRepository = userSettingsRepository,
+        analysisRepository = analysisRepository,
+        analyticsTracker = com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker,
+    )
 
     constructor(
         userSettingsRepository: UserSettingsRepository,
     ) : this(
         userSettingsRepository = userSettingsRepository,
         analysisRepository = com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository(),
+        analyticsTracker = com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker,
     )
 
     private val languageModelsState = MutableStateFlow(SettingsUiState.defaultLanguageModelInfos())
@@ -777,6 +788,10 @@ class SettingsViewModel @Inject constructor(
                 val dialog = sherpaDownloadDialogState.value ?: return
                 if (dialog.isDownloading) return
                 val targetEngine = dialog.engine
+                analyticsTracker.logSttModelDownload(
+                    modelId = targetEngine.name.lowercase(Locale.ROOT),
+                    language = dialog.language.value,
+                )
                 sherpaDownloadDialogState.value = dialog.copy(
                     isDownloading = true,
                     isFailed = false,
@@ -841,6 +856,10 @@ class SettingsViewModel @Inject constructor(
             }
 
             is SettingsEvent.RequestSttModelDownload -> {
+                analyticsTracker.logSttModelDownload(
+                    modelId = event.engine.name.lowercase(Locale.ROOT),
+                    language = event.language.value,
+                )
                 val mgmtCode = com.miuraken.chunkflow.core.model.SupportedLanguageCatalog.normalizeToModelManagementCode(
                     event.language.value,
                 )
@@ -1008,6 +1027,10 @@ class SettingsViewModel @Inject constructor(
             }
 
             is SettingsEvent.DownloadSttModel -> {
+                analyticsTracker.logSttModelDownload(
+                    modelId = event.model.name.lowercase(Locale.ROOT),
+                    language = "multi",
+                )
                 downloadableModelsState.update { current ->
                     current.map { st ->
                         if (st.model == event.model) {

@@ -9,8 +9,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
+import com.miuraken.chunkflow.core.data.library.ImportProgress
 import com.miuraken.chunkflow.core.data.library.LibraryRepository
 import com.miuraken.chunkflow.core.designsystem.theme.ChunkFlowTheme
+import com.miuraken.chunkflow.core.model.UsageAnalyticsTracker
 import com.miuraken.chunkflow.navigation.ChunkFlowNavDisplay
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -29,6 +31,9 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var libraryRepository: LibraryRepository
 
+    @Inject
+    lateinit var analyticsTracker: UsageAnalyticsTracker
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -41,7 +46,7 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             ChunkFlowTheme {
-                ChunkFlowNavDisplay()
+                ChunkFlowNavDisplay(analyticsTracker = analyticsTracker)
             }
         }
     }
@@ -50,7 +55,14 @@ class MainActivity : ComponentActivity() {
         val uris = extractSharedContentUris(incomingIntent)
         if (uris.isNotEmpty()) {
             lifecycleScope.launch {
-                libraryRepository.import(uris).collect()
+                libraryRepository.import(uris).collect { progress ->
+                    if (progress is ImportProgress.Done && progress.mediaIds.isNotEmpty()) {
+                        analyticsTracker.logMediaImport(
+                            sourceType = "shared_intent",
+                            itemCount = progress.mediaIds.size,
+                        )
+                    }
+                }
             }
         }
     }

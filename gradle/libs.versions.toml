@@ -45,6 +45,8 @@ mlkitTranslate = "17.0.3"
 # スパイク S4（spikes/textai だけで使う）
 mlkitGenaiProofreading = "1.0.0-beta1"
 mlkitGenaiPrompt = "1.0.0-beta4"
+firebaseAnalytics = "24.0.0"
+googleServices = "4.5.0"
 
 # ---- テスト ----
 junit4 = "4.13.2"
@@ -109,6 +111,7 @@ mlkit-genai-speech-recognition = { group = "com.google.mlkit", name = "genai-spe
 mlkit-translate = { group = "com.google.mlkit", name = "translate", version.ref = "mlkitTranslate" }
 mlkit-genai-proofreading = { group = "com.google.mlkit", name = "genai-proofreading", version.ref = "mlkitGenaiProofreading" }
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
+firebase-analytics = { group = "com.google.firebase", name = "firebase-analytics", version.ref = "firebaseAnalytics" }
 
 # テスト
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
@@ -136,6 +139,7 @@ hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 room = { id = "androidx.room", version.ref = "room" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
 compose-screenshot = { id = "com.android.compose.screenshot", version.ref = "screenshot" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
 
 # convention plugins（build-logic/convention で定義）
 chunkflow-android-application = { id = "chunkflow.android.application" }

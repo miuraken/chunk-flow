@@ -1460,7 +1460,23 @@ class PlayerViewModel @Inject constructor(
     private val playbackController: PlaybackController,
     private val userSettingsRepository: UserSettingsRepository,
     private val itemSttOverrideRepository: com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository,
+    private val analyticsTracker: com.miuraken.chunkflow.core.model.UsageAnalyticsTracker,
 ) : ViewModel() {
+
+    constructor(
+        libraryRepository: LibraryRepository,
+        analysisRepository: AnalysisRepository,
+        playbackController: PlaybackController,
+        userSettingsRepository: UserSettingsRepository,
+        itemSttOverrideRepository: com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository,
+    ) : this(
+        libraryRepository = libraryRepository,
+        analysisRepository = analysisRepository,
+        playbackController = playbackController,
+        userSettingsRepository = userSettingsRepository,
+        itemSttOverrideRepository = itemSttOverrideRepository,
+        analyticsTracker = com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker,
+    )
 
     constructor(
         libraryRepository: LibraryRepository,
@@ -1476,6 +1492,7 @@ class PlayerViewModel @Inject constructor(
             override suspend fun get(id: MediaId): com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
             override suspend fun set(id: MediaId, override: com.miuraken.chunkflow.core.model.ItemSttOverride): Boolean = true
         },
+        analyticsTracker = com.miuraken.chunkflow.core.model.NoOpUsageAnalyticsTracker,
     )
 
     private val currentMediaId = MutableStateFlow<MediaId?>(null)
@@ -2296,6 +2313,7 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.SetBaseLanguageSpeed -> {
                 val rounded = roundSpeed(event.speed)
+                analyticsTracker.logPlaybackSpeedChange(speed = rounded, isBaseLanguageSpeed = true)
                 viewModelScope.launch {
                     userSettingsRepository.setBaseLanguageSpeed(rounded)
                 }
@@ -2355,6 +2373,12 @@ class PlayerViewModel @Inject constructor(
                 if (event.loopMode is LoopMode.AbRange || event.loopMode is LoopMode.Off) {
                     localUiState.update { it.copy(isChunkBoundaryEditMode = false) }
                 }
+                when (val mode = event.loopMode) {
+                    is LoopMode.SingleChunk -> analyticsTracker.logRepeatCountChange(mode.times ?: -1)
+                    is LoopMode.ChunkRange -> analyticsTracker.logRepeatCountChange(mode.times ?: -1)
+                    is LoopMode.AbRange -> analyticsTracker.logAbRepeatSet(chunkSpan = 1)
+                    LoopMode.Off -> Unit
+                }
                 updatePracticeWithCheckedFallback {
                     val nextRepeatWholeFile = if (event.loopMode is LoopMode.Off) false else it.repeatWholeFile
                     it.copy(
@@ -2373,6 +2397,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             PlayerEvent.EnableWholeFileRepeat -> {
+                analyticsTracker.logFileEndActionChange(FileEndAction.REPEAT_FILE.name.lowercase(Locale.ROOT))
                 playbackController.updatePractice { current ->
                     current.copy(
                         repeatWholeFile = true,
@@ -2382,6 +2407,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetFileEndAction -> {
+                analyticsTracker.logFileEndActionChange(event.action.name.lowercase(Locale.ROOT))
                 if (event.action == FileEndAction.SHUFFLE) {
                     playedShuffleMediaIds.clear()
                     resolveActiveMediaId()?.let { playedShuffleMediaIds.add(it) }
@@ -2464,13 +2490,28 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetAutoPause -> {
+                val modeName = when (event.autoPause) {
+                    AutoPause.Off -> "off"
+                    is AutoPause.Fixed -> "fixed"
+                    is AutoPause.Proportional -> "proportional"
+                    is AutoPause.OriginalSilence -> "original_silence"
+                }
+                val nextScope = if (event.autoPause is AutoPause.Off) {
+                    AutoPauseScope.ALL_CHUNKS
+                } else {
+                    playbackController.practice.value.autoPauseScope
+                }
+                analyticsTracker.logAutoPauseChange(
+                    mode = modeName,
+                    scope = nextScope.name.lowercase(Locale.ROOT),
+                )
                 playbackController.updatePractice { current ->
-                    val nextScope = if (event.autoPause is AutoPause.Off) {
+                    val resolvedScope = if (event.autoPause is AutoPause.Off) {
                         AutoPauseScope.ALL_CHUNKS
                     } else {
                         current.autoPauseScope
                     }
-                    current.copy(autoPause = event.autoPause, autoPauseScope = nextScope)
+                    current.copy(autoPause = event.autoPause, autoPauseScope = resolvedScope)
                 }
             }
 
@@ -2490,6 +2531,16 @@ class PlayerViewModel @Inject constructor(
                         } else {
                             current.autoPause
                         }
+                        val modeName = when (nextAutoPause) {
+                            AutoPause.Off -> "off"
+                            is AutoPause.Fixed -> "fixed"
+                            is AutoPause.Proportional -> "proportional"
+                            is AutoPause.OriginalSilence -> "original_silence"
+                        }
+                        analyticsTracker.logAutoPauseChange(
+                            mode = modeName,
+                            scope = event.scope.name.lowercase(Locale.ROOT),
+                        )
                         current.copy(
                             autoPause = nextAutoPause,
                             autoPauseScope = event.scope,
@@ -2513,11 +2564,29 @@ class PlayerViewModel @Inject constructor(
                             } else {
                                 current.autoPause
                             }
+                            analyticsTracker.logAutoPauseChange(
+                                mode = when (nextAutoPause) {
+                                    AutoPause.Off -> "off"
+                                    is AutoPause.Fixed -> "fixed"
+                                    is AutoPause.Proportional -> "proportional"
+                                    is AutoPause.OriginalSilence -> "original_silence"
+                                },
+                                scope = AutoPauseScope.AFTER_BASE_LANGUAGE.name.lowercase(Locale.ROOT),
+                            )
                             current.copy(
                                 autoPause = nextAutoPause,
                                 autoPauseScope = AutoPauseScope.AFTER_BASE_LANGUAGE,
                             )
                         } else {
+                            analyticsTracker.logAutoPauseChange(
+                                mode = when (current.autoPause) {
+                                    AutoPause.Off -> "off"
+                                    is AutoPause.Fixed -> "fixed"
+                                    is AutoPause.Proportional -> "proportional"
+                                    is AutoPause.OriginalSilence -> "original_silence"
+                                },
+                                scope = AutoPauseScope.ALL_CHUNKS.name.lowercase(Locale.ROOT),
+                            )
                             current.copy(autoPauseScope = AutoPauseScope.ALL_CHUNKS)
                         }
                     }
@@ -2530,6 +2599,7 @@ class PlayerViewModel @Inject constructor(
                 ) {
                     return
                 }
+                analyticsTracker.logLanguageFilterChange(event.filter.name.lowercase(Locale.ROOT))
                 languageFilterHighlightJob?.cancel()
                 languageFilterHighlightJob = null
                 localUiState.update { state ->
@@ -2743,6 +2813,7 @@ class PlayerViewModel @Inject constructor(
                         }
                         val merged = analysisRepository.mergeChunks(id, chunkIds)
                         if (merged) {
+                            analyticsTracker.logChunkBoundaryEdit("merge")
                             val preservedIds = if (selectedRanges.isNotEmpty()) {
                                 val updatedChunks = analysisRepository.observeChunks(id).first()
                                 updatedChunks
@@ -2841,6 +2912,7 @@ class PlayerViewModel @Inject constructor(
                         }
                         val merged = analysisRepository.mergeChunks(id, chunkIds)
                         if (merged) {
+                            analyticsTracker.logChunkBoundaryEdit("merge")
                             // 連結するとチャンクの ID が変わるため、選択を外す
                             updatePracticeWithCheckedFallback {
                                 it.copy(repeatChunkIds = emptySet(), temporaryRepeatChunkId = null)
@@ -2906,6 +2978,7 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetBlindMode -> {
+                analyticsTracker.logBlindModeToggle(event.blindMode != BlindMode.OFF)
                 localUiState.update {
                     it.copy(
                         blindMode = event.blindMode,
@@ -2932,6 +3005,12 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.SetShowTargetTranslation -> {
+                val pair = uiState.value.languagePair
+                analyticsTracker.logTranslationToggle(
+                    enabled = event.enabled,
+                    sourceLanguage = pair?.target?.value.orEmpty(),
+                    targetLanguage = pair?.base?.value.orEmpty(),
+                )
                 if (!event.enabled) {
                     stopTranslationLoop()
                     localUiState.update {
@@ -2969,6 +3048,7 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.Resegment -> {
                 val id = resolveActiveMediaId() ?: return
+                analyticsTracker.logChunkBoundaryEdit("resegment")
                 localUiState.update {
                     it.copy(
                         useGlobalSegmentationOverride = false,
@@ -3067,6 +3147,14 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.RetranscribeChunk -> {
                 val id = resolveActiveMediaId() ?: return
+                val targetChunk = uiState.value.chunks.firstOrNull { it.id == event.chunkId }
+                val chunkLang = targetChunk?.language?.value
+                    ?: uiState.value.languagePair?.target?.value
+                    ?: "unknown"
+                analyticsTracker.logChunkDetailTranscription(
+                    language = chunkLang,
+                    engine = "default",
+                )
                 chunkSeekPrioritizeJob?.cancel()
                 chunkSeekPrioritizeJob = null
                 localUiState.update { state ->
@@ -3132,6 +3220,7 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.MergeWithNextChunk -> {
                 val id = resolveActiveMediaId() ?: return
+                analyticsTracker.logChunkBoundaryEdit("merge")
                 viewModelScope.launch {
                     analysisRepository.mergeWithNextChunk(id, event.chunkId)
                 }
@@ -3239,6 +3328,23 @@ class PlayerViewModel @Inject constructor(
                 val id = resolveActiveMediaId() ?: return
                 if (!event.enabled) {
                     abortActiveViewModelTranscriptionJobs()
+                } else {
+                    val pair = uiState.value.languagePair
+                    val targetLang = pair?.target?.value.orEmpty()
+                    val baseLang = pair?.base?.value ?: "none"
+                    val effectiveOverride = uiState.value.itemSttOverride.withFolderFallback(uiState.value.folderSttOverride)
+                    val targetEngine = effectiveOverride.targetEngine?.name?.lowercase(Locale.ROOT) ?: "default"
+                    val baseEngine = effectiveOverride.baseEngine?.name?.lowercase(Locale.ROOT) ?: "default"
+                    analyticsTracker.logFullTranscriptionStart(
+                        targetLanguage = targetLang,
+                        baseLanguage = baseLang,
+                        targetEngine = targetEngine,
+                        baseEngine = baseEngine,
+                    )
+                    analyticsTracker.logLookaheadTranscription(
+                        language = targetLang,
+                        engine = targetEngine,
+                    )
                 }
                 transcriptionBadgeTooltipJob?.cancel()
                 transcriptionBadgeTooltipJob = null
@@ -3367,6 +3473,10 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.RequestRecognitionModelDownload -> {
+                analyticsTracker.logSttModelDownload(
+                    modelId = "recognition_default",
+                    language = event.language.value,
+                )
                 viewModelScope.launch {
                     analysisRepository.requestRecognitionModelDownload(event.language)
                 }
@@ -3383,6 +3493,9 @@ class PlayerViewModel @Inject constructor(
                 val id = resolveActiveMediaId() ?: return
                 viewModelScope.launch {
                     val exported = libraryRepository.exportLocalTranscriptJson(id)
+                    if (exported) {
+                        analyticsTracker.logTranscriptExport("chunkflow_json")
+                    }
                     localUiState.update { it.copy(localTranscriptExported = exported) }
                 }
             }
@@ -3395,6 +3508,9 @@ class PlayerViewModel @Inject constructor(
                         format = event.format,
                         targetUri = event.uri,
                     )
+                    if (success) {
+                        analyticsTracker.logTranscriptExport(event.format.name.lowercase(Locale.ROOT))
+                    }
                     val banner = if (success) {
                         TranscriptExportBannerState.Exported(event.format)
                     } else {
@@ -3575,6 +3691,10 @@ class PlayerViewModel @Inject constructor(
 
             is PlayerEvent.RequestDetailedTranscriptionModelDownload -> {
                 val sttEngine = DetailedTranscriptionDialogState.toSttEngine(event.engine)
+                analyticsTracker.logSttModelDownload(
+                    modelId = sttEngine.name.lowercase(Locale.ROOT),
+                    language = event.language.value,
+                )
                 localUiState.update { state ->
                     val current = state.detailedTranscriptionDialog ?: return@update state
                     val existingInfo = current.modelInfoFor(event.language)
@@ -3682,6 +3802,10 @@ class PlayerViewModel @Inject constructor(
             }
 
             is PlayerEvent.RequestItemSttModelDownload -> {
+                analyticsTracker.logSttModelDownload(
+                    modelId = event.engine.name.lowercase(Locale.ROOT),
+                    language = event.language.value,
+                )
                 val normLang = LanguageSettings.normalize(event.language)
                 val mgmtLang = LanguageTag(SupportedLanguageCatalog.normalizeToModelManagementCode(event.language.value))
                 localUiState.update { state ->
@@ -3876,6 +4000,10 @@ class PlayerViewModel @Inject constructor(
                 val resolvedLanguage = event.languageOverride
                     ?: localUiState.value.detailedTranscriptionDialog?.languageOverride
                     ?: resolveInitialDetailedLanguage(null, uiState.value.languagePair)
+                analyticsTracker.logChunkDetailTranscription(
+                    language = resolvedLanguage.value,
+                    engine = event.engine.name.lowercase(Locale.ROOT),
+                )
                 localUiState.update { state ->
                     val currentDialog = state.detailedTranscriptionDialog ?: return@update state
                     state.copy(
@@ -4048,6 +4176,10 @@ class PlayerViewModel @Inject constructor(
             PlayerEvent.ConfirmRecommendedSttModelDownload -> {
                 val dialog = localUiState.value.recommendedSttModelDialog ?: return
                 if (dialog.isDownloading) return
+                analyticsTracker.logSttModelDownload(
+                    modelId = dialog.engine.name.lowercase(Locale.ROOT),
+                    language = dialog.language.value,
+                )
                 localUiState.update { current ->
                     current.copy(
                         recommendedSttModelDialog = current.recommendedSttModelDialog?.copy(isDownloading = true),
@@ -4417,6 +4549,12 @@ class PlayerViewModel @Inject constructor(
                         localUiState.update {
                             it.copy(failedTranslationChunkIds = failedTranslationChunkIds.toSet())
                         }
+                    } else {
+                        analyticsTracker.logTranslationRun(
+                            sourceLanguage = pair.target.value,
+                            targetLanguage = baseLang.value,
+                            chunkCount = 1,
+                        )
                     }
                 }
             } finally {
@@ -4458,6 +4596,9 @@ class PlayerViewModel @Inject constructor(
                     emptySet()
                 }
                 val split = analysisRepository.splitChunk(id, chunkId, splitPositionMs)
+                if (split) {
+                    analyticsTracker.logChunkBoundaryEdit("split")
+                }
                 if (split && currentRepeatIds.isNotEmpty()) {
                     val updatedChunks = analysisRepository.observeChunks(id).first()
                     val preservedIds = updatedChunks
@@ -4602,6 +4743,13 @@ class PlayerViewModel @Inject constructor(
         val isAutoPaused = playbackController.status.value.autoPauseEndsAtMs != null
         if (!isCurrentlyPlaying || isAutoPaused) {
             requestAutoFollowResume()
+        }
+        if (!isCurrentlyPlaying) {
+            val pair = uiState.value.languagePair
+            analyticsTracker.logPlaybackStart(
+                targetLanguage = pair?.target?.value.orEmpty(),
+                baseLanguage = pair?.base?.value ?: "none",
+            )
         }
         if (player != null) {
             if (isCurrentlyPlaying) {
@@ -4754,6 +4902,7 @@ class PlayerViewModel @Inject constructor(
         newStartMs: Long,
         newEndMs: Long,
     ) {
+        analyticsTracker.logChunkBoundaryEdit("adjust")
         viewModelScope.launch {
             withContext(NonCancellable) {
                 val currentChunks = uiState.value.chunks
@@ -4849,6 +4998,7 @@ class PlayerViewModel @Inject constructor(
 
     private fun setSpeed(rawSpeed: Float) {
         val rounded = roundSpeed(rawSpeed)
+        analyticsTracker.logPlaybackSpeedChange(speed = rounded, isBaseLanguageSpeed = false)
         playbackController.setSpeed(rounded)
         if (kotlin.math.abs(rounded - 1.0f) >= 0.01f) {
             localUiState.update { it.copy(customSpeedOverride = rounded) }
@@ -4860,6 +5010,7 @@ class PlayerViewModel @Inject constructor(
 
     private fun setCustomSpeed(rawSpeed: Float) {
         val rounded = roundSpeed(rawSpeed)
+        analyticsTracker.logPlaybackSpeedChange(speed = rounded, isBaseLanguageSpeed = false)
         localUiState.update { it.copy(customSpeedOverride = rounded) }
         viewModelScope.launch {
             userSettingsRepository.setDefaultSpeed(rounded)
