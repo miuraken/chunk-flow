@@ -106,6 +106,36 @@ class Migration9To10Test {
         }
     }
 
+    @Test
+    fun `MIGRATION_9_10_まとめて補うと名前のない教材だけに保存しすでにある名前は変えない`() = runTest {
+        createVersion9Database { db ->
+            insertMediaItem(db, id = "a", sha256 = "sha-a", sourceUri = "content://x/document/a", localFilePath = null)
+            insertMediaItem(db, id = "b", sha256 = "sha-b", sourceUri = "content://x/document/b", localFilePath = null)
+            insertMediaItem(db, id = "c", sha256 = "sha-c", sourceUri = "content://x/document/c", localFilePath = null)
+        }
+
+        val migrated = openMigratedDatabase()
+        try {
+            val dao = migrated.mediaItemDao()
+            // 補完の途中で取り込みが名前を書いた教材
+            dao.updateDisplayName("b", "取り込みで入れた名前.mp3")
+
+            val updated = dao.fillMissingDisplayNames(
+                mapOf("a" to "a.mp3", "b" to "補完の名前.mp3", "missing" to "missing.mp3"),
+            )
+
+            assertEquals(1, updated)
+            assertEquals("a.mp3", dao.getById("a")?.displayName)
+            assertEquals("取り込みで入れた名前.mp3", dao.getById("b")?.displayName)
+            assertNull(dao.getById("c")?.displayName)
+            assertEquals(listOf("c"), dao.getItemsMissingDisplayName().map { it.id })
+            assertEquals(0, dao.updateDisplayNameIfMissing("a", "上書きしない.mp3"))
+            assertEquals("a.mp3", dao.getById("a")?.displayName)
+        } finally {
+            migrated.close()
+        }
+    }
+
     private fun openMigratedDatabase(): ChunkFlowDatabase = Room.databaseBuilder(context, ChunkFlowDatabase::class.java, dbName)
         .addMigrations(*ChunkFlowDatabase.ALL_MIGRATIONS)
         .allowMainThreadQueries()
