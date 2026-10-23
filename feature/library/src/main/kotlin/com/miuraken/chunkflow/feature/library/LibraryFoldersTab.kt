@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material3.Checkbox
@@ -47,6 +48,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -138,6 +140,9 @@ internal fun LibraryFoldersTabContent(
         )
 
         if (isSearchActive) {
+            // 検索結果はフォルダの一覧（listState）と別の状態にする。同じ状態で行を入れ替えると、
+            // 消えていく行が新しい行に重なって残るため（フォルダごとに状態を分けているのと同じ理由）
+            val searchListState = rememberLazyListState()
             val filteredFiles = state.filteredAllFiles
             if (!state.isLoading && filteredFiles.isEmpty()) {
                 Column(
@@ -166,8 +171,11 @@ internal fun LibraryFoldersTabContent(
                 }
             } else {
                 LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f),
+                    state = searchListState,
+                    // 消えていく行（animateItem）を一覧の外（検索ボックスや絞り込みの欄）に描かない
+                    modifier = Modifier
+                        .weight(1f)
+                        .clipToBounds(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
                     itemsIndexed(
@@ -292,7 +300,10 @@ internal fun LibraryFoldersTabContent(
             } else {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.weight(1f),
+                    // 消えていく行（animateItem。絞り込みを変えたときなど）を一覧の外（フォルダの見出しや絞り込みの欄）に描かない
+                    modifier = Modifier
+                        .weight(1f)
+                        .clipToBounds(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
                     itemsIndexed(

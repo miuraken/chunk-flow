@@ -22,7 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -229,7 +229,11 @@ fun LibraryScreen(
     modifier: Modifier = Modifier,
     onOpenTranscriptExport: (List<MediaId>) -> Unit = {},
 ) {
-    val listState = rememberLazyListState()
+    // フォルダの一覧の状態は、開いているフォルダ（ディレクトリ）ごとに作り直す。同じ状態のまま中身を別のフォルダの行に
+    // 入れ替えると、animateItem() が前のフォルダの行を「消えていく行」として残し、一覧の外（見出しや絞り込みの欄）や
+    // 新しい行に重ねて描いてしまう（ホームに戻ったときに前の一覧が残って見える不具合）。フォルダを開いたときの位置は
+    // 下の LaunchedEffect で決める。
+    val listState = rememberSaveable(state.currentDirectoryPath, saver = LazyListState.Saver) { LazyListState() }
     val snackbarHostState = remember { SnackbarHostState() }
     val topAppBarScrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     var lastScrolledDirectoryPath by remember { mutableStateOf<String?>("__uninitialized__") }
