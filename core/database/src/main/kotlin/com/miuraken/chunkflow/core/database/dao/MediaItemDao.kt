@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import androidx.room.Upsert
 import com.miuraken.chunkflow.core.database.entity.MediaItemEntity
@@ -61,6 +62,34 @@ interface MediaItemDao {
             "AND (source_uri IS NOT NULL OR local_file_path IS NOT NULL) ORDER BY imported_at ASC, id ASC",
     )
     suspend fun getItemsMissingDisplayName(): List<MediaItemEntity>
+
+    /**
+     * 元のファイル名（`display_name`）がまだ `NULL` の教材だけに [displayName] を保存する（ADR 0015）。
+     *
+     * 補完の途中で取り込みや再スキャンが新しい名前を書いた教材は上書きしない。
+     *
+     * @return 更新した行の数（教材がないか、すでに名前があれば 0）。
+     */
+    @Query("UPDATE media_item SET display_name = :displayName WHERE id = :id AND display_name IS NULL")
+    suspend fun updateDisplayNameIfMissing(id: String, displayName: String): Int
+
+    /**
+     * 古い版で取り込んだ教材の元のファイル名を、1 つのトランザクションでまとめて補う（ADR 0015）。
+     *
+     * 1 件ずつ書くと一覧の購読がそのたびに再計算されるので、まとめごとに 1 回にする。
+     * 名前がすでにある教材は変えない（[updateDisplayNameIfMissing]）。
+     *
+     * @param displayNames 教材 ID から元のファイル名への対応。
+     * @return 更新した行の数。
+     */
+    @Transaction
+    suspend fun fillMissingDisplayNames(displayNames: Map<String, String>): Int {
+        var updated = 0
+        for ((id, name) in displayNames) {
+            updated += updateDisplayNameIfMissing(id, name)
+        }
+        return updated
+    }
 
     /** 教材の言語ペアを更新する（§7.4.6）。 */
     @Query("UPDATE media_item SET target_lang = :targetLang, base_lang = :baseLang WHERE id = :id")

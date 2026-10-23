@@ -610,6 +610,16 @@ class DefaultTranscriptImporterTest {
             .filter { it.displayName == null && (it.sourceUri != null || it.localFilePath != null) }
             .sortedWith(compareBy<MediaItemEntity> { it.importedAt }.thenBy { it.id })
 
+        override suspend fun updateDisplayNameIfMissing(id: String, displayName: String): Int {
+            var updated = 0
+            items.update { current ->
+                val existing = current[id]?.takeIf { it.displayName == null } ?: return@update current
+                updated = 1
+                current + (id to existing.copy(displayName = displayName))
+            }
+            return updated
+        }
+
         override suspend fun updateLanguagePair(id: String, targetLang: String, baseLang: String?) {
             items.update { current ->
                 val existing = current[id] ?: return@update current
