@@ -128,6 +128,8 @@ private fun Project.configureUnitTests() {
     tasks.withType<Test>().configureEach {
         // まだテストや @PreviewTest がないモジュールでもタスクが失敗しないようにする（Gradle 9 対応）
         failOnNoDiscoveredTests.set(false)
+        // Compose Preview Screenshot Testing（Layoutlib）で多数のプレビューを描画した際の Heap OOM / GC ハングを防ぐ
+        maxHeapSize = "2g"
         // 端末やロケールに依存しないよう、テストの既定のロケールとタイムゾーンを固定する
         systemProperty("user.language", "ja")
         systemProperty("user.country", "JP")
