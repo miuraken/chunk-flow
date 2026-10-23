@@ -5652,7 +5652,7 @@ class AndroidSpeechRecognizerChunkTranscriber internal constructor(
         putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
         putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, sampleRateHz)
         val rawHint = activeTrialContextHint?.trim().orEmpty()
-        if (rawHint.isNotEmpty() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        if (rawHint.isNotEmpty()) {
             val biasingPhrases = ArrayList<String>()
             for (part in rawHint.split("||")) {
                 val trimmed = part.trim()

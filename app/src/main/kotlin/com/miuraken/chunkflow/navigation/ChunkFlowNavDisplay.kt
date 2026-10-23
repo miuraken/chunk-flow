@@ -40,6 +40,12 @@ import com.miuraken.chunkflow.feature.settings.SettingsTab
  *
  * 予測型「戻る」は NavDisplay が扱い、大画面（Expanded 以上）では [ListDetailSceneStrategy] により
  * 「ライブラリ | プレイヤー」の 2 ペイン表示になる（§7.5.1、§7.5.6）。
+ *
+ * 「戻る」が再構成の前に 2 回届いてもバックスタックが空にならないよう（空になると NavDisplay が
+ * 例外で落ちる）、システムの「戻る」は [popUnlessRoot]（ルートの [LibraryKey] は消さない）、
+ * 画面の「戻る」ボタンは [popIfTop]（自分のエントリーが一番上のときだけ消す）で取り除く。
+ * 画面を開くボタンが再構成の前に 2 回押されても同じ画面が 2 枚積まれないよう、画面は
+ * [pushIfNotTop]（一番上と同じキーは積まない。プレイヤーは [openPlayer]）で積む。
  */
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
@@ -55,7 +61,7 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
     NavDisplay(
         backStack = backStack,
         modifier = modifier,
-        onBack = { backStack.removeLastOrNull() },
+        onBack = { backStack.popUnlessRoot() },
         sceneStrategies = listOf(listDetailStrategy),
         entryProvider = entryProvider {
             entry<LibraryKey>(
@@ -67,21 +73,20 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
             ) {
                 LibraryRoute(
                     onOpenPlayer = { id ->
-                        openPlayerKey(backStack, PlayerKey(mediaId = id.value))
+                        backStack.openPlayer(PlayerKey(mediaId = id.value))
                     },
                     onOpenPlayerAtChunk = { id, chunkId ->
-                        openPlayerKey(
-                            backStack,
+                        backStack.openPlayer(
                             PlayerKey(mediaId = id.value, initialChunkId = chunkId.value),
                         )
                     },
-                    onOpenSettings = { backStack.add(SettingsKey()) },
+                    onOpenSettings = { backStack.pushIfNotTop(SettingsKey()) },
                     onOpenLanguageSettings = {
-                        backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
+                        backStack.pushIfNotTop(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
                     },
                     onOpenTranscriptExport = { ids ->
                         if (ids.isNotEmpty()) {
-                            backStack.add(TranscriptExportKey(mediaIds = ids.map { it.value }))
+                            backStack.pushIfNotTop(TranscriptExportKey(mediaIds = ids.map { it.value }))
                         }
                     },
                 )
@@ -92,42 +97,30 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                 PlayerRoute(
                     mediaId = MediaId(key.mediaId),
                     initialChunkId = key.initialChunkId?.let { ChunkId(it) },
-                    onBack = { backStack.removeLastOrNull() },
-                    onOpenPlaybackSettings = { backStack.add(SettingsKey()) },
+                    onBack = { backStack.popIfTop(key) },
+                    onOpenPlaybackSettings = { backStack.pushIfNotTop(SettingsKey()) },
                     onOpenLanguageSettings = {
-                        backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
+                        backStack.pushIfNotTop(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
                     },
                     onOpenTranscriptExport = { id ->
-                        backStack.add(TranscriptExportKey(mediaIds = listOf(id.value)))
+                        backStack.pushIfNotTop(TranscriptExportKey(mediaIds = listOf(id.value)))
                     },
                 )
             }
             entry<TranscriptExportKey> { key ->
                 TranscriptExportRoute(
                     mediaIds = key.mediaIds.map { MediaId(it) },
-                    onBack = { backStack.removeLastOrNull() },
+                    onBack = { backStack.popIfTop(key) },
                 )
             }
             entry<SettingsKey> { key ->
                 SettingsRoute(
-                    onBack = { backStack.removeLastOrNull() },
+                    onBack = { backStack.popIfTop(key) },
                     initialTab = key.initialTab,
                 )
             }
         },
     )
-}
-
-private fun openPlayerKey(
-    backStack: MutableList<NavKey>,
-    newKey: PlayerKey,
-) {
-    // 2 ペイン表示中に別の教材を選んだとき、詳細ペインの PlayerKey が重複して積まれないよう最新の PlayerKey を差し替える
-    if (backStack.lastOrNull() is PlayerKey) {
-        backStack[backStack.lastIndex] = newKey
-    } else {
-        backStack.add(newKey)
-    }
 }
 
 @Composable

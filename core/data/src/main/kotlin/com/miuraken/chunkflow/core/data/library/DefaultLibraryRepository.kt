@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.util.Log
 import com.miuraken.chunkflow.core.data.analysis.AnalysisRepository
 import com.miuraken.chunkflow.core.data.analysis.DefaultAnalysisRepository
 import com.miuraken.chunkflow.core.data.di.ChunkFlowDispatchers
@@ -92,6 +93,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 
 /**
@@ -104,6 +106,8 @@ import kotlinx.coroutines.withContext
  * - 音声の取り込み完了後、[AnalysisRepository.requestAnalysis] で波形・特徴量・自動分割のジョブを投入する（§7.1 手順 6）。
  * - 文字起こし（`.chunkflow.json` 等）はファイル個別設定画面からファイル単位で手動取り込みを行い、前後のパディング（前 150ms / 後 200ms、
  *   隣のチャンクとの無音の中点を越えない）を付けて [ChunkOrigin.IMPORTED] のチャンクとして管理領域に保存する（§7.4.6）。
+ * - 取り込み・再スキャンでは SAF の `DISPLAY_NAME`（元のファイル名。拡張子を含む）を [AudioItem.displayName] に保存し、
+ *   古い版で取り込んだ教材は [backfillMissingDisplayNames] で補う（ADR 0015）。名前は表示と並びのためだけに使う（§8.1）。
  */
 @SuppressLint("UseKtx")
 @Singleton
@@ -169,6 +173,16 @@ class DefaultLibraryRepository(
     private val scheduledAnalysisMediaIds: MutableSet<MediaId> = ConcurrentHashMap.newKeySet()
     private val rootFolderOrderFile = File(context.filesDir, ROOT_FOLDER_ORDER_FILE_NAME)
     private val rootFolderSortOrders = MutableStateFlow(readRootFolderOrderFromDisk())
+
+    /** 古い教材の元のファイル名の補完（[backfillMissingDisplayNames]）を、同時に 2 つ走らせないための錠。 */
+    private val displayNameBackfillMutex = Mutex()
+
+    /**
+     * このプロセスで、元のファイル名を一度問い合わせた教材の ID（[backfillMissingDisplayNames]）。
+     *
+     * 取れなかった教材（永続的な権限が切れているなど）を、同じプロセスのうちに何度も問い合わせないために使う（次の起動でまた試す）。
+     */
+    private val displayNameBackfillAttemptedIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     override fun observeItems(): Flow<List<AudioItem>> = mediaItemDao.observeAll().map { entities ->
         entities.map(MediaItemEntity::toExternalModel)
@@ -695,6 +709,127 @@ class DefaultLibraryRepository(
 
         audioFileStateVersion.update { it + 1L }
         changedCount
+    }
+
+    override suspend fun backfillMissingDisplayNames(): Int {
+        // 同時に 2 つは走らせない。走っている間の呼び出しは、終わるのを待たずにすぐ戻る（一覧の表示や再生を待たせない）
+        if (!displayNameBackfillMutex.tryLock()) return 0
+        return try {
+            withContext(ioDispatcher) { fillMissingDisplayNamesFromSources() }
+        } finally {
+            displayNameBackfillMutex.unlock()
+        }
+    }
+
+    /**
+     * [backfillMissingDisplayNames] の本体。錠を持った状態で、I/O の Dispatcher で呼ぶ。
+     *
+     * 元のファイル名がまだない教材のうち、このプロセスでまだ問い合わせていないものについて、元のファイルの `DISPLAY_NAME`
+     * （取れなければ `local_file_path` の最後の名前）を求め、[DISPLAY_NAME_BACKFILL_BATCH_SIZE] 件ごとに 1 つの
+     * トランザクションで保存する（一覧の購読の再計算を、1 件ごとではなくまとめごとに 1 回にする）。
+     * 問い合わせている間に取り込み・再スキャンが名前を書いた教材は上書きしない（[MediaItemDao.fillMissingDisplayNames]）。
+     */
+    private suspend fun fillMissingDisplayNamesFromSources(): Int {
+        val targets = mediaItemDao.getItemsMissingDisplayName()
+            .filterNot { it.id in displayNameBackfillAttemptedIds }
+        if (targets.isEmpty()) return 0
+
+        var filledCount = 0
+        var permissionDeniedCount = 0
+        val pendingNames = LinkedHashMap<String, String>()
+        val pendingIds = ArrayList<String>(DISPLAY_NAME_BACKFILL_BATCH_SIZE)
+
+        suspend fun flushPending() {
+            if (pendingNames.isNotEmpty()) {
+                filledCount += mediaItemDao.fillMissingDisplayNames(pendingNames.toMap())
+            }
+            // 書き終えた分だけを問い合わせ済みにする（途中でキャンセルされたら、残りは次の呼び出しで問い合わせ直す）
+            displayNameBackfillAttemptedIds += pendingIds
+            pendingNames.clear()
+            pendingIds.clear()
+        }
+
+        for (entity in targets) {
+            currentCoroutineContext().ensureActive()
+            val sourceLookup = entity.sourceUri
+                ?.takeIf { it.isNotBlank() }
+                ?.let(Uri::parse)
+                ?.takeIf { it.scheme == ContentResolver.SCHEME_CONTENT }
+                ?.let(::lookUpOriginalFileName)
+            if (sourceLookup == OriginalFileNameLookup.PermissionDenied) {
+                permissionDeniedCount += 1
+            }
+            val originalFileName = (sourceLookup as? OriginalFileNameLookup.Found)?.fileName
+                ?: originalFileNameFromLocalPath(entity.localFilePath)
+            if (originalFileName != null) {
+                pendingNames[entity.id] = originalFileName
+            }
+            pendingIds += entity.id
+            if (pendingIds.size >= DISPLAY_NAME_BACKFILL_BATCH_SIZE) {
+                flushPending()
+            }
+        }
+        flushPending()
+
+        // ファイル名・URI はログに出さない（§8.3）。件数だけ
+        logLibraryInfo(
+            "元のファイル名を補った: $filledCount 件（問い合わせ ${targets.size} 件、権限なし $permissionDeniedCount 件）",
+        )
+        return filledCount
+    }
+
+    /**
+     * 元のファイル [uri] の `DISPLAY_NAME` を問い合わせ、保存できる形（[sanitizeOriginalFileName]）にそろえて返す。
+     *
+     * 永続的な権限が切れている（`SecurityException`）、URI が壊れている・プロバイダが知らない（`IllegalArgumentException`）、
+     * プロバイダが応えない（`IOException` など）ときは、この教材だけ飛ばす。
+     */
+    private fun lookUpOriginalFileName(uri: Uri): OriginalFileNameLookup = try {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val rawName = if (cursor.moveToFirst() && nameIndex >= 0 && !cursor.isNull(nameIndex)) {
+                cursor.getString(nameIndex)
+            } else {
+                null
+            }
+            sanitizeOriginalFileName(rawName)?.let { OriginalFileNameLookup.Found(it) }
+        } ?: OriginalFileNameLookup.NotFound
+    } catch (ce: CancellationException) {
+        throw ce
+    } catch (_: SecurityException) {
+        OriginalFileNameLookup.PermissionDenied
+    } catch (_: Exception) {
+        // IllegalArgumentException、IOException（FileNotFoundException など）、プロバイダの異常
+        OriginalFileNameLookup.NotFound
+    }
+
+    /**
+     * 重複として見つかった教材 [entity] の元のファイル名を、取り込み直したファイルの名前 [originalFileName] にそろえる（ADR 0015）。
+     *
+     * まだ保存していない、または違う名前のときだけ書く。名前がわからない（`null`）ときは、保存済みの名前を消さずに残す。
+     */
+    private suspend fun updateDisplayNameIfChanged(entity: MediaItemEntity, originalFileName: String?) {
+        if (originalFileName != null && originalFileName != entity.displayName) {
+            mediaItemDao.updateDisplayName(entity.id, originalFileName)
+        }
+    }
+
+    /** ライブラリの処理のログ（件数など）。ファイル名・URI・文字起こしの本文は渡さない（§8.3）。 */
+    private fun logLibraryInfo(message: String) {
+        // android.util.Log が使えない JVM の単体テストでも落ちないようにする
+        runCatching { Log.i(LOG_TAG, message) }
+    }
+
+    /** 元のファイル名の問い合わせの結果（件数のログのために、取れなかった理由を分ける）。 */
+    private sealed interface OriginalFileNameLookup {
+        /** 取れた。 */
+        data class Found(val fileName: String) : OriginalFileNameLookup
+
+        /** 永続的な権限がない（`SecurityException`）。 */
+        data object PermissionDenied : OriginalFileNameLookup
+
+        /** 名前がない、または問い合わせられない。 */
+        data object NotFound : OriginalFileNameLookup
     }
 
     override suspend fun createVirtualFolder(
@@ -1567,6 +1702,9 @@ class DefaultLibraryRepository(
             return SingleImportOutcome.Failed(ImportError.NO_SPACE)
         }
 
+        // 元のファイル名（拡張子を含む。ADR 0015）。信頼できない入力なので、パスの区切りと制御文字を除いて長さを制限する（§8.1）
+        val originalFileName = sanitizeOriginalFileName(meta?.displayName)
+
         // すでに同じ SHA-256 の項目が DB にあるか調べる
         val existingEntity = mediaItemDao.getBySha256(sha256)
         if (existingEntity != null) {
@@ -1588,6 +1726,8 @@ class DefaultLibraryRepository(
                     baseLang = updatedBaseLang,
                 )
             }
+            // 元のファイル名を保存していない（古い版で取り込んだ）か、取り込み直した名前と違うときは直す（ADR 0015）
+            updateDisplayNameIfChanged(existingEntity, originalFileName)
             val existingMediaId = MediaId(existingEntity.id)
             val existingAudioFile = mediaFileLocator.resolveAudioFile(existingMediaId, existingEntity.mimeType)
             if (existingAudioFile != null && existingAudioFile.exists()) {
@@ -1627,6 +1767,8 @@ class DefaultLibraryRepository(
                     storageState = AudioStorageState.APP_MANAGED.name,
                     sourceUri = uri.toString(),
                     localFilePath = null,
+                    // 教材全体を書き直すので、取り込み直した名前がわからなくても保存済みの元のファイル名は消さない
+                    displayName = originalFileName ?: current.displayName,
                 ),
             )
             audioFileStateVersion.update { it + 1L }
@@ -1671,6 +1813,7 @@ class DefaultLibraryRepository(
             mp3SamplesPerFrame = mp3Info?.samplesPerFrame ?: Mp3HeaderInfo.SAMPLES_PER_FRAME_MPEG1,
             mp3EncoderDelay = mp3Info?.encoderDelay ?: Mp3HeaderInfo.DEFAULT_LAME_ENCODER_DELAY,
             sourceUri = uri.toString(),
+            displayName = originalFileName,
         )
         val initialState = ItemStateEntity(
             mediaId = newMediaId.value,
@@ -2534,6 +2677,8 @@ class DefaultLibraryRepository(
         onProgress: suspend (Float?) -> Unit,
     ): SingleImportOutcome {
         val localFilePath = resolveLocalFilePathFromUri(uri)
+        // 元のファイル名（拡張子を含む。ADR 0015）。フォルダの走査の COLUMN_DISPLAY_NAME などから来る信頼できない入力（§8.1）
+        val originalFileName = sanitizeOriginalFileName(meta?.displayName)
         val directFile = localFilePath?.let(::File)?.takeIf { it.isFile && it.canRead() }
         val tempFile = if (directFile == null) {
             mediaFileLocator.tempFileFor("link-${UUID.randomUUID()}")
@@ -2591,6 +2736,8 @@ class DefaultLibraryRepository(
                         storageState = AudioStorageState.LOCAL_REFERENCE.name,
                         sourceUri = uri.toString(),
                         localFilePath = localFilePath,
+                        // 再スキャンで補う・直す。名前がわからなければ保存済みの元のファイル名を消さない（ADR 0015）
+                        displayName = originalFileName ?: existingEntity.displayName,
                     ),
                 )
                 audioFileStateVersion.update { it + 1L }
@@ -2630,6 +2777,7 @@ class DefaultLibraryRepository(
                 storageState = AudioStorageState.LOCAL_REFERENCE.name,
                 sourceUri = uri.toString(),
                 localFilePath = localFilePath,
+                displayName = originalFileName,
             )
             val initialState = ItemStateEntity(
                 mediaId = newMediaId.value,
@@ -2864,6 +3012,10 @@ class DefaultLibraryRepository(
         private const val ROOT_FOLDER_ORDER_FILE_NAME: String = "root_folder_order.txt"
         private const val MAX_TREE_DEPTH: Int = 6
         private const val MAX_EXPORT_SEGMENT_CHARS: Int = 2_000
+
+        /** 古い教材の元のファイル名の補完で、1 つのトランザクションにまとめて保存する件数（ADR 0015）。 */
+        internal const val DISPLAY_NAME_BACKFILL_BATCH_SIZE: Int = 50
+        private const val LOG_TAG: String = "ChunkFlowLibrary"
         private val COURSE_NAME_JSON_REGEX = Regex(""""courseName"\s*:\s*"([^"]+)"""")
         private val TARGET_LANG_JSON_REGEX = Regex(""""targetLang"\s*:\s*"([^"]+)"""")
         private val BASE_LANG_JSON_REGEX = Regex(""""baseLang"\s*:\s*"([^"]+)"""")
@@ -3038,8 +3190,41 @@ class DefaultLibraryRepository(
          */
         internal fun sanitizeDisplayName(rawName: String?): String {
             if (rawName.isNullOrBlank()) return ""
+            val stripped = stripPathAndControlChars(rawName)
+            val withoutExt = stripped.replace(
+                Regex("\\.(mp3|m4a|mp4|ogg|opus|flac|wav|aac)$", RegexOption.IGNORE_CASE),
+                "",
+            ).trim().ifEmpty { stripped }
+            return truncateToMaxTitleCodePoints(withoutExt)
+        }
+
+        /**
+         * SAF の `DISPLAY_NAME`（元のファイル名）を、[MediaItemEntity.displayName] に保存する形にそろえる（§8.1、ADR 0015）。
+         *
+         * パスの区切りより前の部分と制御文字を取り除き、前後の空白を落として最大 200 文字に切り詰める。元のファイル名なので、
+         * [sanitizeDisplayName] と違って拡張子は残す。空になった名前と `.`・`..` は `null`（わからない）を返す
+         * （`Untitled` などの代わりの名前は入れない）。表示と並びのためだけに使い、ファイルパスには使わない。
+         */
+        internal fun sanitizeOriginalFileName(rawName: String?): String? {
+            if (rawName.isNullOrBlank()) return null
+            val stripped = stripPathAndControlChars(rawName)
+            if (stripped.isEmpty() || stripped == "." || stripped == "..") return null
+            return truncateToMaxTitleCodePoints(stripped)
+        }
+
+        /**
+         * `local_file_path`（`/storage/emulated/0/…/01.mp3`）の最後の名前を、[sanitizeOriginalFileName] でそろえて返す。
+         * 絶対パスでないとき（プレビュー用の `preview:…` など）や空のときは `null`。
+         */
+        internal fun originalFileNameFromLocalPath(path: String?): String? {
+            val absolutePath = path?.trim()?.takeIf { it.startsWith('/') } ?: return null
+            return sanitizeOriginalFileName(absolutePath)
+        }
+
+        /** 名前のうち最後のパスの区切り（`/`・`\`）より後ろだけを取り、制御文字を除いて前後の空白を落とす（§8.1）。 */
+        private fun stripPathAndControlChars(rawName: String): String {
             val lastSegment = rawName.substringAfterLast('/').substringAfterLast('\\')
-            val stripped = buildString(lastSegment.length) {
+            return buildString(lastSegment.length) {
                 for (ch in lastSegment) {
                     val isControl = ch.code < 0x20 || ch.code == 0x7F
                     val isPathSep = ch == '/' || ch == '\\'
@@ -3048,14 +3233,13 @@ class DefaultLibraryRepository(
                     }
                 }
             }.trim()
-            val withoutExt = stripped.replace(
-                Regex("\\.(mp3|m4a|mp4|ogg|opus|flac|wav|aac)$", RegexOption.IGNORE_CASE),
-                "",
-            ).trim().ifEmpty { stripped }
+        }
 
-            val codePoints = withoutExt.codePoints().toArray()
+        /** [value] を最大 [MAX_TITLE_CODE_POINTS] コードポイント（200 文字）に切り詰める（§8.1）。 */
+        private fun truncateToMaxTitleCodePoints(value: String): String {
+            val codePoints = value.codePoints().toArray()
             return if (codePoints.size <= MAX_TITLE_CODE_POINTS) {
-                withoutExt
+                value
             } else {
                 String(codePoints, 0, MAX_TITLE_CODE_POINTS)
             }

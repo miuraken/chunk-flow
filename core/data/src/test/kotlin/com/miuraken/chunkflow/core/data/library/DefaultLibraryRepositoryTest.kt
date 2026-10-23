@@ -62,7 +62,9 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -147,10 +149,12 @@ class DefaultLibraryRepositoryTest {
     @AfterTest
     fun tearDown() {
         TestContentProvider.reset()
+        DisplayNameQueryProvider.reset()
     }
 
     private fun createRepository(
         dispatcher: kotlinx.coroutines.CoroutineDispatcher = UnconfinedTestDispatcher(),
+        mediaItemDao: MediaItemDao = this.mediaItemDao,
     ): DefaultLibraryRepository = DefaultLibraryRepository(
         context = context,
         mediaItemDao = mediaItemDao,
@@ -1351,6 +1355,381 @@ class DefaultLibraryRepositoryTest {
     }
 
     @Test
+    fun `import_元のファイル名を拡張子つきで保存しパスの区切りと制御文字を除き名前がなければnullにする`() = runTest {
+        val traversalBytes = "display-name-traversal".encodeToByteArray()
+        val controlBytes = "display-name-control".encodeToByteArray()
+        val blankBytes = "display-name-blank".encodeToByteArray()
+        val traversalUri = registerContent(
+            id = "dn_traversal",
+            displayName = "../evil/path/lesson_01.mp3",
+            sizeBytes = traversalBytes.size.toLong(),
+            bytes = traversalBytes,
+        )
+        val controlUri = registerContent(
+            id = "dn_control",
+            displayName = "Les\u0000son\u001F 02.MP3",
+            sizeBytes = controlBytes.size.toLong(),
+            bytes = controlBytes,
+        )
+        val blankUri = registerContent("dn_blank", "   ", blankBytes.size.toLong(), blankBytes)
+
+        val repo = createRepository()
+        val done = repo.import(listOf(traversalUri, controlUri, blankUri)).toList().last() as ImportProgress.Done
+        assertEquals(3, done.mediaIds.size)
+
+        val itemsBySha = repo.observeItems().first().associateBy { it.contentSha256 }
+        val traversal = assertNotNull(itemsBySha[sha256Hex(traversalBytes)])
+        // 元のファイル名は拡張子を残す。タイトルはこれまでどおり拡張子を除く
+        assertEquals("lesson_01.mp3", traversal.displayName)
+        assertEquals("lesson_01", traversal.title)
+        assertEquals("Lesson 02.MP3", assertNotNull(itemsBySha[sha256Hex(controlBytes)]).displayName)
+        // 名前がわからないときは、代わりの名前（Untitled）を入れずに null のままにする
+        val blank = assertNotNull(itemsBySha[sha256Hex(blankBytes)])
+        assertNull(blank.displayName)
+        assertEquals("Untitled", blank.title)
+    }
+
+    @Test
+    fun `sanitizeOriginalFileName_最後の名前だけを拡張子つきで200文字までに切り詰め中身のない名前はnullにする`() {
+        assertEquals("c.mp3", DefaultLibraryRepository.sanitizeOriginalFileName("a/b\\c.mp3"))
+        assertEquals("lesson 1.m4a", DefaultLibraryRepository.sanitizeOriginalFileName("  lesson 1.m4a  "))
+        assertEquals("ピンズラー韓国語01.mp3", DefaultLibraryRepository.sanitizeOriginalFileName("ピンズラー韓国語01.mp3"))
+        val longName = assertNotNull(DefaultLibraryRepository.sanitizeOriginalFileName("😀".repeat(250) + ".mp3"))
+        assertEquals(200, longName.codePointCount(0, longName.length))
+        assertNull(DefaultLibraryRepository.sanitizeOriginalFileName(null))
+        assertNull(DefaultLibraryRepository.sanitizeOriginalFileName("   "))
+        assertNull(DefaultLibraryRepository.sanitizeOriginalFileName("\u0007\u001B"))
+        assertNull(DefaultLibraryRepository.sanitizeOriginalFileName("Music/"))
+        assertNull(DefaultLibraryRepository.sanitizeOriginalFileName("."))
+        assertNull(DefaultLibraryRepository.sanitizeOriginalFileName(".."))
+
+        assertEquals(
+            "01.mp3",
+            DefaultLibraryRepository.originalFileNameFromLocalPath("/storage/emulated/0/Music/Korean/01.mp3"),
+        )
+        assertNull(DefaultLibraryRepository.originalFileNameFromLocalPath("preview:lesson01"))
+        assertNull(DefaultLibraryRepository.originalFileNameFromLocalPath("/"))
+        assertNull(DefaultLibraryRepository.originalFileNameFromLocalPath(null))
+    }
+
+    @Test
+    fun `import_重複として取り込み直すと元のファイル名を補い名前がわからなければ消さず違う名前なら直す`() = runTest {
+        val audioBytes = "display-name-duplicate".encodeToByteArray()
+        val repo = createRepository()
+        val firstUri = registerContent("dn_dup1", "lesson 01.mp3", audioBytes.size.toLong(), audioBytes)
+        val mediaId = (repo.import(listOf(firstUri)).toList().last() as ImportProgress.Done).mediaIds.single()
+        assertEquals("lesson 01.mp3", repo.observeItem(mediaId).first()?.displayName)
+
+        // スキーマ 9 以前に取り込んだ教材（元のファイル名を持っていない）を模擬する
+        mediaItemDao.updateDisplayName(mediaId.value, null)
+
+        val sameNameUri = registerContent("dn_dup2", "lesson 01.mp3", audioBytes.size.toLong(), audioBytes)
+        val sameNameDone = repo.import(listOf(sameNameUri)).toList().last() as ImportProgress.Done
+        assertEquals(listOf(mediaId), sameNameDone.mediaIds)
+        assertEquals(1, sameNameDone.duplicates)
+        assertEquals("lesson 01.mp3", repo.observeItem(mediaId).first()?.displayName)
+
+        // 名前がわからない取り込み直しでは、保存済みの名前を消さない
+        val unnamedUri = registerContent("dn_dup3", "  ", audioBytes.size.toLong(), audioBytes)
+        assertEquals(1, (repo.import(listOf(unnamedUri)).toList().last() as ImportProgress.Done).duplicates)
+        assertEquals("lesson 01.mp3", repo.observeItem(mediaId).first()?.displayName)
+
+        // 違う名前で取り込み直したら、その名前にそろえる
+        val renamedUri = registerContent("dn_dup4", "Lesson 01 (new).mp3", audioBytes.size.toLong(), audioBytes)
+        assertEquals(1, (repo.import(listOf(renamedUri)).toList().last() as ImportProgress.Done).duplicates)
+        assertEquals("Lesson 01 (new).mp3", repo.observeItem(mediaId).first()?.displayName)
+        assertEquals(1, repo.observeItems().first().size)
+    }
+
+    @Test
+    fun `import_音声ファイルが欠けた教材に取り込み直して付け直すときも元のファイル名を補い名前がわからなければ消さない`() = runTest {
+        val audioBytes = "display-name-reattach".encodeToByteArray()
+        val repo = createRepository(UnconfinedTestDispatcher(testScheduler))
+        val firstUri = registerContent("dn_re1", "unit 03.mp3", audioBytes.size.toLong(), audioBytes)
+        val mediaId = (repo.import(listOf(firstUri)).toList().last() as ImportProgress.Done).mediaIds.single()
+
+        // 音声ファイルだけが欠け、元のファイル名も持っていない（古い版のバックアップから戻した）状態を模擬する
+        assertTrue(assertNotNull(mediaFileLocator.resolveAudioFile(mediaId)).delete())
+        mediaItemDao.updateDisplayName(mediaId.value, null)
+
+        val reattachUri = registerContent("dn_re2", "unit 03.mp3", audioBytes.size.toLong(), audioBytes)
+        val done = repo.import(listOf(reattachUri)).toList().last() as ImportProgress.Done
+        assertEquals(listOf(mediaId), done.mediaIds)
+        assertNotNull(mediaFileLocator.resolveAudioFile(mediaId))
+        val reattached = assertNotNull(repo.observeItem(mediaId).first())
+        assertEquals("unit 03.mp3", reattached.displayName)
+        assertEquals(reattachUri.toString(), reattached.sourceUri)
+
+        // 教材全体を書き直す付け直しでも、名前がわからなければ保存済みの名前を消さない
+        assertTrue(assertNotNull(mediaFileLocator.resolveAudioFile(mediaId)).delete())
+        val unnamedUri = registerContent("dn_re3", "", audioBytes.size.toLong(), audioBytes)
+        repo.import(listOf(unnamedUri)).toList()
+        val reattachedAgain = assertNotNull(repo.observeItem(mediaId).first())
+        assertEquals(unnamedUri.toString(), reattachedAgain.sourceUri)
+        assertEquals("unit 03.mp3", reattachedAgain.displayName)
+    }
+
+    @Test
+    fun `linkLocalDirectoryとrescanLocalDirectories_元のファイル名を保存し再スキャンで補い名前がわからなければ消さず違う名前なら直す`() = runTest {
+        val audioBytes = "display-name-rescan".encodeToByteArray()
+        val rootDocId = "primary:Music/DisplayNameCourse"
+        val treeUri = registerTreeDirectory(
+            rootDocId = rootDocId,
+            rootDisplayName = "DisplayNameCourse",
+            audioFiles = listOf("ep01.mp3" to audioBytes),
+            transcriptionFiles = emptyList(),
+        )
+        val repo = createRepository(UnconfinedTestDispatcher(testScheduler))
+        val mediaId = (repo.linkLocalDirectory(treeUri).toList().last() as ImportProgress.Done).mediaIds.single()
+        assertEquals("ep01.mp3", repo.observeItem(mediaId).first()?.displayName)
+
+        // スキーマ 9 以前に登録した教材を模擬して、再スキャンで補われることを確かめる
+        mediaItemDao.updateDisplayName(mediaId.value, null)
+        repo.rescanLocalDirectories("DisplayNameCourse")
+        assertEquals("ep01.mp3", repo.observeItem(mediaId).first()?.displayName)
+
+        // フォルダの走査で名前が取れなかったときは、保存済みの名前を消さない（教材全体を書き直す経路）
+        val rootChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, rootDocId)
+        val ep01Row = assertNotNull(TestContentProvider.treeChildren[rootChildrenUri]).single()
+        TestContentProvider.treeChildren[rootChildrenUri] = listOf(ep01Row.copy(displayName = ""))
+        repo.rescanLocalDirectories("DisplayNameCourse")
+        assertEquals("ep01.mp3", repo.observeItem(mediaId).first()?.displayName)
+
+        // 名前が変わっていたら、その名前にそろえる
+        TestContentProvider.treeChildren[rootChildrenUri] = listOf(ep01Row.copy(displayName = "ep01 (改訂).mp3"))
+        repo.rescanLocalDirectories("DisplayNameCourse")
+        val renamed = assertNotNull(repo.observeItem(mediaId).first())
+        assertEquals("ep01 (改訂).mp3", renamed.displayName)
+        assertEquals(AudioStorageState.LOCAL_REFERENCE, renamed.storageState)
+        assertEquals(1, repo.observeItems().first().size)
+    }
+
+    @Test
+    fun `backfillMissingDisplayNames_DISPLAY_NAMEとlocalFilePathで補い権限の例外などの教材は飛ばして続ける`() = runTest {
+        registerDisplayNameQueryProvider()
+        val nameUri = DisplayNameQueryProvider.uriFor("drive-name")
+        val deniedUri = DisplayNameQueryProvider.uriFor("drive-denied")
+        val brokenUri = DisplayNameQueryProvider.uriFor("broken")
+        val deniedWithPathUri = DisplayNameQueryProvider.uriFor("ext-denied")
+        val noCursorUri = DisplayNameQueryProvider.uriFor("no-cursor")
+        val crashUri = DisplayNameQueryProvider.uriFor("crash")
+        val unsafeNameUri = DisplayNameQueryProvider.uriFor("unsafe-name")
+        val blankNameUri = DisplayNameQueryProvider.uriFor("blank-name")
+        with(DisplayNameQueryProvider.answers) {
+            put(nameUri, DisplayNameQueryProvider.Answer.Name("ピンズラー韓国語01.mp3"))
+            put(deniedUri, DisplayNameQueryProvider.Answer.Fail(SecurityException("Permission Denial")))
+            put(brokenUri, DisplayNameQueryProvider.Answer.Fail(IllegalArgumentException("Unknown URI")))
+            put(deniedWithPathUri, DisplayNameQueryProvider.Answer.Fail(SecurityException("Permission Denial")))
+            put(noCursorUri, DisplayNameQueryProvider.Answer.NoCursor)
+            put(crashUri, DisplayNameQueryProvider.Answer.Fail(IllegalStateException("provider crashed")))
+            put(unsafeNameUri, DisplayNameQueryProvider.Answer.Name("../../evil/\u0000g.mp3"))
+            put(blankNameUri, DisplayNameQueryProvider.Answer.Name("   "))
+        }
+        insertLegacyMediaItem("a-name", sourceUri = nameUri.toString())
+        insertLegacyMediaItem("b-denied", sourceUri = deniedUri.toString())
+        insertLegacyMediaItem("c-broken", sourceUri = brokenUri.toString())
+        insertLegacyMediaItem(
+            id = "d-denied-with-path",
+            sourceUri = deniedWithPathUri.toString(),
+            localFilePath = "/storage/emulated/0/Music/Korean/04 track.mp3",
+        )
+        insertLegacyMediaItem("e-path-only", localFilePath = "/storage/emulated/0/Music/Korean/05.mp3")
+        insertLegacyMediaItem("f-no-cursor", sourceUri = noCursorUri.toString())
+        insertLegacyMediaItem("g-crash", sourceUri = crashUri.toString())
+        insertLegacyMediaItem("h-unsafe-name", sourceUri = unsafeNameUri.toString())
+        insertLegacyMediaItem("i-blank-name", sourceUri = blankNameUri.toString())
+        insertLegacyMediaItem("j-file-scheme", sourceUri = "file:///sdcard/Music/j.mp3")
+        insertLegacyMediaItem("k-saved", sourceUri = nameUri.toString(), displayName = "保存済み.mp3")
+
+        val repo = createRepository()
+        assertEquals(4, repo.backfillMissingDisplayNames())
+
+        val names = mediaItemDao.observeAll().first().associate { it.id to it.displayName }
+        assertEquals("ピンズラー韓国語01.mp3", names["a-name"])
+        // 権限が切れている・URI が壊れている・プロバイダが異常な教材は飛ばし、null のまま（次の起動でまた試す）
+        assertNull(names["b-denied"])
+        assertNull(names["c-broken"])
+        assertNull(names["g-crash"])
+        // DISPLAY_NAME が取れなければ local_file_path の最後の名前を使う
+        assertEquals("04 track.mp3", names["d-denied-with-path"])
+        assertEquals("05.mp3", names["e-path-only"])
+        assertNull(names["f-no-cursor"])
+        // プロバイダが返す名前も信頼できない入力として、パスの区切りと制御文字を除く
+        assertEquals("g.mp3", names["h-unsafe-name"])
+        assertNull(names["i-blank-name"])
+        assertNull(names["j-file-scheme"])
+        assertEquals("保存済み.mp3", names["k-saved"])
+
+        // content:// の URI だけを 1 回ずつ問い合わせる（file:// と、保存済みの教材は問い合わせない）
+        assertEquals(
+            mapOf(
+                nameUri to 1,
+                deniedUri to 1,
+                brokenUri to 1,
+                deniedWithPathUri to 1,
+                noCursorUri to 1,
+                crashUri to 1,
+                unsafeNameUri to 1,
+                blankNameUri to 1,
+            ),
+            DisplayNameQueryProvider.queryCounts.toMap(),
+        )
+    }
+
+    @Test
+    fun `backfillMissingDisplayNames_同時には2つ走らず一度問い合わせた教材は問い合わせ直さず新しい教材だけを問い合わせる`() = runTest {
+        registerDisplayNameQueryProvider()
+        val foundUri = DisplayNameQueryProvider.uriFor("found")
+        val deniedUri = DisplayNameQueryProvider.uriFor("denied")
+        DisplayNameQueryProvider.answers[foundUri] = DisplayNameQueryProvider.Answer.Name("found.mp3")
+        DisplayNameQueryProvider.answers[deniedUri] =
+            DisplayNameQueryProvider.Answer.Fail(SecurityException("Permission Denial"))
+        insertLegacyMediaItem("found", sourceUri = foundUri.toString())
+        insertLegacyMediaItem("denied", sourceUri = deniedUri.toString())
+
+        // 1 回目の補完を、元のファイル名のない教材を読むところで止めておく
+        val inMemoryDao = mediaItemDao
+        val gate = CompletableDeferred<Unit>()
+        val gatedDao = object : MediaItemDao by inMemoryDao {
+            override suspend fun getItemsMissingDisplayName(): List<MediaItemEntity> {
+                gate.await()
+                return inMemoryDao.getItemsMissingDisplayName()
+            }
+        }
+        val repo = createRepository(UnconfinedTestDispatcher(testScheduler), mediaItemDao = gatedDao)
+        val first = async { repo.backfillMissingDisplayNames() }
+        testScheduler.runCurrent()
+        assertFalse(first.isCompleted)
+
+        // 走っている間の呼び出しは、待たずに 0 を返し、何も問い合わせない
+        assertEquals(0, repo.backfillMissingDisplayNames())
+        assertTrue(DisplayNameQueryProvider.queryCounts.isEmpty())
+
+        gate.complete(Unit)
+        assertEquals(1, first.await())
+        assertEquals(mapOf(foundUri to 1, deniedUri to 1), DisplayNameQueryProvider.queryCounts.toMap())
+
+        // 同じプロセスでは、取れなかった教材を問い合わせ直さない
+        assertEquals(0, repo.backfillMissingDisplayNames())
+        assertEquals(mapOf(foundUri to 1, deniedUri to 1), DisplayNameQueryProvider.queryCounts.toMap())
+        assertNull(inMemoryDao.getById("denied")?.displayName)
+
+        // 新しく見つかった、元のファイル名のない教材だけを問い合わせる
+        val newUri = DisplayNameQueryProvider.uriFor("new")
+        DisplayNameQueryProvider.answers[newUri] = DisplayNameQueryProvider.Answer.Name("new.mp3")
+        insertLegacyMediaItem("new", sourceUri = newUri.toString())
+        assertEquals(1, repo.backfillMissingDisplayNames())
+        assertEquals(
+            mapOf(foundUri to 1, deniedUri to 1, newUri to 1),
+            DisplayNameQueryProvider.queryCounts.toMap(),
+        )
+        assertEquals("new.mp3", inMemoryDao.getById("new")?.displayName)
+
+        // 次の起動（新しいリポジトリ）では、取れなかった教材をまた試す
+        assertEquals(0, createRepository(mediaItemDao = inMemoryDao).backfillMissingDisplayNames())
+        assertEquals(2, DisplayNameQueryProvider.queryCounts[deniedUri])
+    }
+
+    @Test
+    fun `backfillMissingDisplayNames_50件ごとに1つのトランザクションでまとめて保存する`() = runTest {
+        val total = DefaultLibraryRepository.DISPLAY_NAME_BACKFILL_BATCH_SIZE * 2 + 20
+        for (index in 1..total) {
+            insertLegacyMediaItem(
+                id = "batch-%03d".format(index),
+                localFilePath = "/storage/emulated/0/Music/Batch/track %03d.mp3".format(index),
+            )
+        }
+        val inMemoryDao = mediaItemDao
+        val batchSizes = mutableListOf<Int>()
+        val recordingDao = object : MediaItemDao by inMemoryDao {
+            override suspend fun fillMissingDisplayNames(displayNames: Map<String, String>): Int {
+                batchSizes += displayNames.size
+                return inMemoryDao.fillMissingDisplayNames(displayNames)
+            }
+        }
+
+        val repo = createRepository(mediaItemDao = recordingDao)
+        assertEquals(total, repo.backfillMissingDisplayNames())
+        assertEquals(listOf(50, 50, 20), batchSizes)
+        assertEquals("track 001.mp3", inMemoryDao.getById("batch-001")?.displayName)
+        assertEquals("track 120.mp3", inMemoryDao.getById("batch-120")?.displayName)
+        assertTrue(inMemoryDao.getItemsMissingDisplayName().isEmpty())
+    }
+
+    @Test
+    fun `backfillMissingDisplayNames_キャンセルは握りつぶさずに止まり錠を外し書けなかった教材は次の呼び出しで補う`() = runTest {
+        val total = DefaultLibraryRepository.DISPLAY_NAME_BACKFILL_BATCH_SIZE + 10
+        for (index in 1..total) {
+            insertLegacyMediaItem(
+                id = "cancel-%03d".format(index),
+                localFilePath = "/storage/emulated/0/Music/Cancel/%03d.mp3".format(index),
+            )
+        }
+        // 1 つ目のまとめを書くところで止めておく
+        val inMemoryDao = mediaItemDao
+        val firstBatchGate = CompletableDeferred<Unit>()
+        var holdNextBatch = true
+        val gatedDao = object : MediaItemDao by inMemoryDao {
+            override suspend fun fillMissingDisplayNames(displayNames: Map<String, String>): Int {
+                if (holdNextBatch) {
+                    holdNextBatch = false
+                    firstBatchGate.await()
+                }
+                return inMemoryDao.fillMissingDisplayNames(displayNames)
+            }
+        }
+        val repo = createRepository(UnconfinedTestDispatcher(testScheduler), mediaItemDao = gatedDao)
+
+        val job = launch { repo.backfillMissingDisplayNames() }
+        testScheduler.runCurrent()
+        assertTrue(job.isActive)
+        job.cancel()
+        job.join()
+
+        // キャンセルの後に残りの教材を書き進めていない（CancellationException を握りつぶしていない）
+        assertTrue(job.isCancelled)
+        assertEquals(total, inMemoryDao.getItemsMissingDisplayName().size)
+
+        // 錠は外れていて、書けなかった教材も次の呼び出しで補える
+        assertEquals(total, repo.backfillMissingDisplayNames())
+        assertTrue(inMemoryDao.getItemsMissingDisplayName().isEmpty())
+    }
+
+    /** [DisplayNameQueryProvider] を登録する（テストごとに状態を空にする）。 */
+    private fun registerDisplayNameQueryProvider() {
+        DisplayNameQueryProvider.reset()
+        Robolectric.buildContentProvider(DisplayNameQueryProvider::class.java)
+            .create(DisplayNameQueryProvider.AUTHORITY)
+    }
+
+    /** スキーマ 9 以前に取り込んだ教材のように、元のファイル名（display_name）を持たない行を DB に足す。 */
+    private suspend fun insertLegacyMediaItem(
+        id: String,
+        sourceUri: String? = null,
+        localFilePath: String? = null,
+        displayName: String? = null,
+    ) {
+        mediaItemDao.upsert(
+            MediaItemEntity(
+                id = id,
+                title = "Legacy $id",
+                durationMs = 60_000L,
+                mimeType = "audio/mpeg",
+                sizeBytes = 1_000L,
+                sha256 = sha256Hex(id.encodeToByteArray()),
+                course = "legacy",
+                targetLang = "ko",
+                baseLang = "ja",
+                importedAt = 1_000L,
+                sourceUri = sourceUri,
+                localFilePath = localFilePath,
+                storageState = AudioStorageState.LOCAL_REFERENCE.name,
+                displayName = displayName,
+            ),
+        )
+    }
+
+    @Test
     fun `createVirtualFolderとmoveItemsToCourse_仮想フォルダを作成し教材を移動するとコースと言語ペアが反映される`() = runTest {
         val audioBytes = "move-course-audio".encodeToByteArray()
         val uri = registerContent("mv1", "lesson.mp3", audioBytes.size.toLong(), audioBytes)
@@ -1780,6 +2159,16 @@ class DefaultLibraryRepositoryTest {
             .filter { it.displayName == null && (it.sourceUri != null || it.localFilePath != null) }
             .sortedWith(compareBy<MediaItemEntity> { it.importedAt }.thenBy { it.id })
 
+        override suspend fun updateDisplayNameIfMissing(id: String, displayName: String): Int {
+            var updated = 0
+            items.update { current ->
+                val existing = current[id]?.takeIf { it.displayName == null } ?: return@update current
+                updated = 1
+                current + (id to existing.copy(displayName = displayName))
+            }
+            return updated
+        }
+
         override suspend fun updateLanguagePair(id: String, targetLang: String, baseLang: String?) {
             items.update { current ->
                 val existing = current[id] ?: return@update current
@@ -2035,6 +2424,73 @@ class DefaultLibraryRepositoryTest {
             fun reset() {
                 entries.clear()
                 treeChildren.clear()
+            }
+        }
+    }
+
+    /**
+     * [DefaultLibraryRepository.backfillMissingDisplayNames] のテスト用のプロバイダ。
+     *
+     * URI ごとに、`DISPLAY_NAME` を返す・カーソルを返さない・例外を投げる（永続的な権限切れの `SecurityException` など）を
+     * 決められ、問い合わせの回数を数える。
+     */
+    class DisplayNameQueryProvider : ContentProvider() {
+        /** 問い合わせへの応え方。 */
+        sealed interface Answer {
+            /** `DISPLAY_NAME` の列に [value] を入れた 1 行を返す。 */
+            data class Name(val value: String?) : Answer
+
+            /** [error] を投げる。 */
+            data class Fail(val error: RuntimeException) : Answer
+
+            /** カーソルを返さない（`null`）。 */
+            data object NoCursor : Answer
+        }
+
+        override fun onCreate(): Boolean = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): Cursor? {
+            queryCounts[uri] = (queryCounts[uri] ?: 0) + 1
+            return when (val answer = answers[uri]) {
+                is Answer.Name -> MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME)).apply {
+                    addRow(arrayOf<Any?>(answer.value))
+                }
+
+                is Answer.Fail -> throw answer.error
+
+                Answer.NoCursor, null -> null
+            }
+        }
+
+        override fun getType(uri: Uri): String? = null
+
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+
+        override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ): Int = 0
+
+        companion object {
+            const val AUTHORITY = "com.miuraken.chunkflow.test.displayname"
+            val answers = mutableMapOf<Uri, Answer>()
+            val queryCounts = mutableMapOf<Uri, Int>()
+
+            fun uriFor(id: String): Uri = Uri.parse("content://$AUTHORITY/document/$id")
+
+            fun reset() {
+                answers.clear()
+                queryCounts.clear()
             }
         }
     }
