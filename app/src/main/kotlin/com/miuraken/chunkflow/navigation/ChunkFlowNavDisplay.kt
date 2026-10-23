@@ -105,6 +105,7 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                     onOpenTranscriptExport = { id ->
                         backStack.pushIfNotTop(TranscriptExportKey(mediaIds = listOf(id.value)))
                     },
+                    showBackButton = directive.maxHorizontalPartitions < 2,
                 )
             }
             entry<TranscriptExportKey> { key ->
