@@ -109,6 +109,7 @@ fun PlayerRoute(
     onOpenPlaybackSettings: () -> Unit = {},
     onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
     onOpenTranscriptExport: (MediaId) -> Unit = {},
+    showBackButton: Boolean = true,
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(mediaId, initialChunkId) {
@@ -206,6 +207,7 @@ fun PlayerRoute(
             onRequestRecordAudioPermission = {
                 detailedRecordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             },
+            showBackButton = showBackButton,
             modifier = modifier,
         )
     }
@@ -268,6 +270,7 @@ fun PlayerScreen(
     onOpenTranscriptExport: () -> Unit = {},
     hasRecordAudioPermission: Boolean = true,
     onRequestRecordAudioPermission: () -> Unit = {},
+    showBackButton: Boolean = true,
 ) {
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showResegmentSheet by remember { mutableStateOf(false) }
@@ -338,11 +341,13 @@ fun PlayerScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = { onEvent(PlayerEvent.Back) }) {
-                        Icon(
-                            imageVector = ChunkFlowIcons.ArrowBack,
-                            contentDescription = stringResource(R.string.player_back),
-                        )
+                    if (showBackButton) {
+                        IconButton(onClick = { onEvent(PlayerEvent.Back) }) {
+                            Icon(
+                                imageVector = ChunkFlowIcons.ArrowBack,
+                                contentDescription = stringResource(R.string.player_back),
+                            )
+                        }
                     }
                 },
                 actions = {

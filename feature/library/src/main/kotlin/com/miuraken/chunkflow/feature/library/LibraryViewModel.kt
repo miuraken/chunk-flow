@@ -1776,6 +1776,9 @@ class LibraryViewModel @Inject constructor(
                 defaultLanguagePair = settings.defaultLanguagePair
             }
         }
+        viewModelScope.launch {
+            libraryRepository.backfillMissingDisplayNames()
+        }
     }
 
     private val pendingEditItemSttOverrideFlow: Flow<ItemSttOverride> =
