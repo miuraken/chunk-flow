@@ -79,12 +79,7 @@ internal fun LibraryFoldersTabContent(
     val currentFolderPath = state.currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
     val isSearchActive = state.fileSearchQuery.trim().isNotEmpty()
     val showSearchBox = isSearchExpanded || state.fileSearchQuery.isNotEmpty()
-    val displayTags = state.tagsSortedByItemCount
-    var languageMenuExpanded by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
-    val activeFilterCode = state.fileTargetLanguageFilter?.value?.lowercase(Locale.ROOT)
-    val allLanguagesLabel = stringResource(R.string.library_files_filter_all_languages)
-    val currentLanguageFilterLabel = activeFilterCode ?: allLanguagesLabel
 
     LaunchedEffect(isSearchExpanded) {
         if (isSearchExpanded) {
@@ -135,96 +130,12 @@ internal fun LibraryFoldersTabContent(
             )
         }
 
-        // 言語の絞り込みの行（並びは常にファイル名の昇順なので、並び替えのメニューはない）
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box {
-                Surface(
-                    onClick = { languageMenuExpanded = true },
-                    modifier = Modifier.height(38.dp),
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = stringResource(
-                                R.string.library_files_language_filter_button_format,
-                                currentLanguageFilterLabel,
-                            ),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                DropdownMenu(
-                    expanded = languageMenuExpanded,
-                    onDismissRequest = { languageMenuExpanded = false },
-                    shape = MaterialTheme.shapes.medium,
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .widthIn(min = 180.dp, max = 260.dp)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        LanguageFilterPillChip(
-                            label = allLanguagesLabel,
-                            selected = activeFilterCode == null,
-                            onClick = {
-                                languageMenuExpanded = false
-                                onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null))
-                            },
-                        )
-                        if (state.availableTargetLanguages.isNotEmpty()) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                state.availableTargetLanguages.forEach { lang ->
-                                    val code = lang.value.lowercase(Locale.ROOT)
-                                    val isSelected = activeFilterCode == code
-                                    LanguageFilterPillChip(
-                                        label = code,
-                                        selected = isSelected,
-                                        onClick = {
-                                            languageMenuExpanded = false
-                                            onEvent(
-                                                LibraryEvent.SelectFileTargetLanguageFilter(
-                                                    if (isSelected) null else LanguageTag(code),
-                                                ),
-                                            )
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // タグでの絞り込み（タグがまだ付けられていない場合は非表示、アイテム数が多い順で1行横スクロール）
-        if (displayTags.isNotEmpty()) {
-            FileTagFilterRow(
-                tags = displayTags,
-                selectedTags = state.fileTagFilter,
-                onToggleTag = { tag -> onEvent(LibraryEvent.ToggleFileTagFilter(tag)) },
-                onClear = { onEvent(LibraryEvent.ClearFileTagFilter) },
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
-        }
+        // 言語の絞り込みとタグの絞り込みを 1 行に並べる（並びは常にファイル名の昇順なので、並び替えのメニューはない）
+        LibraryFilterBar(
+            state = state,
+            onEvent = onEvent,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
 
         if (isSearchActive) {
             val filteredFiles = state.filteredAllFiles
@@ -496,6 +407,130 @@ internal fun LibraryFoldersTabContent(
                                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 言語の絞り込みのボタンと、タグの絞り込み（横にスクロールするタグのチップ）を 1 行に並べる（library_v2.2.png）。
+ *
+ * 左から「言語: …」のボタン → 🏷 とタグのチップ（残りの幅を使う）。タグがないときはタグの欄を出さない。
+ * タグはファイルが多い順に左から並べる（[LibraryUiState.tagsSortedByItemCount]）。
+ */
+@Composable
+private fun LibraryFilterBar(
+    state: LibraryUiState,
+    onEvent: (LibraryEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val displayTags = state.tagsSortedByItemCount
+    Row(
+        // タグの欄は画面の右端までスクロールできるように、右の余白はタグの欄の中（LazyRow の contentPadding）で取る
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = if (displayTags.isEmpty()) 12.dp else 0.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LanguageFilterButton(
+            activeLanguage = state.fileTargetLanguageFilter,
+            availableLanguages = state.availableTargetLanguages,
+            onSelectLanguage = { language -> onEvent(LibraryEvent.SelectFileTargetLanguageFilter(language)) },
+        )
+        if (displayTags.isNotEmpty()) {
+            FileTagFilterRow(
+                tags = displayTags,
+                selectedTags = state.fileTagFilter,
+                onToggleTag = { tag -> onEvent(LibraryEvent.ToggleFileTagFilter(tag)) },
+                onClear = { onEvent(LibraryEvent.ClearFileTagFilter) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/**
+ * 「言語: すべて」のボタン。押すと、ファイルの対象言語で絞り込むメニューを開く。
+ *
+ * @param activeLanguage 絞り込んでいる対象言語（`null` ならすべて）。
+ * @param availableLanguages ライブラリのファイルにある対象言語。
+ * @param onSelectLanguage 言語を選んだとき（`null` はすべて）。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LanguageFilterButton(
+    activeLanguage: LanguageTag?,
+    availableLanguages: List<LanguageTag>,
+    onSelectLanguage: (LanguageTag?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val activeFilterCode = activeLanguage?.value?.lowercase(Locale.ROOT)
+    val allLanguagesLabel = stringResource(R.string.library_files_filter_all_languages)
+    Box(modifier = modifier) {
+        Surface(
+            onClick = { menuExpanded = true },
+            // 文字を大きくしても切れないように、高さは最小だけを決める
+            modifier = Modifier.heightIn(min = 38.dp),
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(
+                        R.string.library_files_language_filter_button_format,
+                        activeFilterCode ?: allLanguagesLabel,
+                    ),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+            shape = MaterialTheme.shapes.medium,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 180.dp, max = 260.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LanguageFilterPillChip(
+                    label = allLanguagesLabel,
+                    selected = activeFilterCode == null,
+                    onClick = {
+                        menuExpanded = false
+                        onSelectLanguage(null)
+                    },
+                )
+                if (availableLanguages.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        availableLanguages.forEach { lang ->
+                            val code = lang.value.lowercase(Locale.ROOT)
+                            val isSelected = activeFilterCode == code
+                            LanguageFilterPillChip(
+                                label = code,
+                                selected = isSelected,
+                                onClick = {
+                                    menuExpanded = false
+                                    onSelectLanguage(if (isSelected) null else LanguageTag(code))
+                                },
+                            )
                         }
                     }
                 }

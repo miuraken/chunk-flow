@@ -161,6 +161,59 @@ private fun LibraryScreenFolderPreview() {
     }
 }
 
+/**
+ * ファイルタブのルート: 「言語: すべて」のボタンの右隣に 🏷 とタグのチップ（ファイルが多い順。横にスクロールする）を
+ * 1 行に並べる（library_v2.2.png）。並び替えのメニューはない。
+ */
+@ChunkFlowPreviews
+@Composable
+private fun LibraryScreenRootWithTagsPreview() {
+    val baseItem = SampleMaterials.jaKo.item
+    val folders = listOf(
+        "Hindi 1" to "hi",
+        "韓国語 初級" to "ko",
+        "Cantonese 1" to "yue",
+        "French 1" to "fr",
+        "中国語ニュース" to "zh",
+    ).map { (path, target) ->
+        LibraryCourseFolder(
+            coursePath = path,
+            kind = LibraryFolderKind.LOCAL_DIRECTORY,
+            languagePair = LanguagePair(target = LanguageTag(target), base = LanguageTag("ja")),
+        )
+    }
+    val items = folders.flatMapIndexed { folderIndex, folder ->
+        (1..(folderIndex + 2)).map { number ->
+            LibraryItemUiModel(
+                item = baseItem.copy(
+                    id = MediaId("${folder.coursePath}-$number"),
+                    title = "Lesson $number",
+                    course = folder.coursePath,
+                    languagePair = folder.languagePair,
+                ),
+                tags = buildList {
+                    if (folder.languagePair.target.value == "zh") add("中国語")
+                    if (number == 1) add("復習")
+                    if (folderIndex % 2 == 0) add("シャドーイング")
+                },
+            )
+        }
+    }
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = items,
+                courseFolders = folders,
+                allTags = listOf("中国語", "復習", "シャドーイング", "旅行"),
+                folderLanguageColorOrdinals = folders.mapIndexed { index, folder ->
+                    folder.languagePair.target to index
+                }.toMap(),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
 @ChunkFlowPreviews
 @Composable
 private fun LibraryScreenImportErrorPreview() {
