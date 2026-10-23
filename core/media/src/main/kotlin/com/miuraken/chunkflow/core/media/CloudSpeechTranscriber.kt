@@ -432,8 +432,14 @@ internal class CloudSpeechTranscriber internal constructor(
         /** 試す順の Gemini のモデル（主 → 予備）。 */
         internal val GEMINI_MODEL_CANDIDATES: List<String> = listOf(GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL)
 
-        /** 文字起こしで思考を抑えるための `generationConfig.thinkingConfig.thinkingLevel`。 */
-        internal const val GEMINI_THINKING_LEVEL = "minimal"
+        /**
+         * 文字起こしで思考を抑えるための `generationConfig.thinkingConfig.thinkingLevel`。
+         *
+         * `"minimal"` は `gemini-3.8-flash`（と、それを指す `gemini-flash-latest`）が 400 INVALID_ARGUMENT
+         * 「Thinking level MINIMAL is not supported for this model.」で拒否する。`"low"` なら思考のトークンが 0 で、
+         * thinkingConfig を付けないとき（既定の思考あり）より速かった（2026-10-23 に合成音声で確認）。
+         */
+        internal const val GEMINI_THINKING_LEVEL = "low"
 
         /**
          * Gemini のモデル [model] で文字起こししたときのエンジン ID（`cloud-` + モデル名。例: `cloud-gemini-3.8-flash`）。

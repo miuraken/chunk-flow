@@ -128,7 +128,7 @@ class CloudSpeechTranscriberTest {
     }
 
     @Test
-    fun `buildGeminiGenerateContentRequest_thinkingConfigを付けるとminimalになり外すと含まない`() {
+    fun `buildGeminiGenerateContentRequest_thinkingConfigを付けるとthinkingLevelがlowになり外すと含まない`() {
         val withThinking = JSONObject(
             CloudSpeechTranscriber.buildGeminiGenerateContentRequest("QUJD", "prompt", includeThinkingConfig = true),
         )
@@ -140,7 +140,7 @@ class CloudSpeechTranscriberTest {
         assertEquals("prompt", parts.getJSONObject(1).getString("text"))
         val generationConfig = withThinking.getJSONObject("generationConfig")
         assertEquals(0.0, generationConfig.getDouble("temperature"), 0.0)
-        assertEquals("minimal", generationConfig.getJSONObject("thinkingConfig").getString("thinkingLevel"))
+        assertEquals("low", generationConfig.getJSONObject("thinkingConfig").getString("thinkingLevel"))
 
         val withoutThinking = JSONObject(
             CloudSpeechTranscriber.buildGeminiGenerateContentRequest("QUJD", "prompt", includeThinkingConfig = false),
@@ -450,6 +450,16 @@ class CloudSpeechTranscriberTest {
         assertTrue(
             reject(
                 400,
+                GoogleApiError(
+                    400,
+                    "INVALID_ARGUMENT",
+                    "Thinking level MINIMAL is not supported for this model. Please retry with other thinking level.",
+                ),
+            ),
+        )
+        assertTrue(
+            reject(
+                400,
                 GoogleApiError(400, "INVALID_ARGUMENT", "Invalid value at 'generation_config.thinking_config.thinking_level'"),
             ),
         )
@@ -482,7 +492,7 @@ class CloudSpeechTranscriberTest {
     // ---- 呼び出しの流れ（HTTP を差し替える） ----
 
     @Test
-    fun `Gemini_キーをヘッダで送りthinkingLevelをminimalにして主のモデルを呼ぶ`() = runTest {
+    fun `Gemini_キーをヘッダで送りthinkingLevelをlowにして主のモデルを呼ぶ`() = runTest {
         val http = FakeCloudHttpClient { CloudHttpResponse(200, geminiSuccess("hello")) }
         val result = transcriber(http, geminiApiKey = AIZA_KEY).transcribeGemini()
 
@@ -494,7 +504,7 @@ class CloudSpeechTranscriberTest {
         assertEquals(AIZA_KEY, request.headers["x-goog-api-key"])
         assertFalse(request.url.contains(AIZA_KEY))
         val generationConfig = JSONObject(request.body).getJSONObject("generationConfig")
-        assertEquals("minimal", generationConfig.getJSONObject("thinkingConfig").getString("thinkingLevel"))
+        assertEquals("low", generationConfig.getJSONObject("thinkingConfig").getString("thinkingLevel"))
     }
 
     @Test
@@ -760,6 +770,6 @@ class CloudSpeechTranscriberTest {
 
         const val SERVICE_BLOCKED_403 = """{"error":{"code":403,"message":"Requests to this API aiplatform.googleapis.com method google.cloud.aiplatform.v1beta1.PredictionService.GenerateContent are blocked.","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_SERVICE_BLOCKED","domain":"googleapis.com","metadata":{"service":"aiplatform.googleapis.com"}}]}}"""
 
-        const val THINKING_REJECTED_400 = """{"error":{"code":400,"message":"Thinking level minimal is not supported for this model.","status":"INVALID_ARGUMENT"}}"""
+        const val THINKING_REJECTED_400 = """{"error":{"code":400,"message":"Thinking level is not supported for this model.","status":"INVALID_ARGUMENT"}}"""
     }
 }
