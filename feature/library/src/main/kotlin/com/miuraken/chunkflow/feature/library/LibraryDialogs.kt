@@ -54,6 +54,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
+import com.miuraken.chunkflow.core.designsystem.component.MISSING_LANGUAGE_HINT_LINK_SLOT
+import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithSettingsLink
 import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
 import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowLoadingIndicator
@@ -286,7 +288,11 @@ internal fun LanguagePairDropdownSection(
         }
     }
 
-    MissingLanguageHintWithSettingsLink(onOpenLanguageSettings = onOpenLanguageSettings)
+    MissingLanguageHintWithSettingsLink(
+        sentence = stringResource(R.string.library_missing_language_hint_with_link, MISSING_LANGUAGE_HINT_LINK_SLOT),
+        linkLabel = stringResource(R.string.library_open_global_language_settings),
+        onOpenLanguageSettings = onOpenLanguageSettings,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
