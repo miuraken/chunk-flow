@@ -7,7 +7,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/** プレイヤーの「次のファイル」の順番（ライブラリと同じファイル名の昇順）のテスト。 */
+/**
+ * プレイヤーの「次のファイル」の順番（ライブラリと同じファイル名の昇順）のテスト。
+ *
+ * 名前の比べ方やファイル名の取り出し方そのものは core:model の `AudioItemFileOrderTest` で確かめている。
+ */
 class PlayerFileOrderTest {
 
     private fun item(
@@ -16,12 +20,14 @@ class PlayerFileOrderTest {
         course: String? = "Course",
         localFilePath: String? = null,
         sourceUri: String? = null,
+        displayName: String? = null,
     ): AudioItem = SampleMaterials.jaKo.item.copy(
         id = MediaId(id),
         title = title,
         course = course,
         localFilePath = localFilePath,
         sourceUri = sourceUri,
+        displayName = displayName,
     )
 
     @Test
@@ -53,45 +59,26 @@ class PlayerFileOrderTest {
     }
 
     @Test
-    fun `sortedInLibraryFileOrder_ファイル名がわからないファイルはタイトルで比べ同じ名前はタイトルそのあとIDで決める`() {
-        val local4 = item("local4", title = "x", localFilePath = "/m/Lesson 04.mp3")
+    fun `sortedInLibraryFileOrder_元のファイル名を最優先しファイル名がわからないファイルはタイトルで比べる`() {
+        // Google ドライブのファイル: 元のファイル名（displayName）が保存されていればそれで並べる
+        val drive2 = item(
+            "drive2",
+            title = "Zeta",
+            sourceUri = "content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3Dencoded%3Dabc",
+            displayName = "Lesson 02.mp3",
+        )
+        // 元のファイル名がまだ補われていないドライブのファイルはタイトルで比べる
         val drive5 = item(
             "drive5",
             title = "Lesson 05",
             sourceUri = "content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3Dencoded%3Dxyz",
         )
-        val local6b = item("local6b", title = "Same", localFilePath = "/m/Lesson 06.m4a")
-        val local6a = item("local6a", title = "Same", localFilePath = "/m/Lesson 06.mp3")
+        val local4 = item("local4", title = "Alpha", localFilePath = "/m/Lesson 04.mp3")
+        // displayName はローカルのパスより優先する
+        val renamed = item("renamed", title = "Beta", localFilePath = "/m/Lesson 01.mp3", displayName = "Lesson 10.mp3")
         assertEquals(
-            listOf("local4", "drive5", "local6a", "local6b"),
-            sortedInLibraryFileOrder(listOf(local6b, drive5, local6a, local4)).map { it.id.value },
+            listOf("drive2", "local4", "drive5", "renamed"),
+            sortedInLibraryFileOrder(listOf(renamed, drive5, local4, drive2)).map { it.id.value },
         )
-    }
-
-    @Test
-    fun `fileNameFromSourceUri_ローカルのストレージとrawとfileは名前を返しそれ以外はnull`() {
-        assertEquals(
-            "第01課.mp3",
-            fileNameFromSourceUri(
-                "content://com.android.externalstorage.documents/document/" +
-                    "primary%3AMusic%2F%E9%9F%93%E5%9B%BD%E8%AA%9E%2F%E7%AC%AC01%E8%AA%B2.mp3",
-            ),
-        )
-        assertEquals(
-            "podcast 10.mp3",
-            fileNameFromSourceUri(
-                "content://com.android.providers.downloads.documents/document/" +
-                    "raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fpodcast%2010.mp3",
-            ),
-        )
-        assertEquals("a b.mp3", fileNameFromSourceUri("file:///storage/emulated/0/Music/a%20b.mp3"))
-        assertNull(fileNameFromSourceUri("content://com.android.providers.media.documents/document/audio%3A1234"))
-        assertNull(
-            fileNameFromSourceUri(
-                "content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3Dencoded%3DAbC%2FdEf%3D",
-            ),
-        )
-        assertEquals("Lesson 1.5", removeFileExtension("Lesson 1.5"))
-        assertEquals("Lesson 1", removeFileExtension("Lesson 1.mp3"))
     }
 }

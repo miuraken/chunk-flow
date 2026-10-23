@@ -11,6 +11,7 @@ import com.miuraken.chunkflow.core.data.stt.ItemSttOverrideRepository
 import com.miuraken.chunkflow.core.datastore.UserSettingsRepository
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.AudioItem
+import com.miuraken.chunkflow.core.model.AudioItemFileOrderKey
 import com.miuraken.chunkflow.core.model.AudioStorageState
 import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
@@ -40,6 +41,8 @@ import com.miuraken.chunkflow.core.model.SupportedLanguageCatalog
 import com.miuraken.chunkflow.core.model.Transcript
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
+import com.miuraken.chunkflow.core.model.compareFileNamesAscending
+import com.miuraken.chunkflow.core.model.fileOrderKey
 import com.miuraken.chunkflow.core.playback.PlaybackController
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
 import com.miuraken.chunkflow.core.testing.fake.FakeItemSttOverrideRepository
@@ -128,11 +131,13 @@ data class LibraryItemUiModel(
     ),
 ) {
     /**
-     * ライブラリでの並び（[LibraryFileOrder]）に使うファイル名（拡張子を除く）。
+     * ライブラリでの並び（[LibraryFileOrder]）のキー（core:model の [fileOrderKey]。ファイル名 → タイトル → ID）。
      *
-     * ファイルのパスや元の URI から取り出せないとき（Google ドライブなど）はタイトル。
+     * ファイル名（拡張子を除く）は、元のファイル名（[AudioItem.displayName]）→ ローカルのパス → 元の URI の順に取り、
+     * どれからもわからなければタイトル。並べるたびに作り直さないよう UI モデルを作るときに 1 回だけ作り、
+     * ファイル名での検索にも使う。
      */
-    val fileNameForSort: String = sortableFileNameOf(item)
+    val fileOrderKey: AudioItemFileOrderKey = item.fileOrderKey()
 
     /** 前回の再生位置（ミリ秒）。 */
     val lastPositionMs: Long
@@ -625,7 +630,7 @@ data class LibraryUiState(
             val filtered = items.filter { model ->
                 val matchesQuery = normalizedQuery.isEmpty() ||
                     model.item.title.contains(normalizedQuery, ignoreCase = true) ||
-                    model.fileNameForSort.contains(normalizedQuery, ignoreCase = true) ||
+                    model.fileOrderKey.fileName.contains(normalizedQuery, ignoreCase = true) ||
                     (model.item.course?.contains(normalizedQuery, ignoreCase = true) == true)
                 matchesQuery && matchesLanguageAndTagFilter(model)
             }
