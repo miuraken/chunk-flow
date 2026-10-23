@@ -169,6 +169,7 @@ fun SettingsScreen(
 ) {
     var selectedTabOrdinal by rememberSaveable { mutableIntStateOf(initialTab) }
     val selectedTab = SettingsTab.entries.getOrElse(selectedTabOrdinal) { SettingsTab.PLAYBACK }
+    var showOpenSourceLicensesDialog by rememberSaveable { mutableStateOf(false) }
     val isInspectionMode = LocalInspectionMode.current
 
     LaunchedEffect(selectedTab, isInspectionMode) {
@@ -185,6 +186,12 @@ fun SettingsScreen(
         )
     }
 
+    if (showOpenSourceLicensesDialog) {
+        OpenSourceLicensesDialog(
+            onDismiss = { showOpenSourceLicensesDialog = false },
+        )
+    }
+
     // 本文がスクロールしても TopAppBar は固定し、スクロール中は色だけを変える（計画書 §4 Phase B）。
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
@@ -197,6 +204,14 @@ fun SettingsScreen(
                         Icon(
                             imageVector = ChunkFlowIcons.ArrowBack,
                             contentDescription = stringResource(R.string.settings_back),
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showOpenSourceLicensesDialog = true }) {
+                        Icon(
+                            imageVector = ChunkFlowIcons.Info,
+                            contentDescription = stringResource(R.string.settings_open_source_licenses),
                         )
                     }
                 },
@@ -2035,6 +2050,151 @@ internal fun SettingsScreenTranscriptionTabPreview() {
     }
 }
 
+@Composable
+private fun OpenSourceLicensesDialog(
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = stringResource(R.string.settings_open_source_licenses))
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OPEN_SOURCE_LICENSE_ENTRIES.forEachIndexed { index, entry ->
+                    if (index > 0) {
+                        HorizontalDivider()
+                    }
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Text(
+                            text = entry.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = entry.copyright,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = entry.license,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+                HorizontalDivider()
+                Text(
+                    text = APACHE_2_0_NOTICE,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                HorizontalDivider()
+                Text(
+                    text = MIT_LICENSE_NOTICE,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.settings_open_source_licenses_close))
+            }
+        },
+    )
+}
+
+private data class OpenSourceLicenseEntry(
+    val name: String,
+    val copyright: String,
+    val license: String,
+)
+
+private val OPEN_SOURCE_LICENSE_ENTRIES: List<OpenSourceLicenseEntry> = listOf(
+    OpenSourceLicenseEntry(
+        name = "AndroidX / Jetpack (Compose, Media3, Room, DataStore, WorkManager, Navigation 3, Lifecycle)",
+        copyright = "Copyright (C) The Android Open Source Project",
+        license = "Apache License 2.0",
+    ),
+    OpenSourceLicenseEntry(
+        name = "Kotlin Standard Library / Kotlinx Coroutines / Kotlinx Serialization",
+        copyright = "Copyright (C) JetBrains s.r.o. and Kotlin Programming Language contributors",
+        license = "Apache License 2.0",
+    ),
+    OpenSourceLicenseEntry(
+        name = "Dagger / Hilt",
+        copyright = "Copyright (C) The Dagger Authors",
+        license = "Apache License 2.0",
+    ),
+    OpenSourceLicenseEntry(
+        name = "ONNX Runtime (onnxruntime-android)",
+        copyright = "Copyright (c) Microsoft Corporation",
+        license = "MIT License",
+    ),
+    OpenSourceLicenseEntry(
+        name = "sherpa-onnx",
+        copyright = "Copyright (c) Next-gen Kaldi (k2-fsa) contributors",
+        license = "Apache License 2.0",
+    ),
+    OpenSourceLicenseEntry(
+        name = "Whisper Models (Tiny / Base / Small)",
+        copyright = "Copyright (c) OpenAI",
+        license = "MIT License",
+    ),
+    OpenSourceLicenseEntry(
+        name = "SenseVoice Small Model",
+        copyright = "Copyright (c) FunAudioLLM / Alibaba Group",
+        license = "Apache License 2.0",
+    ),
+    OpenSourceLicenseEntry(
+        name = "Moonshine ONNX Models (Tiny / Base)",
+        copyright = "Copyright (c) Useful Sensors, Inc.",
+        license = "MIT License",
+    ),
+    OpenSourceLicenseEntry(
+        name = "Silero VAD",
+        copyright = "Copyright (c) Silero Team",
+        license = "MIT License",
+    ),
+    OpenSourceLicenseEntry(
+        name = "Google ML Kit (Translate / GenAI Speech Recognition)",
+        copyright = "Copyright (c) Google LLC",
+        license = "Google APIs Terms of Service / ML Kit Terms of Service",
+    ),
+)
+
+private const val APACHE_2_0_NOTICE: String =
+    "Apache License 2.0\n" +
+        "Licensed under the Apache License, Version 2.0 (the \"License\"); " +
+        "you may not use this file except in compliance with the License. " +
+        "You may obtain a copy of the License at\n" +
+        "http://www.apache.org/licenses/LICENSE-2.0\n" +
+        "Unless required by applicable law or agreed to in writing, software " +
+        "distributed under the License is distributed on an \"AS IS\" BASIS, " +
+        "WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied."
+
+private const val MIT_LICENSE_NOTICE: String =
+    "MIT License\n" +
+        "Permission is hereby granted, free of charge, to any person obtaining a copy " +
+        "of this software and associated documentation files (the \"Software\"), to deal " +
+        "in the Software without restriction, including without limitation the rights " +
+        "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell " +
+        "copies of the Software, and to permit persons to whom the Software is " +
+        "furnished to do so, subject to the above copyright notice and this permission notice.\n" +
+        "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR " +
+        "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, " +
+        "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT."
+
 @ChunkFlowPreviews
 @Composable
 internal fun SettingsScreenLanguageTabPreview() {
@@ -2044,5 +2204,13 @@ internal fun SettingsScreenLanguageTabPreview() {
             onEvent = {},
             initialTab = SettingsTab.LANGUAGE.ordinal,
         )
+    }
+}
+
+@ChunkFlowPreviews
+@Composable
+internal fun OpenSourceLicensesDialogPreview() {
+    ChunkFlowTheme {
+        OpenSourceLicensesDialog(onDismiss = {})
     }
 }

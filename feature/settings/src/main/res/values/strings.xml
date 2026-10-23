@@ -149,4 +149,6 @@
     <string name="settings_stt_recommendation_update_item_format">・%1$s: 現在 %2$s → おすすめ: 自動（%3$s）</string>
     <string name="settings_stt_recommendation_update_switch_to_auto">自動（おすすめ）に切り替える</string>
     <string name="settings_stt_recommendation_update_keep_current">現在の設定を維持</string>
+    <string name="settings_open_source_licenses">オープンソースライセンス</string>
+    <string name="settings_open_source_licenses_close">閉じる</string>
 </resources>

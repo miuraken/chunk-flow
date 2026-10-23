@@ -1381,6 +1381,34 @@ object ChunkFlowIcons {
         }
     }
 
+    /** Material `info`（outlined）— 情報・オープンソースライセンス表示アイコン。 */
+    val Info: ImageVector by lazy {
+        materialIcon(name = "Info") {
+            moveTo(11f, 7f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(-2f)
+            close()
+            moveTo(11f, 11f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(6f)
+            horizontalLineToRelative(-2f)
+            close()
+            moveTo(12f, 2f)
+            curveTo(6.48f, 2f, 2f, 6.48f, 2f, 12f)
+            reflectiveCurveToRelative(4.48f, 10f, 10f, 10f)
+            reflectiveCurveToRelative(10f, -4.48f, 10f, -10f)
+            reflectiveCurveTo(17.52f, 2f, 12f, 2f)
+            close()
+            moveTo(12f, 20f)
+            curveToRelative(-4.41f, 0f, -8f, -3.59f, -8f, -8f)
+            reflectiveCurveToRelative(3.59f, -8f, 8f, -8f)
+            reflectiveCurveToRelative(8f, 3.59f, 8f, 8f)
+            reflectiveCurveToRelative(-3.59f, 8f, -8f, 8f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

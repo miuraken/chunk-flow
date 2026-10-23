@@ -144,4 +144,6 @@
     <string name="settings_stt_label_high_accuracy">High accuracy</string>
     <string name="settings_stt_label_fast">Fast</string>
     <string name="settings_stt_label_slow">Slow</string>
+    <string name="settings_open_source_licenses">Open Source Licenses</string>
+    <string name="settings_open_source_licenses_close">Close</string>
 </resources>
