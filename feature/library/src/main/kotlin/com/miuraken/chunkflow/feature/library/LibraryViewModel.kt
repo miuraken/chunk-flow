@@ -589,20 +589,48 @@ data class LibraryUiState(
             .sortedBy { it.value }
 
     /**
-     * ライブラリ内のタグを、そのタグが付いているファイル数が多い順（同数なら [allTags] の順）に並べた一覧。
+     * 現在表示されているフォルダ（[currentDirectoryPath]）および対象言語フィルタ（[fileTargetLanguageFilter]）の
+     * 範囲内にある教材の一覧（タグの絞り込みや検索キーワードは適用しない）。
+     */
+    internal val itemsInCurrentFolderAndLanguageScope: List<LibraryItemUiModel>
+        get() {
+            if (items.isEmpty()) return emptyList()
+            val currentPath = currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+            val folderScopedItems = if (currentPath == null) {
+                items
+            } else {
+                itemsInDirectoryTree(currentPath)
+            }
+            val targetFilter = fileTargetLanguageFilter?.value?.lowercase()
+            return if (targetFilter == null) {
+                folderScopedItems
+            } else {
+                folderScopedItems.filter {
+                    it.item.languagePair.target.value.lowercase() == targetFilter
+                }
+            }
+        }
+
+    /**
+     * 現在表示されているフォルダ（[currentDirectoryPath]）内（かつ対象言語フィルタ [fileTargetLanguageFilter] に一致する）
+     * アイテムに付いているタグを、その範囲内で付いているファイル数が多い順（同数なら [allTags] の順）に並べた一覧。
+     *
+     * ホームディレクトリ（ルート階層）で「すべての言語」を選んでいるときは全アイテムのタグが表示され、
+     * フォルダに入っているときや言語で絞り込んでいるときはその範囲内のアイテムに付いているタグのみを表示する。
      */
     val tagsSortedByItemCount: List<String>
         get() {
-            if (allTags.size <= 1 || items.isEmpty()) return allTags
-            val counts = HashMap<String, Int>()
-            for (model in items) {
+            val scopedItems = itemsInCurrentFolderAndLanguageScope
+            if (scopedItems.isEmpty()) return emptyList()
+            val counts = LinkedHashMap<String, Int>()
+            for (model in scopedItems) {
                 for (tag in model.tags) {
                     counts[tag] = (counts[tag] ?: 0) + 1
                 }
             }
-            if (counts.isEmpty()) return allTags
+            if (counts.isEmpty()) return emptyList()
             val originalIndex = allTags.withIndex().associate { (i, t) -> t to i }
-            return allTags.sortedWith(
+            return counts.keys.sortedWith(
                 compareByDescending<String> { counts[it] ?: 0 }
                     .thenBy { originalIndex[it] ?: Int.MAX_VALUE },
             )
@@ -1201,6 +1229,37 @@ data class LibraryUiState(
             }
             return matching.sortedWith(LibraryFileOrder)
         }
+
+    /**
+     * プレイヤーで教材 [openedMediaId] を開く前にライブラリの「ファイル」に表示されていたファイル一覧の ID リストを返す。
+     *
+     * 検索キーワード入力時は [filteredAllFiles]、通常時は現在開いているフォルダの [currentFiles] を使う。
+     * [openedMediaId] がその一覧に含まれない場合（ルート階層でミニプレイヤーや別タブから開いた場合など）は、
+     * その教材のフォルダ内で現在の言語・タグ絞り込みに一致するファイル一覧（一致しなければ同フォルダの全ファイル一覧）を返す。
+     */
+    fun displayedFileMediaIdsForPlayback(openedMediaId: MediaId): List<MediaId> {
+        val visibleFiles = if (fileSearchQuery.trim().isNotEmpty()) {
+            filteredAllFiles
+        } else {
+            currentFiles
+        }
+        if (visibleFiles.any { it.item.id == openedMediaId }) {
+            return visibleFiles.map { it.item.id }
+        }
+        val openedModel = items.firstOrNull { it.item.id == openedMediaId }
+            ?: return visibleFiles.map { it.item.id }
+        val targetPath = effectivePathOf(openedModel)
+        val sameFolderFiltered = items
+            .filter { effectivePathOf(it) == targetPath && matchesLanguageAndTagFilter(it) }
+            .sortedWith(LibraryFileOrder)
+        if (sameFolderFiltered.any { it.item.id == openedMediaId }) {
+            return sameFolderFiltered.map { it.item.id }
+        }
+        return items
+            .filter { effectivePathOf(it) == targetPath }
+            .sortedWith(LibraryFileOrder)
+            .map { it.item.id }
+    }
 
     /**
      * 現在の階層で最後にアクセスされた `Listened` ファイルが 1〜2 件だけ上部に残る `LazyColumn` インデックス。
@@ -2208,7 +2267,12 @@ class LibraryViewModel @Inject constructor(
 
             is LibraryEvent.OpenDirectory -> {
                 clearSelectionInternal()
-                currentDirectoryPath.value = event.directoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+                val nextPath = event.directoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+                currentDirectoryPath.value = nextPath
+                pruneTagFilterForScope(
+                    directoryPath = nextPath,
+                    languageFilter = fileTargetLanguageFilter.value,
+                )
             }
 
             LibraryEvent.NavigateUp -> {
@@ -2218,11 +2282,16 @@ class LibraryViewModel @Inject constructor(
                     selectedPlaylistId.value = null
                 } else {
                     val current = currentDirectoryPath.value?.trim('/')?.takeIf { it.isNotBlank() }
-                    currentDirectoryPath.value = if (current != null && '/' in current) {
+                    val nextPath = if (current != null && '/' in current) {
                         current.substringBeforeLast('/')
                     } else {
                         null
                     }
+                    currentDirectoryPath.value = nextPath
+                    pruneTagFilterForScope(
+                        directoryPath = nextPath,
+                        languageFilter = fileTargetLanguageFilter.value,
+                    )
                 }
             }
 
@@ -2231,6 +2300,10 @@ class LibraryViewModel @Inject constructor(
                 selectedTab.value = LibraryViewTab.FOLDERS
                 currentDirectoryPath.value = null
                 selectedPlaylistId.value = null
+                pruneTagFilterForScope(
+                    directoryPath = null,
+                    languageFilter = fileTargetLanguageFilter.value,
+                )
             }
 
             is LibraryEvent.SelectTab -> {
@@ -2243,9 +2316,14 @@ class LibraryViewModel @Inject constructor(
             }
 
             is LibraryEvent.SelectFileTargetLanguageFilter -> {
-                fileTargetLanguageFilter.value = event.language?.let {
+                val nextLang = event.language?.let {
                     LanguageTag(it.value.trim().lowercase())
                 }
+                fileTargetLanguageFilter.value = nextLang
+                pruneTagFilterForScope(
+                    directoryPath = currentDirectoryPath.value,
+                    languageFilter = nextLang,
+                )
             }
 
             is LibraryEvent.ToggleFileTagFilter -> {
@@ -3306,6 +3384,24 @@ class LibraryViewModel @Inject constructor(
         isPendingBatchDelete.value = false
     }
 
+    private fun pruneTagFilterForScope(
+        directoryPath: String?,
+        languageFilter: LanguageTag?,
+    ) {
+        val currentFilter = fileTagFilter.value
+        if (currentFilter.isEmpty()) return
+        val currentState = uiState.value
+        if (currentState.items.isEmpty()) return
+        val allowedTags = currentState
+            .copy(
+                currentDirectoryPath = directoryPath,
+                fileTargetLanguageFilter = languageFilter,
+            )
+            .tagsSortedByItemCount
+            .toSet()
+        fileTagFilter.value = currentFilter.filterTo(LinkedHashSet()) { it in allowedTags }
+    }
+
     private fun linkLocalDirectory(
         treeUri: Uri,
         course: String?,
@@ -3704,9 +3800,26 @@ class LibraryViewModel @Inject constructor(
             ?: defaultSpeed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
             ?: playbackStatus.speed.takeIf { kotlin.math.abs(it - 1.0f) >= 0.01f }
             ?: 1.5f
-        // どのファイルにも付いていないタグ（消えたタグ）は、絞り込みから外して扱う
+        // どのファイルにも付いていないタグ（消えたタグ）や、現在のフォルダ・言語範囲に存在しないタグは絞り込みから外して扱う
+        val currentPath = navAndSelection.currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
+        val targetFilter = navAndSelection.fileTargetLanguageFilter?.value?.lowercase()
+        val scopedTagNames = HashSet<String>()
+        for (model in uiItems) {
+            if (currentPath != null) {
+                val raw = model.item.course ?: navAndSelection.selectedDirectoryName
+                val path = raw?.trim('/')?.takeIf { it.isNotBlank() }
+                val inDir = path == currentPath || (path != null && path.startsWith("$currentPath/"))
+                if (!inDir) continue
+            }
+            if (targetFilter != null && model.item.languagePair.target.value.lowercase() != targetFilter) {
+                continue
+            }
+            scopedTagNames.addAll(model.tags)
+        }
         val tagNames = tags.toHashSet()
-        val effectiveTagFilter = navAndSelection.fileTagFilter.filterTo(LinkedHashSet()) { it in tagNames }
+        val effectiveTagFilter = navAndSelection.fileTagFilter.filterTo(LinkedHashSet()) {
+            it in tagNames && it in scopedTagNames
+        }
         // タグが付いているファイル数が多い順（同数なら作成順）に並べる
         val tagCounts = HashMap<String, Int>()
         for (model in uiItems) {

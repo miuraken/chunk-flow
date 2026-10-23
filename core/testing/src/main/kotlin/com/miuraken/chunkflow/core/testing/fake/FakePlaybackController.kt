@@ -51,7 +51,15 @@ class FakePlaybackController(
 
     override suspend fun open(mediaId: MediaId) {
         openedMediaIds += mediaId
-        statusState.update { it.copy(mediaId = mediaId, isPlaying = false, currentChunkId = null, error = null) }
+        statusState.update {
+            it.copy(
+                mediaId = mediaId,
+                isPlaying = false,
+                currentChunkId = null,
+                hasReachedFileEnd = false,
+                error = null,
+            )
+        }
     }
 
     override fun seekToChunk(chunkId: ChunkId) {

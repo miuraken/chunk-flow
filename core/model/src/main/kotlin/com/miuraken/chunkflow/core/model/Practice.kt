@@ -90,6 +90,21 @@ enum class LanguageFilter {
     CHECKED_ONLY,
 }
 
+/** ファイル最後まで再生したときの挙動。 */
+enum class FileEndAction {
+    /** このファイルをリピート（ファイル最後まで再生したら、ふたたび自動的に同じファイルの先頭から再生をはじめる）。 */
+    REPEAT_FILE,
+
+    /** 再生後に停止（ファイル最後まで再生したら、そのまま停止する）。 */
+    STOP_AFTER_FILE,
+
+    /** 次のファイルに進む（ファイル最後まで再生したら、自動的に次のファイルを開き、再生をはじめる）。 */
+    NEXT_FILE,
+
+    /** シャッフル（ファイル最後まで再生したら、表示されていたファイルの中からシャッフルして次のファイルを開き、再生をはじめる）。 */
+    SHUFFLE,
+}
+
 /**
  * 学習モードの設定一式。
  *
@@ -102,7 +117,8 @@ enum class LanguageFilter {
  * @property repeatCheckedOnly 下部再生コントロールの「リピート」トグルが ON かどうか（デフォルトは `false`）。`true` かつ [languageFilter] が [LanguageFilter.CHECKED_ONLY] で [repeatChunkIds] が空でない場合は選択したチャンクを繰り返し、`false` の場合は最後の選択チャンクのあとで一時停止する。
  * @property temporaryRepeatChunkId 未選択状態でリピートバッジを有効化した際に再生中のチャンクへ付与された「一時チェック」のチャンク ID（高々 1 つ）。見た目や再生時の扱いは通常のチェック（[repeatChunkIds]）と同じだが、(1) 一時チェック中に他のチャンクをタップしてシークすると新しいチャンクへ一時チェックが移り、(2) 他のチャンクにチェックが入れられると恒久的なチェックへ移行（`null` にクリア）し、(3) リピート解除時には一時チェックのみが [repeatChunkIds] から解除される。
  * @property skipOriginalSilence 元音声のチャンク間の無音区間（`[chunk.endMs, nextChunk.startMs)`）をスキップして次のチャンクへ進むかどうか。
- * @property repeatWholeFile ファイル全体をリピートするかどうか（リピートバッジの長押しで確認後 ON、もう一度タップで OFF。チャンクの選択やチェックボックスは変更しない）。
+ * @property repeatWholeFile ファイル全体をリピートするかどうか（[fileEndAction] が [FileEndAction.REPEAT_FILE] のとき `true`）。
+ * @property fileEndAction ファイル最後まで再生したときの挙動（デフォルトは [FileEndAction.STOP_AFTER_FILE]）。
  */
 data class PracticeSettings(
     val loop: LoopMode = LoopMode.Off,
@@ -115,4 +131,5 @@ data class PracticeSettings(
     val temporaryRepeatChunkId: ChunkId? = null,
     val skipOriginalSilence: Boolean = false,
     val repeatWholeFile: Boolean = false,
+    val fileEndAction: FileEndAction = if (repeatWholeFile) FileEndAction.REPEAT_FILE else FileEndAction.STOP_AFTER_FILE,
 )

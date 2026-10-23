@@ -80,6 +80,7 @@ internal fun ChunkDisplaySettingsStrip(
 
     Row(
         modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
@@ -311,7 +312,6 @@ internal fun ChunkDisplaySettingsStrip(
             val blindChipLabel = stringResource(R.string.player_chip_blind_target)
             val readingLabel = stringResource(R.string.player_chip_reading)
             val translateLabel = stringResource(R.string.player_chip_translate)
-            val bookmarksOnlyLabel = stringResource(R.string.player_chip_bookmarks_only_cd)
             val toggleItems = buildList {
                 add(
                     ChunkFlowToggleButtonItem(
@@ -351,8 +351,20 @@ internal fun ChunkDisplaySettingsStrip(
                 items = toggleItems,
                 compact = true,
             )
+        }
 
-            // 5. 「🔖」（ブックマークしたチャンクのみ表示。チャンクリスト内の表示切替とは別グループの独立したボタン）
+        // 右端: 書き起こし状態ボタン・バッジ（ブックマークボタンが現れたらそのすぐ左側）とブックマークボタン（ブックマークが存在する場合のみ）
+        val bookmarksOnlyLabel = stringResource(R.string.player_chip_bookmarks_only_cd)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PlayerTranscriptionStatusBadge(
+                state = state,
+                onToggleTranscription = { enabled ->
+                    onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+                },
+            )
             if (state.chunks.any { it.isBookmarked && !it.isSkipped }) {
                 ChunkFlowToggleButtonGroup(
                     items = listOf(

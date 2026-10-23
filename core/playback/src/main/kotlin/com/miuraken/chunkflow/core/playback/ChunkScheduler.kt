@@ -63,6 +63,7 @@ class ChunkScheduler(
     mainDispatcher: CoroutineDispatcher = Dispatchers.Main.immediate,
     private val elapsedRealtimeMs: () -> Long = SystemClock::elapsedRealtime,
     private val onStateChanged: (currentChunkId: ChunkId?, autoPauseEndsAtMs: Long?) -> Unit = { _, _ -> },
+    private val onFilePlaybackEnded: () -> Unit = {},
 ) : Player.Listener {
 
     private val scope = CoroutineScope(SupervisorJob() + mainDispatcher)
@@ -515,6 +516,9 @@ class ChunkScheduler(
             shouldRestartSelectedChunksOnPlay = true
             if (_autoPauseEndsAtMs.value != null) {
                 cancelAutoPause()
+            }
+            if (playbackState == Player.STATE_ENDED) {
+                onFilePlaybackEnded()
             }
         } else if (playbackState == Player.STATE_READY) {
             val nowMs = exoPlayer.currentPosition.coerceAtLeast(0L)
@@ -1247,6 +1251,7 @@ class ChunkScheduler(
         }
         pausedAtChunkEndPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
         exoPlayer.pause()
+        onFilePlaybackEnded()
     }
 
     /**
@@ -1512,6 +1517,9 @@ class ChunkScheduler(
                 shouldRestartSelectedChunksOnPlay = true
                 pausedAtChunkEndPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
                 exoPlayer.pause()
+                if (action.allowsAutoPause) {
+                    onFilePlaybackEnded()
+                }
             }
         }
     }

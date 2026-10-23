@@ -17,6 +17,7 @@ import com.miuraken.chunkflow.core.model.Chunk
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
 import com.miuraken.chunkflow.core.model.DownloadableSttModel
+import com.miuraken.chunkflow.core.model.FileEndAction
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.LanguageFilter
 import com.miuraken.chunkflow.core.model.LanguagePair
@@ -831,6 +832,8 @@ data class PlayerUiState(
     val baseLanguageSpeedEnabled: Boolean = false,
     val baseLanguageSpeed: Float = 1.0f,
     val isChunkBoundaryEditMode: Boolean = false,
+    val pendingOpenMediaId: MediaId? = null,
+    val returnToLibraryFolderPath: String? = null,
 ) {
     /** 全体波形・拡大波形の両方のレンダリングが完成しているかどうか。 */
     val isWaveformRenderComplete: Boolean
@@ -1080,6 +1083,9 @@ sealed interface PlayerEvent {
 
     /** リピートバッジの長押し確認ダイアログで「はい」が選ばれたときにファイル全体リピートを有効にする（チャンク選択は変更しない）。 */
     data object EnableWholeFileRepeat : PlayerEvent
+
+    /** ファイルの最後まで再生したときの挙動（リピート / 停止 / 次のファイル / シャッフル）を変更する。 */
+    data class SetFileEndAction(val action: FileEndAction) : PlayerEvent
 
     /** 下部再生コントロールの「無音スキップ」トグル（チャンク間の無音をスキップ）を切り替える。 */
     data object ToggleSkipSilence : PlayerEvent
@@ -1349,8 +1355,14 @@ sealed interface PlayerEvent {
     /** 現在位置より後ろのしおり（ブックマーク）付きチャンクへ移動する。 */
     data object SeekToNextBookmarkedChunk : PlayerEvent
 
-    /** 同じフォルダ（コース）内の次の教材ファイルを開いて再生する。 */
+    /** 同じフォルダ（または再生前ファイル一覧）内の次の教材ファイルを開いて再生する。 */
     data object OpenNextMediaItem : PlayerEvent
+
+    /** 自動遷移で次のファイルへ切り替わった通知を消費する。 */
+    data object ConsumePendingOpenMedia : PlayerEvent
+
+    /** 次のファイルがないときにライブラリの該当フォルダへ戻る通知を消費する。 */
+    data object ConsumeReturnToLibraryFolder : PlayerEvent
 
     /** 全体波形のプログレッシブ更新レンダリングが完了したことを記録する。 */
     data object MarkOverviewWaveformRenderComplete : PlayerEvent
@@ -1433,6 +1445,8 @@ private data class LocalUiSnapshot(
     val baseWaveformChunks: List<ChunkUi> = emptyList(),
     val waveformRenderGeneration: Long = 0L,
     val isChunkBoundaryEditMode: Boolean = false,
+    val pendingOpenMediaId: MediaId? = null,
+    val returnToLibraryFolderPath: String? = null,
 )
 
 /**
@@ -1466,6 +1480,9 @@ class PlayerViewModel @Inject constructor(
 
     private val currentMediaId = MutableStateFlow<MediaId?>(null)
     private val localUiState = MutableStateFlow(LocalUiSnapshot())
+    private val playlistMediaIdsFlow = MutableStateFlow<List<MediaId>>(emptyList())
+    private val nextShuffledMediaIdFlow = MutableStateFlow<MediaId?>(null)
+    private val playedShuffleMediaIds = mutableSetOf<MediaId>()
     private val perMediaLookaheadEnabled = MutableStateFlow<Map<MediaId, Boolean>>(emptyMap())
     private val prioritizedMediaIds = MutableStateFlow<Set<MediaId>>(emptySet())
     private var lastOpenedMediaId: MediaId? = null
@@ -1492,6 +1509,21 @@ class PlayerViewModel @Inject constructor(
 
     private fun isLookaheadActivelyRunningInRepo(status: LookaheadTranscriptionStatus): Boolean = status.enabled &&
         (status.backgroundEnabled || status.inFlightChunkId != null || status.queuedChunkIds.isNotEmpty())
+
+    private fun resolveNextShuffleCandidate(
+        currentId: MediaId,
+        candidates: List<AudioItem>,
+        cachedNextId: MediaId?,
+    ): AudioItem? {
+        playedShuffleMediaIds.add(currentId)
+        val unplayed = candidates.filter { it.id != currentId && it.id !in playedShuffleMediaIds }
+        if (unplayed.isEmpty()) return null
+        val cached = cachedNextId?.let { cid -> unplayed.firstOrNull { it.id == cid } }
+        if (cached != null) return cached
+        val chosen = unplayed.random()
+        nextShuffledMediaIdFlow.value = chosen.id
+        return chosen
+    }
 
     /** 高頻度で変わる再生位置のプロバイダ（§6.2）。 */
     val positionProvider: PositionProvider
@@ -1546,13 +1578,38 @@ class PlayerViewModel @Inject constructor(
         if (id == null) {
             flowOf(MediaStateInfo(mediaId = null, item = null, itemState = null, analysis = AnalysisSnapshot()))
         } else {
+            val playlistAndShuffleStateFlow = combine(
+                playlistMediaIdsFlow,
+                playbackController.practice.map { it.fileEndAction }.distinctUntilChanged(),
+                nextShuffledMediaIdFlow,
+            ) { playlistIds, fileEndAction, nextShuffledId ->
+                Triple(playlistIds, fileEndAction, nextShuffledId)
+            }
             val itemAndNextFlow = combine(
                 libraryRepository.observeItem(id),
                 libraryRepository.observeItems(),
                 libraryRepository.observeCourseFolders(),
-            ) { item, allItems, courseFolders ->
-                // 同じフォルダの、ライブラリと同じ並び（ファイル名の昇順）で次のファイル
-                val nextItem = item?.let { nextMediaItemInSameFolder(it, allItems) }
+                playlistAndShuffleStateFlow,
+            ) { item, allItems, courseFolders, (playlistIds, fileEndAction, nextShuffledId) ->
+                val nextItem = if (item == null) {
+                    null
+                } else {
+                    val candidates = resolveOrderedCandidateItems(
+                        current = item,
+                        allItems = allItems,
+                        playlistMediaIds = playlistIds,
+                    )
+                    if (fileEndAction == FileEndAction.SHUFFLE) {
+                        resolveNextShuffleCandidate(
+                            currentId = id,
+                            candidates = candidates,
+                            cachedNextId = nextShuffledId,
+                        )
+                    } else {
+                        val idx = candidates.indexOfFirst { it.id == id }
+                        if (idx >= 0) candidates.getOrNull(idx + 1) else null
+                    }
+                }
                 // 内包するフォルダの音声認識エンジンの上書き（近いフォルダを言語ごとに優先。ファイル個別設定は含まない）
                 val folderOverride = if (item == null) {
                     com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
@@ -1772,6 +1829,60 @@ class PlayerViewModel @Inject constructor(
                     }
                 }
         }
+
+        // ファイルの末尾まで再生し終えたとき、「次のファイルに進む」または「シャッフル」なら自動的に次のファイル（なければフォルダ一覧）へ遷移する
+        viewModelScope.launch {
+            playbackController.status
+                .map { it.mediaId to it.hasReachedFileEnd }
+                .distinctUntilChanged()
+                .collect { (endedMediaId, hasReachedFileEnd) ->
+                    if (!hasReachedFileEnd || endedMediaId == null || endedMediaId != currentMediaId.value) {
+                        return@collect
+                    }
+                    val action = playbackController.practice.value.fileEndAction
+                    if (action != FileEndAction.NEXT_FILE && action != FileEndAction.SHUFFLE) {
+                        return@collect
+                    }
+                    val state = uiState.value
+                    val nextId = state.nextMediaId ?: resolveNextMediaIdImmediate(endedMediaId, action)
+                    if (nextId != null) {
+                        open(
+                            mediaId = nextId,
+                            initialChunkId = null,
+                            playlistMediaIds = playlistMediaIdsFlow.value,
+                            autoPlayFromStart = true,
+                        )
+                        localUiState.update { it.copy(pendingOpenMediaId = nextId) }
+                    } else {
+                        val course = state.course ?: libraryRepository.observeItem(endedMediaId).firstOrNull()?.course
+                        val folderPath = normalizedFolderPath(course).orEmpty()
+                        localUiState.update { it.copy(returnToLibraryFolderPath = folderPath) }
+                    }
+                }
+        }
+    }
+
+    private suspend fun resolveNextMediaIdImmediate(
+        currentId: MediaId,
+        action: FileEndAction,
+    ): MediaId? {
+        val item = libraryRepository.observeItem(currentId).firstOrNull() ?: return null
+        val allItems = libraryRepository.observeItems().firstOrNull().orEmpty()
+        val candidates = resolveOrderedCandidateItems(
+            current = item,
+            allItems = allItems,
+            playlistMediaIds = playlistMediaIdsFlow.value,
+        )
+        return if (action == FileEndAction.SHUFFLE) {
+            resolveNextShuffleCandidate(
+                currentId = currentId,
+                candidates = candidates,
+                cachedNextId = nextShuffledMediaIdFlow.value,
+            )?.id
+        } else {
+            val idx = candidates.indexOfFirst { it.id == currentId }
+            if (idx >= 0) candidates.getOrNull(idx + 1)?.id else null
+        }
     }
 
     /** 開いている教材の言語（学習言語・母語）のうち、端末内音声認識モデルに問題がある言語。 */
@@ -1897,9 +2008,26 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    /** 指定した教材を開いて再生準備を行う。[initialChunkId] が指定された場合は該当チャンクの先頭へ一時停止状態で移動する。 */
-    fun open(mediaId: MediaId, initialChunkId: ChunkId? = null) {
+    /**
+     * 指定した教材を開いて再生準備を行う。
+     * [initialChunkId] が指定された場合は該当チャンクの先頭へ一時停止状態で移動する。
+     * [playlistMediaIds] が指定された場合は、再生開始前にライブラリの「ファイル」一覧に表示されていた順序として保持する。
+     */
+    fun open(
+        mediaId: MediaId,
+        initialChunkId: ChunkId? = null,
+        playlistMediaIds: List<MediaId> = emptyList(),
+        autoPlayFromStart: Boolean = false,
+    ) {
+        if (playlistMediaIds.isNotEmpty() && playlistMediaIds != playlistMediaIdsFlow.value) {
+            playlistMediaIdsFlow.value = playlistMediaIds
+            playedShuffleMediaIds.clear()
+        }
+        playedShuffleMediaIds.add(mediaId)
         val previousId = lastOpenedMediaId
+        if (previousId != mediaId) {
+            nextShuffledMediaIdFlow.value = null
+        }
         if (previousId != null && previousId != mediaId) {
             val prevState = uiState.value
             if (prevState.mediaId == previousId && prevState.chunks.isNotEmpty()) {
@@ -1915,7 +2043,7 @@ class PlayerViewModel @Inject constructor(
         }
         analysisRepository.setMediaTranscriptionSessionOpen(mediaId, true)
         currentMediaId.value = mediaId
-        if (previousId == mediaId && initialChunkId == null) {
+        if (previousId == mediaId && initialChunkId == null && !autoPlayFromStart) {
             val currentState = uiState.value
             val currentSig = computeWaveformRenderSignature(currentState.waveform, currentState.chunks)
             val savedOverviewSig = completedOverviewSignaturesByMedia[mediaId]
@@ -2029,6 +2157,32 @@ class PlayerViewModel @Inject constructor(
                             isPlaying = false,
                             currentChunkId = initialChunkId,
                             autoPauseEndsAtMs = null,
+                            hasReachedFileEnd = false,
+                        )
+                    }
+                }
+            } else if (autoPlayFromStart) {
+                libraryRepository.updatePlaybackPosition(
+                    id = mediaId,
+                    positionMs = 0L,
+                    speed = initialSpeed,
+                    updatedAtEpochMs = System.currentTimeMillis(),
+                )
+                playbackController.open(mediaId)
+                playbackController.player.value?.let { player ->
+                    player.seekTo(0L)
+                    player.play()
+                }
+                if (playbackController is FakePlaybackController) {
+                    playbackController.position.positionMs = 0L
+                    playbackController.setSpeed(initialSpeed)
+                    playbackController.statusState.update { status ->
+                        status.copy(
+                            mediaId = mediaId,
+                            isPlaying = true,
+                            currentChunkId = null,
+                            autoPauseEndsAtMs = null,
+                            hasReachedFileEnd = false,
                         )
                     }
                 }
@@ -2202,19 +2356,42 @@ class PlayerViewModel @Inject constructor(
                     localUiState.update { it.copy(isChunkBoundaryEditMode = false) }
                 }
                 updatePracticeWithCheckedFallback {
+                    val nextRepeatWholeFile = if (event.loopMode is LoopMode.Off) false else it.repeatWholeFile
                     it.copy(
                         loop = event.loopMode,
                         repeatChunkIds = if (event.loopMode is LoopMode.Off) emptySet() else it.repeatChunkIds,
                         repeatCheckedOnly = if (event.loopMode is LoopMode.Off) false else it.repeatCheckedOnly,
                         temporaryRepeatChunkId = if (event.loopMode is LoopMode.Off) null else it.temporaryRepeatChunkId,
-                        repeatWholeFile = if (event.loopMode is LoopMode.Off) false else it.repeatWholeFile,
+                        repeatWholeFile = nextRepeatWholeFile,
+                        fileEndAction = if (event.loopMode is LoopMode.Off && it.fileEndAction == FileEndAction.REPEAT_FILE) {
+                            FileEndAction.STOP_AFTER_FILE
+                        } else {
+                            it.fileEndAction
+                        },
                     )
                 }
             }
 
             PlayerEvent.EnableWholeFileRepeat -> {
                 playbackController.updatePractice { current ->
-                    current.copy(repeatWholeFile = true)
+                    current.copy(
+                        repeatWholeFile = true,
+                        fileEndAction = FileEndAction.REPEAT_FILE,
+                    )
+                }
+            }
+
+            is PlayerEvent.SetFileEndAction -> {
+                if (event.action == FileEndAction.SHUFFLE) {
+                    playedShuffleMediaIds.clear()
+                    resolveActiveMediaId()?.let { playedShuffleMediaIds.add(it) }
+                    nextShuffledMediaIdFlow.value = null
+                }
+                playbackController.updatePractice { current ->
+                    current.copy(
+                        fileEndAction = event.action,
+                        repeatWholeFile = event.action == FileEndAction.REPEAT_FILE,
+                    )
                 }
             }
 
@@ -2239,7 +2416,14 @@ class PlayerViewModel @Inject constructor(
                     ?: chunks.firstOrNull()?.id
                 updatePracticeWithCheckedFallback { current ->
                     if (current.repeatWholeFile) {
-                        current.copy(repeatWholeFile = false)
+                        current.copy(
+                            repeatWholeFile = false,
+                            fileEndAction = if (current.fileEndAction == FileEndAction.REPEAT_FILE) {
+                                FileEndAction.STOP_AFTER_FILE
+                            } else {
+                                current.fileEndAction
+                            },
+                        )
                     } else {
                         val isCurrentlyOn = current.loop !is LoopMode.Off || current.repeatCheckedOnly
                         if (isCurrentlyOn) {
@@ -3811,7 +3995,20 @@ class PlayerViewModel @Inject constructor(
 
             PlayerEvent.OpenNextMediaItem -> {
                 val nextId = uiState.value.nextMediaId ?: return
-                open(nextId)
+                open(
+                    mediaId = nextId,
+                    initialChunkId = null,
+                    playlistMediaIds = playlistMediaIdsFlow.value,
+                    autoPlayFromStart = playbackController.status.value.isPlaying,
+                )
+            }
+
+            PlayerEvent.ConsumePendingOpenMedia -> {
+                localUiState.update { it.copy(pendingOpenMediaId = null) }
+            }
+
+            PlayerEvent.ConsumeReturnToLibraryFolder -> {
+                localUiState.update { it.copy(returnToLibraryFolderPath = null) }
             }
 
             PlayerEvent.MarkOverviewWaveformRenderComplete -> {
@@ -4869,6 +5066,8 @@ class PlayerViewModel @Inject constructor(
             baseWaveformChunks = resolvedBaseWaveformChunks,
             waveformRenderGeneration = local.waveformRenderGeneration,
             isChunkBoundaryEditMode = isChunkBoundaryEditMode,
+            pendingOpenMediaId = local.pendingOpenMediaId,
+            returnToLibraryFolderPath = local.returnToLibraryFolderPath,
         )
     }
 

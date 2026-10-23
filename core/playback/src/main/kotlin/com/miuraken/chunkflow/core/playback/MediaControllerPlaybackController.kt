@@ -203,6 +203,14 @@ class MediaControllerPlaybackController(
                     }
                     notifyLookaheadIfChanged(_status.value.mediaId, chunkId)
                 },
+                onFilePlaybackEnded = {
+                    _status.update {
+                        it.copy(
+                            isPlaying = false,
+                            hasReachedFileEnd = true,
+                        )
+                    }
+                },
             )
             chunkScheduler = scheduler
             scheduler.setBaseLanguageSpeed(latestBaseLanguageSpeed)
@@ -342,6 +350,9 @@ class MediaControllerPlaybackController(
         // 保存済みの学習モード（言語フィルタ・チャンク種別）を復元する。
         // 自動ポーズは常に全体設定の再生設定（UserSettings.defaultAutoPause / defaultAutoPauseScope）に従う（ループは常に Off、§7.2.5）。
         // 初回ロード時はチェック状態（repeatChunkIds）が空のため、CHECKED_ONLY が保存されていても ALL にフォールバックする。
+        val currentPractice = practiceController.settings.value
+        val preservedFileEndAction = currentPractice.fileEndAction
+        val preservedRepeatWholeFile = currentPractice.repeatWholeFile
         if (savedState != null) {
             activeChunkSource = savedState.chunkSource
             val restoredFilter = savedState.languageFilter.takeUnless { it == LanguageFilter.CHECKED_ONLY }
@@ -353,6 +364,8 @@ class MediaControllerPlaybackController(
                     autoPauseScope = userSettings.defaultAutoPauseScope,
                     skipOriginalSilence = userSettings.skipOriginalSilence,
                     languageFilter = restoredFilter,
+                    repeatWholeFile = preservedRepeatWholeFile,
+                    fileEndAction = preservedFileEndAction,
                 ),
             )
         } else {
@@ -363,6 +376,8 @@ class MediaControllerPlaybackController(
                     autoPause = userSettings.defaultAutoPause,
                     autoPauseScope = userSettings.defaultAutoPauseScope,
                     skipOriginalSilence = userSettings.skipOriginalSilence,
+                    repeatWholeFile = preservedRepeatWholeFile,
+                    fileEndAction = preservedFileEndAction,
                 ),
             )
         }
@@ -807,6 +822,21 @@ class MediaControllerPlaybackController(
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
                 val mediaId = _status.value.mediaId ?: return
+                if (chunkScheduler == null) {
+                    if (practiceController.settings.value.repeatWholeFile) {
+                        learningPlayerInstance?.let { lp ->
+                            lp.seekTo(0L)
+                            lp.play()
+                        }
+                    } else {
+                        _status.update {
+                            it.copy(
+                                isPlaying = false,
+                                hasReachedFileEnd = true,
+                            )
+                        }
+                    }
+                }
                 scope.launch {
                     checkAndMarkListenedOnEnded(mediaId)
                     persistCurrentPositionNow(mediaId)
@@ -821,6 +851,7 @@ class MediaControllerPlaybackController(
                     isPlaying = isPlaying,
                     currentChunkId = chunkScheduler?.currentChunkId?.value ?: findChunkAt(pos)?.id,
                     autoPauseEndsAtMs = chunkScheduler?.autoPauseEndsAtMs?.value,
+                    hasReachedFileEnd = if (isPlaying) false else it.hasReachedFileEnd,
                 )
             }
             if (isPlaying) {

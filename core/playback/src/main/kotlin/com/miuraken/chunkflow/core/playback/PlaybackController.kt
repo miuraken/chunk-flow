@@ -56,6 +56,7 @@ fun interface PositionProvider {
  * @property speed 再生速度。
  * @property currentChunkId 現在のチャンク。ChunkScheduler がチャンク境界で更新する。
  * @property autoPauseEndsAtMs 自動ポーズが終わる時刻（`elapsedRealtime` 基準）。自動ポーズ中のみ。
+ * @property hasReachedFileEnd ファイルの最後まで再生して停止した状態かどうか（再生開始や別ファイルを開いたときに `false` に戻る）。
  * @property error 再生のエラー。
  */
 data class PlaybackStatus(
@@ -65,6 +66,7 @@ data class PlaybackStatus(
     val speed: Float = 1.0f,
     val currentChunkId: ChunkId? = null,
     val autoPauseEndsAtMs: Long? = null,
+    val hasReachedFileEnd: Boolean = false,
     val error: PlaybackError? = null,
 )
 

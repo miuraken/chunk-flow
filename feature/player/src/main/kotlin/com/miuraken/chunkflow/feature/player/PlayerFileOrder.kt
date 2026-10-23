@@ -42,4 +42,24 @@ internal fun sortedInLibraryFileOrder(items: List<AudioItem>): List<AudioItem> =
     .sortedBy { (_, key) -> key }
     .map { (item, _) -> item }
 
-private fun normalizedFolderPath(course: String?): String? = course?.trim('/')?.takeIf { it.isNotBlank() }
+/**
+ * 再生開始前にライブラリの「ファイル」一覧に表示されていた [playlistMediaIds] がある場合はその順序（現在開いているファイルが
+ * 含まれているとき）を、なければ [current] と同じフォルダにあるファイルを [sortedInLibraryFileOrder] で並べた一覧を返す。
+ */
+internal fun resolveOrderedCandidateItems(
+    current: AudioItem,
+    allItems: List<AudioItem>,
+    playlistMediaIds: List<MediaId> = emptyList(),
+): List<AudioItem> {
+    if (playlistMediaIds.isNotEmpty() && current.id in playlistMediaIds) {
+        val byId = allItems.associateBy { it.id }
+        val resolved = playlistMediaIds.mapNotNull { byId[it] }
+        if (resolved.any { it.id == current.id }) {
+            return resolved
+        }
+    }
+    val folder = normalizedFolderPath(current.course)
+    return sortedInLibraryFileOrder(allItems.filter { normalizedFolderPath(it.course) == folder })
+}
+
+internal fun normalizedFolderPath(course: String?): String? = course?.trim('/')?.takeIf { it.isNotBlank() }

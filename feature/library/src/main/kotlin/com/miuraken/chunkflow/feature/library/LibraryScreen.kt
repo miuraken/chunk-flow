@@ -131,10 +131,24 @@ fun LibraryRoute(
     modifier: Modifier = Modifier,
     onOpenLanguageSettings: () -> Unit = onOpenSettings,
     onOpenPlayerAtChunk: (MediaId, ChunkId) -> Unit = { id, _ -> onOpenPlayer(id) },
+    onOpenPlayerWithPlaylist: (MediaId, List<MediaId>) -> Unit = { id, _ -> onOpenPlayer(id) },
+    onOpenPlayerAtChunkWithPlaylist: (MediaId, ChunkId, List<MediaId>) -> Unit = { id, chunkId, _ ->
+        onOpenPlayerAtChunk(id, chunkId)
+    },
+    openFolderRequestId: Int = 0,
+    folderPathToOpen: String? = null,
+    onFolderRequestHandled: () -> Unit = {},
     onOpenTranscriptExport: (List<MediaId>) -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(openFolderRequestId) {
+        if (openFolderRequestId > 0) {
+            viewModel.onEvent(LibraryEvent.SelectTab(LibraryViewTab.FOLDERS))
+            viewModel.onEvent(LibraryEvent.OpenDirectory(folderPathToOpen))
+            onFolderRequestHandled()
+        }
+    }
     val context = LocalContext.current
     // 案内文は構成の変更（表示言語の切り替えなど）に追従させるため、コンポーズ中に stringResource で取る
     val folderPickerPrompt = stringResource(R.string.library_picker_prompt_folder)
@@ -202,13 +216,15 @@ fun LibraryRoute(
                 }
 
                 is LibraryEvent.OpenItem -> {
+                    val playlistIds = state.displayedFileMediaIdsForPlayback(event.id)
                     viewModel.onEvent(event)
-                    onOpenPlayer(event.id)
+                    onOpenPlayerWithPlaylist(event.id, playlistIds)
                 }
 
                 is LibraryEvent.OpenBookmarkedChunkInPlayer -> {
+                    val playlistIds = state.displayedFileMediaIdsForPlayback(event.mediaId)
                     viewModel.onEvent(event)
-                    onOpenPlayerAtChunk(event.mediaId, event.chunkId)
+                    onOpenPlayerAtChunkWithPlaylist(event.mediaId, event.chunkId, playlistIds)
                 }
 
                 LibraryEvent.OpenSettings -> onOpenSettings()

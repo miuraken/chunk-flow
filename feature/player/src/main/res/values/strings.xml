@@ -325,4 +325,9 @@
     <string name="player_file_settings_stt_action_download_with_size">ダウンロード(%1$d MB)</string>
     <string name="player_file_settings_stt_action_download">ダウンロード</string>
     <string name="player_file_settings_stt_action_delete">削除</string>
+    <string name="player_file_end_action_repeat">このファイルをリピート</string>
+    <string name="player_file_end_action_stop">再生後に停止</string>
+    <string name="player_file_end_action_next">次のファイルに進む</string>
+    <string name="player_file_end_action_shuffle">シャッフル</string>
+    <string name="player_file_end_action_menu_cd">再生終了時の挙動を選択</string>
 </resources>

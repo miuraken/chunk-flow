@@ -195,6 +195,7 @@ private fun LibraryScreenRootWithTagsPreview() {
                     if (folder.languagePair.target.value == "zh") add("中国語")
                     if (number == 1) add("復習")
                     if (folderIndex % 2 == 0) add("シャドーイング")
+                    if (folderIndex == 0 && number == 2) add("旅行")
                 },
             )
         }

@@ -6,6 +6,7 @@ import com.miuraken.chunkflow.core.model.AutoPause
 import com.miuraken.chunkflow.core.model.AutoPauseScope
 import com.miuraken.chunkflow.core.model.ChunkId
 import com.miuraken.chunkflow.core.model.ChunkOrigin
+import com.miuraken.chunkflow.core.model.FileEndAction
 import com.miuraken.chunkflow.core.model.ItemState
 import com.miuraken.chunkflow.core.model.ItemSttOverride
 import com.miuraken.chunkflow.core.model.LanguageFilter
@@ -15,6 +16,7 @@ import com.miuraken.chunkflow.core.model.LibraryCourseFolder
 import com.miuraken.chunkflow.core.model.LibraryFolderKind
 import com.miuraken.chunkflow.core.model.LookaheadTranscriptionStatus
 import com.miuraken.chunkflow.core.model.LoopMode
+import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.PhoneticGuideKind
 import com.miuraken.chunkflow.core.model.SegmentationParams
 import com.miuraken.chunkflow.core.model.SttEngine
@@ -3345,4 +3347,151 @@ class PlayerViewModelTest {
         languagePair = languages,
         sttOverride = sttOverride,
     )
+
+    @Test
+    fun `SetFileEndAction_NEXT_FILE選択時はplaylistMediaIdsの順で次のファイルを自動再生し末尾ファイル終了時はフォルダへ戻る`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val itemA = sample.item.copy(
+            id = MediaId("media-a"),
+            title = "Lesson 1",
+            course = "CourseA",
+        )
+        val itemB = sample.item.copy(
+            id = MediaId("media-b"),
+            title = "Lesson 2",
+            course = "CourseB",
+        )
+        val itemC = sample.item.copy(
+            id = MediaId("media-c"),
+            title = "Lesson 3",
+            course = "CourseA",
+        )
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(itemA, itemB, itemC))
+        val playback = FakePlaybackController()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample.copy(item = itemA))
+            put(sample.copy(item = itemB))
+            put(sample.copy(item = itemC))
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            FakeUserSettingsRepository(),
+            FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // ライブラリの「ファイル」に表示されていた順序（フォルダを跨ぐ itemA -> itemB）を渡して開く
+        val playlistOrder = listOf(itemA.id, itemB.id)
+        viewModel.open(itemA.id, playlistMediaIds = playlistOrder)
+        assertEquals(itemB.id, viewModel.uiState.value.nextMediaId)
+
+        // このファイルをリピート -> 再生後に停止 -> 次のファイルに進む の切り替え確認
+        viewModel.onEvent(PlayerEvent.SetFileEndAction(com.miuraken.chunkflow.core.model.FileEndAction.REPEAT_FILE))
+        assertTrue(viewModel.uiState.value.practice.repeatWholeFile)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.FileEndAction.REPEAT_FILE,
+            viewModel.uiState.value.practice.fileEndAction,
+        )
+
+        viewModel.onEvent(PlayerEvent.SetFileEndAction(com.miuraken.chunkflow.core.model.FileEndAction.STOP_AFTER_FILE))
+        assertFalse(viewModel.uiState.value.practice.repeatWholeFile)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.FileEndAction.STOP_AFTER_FILE,
+            viewModel.uiState.value.practice.fileEndAction,
+        )
+
+        viewModel.onEvent(PlayerEvent.SetFileEndAction(com.miuraken.chunkflow.core.model.FileEndAction.NEXT_FILE))
+        assertFalse(viewModel.uiState.value.practice.repeatWholeFile)
+        assertEquals(
+            com.miuraken.chunkflow.core.model.FileEndAction.NEXT_FILE,
+            viewModel.uiState.value.practice.fileEndAction,
+        )
+
+        // itemA の末尾まで再生完了すると、自動的に itemB を開いて先頭から再生開始する
+        playback.statusState.value = playback.statusState.value.copy(
+            mediaId = itemA.id,
+            isPlaying = false,
+            hasReachedFileEnd = true,
+        )
+        assertEquals(itemB.id, viewModel.uiState.value.mediaId)
+        assertEquals(itemB.id, viewModel.uiState.value.pendingOpenMediaId)
+        assertTrue(playback.status.value.isPlaying)
+        viewModel.onEvent(PlayerEvent.ConsumePendingOpenMedia)
+        assertNull(viewModel.uiState.value.pendingOpenMediaId)
+
+        // itemB は playlistOrder の末尾なので nextMediaId は null。再生完了時は itemB のフォルダ（CourseB）へ戻る
+        assertNull(viewModel.uiState.value.nextMediaId)
+        playback.statusState.value = playback.statusState.value.copy(
+            mediaId = itemB.id,
+            isPlaying = false,
+            hasReachedFileEnd = true,
+        )
+        assertEquals("CourseB", viewModel.uiState.value.returnToLibraryFolderPath)
+        viewModel.onEvent(PlayerEvent.ConsumeReturnToLibraryFolder)
+        assertNull(viewModel.uiState.value.returnToLibraryFolderPath)
+    }
+
+    @Test
+    fun `SetFileEndAction_SHUFFLE選択時はplaylistMediaIds内の未再生ファイルから順番に選び全件再生後はフォルダへ戻る`() = runTest {
+        val sample = SampleMaterials.jaKo
+        val item1 = sample.item.copy(id = MediaId("s-1"), title = "Track 1", course = "ShuffleFolder")
+        val item2 = sample.item.copy(id = MediaId("s-2"), title = "Track 2", course = "ShuffleFolder")
+        val item3 = sample.item.copy(id = MediaId("s-3"), title = "Track 3", course = "ShuffleFolder")
+        val itemOther = sample.item.copy(id = MediaId("s-other"), title = "Other", course = "ShuffleFolder")
+        val libraryRepo = FakeLibraryRepository(initialItems = listOf(item1, item2, item3, itemOther))
+        val playback = FakePlaybackController()
+        val analysisRepo = FakeAnalysisRepository().apply {
+            put(sample.copy(item = item1))
+            put(sample.copy(item = item2))
+            put(sample.copy(item = item3))
+            put(sample.copy(item = itemOther))
+        }
+        val viewModel = PlayerViewModel(
+            libraryRepo,
+            analysisRepo,
+            playback,
+            FakeUserSettingsRepository(),
+            FakeItemSttOverrideRepository(),
+        )
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // ライブラリの「ファイル」に表示されていた 3 件のみをシャッフル対象にする（itemOther は含めない）
+        val playlistOrder = listOf(item1.id, item2.id, item3.id)
+        viewModel.open(item1.id, playlistMediaIds = playlistOrder)
+        viewModel.onEvent(PlayerEvent.SetFileEndAction(com.miuraken.chunkflow.core.model.FileEndAction.SHUFFLE))
+
+        val secondId = viewModel.uiState.value.nextMediaId
+        assertTrue(secondId == item2.id || secondId == item3.id)
+
+        // 1 曲目の再生終了 -> 2 曲目へ自動遷移
+        playback.statusState.value = playback.statusState.value.copy(
+            mediaId = item1.id,
+            isPlaying = false,
+            hasReachedFileEnd = true,
+        )
+        assertEquals(secondId, viewModel.uiState.value.mediaId)
+
+        // 残る未再生は 1 件のみ
+        val expectedThirdId = if (secondId == item2.id) item3.id else item2.id
+        assertEquals(expectedThirdId, viewModel.uiState.value.nextMediaId)
+
+        // 2 曲目の再生終了 -> 3 曲目へ自動遷移
+        playback.statusState.value = playback.statusState.value.copy(
+            mediaId = secondId,
+            isPlaying = false,
+            hasReachedFileEnd = true,
+        )
+        assertEquals(expectedThirdId, viewModel.uiState.value.mediaId)
+        assertNull(viewModel.uiState.value.nextMediaId)
+
+        // 3 曲目の再生終了 -> 未再生ファイルがないためフォルダへ戻る
+        playback.statusState.value = playback.statusState.value.copy(
+            mediaId = expectedThirdId,
+            isPlaying = false,
+            hasReachedFileEnd = true,
+        )
+        assertEquals("ShuffleFolder", viewModel.uiState.value.returnToLibraryFolderPath)
+    }
 }

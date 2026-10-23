@@ -1274,6 +1274,113 @@ object ChunkFlowIcons {
         }
     }
 
+    /** Material `repeat_one` — 1 曲リピート（このファイルをリピート）アイコン。 */
+    val RepeatOne: ImageVector by lazy {
+        materialIcon(name = "RepeatOne") {
+            moveTo(7f, 7f)
+            horizontalLineToRelative(10f)
+            verticalLineToRelative(3f)
+            lineToRelative(4f, -4f)
+            lineToRelative(-4f, -4f)
+            verticalLineToRelative(3f)
+            lineTo(5f, 5f)
+            verticalLineToRelative(6f)
+            horizontalLineToRelative(2f)
+            lineTo(7f, 7f)
+            close()
+            moveTo(17f, 17f)
+            lineTo(7f, 17f)
+            verticalLineToRelative(-3f)
+            lineToRelative(-4f, 4f)
+            lineToRelative(4f, 4f)
+            verticalLineToRelative(-3f)
+            horizontalLineToRelative(12f)
+            verticalLineToRelative(-6f)
+            horizontalLineToRelative(-2f)
+            verticalLineToRelative(4f)
+            close()
+            moveTo(13f, 15f)
+            lineTo(13f, 9f)
+            horizontalLineToRelative(-1f)
+            lineToRelative(-2f, 1f)
+            verticalLineToRelative(1f)
+            horizontalLineToRelative(1.5f)
+            verticalLineToRelative(4f)
+            lineTo(13f, 15f)
+            close()
+        }
+    }
+
+    /** 右端で停止（`→|`、再生後に停止）アイコン。 */
+    val AlignHorizontalRight: ImageVector by lazy {
+        materialIcon(name = "AlignHorizontalRight") {
+            moveTo(19f, 5f)
+            horizontalLineToRelative(2f)
+            verticalLineToRelative(14f)
+            horizontalLineToRelative(-2f)
+            verticalLineTo(5f)
+            close()
+            moveTo(12f, 7f)
+            lineToRelative(-1.41f, 1.41f)
+            lineTo(13.17f, 11f)
+            horizontalLineTo(3f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(10.17f)
+            lineToRelative(-2.58f, 2.59f)
+            lineTo(12f, 17f)
+            lineToRelative(5f, -5f)
+            lineToRelative(-5f, -5f)
+            close()
+        }
+    }
+
+    /** Material `arrow_forward` — 次のファイルに進む（`→`）アイコン。 */
+    val ArrowForward: ImageVector by lazy {
+        materialIcon(name = "ArrowForward") {
+            moveTo(12f, 4f)
+            lineToRelative(-1.41f, 1.41f)
+            lineTo(16.17f, 11f)
+            horizontalLineTo(4f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(12.17f)
+            lineToRelative(-5.58f, 5.59f)
+            lineTo(12f, 20f)
+            lineToRelative(8f, -8f)
+            lineToRelative(-8f, -8f)
+            close()
+        }
+    }
+
+    /** Material `shuffle` — シャッフル再生アイコン。 */
+    val Shuffle: ImageVector by lazy {
+        materialIcon(name = "Shuffle") {
+            moveTo(10.59f, 9.17f)
+            lineTo(5.41f, 4f)
+            lineTo(4f, 5.41f)
+            lineToRelative(5.17f, 5.17f)
+            lineToRelative(1.42f, -1.41f)
+            close()
+            moveTo(14.5f, 4f)
+            lineToRelative(2.04f, 2.04f)
+            lineTo(4f, 18.59f)
+            lineTo(5.41f, 20f)
+            lineTo(17.96f, 7.46f)
+            lineTo(20f, 9.5f)
+            verticalLineTo(4f)
+            horizontalLineToRelative(-5.5f)
+            close()
+            moveTo(14.83f, 13.41f)
+            lineToRelative(-1.41f, 1.41f)
+            lineToRelative(3.13f, 3.13f)
+            lineTo(14.5f, 20f)
+            horizontalLineTo(20f)
+            verticalLineToRelative(-5.5f)
+            lineToRelative(-2.04f, 2.04f)
+            lineToRelative(-3.13f, -3.13f)
+            close()
+        }
+    }
+
     private inline fun materialIcon(
         name: String,
         crossinline block: PathBuilder.() -> Unit,

@@ -86,17 +86,15 @@ fun PlaybackControlStrip(
     onSetSpeed: (Float) -> Unit,
     onOpenSpeedSheet: () -> Unit,
     onToggleRepeat: () -> Unit,
-    onEnableWholeFileRepeat: () -> Unit,
+    onEnableWholeFileRepeat: () -> Unit = {},
     onToggleSkipSilence: () -> Unit,
     onOpenPlaybackSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isNormalSpeed = abs(speed - 1.0f) < 0.01f
     val isCustomSpeedSelected = !isNormalSpeed
-    val isWholeFileRepeat = practice.repeatWholeFile
-    val isRepeatOn = isWholeFileRepeat || practice.loop !is LoopMode.Off || practice.repeatCheckedOnly
+    val isRepeatOn = !practice.repeatWholeFile && (practice.loop !is LoopMode.Off || practice.repeatCheckedOnly)
     val isSkipSilenceOn = practice.skipOriginalSilence
-    var showWholeFileRepeatDialog by remember { mutableStateOf(false) }
 
     SubcomposeLayout(modifier = modifier.fillMaxWidth()) { constraints ->
         val tiers = StripLayoutTier.entries
@@ -110,12 +108,10 @@ fun PlaybackControlStrip(
                     isCustomSpeedSelected = isCustomSpeedSelected,
                     customSpeed = customSpeed,
                     isRepeatOn = isRepeatOn,
-                    isWholeFileRepeat = isWholeFileRepeat,
                     isSkipSilenceOn = isSkipSilenceOn,
                     onSetSpeed = onSetSpeed,
                     onOpenSpeedSheet = onOpenSpeedSheet,
                     onToggleRepeat = onToggleRepeat,
-                    onRequestWholeFileRepeat = { showWholeFileRepeatDialog = true },
                     onToggleSkipSilence = onToggleSkipSilence,
                     onOpenPlaybackSettings = onOpenPlaybackSettings,
                 )
@@ -138,48 +134,18 @@ fun PlaybackControlStrip(
             placeable.placeRelative(x = (width - placeable.width) / 2, y = 0)
         }
     }
-
-    if (showWholeFileRepeatDialog) {
-        AlertDialog(
-            onDismissRequest = { showWholeFileRepeatDialog = false },
-            text = {
-                Text(text = stringResource(R.string.designsystem_playback_whole_file_repeat_confirm_message))
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showWholeFileRepeatDialog = false
-                        onEnableWholeFileRepeat()
-                    },
-                ) {
-                    Text(text = stringResource(R.string.designsystem_playback_whole_file_repeat_yes))
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { showWholeFileRepeatDialog = false },
-                ) {
-                    Text(text = stringResource(R.string.designsystem_playback_whole_file_repeat_no))
-                }
-            },
-        )
-    }
 }
 
 /** [PlaybackControlStrip] のレイアウトの段。先頭から順に試し、1 行に収まる最初の段を使う。 */
 private enum class StripLayoutTier(
     val compact: Boolean,
     val skipSilenceLabel: Boolean,
-    val repeatLabel: Boolean,
 ) {
     /** ラベル付き・通常の余白（広い幅）。 */
-    FULL(compact = false, skipSilenceLabel = true, repeatLabel = true),
+    FULL(compact = false, skipSilenceLabel = true),
 
-    /** 無音スキップをアイコンだけにし、余白と間隔を詰める。 */
-    SKIP_SILENCE_ICON(compact = true, skipSilenceLabel = false, repeatLabel = true),
-
-    /** リピートもアイコンだけにする（最小。入りきらなければ折り返す）。 */
-    ALL_ICONS(compact = true, skipSilenceLabel = false, repeatLabel = false),
+    /** 無音スキップをアイコンだけにし、余白と間隔を詰める（最小。入りきらなければ折り返す）。 */
+    SKIP_SILENCE_ICON(compact = true, skipSilenceLabel = false),
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -190,12 +156,10 @@ private fun StripContent(
     isCustomSpeedSelected: Boolean,
     customSpeed: Float,
     isRepeatOn: Boolean,
-    isWholeFileRepeat: Boolean,
     isSkipSilenceOn: Boolean,
     onSetSpeed: (Float) -> Unit,
     onOpenSpeedSheet: () -> Unit,
     onToggleRepeat: () -> Unit,
-    onRequestWholeFileRepeat: () -> Unit,
     onToggleSkipSilence: () -> Unit,
     onOpenPlaybackSettings: () -> Unit,
 ) {
@@ -231,29 +195,19 @@ private fun StripContent(
             )
         }
 
-        // 2. リピート: [🔁 ▼]（▼ と長押しで「全体リピート」）。通常時はアイコンのみ表示し、「全体リピート」選択時のみ十分な幅があればラベルを併記する
-        val repeatLabel = if (isWholeFileRepeat) {
-            stringResource(R.string.designsystem_playback_chip_repeat_whole_file)
-        } else {
-            stringResource(R.string.designsystem_playback_chip_repeat)
-        }
-        ChunkFlowSplitButton(
-            label = repeatLabel,
-            onClick = onToggleRepeat,
-            checked = isRepeatOn,
-            icon = ChunkFlowIcons.Repeat,
-            showLabel = isWholeFileRepeat && tier.repeatLabel,
-            onLongClick = onRequestWholeFileRepeat,
-            menuItems = listOf(
-                ChunkFlowSplitButtonMenuItem(
-                    label = stringResource(R.string.designsystem_playback_chip_repeat_whole_file),
+        // 2. リピート（選択チャンクのリピートを担当する通常のトグルボタン）
+        val repeatLabel = stringResource(R.string.designsystem_playback_chip_repeat)
+        ChunkFlowToggleButtonGroup(
+            compact = tier.compact,
+            items = listOf(
+                ChunkFlowToggleButtonItem(
+                    label = repeatLabel,
+                    checked = isRepeatOn,
+                    onCheckedChange = { onToggleRepeat() },
                     icon = ChunkFlowIcons.Repeat,
-                    checked = isWholeFileRepeat,
-                    onClick = onRequestWholeFileRepeat,
+                    showLabel = false,
                 ),
             ),
-            menuContentDescription = stringResource(R.string.designsystem_playback_repeat_menu_cd),
-            compact = tier.compact,
         )
 
         // 3. 無音スキップ（トグル）。狭い幅ではアイコンだけにし、ラベルは contentDescription で補う

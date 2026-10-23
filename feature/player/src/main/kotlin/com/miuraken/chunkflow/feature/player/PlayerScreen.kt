@@ -25,8 +25,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChipDefaults
@@ -89,6 +91,7 @@ import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
 import com.miuraken.chunkflow.core.designsystem.theme.chunkFlowExtendedColors
 import com.miuraken.chunkflow.core.model.AnalysisStage
 import com.miuraken.chunkflow.core.model.ChunkId
+import com.miuraken.chunkflow.core.model.FileEndAction
 import com.miuraken.chunkflow.core.model.LoopMode
 import com.miuraken.chunkflow.core.model.MediaId
 import com.miuraken.chunkflow.core.model.StageStatus
@@ -106,15 +109,17 @@ fun PlayerRoute(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     initialChunkId: ChunkId? = null,
+    playlistMediaIds: List<MediaId> = emptyList(),
     onOpenMediaItem: (MediaId) -> Unit = {},
+    onReturnToLibraryFolder: (String?) -> Unit = { onBack() },
     onOpenPlaybackSettings: () -> Unit = {},
     onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
     onOpenTranscriptExport: (MediaId) -> Unit = {},
     showBackButton: Boolean = true,
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
-    LaunchedEffect(mediaId, initialChunkId) {
-        viewModel.open(mediaId, initialChunkId)
+    LaunchedEffect(mediaId, initialChunkId, playlistMediaIds) {
+        viewModel.open(mediaId, initialChunkId, playlistMediaIds)
     }
     DisposableEffect(mediaId) {
         onDispose {
@@ -123,6 +128,20 @@ fun PlayerRoute(
     }
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(state.pendingOpenMediaId) {
+        val pendingId = state.pendingOpenMediaId
+        if (pendingId != null) {
+            viewModel.onEvent(PlayerEvent.ConsumePendingOpenMedia)
+            onOpenMediaItem(pendingId)
+        }
+    }
+    LaunchedEffect(state.returnToLibraryFolderPath) {
+        val folderPath = state.returnToLibraryFolderPath
+        if (folderPath != null) {
+            viewModel.onEvent(PlayerEvent.ConsumeReturnToLibraryFolder)
+            onReturnToLibraryFolder(folderPath.takeIf { it.isNotEmpty() })
+        }
+    }
     var hasRecordAudioPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
@@ -360,10 +379,10 @@ fun PlayerScreen(
                     }
                 },
                 actions = {
-                    PlayerTranscriptionStatusBadge(
-                        state = state,
-                        onToggleTranscription = { enabled ->
-                            onEvent(PlayerEvent.SetLookaheadEnabled(enabled))
+                    PlayerFileEndActionButton(
+                        fileEndAction = state.practice.fileEndAction,
+                        onSelectAction = { action ->
+                            onEvent(PlayerEvent.SetFileEndAction(action))
                         },
                     )
                     IconButton(onClick = { showResegmentSheet = true }) {
@@ -843,14 +862,183 @@ private fun FloatingTransportContent(
 }
 
 /**
- * 再生画面 TopAppBar の設定アイコン左に表示する文字起こし進捗バッジ。
+ * 再生画面 TopAppBar の設定アイコン左に表示する再生終了時の挙動選択プルダウン。
+ *
+ * - このファイルをリピート（[FileEndAction.REPEAT_FILE]）
+ * - 再生後に停止（[FileEndAction.STOP_AFTER_FILE]）
+ * - 次のファイルに進む（[FileEndAction.NEXT_FILE]）
+ * - シャッフル（[FileEndAction.SHUFFLE]）
+ */
+@Composable
+private fun PlayerFileEndActionButton(
+    fileEndAction: FileEndAction,
+    onSelectAction: (FileEndAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val repeatLabel = stringResource(R.string.player_file_end_action_repeat)
+    val stopLabel = stringResource(R.string.player_file_end_action_stop)
+    val nextLabel = stringResource(R.string.player_file_end_action_next)
+    val shuffleLabel = stringResource(R.string.player_file_end_action_shuffle)
+    val menuCd = stringResource(R.string.player_file_end_action_menu_cd)
+
+    val activeIcon = when (fileEndAction) {
+        FileEndAction.REPEAT_FILE -> ChunkFlowIcons.RepeatOne
+        FileEndAction.STOP_AFTER_FILE -> ChunkFlowIcons.AlignHorizontalRight
+        FileEndAction.NEXT_FILE -> ChunkFlowIcons.ArrowForward
+        FileEndAction.SHUFFLE -> ChunkFlowIcons.Shuffle
+    }
+    val activeLabel = when (fileEndAction) {
+        FileEndAction.REPEAT_FILE -> repeatLabel
+        FileEndAction.STOP_AFTER_FILE -> stopLabel
+        FileEndAction.NEXT_FILE -> nextLabel
+        FileEndAction.SHUFFLE -> shuffleLabel
+    }
+
+    val leadingShape = RoundedCornerShape(
+        topStart = 16.dp,
+        bottomStart = 16.dp,
+        topEnd = 4.dp,
+        bottomEnd = 4.dp,
+    )
+    val trailingShape = RoundedCornerShape(
+        topStart = 4.dp,
+        bottomStart = 4.dp,
+        topEnd = 16.dp,
+        bottomEnd = 16.dp,
+    )
+    val buttonContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    val buttonContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box(modifier = modifier) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                shape = leadingShape,
+                color = buttonContainerColor,
+                contentColor = buttonContentColor,
+                modifier = Modifier
+                    .height(32.dp)
+                    .clip(leadingShape)
+                    .clickable { expanded = true }
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = activeLabel
+                    },
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                ) {
+                    Icon(
+                        imageVector = activeIcon,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            Surface(
+                shape = trailingShape,
+                color = buttonContainerColor,
+                contentColor = buttonContentColor,
+                modifier = Modifier
+                    .height(32.dp)
+                    .clip(trailingShape)
+                    .clickable { expanded = true }
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = menuCd
+                    },
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 6.dp),
+                ) {
+                    Icon(
+                        imageVector = ChunkFlowIcons.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .widthIn(min = 200.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val options = listOf(
+                    Triple(FileEndAction.REPEAT_FILE, ChunkFlowIcons.RepeatOne, repeatLabel),
+                    Triple(FileEndAction.STOP_AFTER_FILE, ChunkFlowIcons.AlignHorizontalRight, stopLabel),
+                    Triple(FileEndAction.NEXT_FILE, ChunkFlowIcons.ArrowForward, nextLabel),
+                    Triple(FileEndAction.SHUFFLE, ChunkFlowIcons.Shuffle, shuffleLabel),
+                )
+                for ((action, icon, label) in options) {
+                    val selected = fileEndAction == action
+                    val pillColor = if (selected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    }
+                    val pillContentColor = if (selected) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = pillColor,
+                        contentColor = pillContentColor,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 40.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                expanded = false
+                                onSelectAction(action)
+                            },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * チャンクリスト上部の右端（ブックマークボタンのすぐ左）に表示する文字起こし進捗バッジ。
  *
  * - 全チャンクの文字起こしが完了している場合は、ライブラリ画面と同様に緑丸＋白抜きの文字起こしアイコンを表示する。
  * - 未完了の場合は `{文字起こしアイコン}{スピナー（実行中のみ）}{進捗率%}` をトグルバッジとして表示し、タップでオン（再開）/ オフ（一時停止）を切り替えられる。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PlayerTranscriptionStatusBadge(
+internal fun PlayerTranscriptionStatusBadge(
     state: PlayerUiState,
     onToggleTranscription: (Boolean) -> Unit,
     modifier: Modifier = Modifier,

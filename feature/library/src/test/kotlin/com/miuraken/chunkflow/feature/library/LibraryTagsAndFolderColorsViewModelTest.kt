@@ -131,6 +131,66 @@ class LibraryTagsAndFolderColorsViewModelTest {
     }
 
     @Test
+    fun `tagsSortedByItemCount_現在表示中のフォルダおよび言語設定内のアイテムにあるタグのみ表示する`() = runTest {
+        val ko1 = item("ko1", course = "韓国語講座/Unit1", target = "ko")
+        val ko2 = item("ko2", course = "韓国語講座/Unit2", target = "ko")
+        val en1 = item("en1", course = "英語ニュース", target = "en")
+        val zh1 = item("zh1", course = "中国語会話", target = "zh")
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(ko1, ko2, en1, zh1),
+            initialItemTags = mapOf(
+                ko1.id to listOf("基礎", "復習"),
+                ko2.id to listOf("基礎"),
+                en1.id to listOf("ニュース", "復習"),
+                zh1.id to listOf("旅行"),
+            ),
+        )
+        val viewModel = LibraryViewModel(repo, FakePlaybackController())
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        // ホームディレクトリ・すべての言語のときは全アイテムのタグが表示される（基礎:2, 復習:2, ニュース:1, 旅行:1）
+        assertEquals(
+            listOf("基礎", "復習", "ニュース", "旅行"),
+            viewModel.uiState.value.tagsSortedByItemCount,
+        )
+
+        // 「韓国語講座」フォルダに入ると、そのフォルダ配下のアイテムにあるタグ（基礎, 復習）のみ表示される
+        viewModel.onEvent(LibraryEvent.OpenDirectory("韓国語講座"))
+        assertEquals(
+            listOf("基礎", "復習"),
+            viewModel.uiState.value.tagsSortedByItemCount,
+        )
+
+        // サブフォルダ「韓国語講座/Unit2」に入ると、Unit2 内のアイテムにあるタグ（基礎）のみ表示される
+        viewModel.onEvent(LibraryEvent.OpenDirectory("韓国語講座/Unit2"))
+        assertEquals(
+            listOf("基礎"),
+            viewModel.uiState.value.tagsSortedByItemCount,
+        )
+
+        // ホームディレクトリに戻ると再び全タグが表示される
+        viewModel.onEvent(LibraryEvent.ResetToFoldersRoot)
+        assertEquals(
+            listOf("基礎", "復習", "ニュース", "旅行"),
+            viewModel.uiState.value.tagsSortedByItemCount,
+        )
+
+        // 言語フィルタを「en」に設定すると、英語アイテムにあるタグ（復習, ニュース）のみ表示される
+        viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(LanguageTag("en")))
+        assertEquals(
+            listOf("復習", "ニュース"),
+            viewModel.uiState.value.tagsSortedByItemCount,
+        )
+
+        // 「ニュース」タグを選択した状態で言語フィルタを「zh」に切り替えると、zh に存在しない「ニュース」絞り込みは解除され「旅行」のみ表示される
+        viewModel.onEvent(LibraryEvent.ToggleFileTagFilter("ニュース"))
+        assertEquals(setOf("ニュース"), viewModel.uiState.value.fileTagFilter)
+        viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(LanguageTag("zh")))
+        assertEquals(listOf("旅行"), viewModel.uiState.value.tagsSortedByItemCount)
+        assertTrue(viewModel.uiState.value.fileTagFilter.isEmpty())
+    }
+
+    @Test
     fun `selectedTargetTagCounts_選んだファイルとフォルダの中のファイルのタグごとの件数`() = runTest {
         val a = item("a", course = "講座A")
         val b = item("b", course = "講座A")
