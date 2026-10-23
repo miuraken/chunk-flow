@@ -16,6 +16,10 @@ import androidx.navigation3.runtime.NavKey
 // そのため、ポップは次の 2 つを守る。
 // - ルート（一番下）の 1 件は消さない。
 // - 画面の「戻る」ボタンは、その画面のエントリーが一番上にあるときだけ消す。
+//
+// 画面を開くボタンも、再構成の前に 2 回押されることがある（ボタンのダブルタップ。2 回目は、
+// プッシュのアニメーションの間に、消えていく元の画面のボタンに届くことがある）。同じ画面が 2 枚
+// 積まれて「戻る」が 2 回必要にならないよう、一番上と同じキーは積まない。
 
 /**
  * システムの「戻る」（NavDisplay の onBack）で、一番上のエントリーを 1 件取り除く。
@@ -47,6 +51,22 @@ internal fun <T : Any> MutableList<T>.popUnlessRoot(): Boolean {
 internal fun <T : Any> MutableList<T>.popIfTop(key: T): Boolean {
     if (lastOrNull() != key) return false
     return popUnlessRoot()
+}
+
+/**
+ * [key] の画面を開く（一番上に積む）。一番上がすでに同じキー（等しさで比べる）のときは積まない。
+ *
+ * 画面を開くボタンが再構成の前に 2 回押されたとき（ダブルタップなど）に、同じ画面が 2 枚積まれて
+ * 「戻る」が 2 回必要になるのを防ぐ。内容の違うキー（たとえば別のタブを開く [SettingsKey]）は積む。
+ * プレイヤーは [openPlayer] で開く。
+ *
+ * @param key 開く画面のキー。
+ * @return 積んだら true、一番上が同じキーで積まなかったら false。
+ */
+internal fun <T : Any> MutableList<T>.pushIfNotTop(key: T): Boolean {
+    if (lastOrNull() == key) return false
+    add(key)
+    return true
 }
 
 /**

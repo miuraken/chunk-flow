@@ -44,6 +44,8 @@ import com.miuraken.chunkflow.feature.settings.SettingsTab
  * 「戻る」が再構成の前に 2 回届いてもバックスタックが空にならないよう（空になると NavDisplay が
  * 例外で落ちる）、システムの「戻る」は [popUnlessRoot]（ルートの [LibraryKey] は消さない）、
  * 画面の「戻る」ボタンは [popIfTop]（自分のエントリーが一番上のときだけ消す）で取り除く。
+ * 画面を開くボタンが再構成の前に 2 回押されても同じ画面が 2 枚積まれないよう、画面は
+ * [pushIfNotTop]（一番上と同じキーは積まない。プレイヤーは [openPlayer]）で積む。
  */
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
@@ -78,13 +80,13 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                             PlayerKey(mediaId = id.value, initialChunkId = chunkId.value),
                         )
                     },
-                    onOpenSettings = { backStack.add(SettingsKey()) },
+                    onOpenSettings = { backStack.pushIfNotTop(SettingsKey()) },
                     onOpenLanguageSettings = {
-                        backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
+                        backStack.pushIfNotTop(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
                     },
                     onOpenTranscriptExport = { ids ->
                         if (ids.isNotEmpty()) {
-                            backStack.add(TranscriptExportKey(mediaIds = ids.map { it.value }))
+                            backStack.pushIfNotTop(TranscriptExportKey(mediaIds = ids.map { it.value }))
                         }
                     },
                 )
@@ -96,12 +98,12 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                     mediaId = MediaId(key.mediaId),
                     initialChunkId = key.initialChunkId?.let { ChunkId(it) },
                     onBack = { backStack.popIfTop(key) },
-                    onOpenPlaybackSettings = { backStack.add(SettingsKey()) },
+                    onOpenPlaybackSettings = { backStack.pushIfNotTop(SettingsKey()) },
                     onOpenLanguageSettings = {
-                        backStack.add(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
+                        backStack.pushIfNotTop(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
                     },
                     onOpenTranscriptExport = { id ->
-                        backStack.add(TranscriptExportKey(mediaIds = listOf(id.value)))
+                        backStack.pushIfNotTop(TranscriptExportKey(mediaIds = listOf(id.value)))
                     },
                 )
             }

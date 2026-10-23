@@ -8,11 +8,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * 画面遷移のバックスタックの操作（[popUnlessRoot]、[popIfTop]、[openPlayer]）のテスト。
+ * 画面遷移のバックスタックの操作（[popUnlessRoot]、[popIfTop]、[pushIfNotTop]、[openPlayer]）のテスト。
  *
  * 「戻る」が再構成の前に 2 回届いたとき（戻る矢印のダブルタップ、ポップ中に消えていく画面のタップ、
  * 同じフレームでのシステムの「戻る」2 回）に、ルートの [LibraryKey] まで消えて NavDisplay が
  * IllegalArgumentException（NavDisplay backstack cannot be empty）で落ちないことを確かめる。
+ * あわせて、画面を開くボタンのダブルタップで同じ画面が 2 枚積まれないことを確かめる。
  */
 class BackStackOperationsTest {
 
@@ -137,6 +138,66 @@ class BackStackOperationsTest {
     }
 
     @Test
+    fun `pushIfNotTop_一番上が別のキーのとき_積む`() {
+        val backStack = mutableListOf<NavKey>(LibraryKey)
+
+        assertTrue(backStack.pushIfNotTop(settings))
+        assertEquals(listOf<NavKey>(LibraryKey, settings), backStack)
+    }
+
+    @Test
+    fun `pushIfNotTop_歯車をダブルタップしたとき_設定は1件だけ積まれる`() {
+        val backStack = mutableListOf<NavKey>(LibraryKey)
+
+        assertTrue(backStack.pushIfNotTop(SettingsKey()))
+        assertFalse(backStack.pushIfNotTop(SettingsKey()))
+        assertEquals(listOf<NavKey>(LibraryKey, SettingsKey()), backStack)
+    }
+
+    @Test
+    fun `pushIfNotTop_ダブルタップで開いたあと戻る1回で_元の画面に戻る`() {
+        // プレイヤーの再生設定ボタンをダブルタップ → 設定の戻る矢印 1 回でプレイヤーに戻る
+        val backStack = mutableListOf<NavKey>(LibraryKey, playerA)
+        backStack.pushIfNotTop(SettingsKey())
+        backStack.pushIfNotTop(SettingsKey())
+
+        assertTrue(backStack.popIfTop(SettingsKey()))
+        assertEquals(listOf<NavKey>(LibraryKey, playerA), backStack)
+    }
+
+    @Test
+    fun `pushIfNotTop_内容が違うキーのとき_積む`() {
+        // 再生のタブの設定の上に、言語のタブの設定を開く
+        val backStack = mutableListOf<NavKey>(LibraryKey, SettingsKey(initialTab = 0))
+
+        assertTrue(backStack.pushIfNotTop(SettingsKey(initialTab = 3)))
+        assertEquals(
+            listOf<NavKey>(LibraryKey, SettingsKey(initialTab = 0), SettingsKey(initialTab = 3)),
+            backStack,
+        )
+    }
+
+    @Test
+    fun `pushIfNotTop_文字起こしエクスポートを2回開いたとき_1件だけ積まれる`() {
+        // TranscriptExportKey は教材 ID のリストの等しさで比べる（別のインスタンスでも同じキー）
+        val backStack = mutableListOf<NavKey>(LibraryKey)
+        val first = TranscriptExportKey(mediaIds = listOf("media-a", "media-b"))
+        val second = TranscriptExportKey(mediaIds = listOf("media-a", "media-b"))
+
+        assertTrue(backStack.pushIfNotTop(first))
+        assertFalse(backStack.pushIfNotTop(second))
+        assertEquals(listOf<NavKey>(LibraryKey, first), backStack)
+    }
+
+    @Test
+    fun `pushIfNotTop_同じキーが一番上ではなく下にあるとき_積む`() {
+        val backStack = mutableListOf<NavKey>(LibraryKey, settings, playerA)
+
+        assertTrue(backStack.pushIfNotTop(settings))
+        assertEquals(listOf<NavKey>(LibraryKey, settings, playerA, settings), backStack)
+    }
+
+    @Test
     fun `openPlayer_一番上がプレイヤーでないとき_積む`() {
         val backStack = mutableListOf<NavKey>(LibraryKey)
 
@@ -182,5 +243,14 @@ class BackStackOperationsTest {
         assertFalse(backStack.popUnlessRoot())
         assertFalse(backStack.popIfTop(playerA))
         assertEquals(listOf<NavKey>(LibraryKey), backStack.toList())
+    }
+
+    @Test
+    fun `NavBackStack_歯車をダブルタップしたとき_設定は1件だけ積まれる`() {
+        val backStack = NavBackStack<NavKey>(LibraryKey)
+
+        assertTrue(backStack.pushIfNotTop(SettingsKey()))
+        assertFalse(backStack.pushIfNotTop(SettingsKey()))
+        assertEquals(listOf<NavKey>(LibraryKey, SettingsKey()), backStack.toList())
     }
 }
