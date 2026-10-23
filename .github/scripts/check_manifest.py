@@ -52,10 +52,13 @@ SYSTEM_PERMISSION_PROTECTED_ALLOWED = {
     ("service", "androidx.work.impl.background.systemjob.SystemJobService", "android.permission.BIND_JOB_SERVICE"),
 }
 
-# デバッグビルドにだけ入る、Compose のプレビューを端末で表示するための Activity（ui-tooling。debugImplementation）。
-# Android Studio の「プレビューを端末で実行」に使う。リリースビルドには入らないことを、リリースのマニフェストで確かめる（ADR 0004）。
+# デバッグビルドにだけ入る、Compose のプレビューを端末で表示するための Activity（ui-tooling。debugImplementation）
+# および端末内 LID / STT 実機計測用の Activity（core/media/src/debug/AndroidManifest.xml、android.permission.DUMP 保護）。
+# リリースビルドには入らないことを、リリースのマニフェストで確かめる（ADR 0004）。
 DEBUG_ONLY_ALLOWED_EXPORTED = {
     ("activity", "androidx.compose.ui.tooling.PreviewActivity"),
+    ("activity", "com.miuraken.chunkflow.core.media.bench.LidBenchActivity"),
+    ("activity", "com.miuraken.chunkflow.core.media.bench.SttBenchActivity"),
 }
 
 COMPONENT_TAGS = ("activity", "activity-alias", "service", "receiver", "provider")
