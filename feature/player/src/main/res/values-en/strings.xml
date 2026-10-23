@@ -275,7 +275,8 @@
     <string name="player_next_chunk_long_press_tooltip">Long-press to jump to the next checked chunk / next file</string>
     <string name="player_play_pause_long_press_tooltip">Long-press to show / hide the floating controls</string>
     <string name="player_transcription_progress_close_cd">Close transcription progress</string>
-    <string name="player_missing_language_hint">If you cannot find the language you want, add it from Global Settings &gt; Languages.</string>
+    <!-- %1$s is replaced with the "⚙ Global Settings (Languages)" link (player_open_global_settings) -->
+    <string name="player_missing_language_hint_with_link">If the language you want is not listed, add it from %1$s.</string>
     <string name="player_resegment_reset_button">Reset chunk segmentation &amp; transcripts</string>
     <string name="player_resegment_reset_caption">Transcripts will also be cleared</string>
     <string name="player_target_lang_change_confirm_title">Change target language?</string>

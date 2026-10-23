@@ -171,11 +171,12 @@ internal fun ResegmentSheetContent(
 
         when (selectedTabIndex) {
             0 -> {
-                // 「言語」タブ: 学習言語、ベース言語とそれぞれの文字起こしエンジン
+                // 「言語」タブ: 学習言語とベース言語。言語が選択肢にないときは、案内文の「⚙ 全体設定（言語）」のリンクから開く
                 ItemLanguageSettingsSection(
                     languagePair = languagePair,
                     itemSttOverride = itemSttOverride,
                     onChangeLanguages = onChangeLanguages,
+                    onOpenLanguageSettings = onOpenGlobalSettings,
                     onChangeTargetEngine = onChangeTargetEngine,
                     onChangeBaseEngine = onChangeBaseEngine,
                     enabledLanguages = enabledLanguages,
@@ -184,21 +185,6 @@ internal fun ResegmentSheetContent(
                     languageModelInfos = languageModelInfos,
                     showSectionTitle = false,
                 )
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                OutlinedButton(
-                    onClick = onOpenGlobalSettings,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(
-                        imageVector = ChunkFlowIcons.Settings,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = stringResource(R.string.player_open_global_settings))
-                }
             }
 
             1 -> {

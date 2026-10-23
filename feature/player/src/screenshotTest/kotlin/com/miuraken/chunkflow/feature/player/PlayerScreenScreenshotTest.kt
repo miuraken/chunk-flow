@@ -196,6 +196,44 @@ fun PlayerScreenTranscriptionProgressScreenshot() {
 }
 
 /**
+ * ファイルの設定の「言語」タブ: 学習言語とベース言語のプルダウンの下に、言語が選択肢にないときの案内文を出し、
+ * 文中の「⚙ 全体設定（言語）」をリンクにする（ライブラリのシートと同じ部品。ボタンと区切り線はない）。
+ */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun PlayerFileSettingsLanguageTabScreenshot() {
+    ChunkFlowTheme {
+        Surface {
+            ResegmentSheetContent(
+                initialParams = SegmentationParams(),
+                useGlobalSegmentation = true,
+                languagePair = LanguagePair(target = LanguageTag("ko"), base = LanguageTag("ja")),
+                itemSttOverride = ItemSttOverride.NONE,
+                sttEngineByLanguage = emptyMap(),
+                languageModelInfos = emptyMap(),
+                enabledLanguages = listOf(LanguageTag("ja"), LanguageTag("en"), LanguageTag("ko")),
+                onChangeLanguages = {},
+                onChangeTargetEngine = {},
+                onChangeBaseEngine = {},
+                transcriptOffsetMs = 0,
+                onAdjustTranscriptOffset = {},
+                onAutoAlignTranscriptOffset = {},
+                onImportTranscript = {},
+                onExportTranscript = {},
+                onResetTranscripts = {},
+                onOpenDiagnostics = {},
+                onToggleUseGlobalSegmentation = {},
+                onApply = {},
+                onOpenGlobalSettings = {},
+                onClose = {},
+                initialTabIndex = 0,
+            )
+        }
+    }
+}
+
+/**
  * ファイルの設定の「文字起こし」タブ: 内包するフォルダの設定が学習対象言語のエンジンを上書きしているので、
  * チェックボックスと学習対象言語のアコーディオンが「フォルダー設定に従う」になる（ベース言語は「全体設定に従う」）。
  */
