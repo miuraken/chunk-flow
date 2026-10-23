@@ -15,7 +15,12 @@ import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
 import androidx.compose.material3.adaptive.navigation3.ListDetailSceneStrategy
 import androidx.compose.material3.adaptive.navigation3.rememberListDetailSceneStrategy
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -57,6 +62,8 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
             .copy(horizontalPartitionSpacerSize = 0.dp)
     }
     val listDetailStrategy = rememberListDetailSceneStrategy<NavKey>(directive = directive)
+    var openFolderRequestId by rememberSaveable { mutableIntStateOf(0) }
+    var folderPathToOpen by rememberSaveable { mutableStateOf<String?>(null) }
 
     NavDisplay(
         backStack = backStack,
@@ -80,6 +87,26 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                             PlayerKey(mediaId = id.value, initialChunkId = chunkId.value),
                         )
                     },
+                    onOpenPlayerWithPlaylist = { id, playlistIds ->
+                        backStack.openPlayer(
+                            PlayerKey(
+                                mediaId = id.value,
+                                playlistMediaIds = playlistIds.map { it.value },
+                            ),
+                        )
+                    },
+                    onOpenPlayerAtChunkWithPlaylist = { id, chunkId, playlistIds ->
+                        backStack.openPlayer(
+                            PlayerKey(
+                                mediaId = id.value,
+                                initialChunkId = chunkId.value,
+                                playlistMediaIds = playlistIds.map { it.value },
+                            ),
+                        )
+                    },
+                    openFolderRequestId = openFolderRequestId,
+                    folderPathToOpen = folderPathToOpen,
+                    onFolderRequestHandled = { openFolderRequestId = 0 },
                     onOpenSettings = { backStack.pushIfNotTop(SettingsKey()) },
                     onOpenLanguageSettings = {
                         backStack.pushIfNotTop(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
@@ -97,7 +124,13 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                 PlayerRoute(
                     mediaId = MediaId(key.mediaId),
                     initialChunkId = key.initialChunkId?.let { ChunkId(it) },
+                    playlistMediaIds = key.playlistMediaIds.map { MediaId(it) },
                     onBack = { backStack.popIfTop(key) },
+                    onReturnToLibraryFolder = { folderPath ->
+                        folderPathToOpen = folderPath
+                        openFolderRequestId += 1
+                        backStack.popIfTop(key)
+                    },
                     onOpenPlaybackSettings = { backStack.pushIfNotTop(SettingsKey()) },
                     onOpenLanguageSettings = {
                         backStack.pushIfNotTop(SettingsKey(initialTab = SettingsTab.LANGUAGE.ordinal))
@@ -106,7 +139,12 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                         backStack.pushIfNotTop(TranscriptExportKey(mediaIds = listOf(id.value)))
                     },
                     onOpenMediaItem = { id ->
-                        backStack.openPlayer(PlayerKey(mediaId = id.value))
+                        backStack.openPlayer(
+                            PlayerKey(
+                                mediaId = id.value,
+                                playlistMediaIds = key.playlistMediaIds,
+                            ),
+                        )
                     },
                     showBackButton = directive.maxHorizontalPartitions < 2,
                 )

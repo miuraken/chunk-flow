@@ -15,11 +15,13 @@ data object LibraryKey : NavKey
  *
  * @property mediaId 開く教材の [com.miuraken.chunkflow.core.model.MediaId] の値。
  * @property initialChunkId 開いた直後に移動するチャンクの [com.miuraken.chunkflow.core.model.ChunkId] の値（指定時は一時停止状態でそのチャンクへ移動する）。
+ * @property playlistMediaIds 再生開始前にライブラリの「ファイル」一覧に表示されていた教材 ID の順序（次のファイル・シャッフルの対象）。
  */
 @Serializable
 data class PlayerKey(
     val mediaId: String,
     val initialChunkId: Long? = null,
+    val playlistMediaIds: List<String> = emptyList(),
 ) : NavKey
 
 /**

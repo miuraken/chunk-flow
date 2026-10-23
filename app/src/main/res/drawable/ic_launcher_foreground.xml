@@ -1,11 +1,41 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 雛形のアイコン（波形のバー）。デザインは ui が作り直す。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M34,46h6v16h-6z M44,38h6v32h-6z M54,30h6v48h-6z M64,42h6v24h-6z M74,48h6v12h-6z" />
+    android:viewportWidth="432"
+    android:viewportHeight="432">
+  <path
+      android:strokeWidth="1"
+      android:pathData="M72,72h288v288h-288z"
+      android:fillColor="#fff"
+      android:strokeColor="#b3b3b3"/>
+  <path
+      android:strokeWidth="1"
+      android:pathData="M216,216m-132,0a132,132 0,1 1,264 0a132,132 0,1 1,-264 0"
+      android:fillColor="#fff"
+      android:strokeColor="#b3b3b3"/>
+  <path
+      android:pathData="M216,216.33m-130,0a130,130 0,1 1,260 0a130,130 0,1 1,-260 0"
+      android:strokeWidth="5"
+      android:fillColor="#afd3c4"
+      android:strokeColor="#260000"/>
+  <path
+      android:pathData="M125.5,166L131.49,166A12,12 0,0 1,143.49 178L143.49,254A12,12 0,0 1,131.49 266L125.5,266A12,12 0,0 1,113.5 254L113.5,178A12,12 0,0 1,125.5 166z"
+      android:fillColor="#1037c6"/>
+  <path
+      android:pathData="M294.65,166.33L300.64,166.33A12,12 0,0 1,312.64 178.33L312.64,254.33A12,12 0,0 1,300.64 266.33L294.65,266.33A12,12 0,0 1,282.65 254.33L282.65,178.33A12,12 0,0 1,294.65 166.33z"
+      android:fillColor="#c1272d"/>
+  <path
+      android:pathData="M171.63,136.33L177.62,136.33A12,12 0,0 1,189.62 148.33L189.62,284.33A12,12 0,0 1,177.62 296.33L171.63,296.33A12,12 0,0 1,159.63 284.33L159.63,148.33A12,12 0,0 1,171.63 136.33z"
+      android:fillColor="#1037c6"/>
+  <path
+      android:pathData="M253.26,136.33L259.25,136.33A12,12 0,0 1,271.25 148.33L271.25,284.33A12,12 0,0 1,259.25 296.33L253.26,296.33A12,12 0,0 1,241.26 284.33L241.26,148.33A12,12 0,0 1,253.26 136.33z"
+      android:fillColor="#c1272d"/>
+  <path
+      android:pathData="M198.33,177.5c-4.79,-2.7 -8.71,-0.41 -8.71,5.09v67.47c0,5.5 3.92,7.79 8.71,5.09l60.09,-33.91c4.79,-2.7 4.79,-7.13 0,-9.83l-60.09,-33.91Z"
+      android:fillColor="#f2a040"/>
+  <path
+      android:pathData="M198.33,177.5c-4.79,-2.7 -8.71,-0.41 -8.71,5.09v67.47c0,5.5 3.92,7.79 8.71,5.09l60.09,-33.91c4.79,-2.7 4.79,-7.13 0,-9.83l-60.09,-33.91Z"
+      android:strokeWidth="7"
+      android:fillColor="#00000000"
+      android:strokeColor="#260000"/>
 </vector>
