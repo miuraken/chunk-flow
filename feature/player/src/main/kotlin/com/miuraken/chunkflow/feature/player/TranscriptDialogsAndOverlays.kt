@@ -468,20 +468,9 @@ internal fun DetailedChunkTranscriptionDialog(
             if (dialogState.recognizedEngineId != null) {
                 val langText = (dialogState.recognizedLanguage ?: selectedLanguage).value
                     .lowercase(JavaLocale.ROOT)
-                val friendlyEngineName = when (dialogState.recognizedEngineId) {
-                    "mlkit-genai-speech" -> stringResource(R.string.player_detailed_transcribe_engine_mlkit)
-                    "android-on-device-speech", "android-speech-recognizer" -> stringResource(R.string.player_detailed_transcribe_engine_os)
-                    "sherpa-onnx-whisper-tiny" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa)
-                    "sherpa-onnx-sense-voice-small" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa_sense_voice)
-                    "sherpa-onnx-whisper-base" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa_whisper_base)
-                    "sherpa-onnx-whisper-small" -> stringResource(R.string.player_detailed_transcribe_engine_sherpa_whisper_small)
-                    "moonshine-onnx-tiny" -> stringResource(R.string.player_detailed_transcribe_engine_moonshine_tiny)
-                    "moonshine-onnx-base" -> stringResource(R.string.player_detailed_transcribe_engine_moonshine_base)
-                    "openai-compatible-stt" -> stringResource(R.string.player_detailed_transcribe_engine_openai_api)
-                    "groq-stt" -> stringResource(R.string.player_detailed_transcribe_engine_groq_api)
-                    "gemini-stt" -> stringResource(R.string.player_detailed_transcribe_engine_gemini_api)
-                    else -> dialogState.recognizedEngineId
-                }
+                // クラウドのエンジンは ID にモデル名が入るので前方一致で名前を決める（知らない ID はそのまま出す）
+                val engineId = dialogState.recognizedEngineId
+                val friendlyEngineName = transcriptEngineLabelRes(engineId)?.let { stringResource(it) } ?: engineId
                 Text(
                     text = stringResource(
                         R.string.player_detailed_transcribe_result_meta,

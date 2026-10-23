@@ -55,7 +55,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
 import com.miuraken.chunkflow.core.designsystem.component.feedback.ChunkFlowSnackbarHost
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -255,7 +258,12 @@ fun LibraryScreen(
         (isOnFoldersOrFilesTab && state.currentDirectoryPath != null) ||
         (state.selectedTab == LibraryViewTab.PLAYLISTS && state.activePlaylist != null)
 
-    BackHandler(enabled = canNavigateBack) {
+    // 画面の遷移のアニメーション中は「戻る」を受け取らない（NavDisplay は遷移中のエントリーを STARTED までに抑えるので、
+    // RESUMED のときだけ有効にする）。プレイヤーへのプッシュの途中でシステムの「戻る」を押すと、消えていくライブラリが
+    // 先に受け取ってフォルダだけが 1 つ上に戻り、プレイヤーが残ってしまうため。
+    // ポップでライブラリに戻るアニメーションの間はフォルダを上がれないが、それは許容する。
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    BackHandler(enabled = canNavigateBack && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
         if (!state.isSelectionMode && isSearchOpen) {
             if (state.fileSearchQuery.isNotEmpty()) {
                 onEvent(LibraryEvent.UpdateFileSearchQuery(""))
