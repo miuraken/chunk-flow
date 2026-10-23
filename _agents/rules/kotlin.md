@@ -5,7 +5,7 @@ globs: "*.kt,*.kts"
 
 # Kotlin の規約（Chunk Flow）
 
-- スタイルは Kotlin の公式スタイル。整形は Spotless + ktlint に任せ、`./gradlew :<module>:spotlessApply` で直してからコミットする。
+- スタイルは Kotlin の公式スタイル。整形は Spotless + ktlint に任せ、`./gradlew spotlessApply` で直してからコミットする（Spotless はルートのプロジェクトにだけ設定してあり、`:<module>:spotlessApply` というタスクは無い）。
 - `!!` を使わない。null になり得る値は型で表し、呼び出し側で扱う。
 - 例外を UI まで投げない。失敗は `sealed interface` の結果型やエラー種別（`AnalysisError`、`ImportError` など。設計書 §6）で返す。`Throwable` を UiState に入れない。
 - コルーチン: `GlobalScope` を使わない。Dispatcher は DI で注入する（`Dispatchers.IO` などを直接書かない）。キャンセルを握りつぶさない（`CancellationException` を捕まえたら投げ直す）。
