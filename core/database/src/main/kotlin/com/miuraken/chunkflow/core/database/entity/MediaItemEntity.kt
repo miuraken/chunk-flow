@@ -13,7 +13,8 @@ import com.miuraken.chunkflow.core.model.MediaId
 /**
  * 取り込んだ教材のメタデータ（§6.4 `media_item` テーブル、ADR 0008）。
  *
- * `sha256` には一意インデックスを張り、重複取り込みの検出と文字起こしファイルの対応付けに使う。
+ * `sha256` には一意インデックスを張り、重複取り込みの検出と文字起こしファイルとの対応付けに使う。
+ * `display_name` は元のファイル名（SAF の `DISPLAY_NAME`）で、ファイル名順の並びに使う（ADR 0015）。
  */
 @Entity(
     tableName = "media_item",
@@ -57,6 +58,8 @@ data class MediaItemEntity(
     val localFilePath: String? = null,
     @ColumnInfo(name = "storage_state", defaultValue = "'APP_MANAGED'")
     val storageState: String = AudioStorageState.APP_MANAGED.name,
+    @ColumnInfo(name = "display_name")
+    val displayName: String? = null,
 )
 
 /** [MediaItemEntity] をドメインモデルの [AudioItem] に変換する。 */
@@ -78,6 +81,7 @@ fun MediaItemEntity.toExternalModel(): AudioItem = AudioItem(
     localFilePath = localFilePath,
     storageState = AudioStorageState.entries.firstOrNull { it.name == storageState }
         ?: AudioStorageState.APP_MANAGED,
+    displayName = displayName,
 )
 
 /** ドメインモデルの [AudioItem] を [MediaItemEntity] に変換する。 */
@@ -103,4 +107,5 @@ fun AudioItem.toEntity(
     sourceUri = sourceUri,
     localFilePath = localFilePath,
     storageState = storageState.name,
+    displayName = displayName,
 )
