@@ -3,6 +3,7 @@ package com.miuraken.chunkflow.core.designsystem
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import com.android.tools.screenshot.PreviewTest
+import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithSettingsLinkPreview
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowFloatingToolbarPreview
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowPlayPauseButtonPreview
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowProgressIndicatorsPreview
@@ -67,6 +68,11 @@ fun SpeedSheetContentScreenshot() = SpeedSheetContentPreview()
 @ChunkFlowPreviews
 @Composable
 fun LanguageRoleBadgeScreenshot() = LanguageRoleBadgePreview()
+
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun MissingLanguageHintWithSettingsLinkScreenshot() = MissingLanguageHintWithSettingsLinkPreview()
 
 // ---- Expressive ラッパー（Phase B） ----
 
