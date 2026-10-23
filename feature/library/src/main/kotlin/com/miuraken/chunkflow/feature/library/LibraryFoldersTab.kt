@@ -27,9 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,10 +79,8 @@ internal fun LibraryFoldersTabContent(
     val currentFolderPath = state.currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
     val isSearchActive = state.fileSearchQuery.trim().isNotEmpty()
     val showSearchBox = isSearchExpanded || state.fileSearchQuery.isNotEmpty()
-    val showSortControl = currentFolderPath != null || isSearchActive || currentFiles.isNotEmpty()
     val displayTags = state.tagsSortedByItemCount
     var languageMenuExpanded by remember { mutableStateOf(false) }
-    var sortMenuExpanded by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
     val activeFilterCode = state.fileTargetLanguageFilter?.value?.lowercase(Locale.ROOT)
     val allLanguagesLabel = stringResource(R.string.library_files_filter_all_languages)
@@ -94,22 +90,6 @@ internal fun LibraryFoldersTabContent(
         if (isSearchExpanded) {
             runCatching { searchFocusRequester.requestFocus() }
         }
-    }
-
-    @Composable
-    fun sortOptionLabel(option: LibraryFileSortOption, ascending: Boolean): String {
-        val optionName = stringResource(
-            when (option) {
-                LibraryFileSortOption.NAME -> R.string.library_files_sort_name
-                LibraryFileSortOption.ACCESS_TIME -> R.string.library_files_sort_access_time
-                LibraryFileSortOption.ADDED_TIME -> R.string.library_files_sort_added_time
-                LibraryFileSortOption.COMPLETION -> R.string.library_files_sort_completion
-            },
-        )
-        val orderName = stringResource(
-            if (ascending) R.string.library_files_sort_asc else R.string.library_files_sort_desc,
-        )
-        return stringResource(R.string.library_files_sort_option_format, optionName, orderName)
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -155,7 +135,7 @@ internal fun LibraryFoldersTabContent(
             )
         }
 
-        // 言語絞り込み ＆ 並び替え行（ルートのフォルダだけのビューでは並び替えは非表示）
+        // 言語の絞り込みの行（並びは常にファイル名の昇順なので、並び替えのメニューはない）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -228,60 +208,6 @@ internal fun LibraryFoldersTabContent(
                                         },
                                     )
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            if (showSortControl) {
-                Box {
-                    Surface(
-                        onClick = { sortMenuExpanded = true },
-                        modifier = Modifier.height(38.dp),
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(start = 12.dp, end = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                text = sortOptionLabel(state.fileSortOption, state.fileSortAscending),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = sortMenuExpanded)
-                        }
-                    }
-                    DropdownMenu(
-                        expanded = sortMenuExpanded,
-                        onDismissRequest = { sortMenuExpanded = false },
-                        shape = MaterialTheme.shapes.medium,
-                    ) {
-                        LibraryFileSortOption.entries.forEach { option ->
-                            listOf(true, false).forEach { ascending ->
-                                val itemLabel = sortOptionLabel(option, ascending)
-                                val isSelected = state.fileSortOption == option &&
-                                    state.fileSortAscending == ascending
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = itemLabel,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        )
-                                    },
-                                    onClick = {
-                                        sortMenuExpanded = false
-                                        onEvent(LibraryEvent.SelectFileSortOption(option, ascending))
-                                    },
-                                )
                             }
                         }
                     }
@@ -575,6 +501,43 @@ internal fun LibraryFoldersTabContent(
                 }
             }
         }
+    }
+}
+
+/** 言語の絞り込みのメニューの中の、言語を 1 つ選ぶチップ。 */
+@Composable
+private fun LanguageFilterPillChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = CircleShape,
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        border = if (selected) {
+            null
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        },
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+        )
     }
 }
 

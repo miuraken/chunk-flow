@@ -1110,7 +1110,7 @@ class LibraryViewModelTest {
     }
 
     @Test
-    fun `複数プレイリスト作成と選択ファイルのプレイリスト追加_およびプレイリストとアイテムとファイルタブのドラッグ並び替えが動作する`() = runTest {
+    fun `複数プレイリスト作成と選択ファイルのプレイリスト追加_およびプレイリストとアイテムのドラッグ並び替えが動作し_ファイルタブはファイル名順のまま`() = runTest {
         val base = SampleMaterials.jaKo.item
         val item1 = base.copy(
             id = com.miuraken.chunkflow.core.model.MediaId("item-1"),
@@ -1192,18 +1192,18 @@ class LibraryViewModelTest {
             viewModel.uiState.value.playlistEntries.map { it.id },
         )
 
-        // 6. ファイルタブでのドラッグ並び替え（Lesson 1, Lesson 2, Lesson 3 -> Lesson 3 を先頭へ移動）
+        // 6. ファイルタブはファイル名の昇順のまま（以前の版で手で並べ替えた順が保存されていても使わない）
         assertEquals(
             listOf(item1.id, item2.id, item3.id),
             viewModel.uiState.value.filteredAllFiles.map { it.item.id },
         )
-        viewModel.onEvent(LibraryEvent.MoveFileTabItem(fromIndex = 2, toIndex = 0))
+        repo.reorderAllFiles(listOf(item3.id, item1.id, item2.id))
         assertEquals(
-            listOf(item3.id, item1.id, item2.id),
+            listOf(item1.id, item2.id, item3.id),
             viewModel.uiState.value.filteredAllFiles.map { it.item.id },
         )
 
-        // 7. ViewModel を再生成しても並び順がすべて保持されている
+        // 7. ViewModel を再生成してもプレイリストの並び順は保持され、ファイルはファイル名の昇順のまま
         val recreated = LibraryViewModel(repo, FakePlaybackController())
         backgroundScope.launch(testDispatcher) { recreated.uiState.collect() }
         assertEquals(
@@ -1217,28 +1217,31 @@ class LibraryViewModelTest {
             recreated.uiState.value.playlistEntries.map { it.id },
         )
         assertEquals(
-            listOf(item3.id, item1.id, item2.id),
+            listOf(item1.id, item2.id, item3.id),
             recreated.uiState.value.filteredAllFiles.map { it.item.id },
         )
     }
 
     @Test
-    fun `ファイルビューのソート_名称順とアクセス日時順と完了度順で並び替えられる`() = runTest {
+    fun `ファイルビューの並び_アクセス日時や完了度や追加日時にかかわらず常にファイル名の自然順になる`() = runTest {
         val base = SampleMaterials.jaKo.item
         val itemA = base.copy(
             id = com.miuraken.chunkflow.core.model.MediaId("item-a"),
             title = "Lesson 1",
             durationMs = 100_000L,
+            importedAtEpochMs = 3_000L,
         )
         val itemB = base.copy(
             id = com.miuraken.chunkflow.core.model.MediaId("item-b"),
             title = "Lesson 2",
             durationMs = 100_000L,
+            importedAtEpochMs = 1_000L,
         )
         val itemC = base.copy(
             id = com.miuraken.chunkflow.core.model.MediaId("item-c"),
             title = "Lesson 10",
             durationMs = 100_000L,
+            importedAtEpochMs = 2_000L,
         )
         val states = mapOf(
             itemA.id to ItemState(
@@ -1252,6 +1255,7 @@ class LibraryViewModelTest {
                 positionMs = 90_000L,
                 maxPositionMs = 90_000L,
                 updatedAtEpochMs = 500L,
+                isListened = true,
             ),
             itemC.id to ItemState(
                 mediaId = itemC.id,
@@ -1267,25 +1271,82 @@ class LibraryViewModelTest {
         val viewModel = LibraryViewModel(repo, FakePlaybackController())
         backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
 
-        // 1. デフォルトは名称順（自然順: Lesson 1, Lesson 2, Lesson 10）
-        assertEquals(LibraryFileSortOption.NAME, viewModel.uiState.value.fileSortOption)
-        assertEquals(
-            listOf(itemA.id, itemB.id, itemC.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
+        // 自然順（Lesson 1, Lesson 2, Lesson 10）。最終アクセス・完了度・追加日時の順には並ばない
+        val expected = listOf(itemA.id, itemB.id, itemC.id)
+        assertEquals(expected, viewModel.uiState.value.filteredAllFiles.map { it.item.id })
+        assertEquals(expected, viewModel.uiState.value.directories.single().items.map { it.item.id })
 
-        // 2. アクセス日時順（新しい順: itemB(500L), itemC(300L), itemA(100L)）
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ACCESS_TIME))
-        assertEquals(
-            listOf(itemB.id, itemC.id, itemA.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
+        // 検索・言語の絞り込みをしても、残ったファイルは同じ順のまま
+        viewModel.onEvent(LibraryEvent.UpdateFileSearchQuery("Lesson"))
+        viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(base.languagePair.target))
+        assertEquals(expected, viewModel.uiState.value.filteredAllFiles.map { it.item.id })
+    }
 
-        // 3. 完了度順（高い順: itemB(90%), itemC(60%), itemA(30%)）
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.COMPLETION))
+    @Test
+    fun `ファイルの並び_タイトルではなくファイル名の昇順で並び手で並べ替えた順は使わない`() = runTest {
+        val base = SampleMaterials.jaKo.item
+        val folder = "SortCourse"
+        // タイトル（音声のタグの曲名）の順は ファイル名の順の逆になっている
+        val first = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("sort-first"),
+            title = "Zeta",
+            course = folder,
+            sourceUri = "content://com.android.externalstorage.documents/tree/primary%3AMusic%2FSortCourse" +
+                "/document/primary%3AMusic%2FSortCourse%2FTrack%201.mp3",
+            localFilePath = "/storage/emulated/0/Music/SortCourse/Track 1.mp3",
+        )
+        val second = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("sort-second"),
+            title = "Epsilon",
+            course = folder,
+            sourceUri = "content://com.android.externalstorage.documents/tree/primary%3AMusic%2FSortCourse" +
+                "/document/primary%3AMusic%2FSortCourse%2FTrack%202.mp3",
+        )
+        val third = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("sort-third"),
+            title = "Beta",
+            course = folder,
+            localFilePath = "/storage/emulated/0/Music/SortCourse/track 3.m4a",
+        )
+        val tenth = base.copy(
+            id = com.miuraken.chunkflow.core.model.MediaId("sort-tenth"),
+            title = "Alpha",
+            course = folder,
+            localFilePath = "/storage/emulated/0/Music/SortCourse/Track 10.mp3",
+        )
+        val repo = FakeLibraryRepository(
+            initialItems = listOf(tenth, third, second, first),
+            // 以前の版で手で並べ替えた順（タイトル順）が保存されている
+            initialItemStates = mapOf(
+                tenth.id to ItemState(mediaId = tenth.id, fileSortOrder = 0),
+                third.id to ItemState(mediaId = third.id, fileSortOrder = 1),
+                second.id to ItemState(mediaId = second.id, fileSortOrder = 2),
+                first.id to ItemState(mediaId = first.id, fileSortOrder = 3),
+            ),
+        )
+        val analysis = FakeAnalysisRepository()
+        val viewModel = LibraryViewModel(repo, FakePlaybackController(), analysis)
+        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
+
+        val expected = listOf(first.id, second.id, third.id, tenth.id)
+
+        // ルートのフォルダの行の中身
         assertEquals(
-            listOf(itemB.id, itemC.id, itemA.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
+            expected,
+            viewModel.uiState.value.currentDirectories.single().items.map { it.item.id },
+        )
+        // フォルダの中
+        viewModel.onEvent(LibraryEvent.OpenDirectory(folder))
+        assertEquals(expected, viewModel.uiState.value.currentFiles.map { it.item.id })
+        // 検索の結果（タイトルにない語でもファイル名で当たる。フォルダごとの並び）
+        viewModel.onEvent(LibraryEvent.UpdateFileSearchQuery("track"))
+        assertEquals(expected, viewModel.uiState.value.filteredAllFiles.map { it.item.id })
+        // お気に入り（手で並べ替えていないとき）
+        repo.toggleFavorite(tenth.id)
+        repo.toggleFavorite(first.id)
+        assertEquals(
+            listOf(first.id, tenth.id),
+            viewModel.uiState.value.playlistItemsFor(LibraryPlaylistCategory.FAVORITES).map { it.item.id },
         )
     }
 
@@ -1607,84 +1668,6 @@ class LibraryViewModelTest {
         viewModel.onEvent(LibraryEvent.RequestEditDirectoryMetadata("仮想フォルダB"))
         assertEquals("仮想フォルダB", viewModel.uiState.value.pendingEditDirectory?.currentCourse)
         assertEquals(false, viewModel.uiState.value.pendingEditDirectory?.isRealFolder)
-    }
-
-    @Test
-    fun `ファイルタブのソート_追加日時と昇順降順すべてで正しく並び替えられる`() = runTest {
-        val baseItem = SampleMaterials.jaKo.item
-        val itemA = baseItem.copy(
-            id = com.miuraken.chunkflow.core.model.MediaId("sort-a"),
-            title = "Lesson 1",
-            importedAtEpochMs = 1_000L,
-        )
-        val itemB = baseItem.copy(
-            id = com.miuraken.chunkflow.core.model.MediaId("sort-b"),
-            title = "Lesson 2",
-            importedAtEpochMs = 3_000L,
-        )
-        val itemC = baseItem.copy(
-            id = com.miuraken.chunkflow.core.model.MediaId("sort-c"),
-            title = "Lesson 10",
-            importedAtEpochMs = 2_000L,
-        )
-        val repo = FakeLibraryRepository(
-            initialItems = listOf(itemA, itemB, itemC),
-            initialItemStates = mapOf(
-                itemA.id to ItemState(mediaId = itemA.id, positionMs = 5_000L, updatedAtEpochMs = 200L),
-                itemB.id to ItemState(mediaId = itemB.id, positionMs = 25_000L, updatedAtEpochMs = 100L),
-                itemC.id to ItemState(mediaId = itemC.id, positionMs = 15_000L, updatedAtEpochMs = 300L),
-            ),
-        )
-        val viewModel = LibraryViewModel(repo, FakePlaybackController())
-        backgroundScope.launch(testDispatcher) { viewModel.uiState.collect() }
-
-        // 名称順（昇順・降順）
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.NAME, ascending = true))
-        assertEquals(
-            listOf(itemA.id, itemB.id, itemC.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.NAME, ascending = false))
-        assertEquals(
-            listOf(itemC.id, itemB.id, itemA.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
-
-        // 追加日時（昇順・降順）
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ADDED_TIME, ascending = true))
-        assertEquals(
-            listOf(itemA.id, itemC.id, itemB.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ADDED_TIME, ascending = false))
-        assertEquals(
-            listOf(itemB.id, itemC.id, itemA.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
-
-        // アクセス日時（昇順・降順）
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ACCESS_TIME, ascending = true))
-        assertEquals(
-            listOf(itemB.id, itemA.id, itemC.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.ACCESS_TIME, ascending = false))
-        assertEquals(
-            listOf(itemC.id, itemA.id, itemB.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
-
-        // 完了度（昇順・降順）
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.COMPLETION, ascending = true))
-        assertEquals(
-            listOf(itemA.id, itemC.id, itemB.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
-        viewModel.onEvent(LibraryEvent.SelectFileSortOption(LibraryFileSortOption.COMPLETION, ascending = false))
-        assertEquals(
-            listOf(itemB.id, itemC.id, itemA.id),
-            viewModel.uiState.value.filteredAllFiles.map { it.item.id },
-        )
     }
 
     @Test
@@ -2068,7 +2051,7 @@ class LibraryViewModelTest {
     }
 
     @Test
-    fun `フォルダタブ統合_言語とタグの絞り込みとフォルダ内ソートおよびタグ件数順ソートが反映される`() = runTest {
+    fun `フォルダタブ統合_言語とタグの絞り込みとフォルダ内のファイル名順およびタグ件数順ソートが反映される`() = runTest {
         val base = SampleMaterials.jaKo.item
         val enPair = LanguagePair(target = LanguageTag("en"), base = LanguageTag("ja"))
         val zhPair = LanguagePair(target = LanguageTag("zh"), base = LanguageTag("ja"))
@@ -2112,21 +2095,11 @@ class LibraryViewModelTest {
             viewModel.uiState.value.currentDirectories.map { it.name },
         )
 
-        // 3. 言語フィルタを解除して EnglishCourse に入り、名称降順ソートを適用すると currentFiles がソートされる
+        // 3. 言語フィルタを解除して EnglishCourse に入ると、currentFiles はファイル名の昇順に並ぶ
         viewModel.onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null))
         viewModel.onEvent(LibraryEvent.OpenDirectory("EnglishCourse"))
         assertEquals(
             listOf(item1.id, item2.id),
-            viewModel.uiState.value.currentFiles.map { it.item.id },
-        )
-        viewModel.onEvent(
-            LibraryEvent.SelectFileSortOption(
-                sortOption = LibraryFileSortOption.NAME,
-                ascending = false,
-            ),
-        )
-        assertEquals(
-            listOf(item2.id, item1.id),
             viewModel.uiState.value.currentFiles.map { it.item.id },
         )
 

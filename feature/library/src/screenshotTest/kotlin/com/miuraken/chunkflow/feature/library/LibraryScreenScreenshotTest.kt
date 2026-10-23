@@ -204,7 +204,6 @@ fun LibraryScreenFilesTabScreenshot() {
             state = LibraryUiState(
                 items = items,
                 selectedTab = LibraryViewTab.FILES,
-                fileSortOption = LibraryFileSortOption.ACCESS_TIME,
             ),
             onEvent = {},
         )
