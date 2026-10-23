@@ -44,6 +44,24 @@ interface MediaItemDao {
     @Query("UPDATE media_item SET transcript_offset_ms = :offsetMs WHERE id = :id")
     suspend fun updateTranscriptOffset(id: String, offsetMs: Int)
 
+    /**
+     * 元のファイル名（`display_name`）を更新する（ADR 0015）。
+     *
+     * @return 更新した行の数（教材がなければ 0）。
+     */
+    @Query("UPDATE media_item SET display_name = :displayName WHERE id = :id")
+    suspend fun updateDisplayName(id: String, displayName: String?): Int
+
+    /**
+     * 元のファイル名（`display_name`）をまだ持っていない教材のうち、元のファイルを参照しているもの
+     * （`source_uri` か `local_file_path` があるもの）を返す。古い版で取り込んだ教材の補完に使う（ADR 0015）。
+     */
+    @Query(
+        "SELECT * FROM media_item WHERE display_name IS NULL " +
+            "AND (source_uri IS NOT NULL OR local_file_path IS NOT NULL) ORDER BY imported_at ASC, id ASC",
+    )
+    suspend fun getItemsMissingDisplayName(): List<MediaItemEntity>
+
     /** 教材の言語ペアを更新する（§7.4.6）。 */
     @Query("UPDATE media_item SET target_lang = :targetLang, base_lang = :baseLang WHERE id = :id")
     suspend fun updateLanguagePair(id: String, targetLang: String, baseLang: String?)

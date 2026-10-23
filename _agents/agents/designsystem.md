@@ -27,7 +27,7 @@ commandExecutionPolicy: auto
 
 # 確認の手順
 
-1. `./gradlew :core:designsystem:spotlessApply :core:designsystem:lint :core:designsystem:testDebugUnitTest < /dev/null`
+1. `./gradlew spotlessApply :core:designsystem:lint :core:designsystem:testDebugUnitTest < /dev/null`（Spotless はルートのタスクだけ）
 2. `./gradlew :core:designsystem:validateDebugScreenshotTest < /dev/null`（見た目を変えたときは `updateDebugScreenshotTest` で基準画像を作り直し、差分画像を報告に添える。`NotificationTimeoutSeconds` を必ず指定し、`BUILD SUCCESSFUL` / `BUILD FAILED` 後にタスクが残っていれば `manage_task` で終了させる）
 3. 部品を使う feature がある場合は、`./gradlew :feature:<name>:validateDebugScreenshotTest < /dev/null` も実行し、意図しない差分がないことを確かめる（feature の基準画像は ui が更新する）。
 4. 報告に、追加・変更した部品の一覧、引数、プレビュー画像、ui への依頼（置き換え箇所）を書く。
