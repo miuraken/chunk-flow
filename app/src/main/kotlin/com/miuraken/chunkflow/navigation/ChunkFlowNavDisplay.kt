@@ -105,6 +105,9 @@ fun ChunkFlowNavDisplay(modifier: Modifier = Modifier) {
                     onOpenTranscriptExport = { id ->
                         backStack.pushIfNotTop(TranscriptExportKey(mediaIds = listOf(id.value)))
                     },
+                    onOpenMediaItem = { id ->
+                        backStack.openPlayer(PlayerKey(mediaId = id.value))
+                    },
                     showBackButton = directive.maxHorizontalPartitions < 2,
                 )
             }

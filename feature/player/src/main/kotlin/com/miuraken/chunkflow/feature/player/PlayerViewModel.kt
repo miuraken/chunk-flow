@@ -42,6 +42,7 @@ import com.miuraken.chunkflow.core.model.TranscriptExportFormat
 import com.miuraken.chunkflow.core.model.UserSettings
 import com.miuraken.chunkflow.core.model.Waveform
 import com.miuraken.chunkflow.core.model.WordTiming
+import com.miuraken.chunkflow.core.model.sortableFileName
 import com.miuraken.chunkflow.core.playback.PlaybackController
 import com.miuraken.chunkflow.core.playback.PlaybackError
 import com.miuraken.chunkflow.core.playback.PlaybackStatus
@@ -818,6 +819,7 @@ data class PlayerUiState(
     val languageModelInfos: Map<LanguageTag, OnDeviceLanguageModelInfo> = emptyMap(),
     val enabledLanguages: List<LanguageTag> = UserSettings.DEFAULT_ENABLED_LANGUAGES.toList(),
     val nextMediaId: MediaId? = null,
+    val nextMediaTitle: String? = null,
     val backgroundSpeechRecognizerWarning: BackgroundSpeechRecognizerWarningState? = null,
     val isLanguageFilterFallbackHighlighted: Boolean = false,
     val isTranscriptionBadgeTooltipVisible: Boolean = false,
@@ -1537,6 +1539,7 @@ class PlayerViewModel @Inject constructor(
         val folderSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride =
             com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
         val nextMediaId: MediaId? = null,
+        val nextMediaTitle: String? = null,
     )
 
     private val mediaAndAnalysisFlow = currentMediaId.flatMapLatest { id ->
@@ -1549,21 +1552,21 @@ class PlayerViewModel @Inject constructor(
                 libraryRepository.observeCourseFolders(),
             ) { item, allItems, courseFolders ->
                 // 同じフォルダの、ライブラリと同じ並び（ファイル名の昇順）で次のファイル
-                val nextId = item?.let { nextMediaIdInSameFolder(it, allItems) }
+                val nextItem = item?.let { nextMediaItemInSameFolder(it, allItems) }
                 // 内包するフォルダの音声認識エンジンの上書き（近いフォルダを言語ごとに優先。ファイル個別設定は含まない）
                 val folderOverride = if (item == null) {
                     com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
                 } else {
                     LibraryCourseFolder.resolveSttOverride(item.course, item.languagePair, courseFolders)
                 }
-                Triple(item, nextId, folderOverride)
+                Triple(item, nextItem, folderOverride)
             }
             combine(
                 itemAndNextFlow,
                 libraryRepository.observeItemState(id),
                 observeAnalysisSnapshot(id),
                 itemSttOverrideRepository.observe(id),
-            ) { (item, nextMediaId, folderOverride), itemState, analysis, override ->
+            ) { (item, nextItem, folderOverride), itemState, analysis, override ->
                 MediaStateInfo(
                     mediaId = id,
                     item = item,
@@ -1571,7 +1574,8 @@ class PlayerViewModel @Inject constructor(
                     analysis = analysis,
                     itemSttOverride = override,
                     folderSttOverride = folderOverride,
-                    nextMediaId = nextMediaId,
+                    nextMediaId = nextItem?.id,
+                    nextMediaTitle = nextItem?.let { it.title.ifBlank { it.sortableFileName() } },
                 )
             }
         }
@@ -1602,6 +1606,7 @@ class PlayerViewModel @Inject constructor(
             itemSttOverride = override,
             folderSttOverride = mediaState.folderSttOverride,
             nextMediaId = mediaState.nextMediaId,
+            nextMediaTitle = mediaState.nextMediaTitle,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -2079,12 +2084,15 @@ class PlayerViewModel @Inject constructor(
                 completedZoomedSignaturesByMedia.remove(targetId)
             }
         }
-        lookaheadLoopJob?.cancel()
-        lookaheadLoopJob = null
-        stopTranslationLoop()
-        stopDetailedChunkPreview(pausePlayer = false)
-        chunkSeekPrioritizeJob?.cancel()
-        chunkSeekPrioritizeJob = null
+        val isStillCurrentMedia = targetId == null || currentMediaId.value == targetId
+        if (isStillCurrentMedia) {
+            lookaheadLoopJob?.cancel()
+            lookaheadLoopJob = null
+            stopTranslationLoop()
+            stopDetailedChunkPreview(pausePlayer = false)
+            chunkSeekPrioritizeJob?.cancel()
+            chunkSeekPrioritizeJob = null
+        }
         if (targetId != null) {
             analysisRepository.setMediaTranscriptionSessionOpen(targetId, false)
         }
@@ -4424,10 +4432,15 @@ class PlayerViewModel @Inject constructor(
         val matchingChunk = uiState.value.chunks.firstOrNull { clampedMs >= it.startMs && clampedMs < it.endMs }
             ?: uiState.value.chunks.firstOrNull { clampedMs in it.startMs..it.endMs }
             ?: uiState.value.chunks.lastOrNull { it.startMs <= clampedMs }
+            ?: uiState.value.chunks.firstOrNull { !it.isSkipped }
+            ?: uiState.value.chunks.firstOrNull()
         if (playbackController is FakePlaybackController) {
             playbackController.position.positionMs = clampedMs
-            if (matchingChunk != null) {
-                playbackController.statusState.update { it.copy(currentChunkId = matchingChunk.id) }
+            playbackController.statusState.update {
+                it.copy(
+                    currentChunkId = matchingChunk?.id,
+                    autoPauseEndsAtMs = null,
+                )
             }
         }
         val id = resolveActiveMediaId()
@@ -4535,14 +4548,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun seekToFileStart() {
-        requestAutoFollowResume()
-        val firstChunk = uiState.value.chunks.firstOrNull { !it.isSkipped }
-            ?: uiState.value.chunks.firstOrNull()
-        if (firstChunk != null) {
-            seekToChunk(firstChunk.id)
-        } else {
-            seekTo(0L)
-        }
+        seekTo(0L)
     }
 
     private fun moveChunkBoundaryPreservingSelection(
@@ -4676,6 +4682,7 @@ class PlayerViewModel @Inject constructor(
         itemSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride,
         folderSttOverride: com.miuraken.chunkflow.core.model.ItemSttOverride = com.miuraken.chunkflow.core.model.ItemSttOverride.NONE,
         nextMediaId: MediaId? = null,
+        nextMediaTitle: String? = null,
     ): PlayerUiState {
         val requestedMediaId = currentMediaId.value
         val resolvedMediaId = if (requestedMediaId != null) {
@@ -4852,6 +4859,7 @@ class PlayerViewModel @Inject constructor(
             languageModelInfos = local.languageModelInfos,
             enabledLanguages = settings.enabledLanguages.toList(),
             nextMediaId = nextMediaId,
+            nextMediaTitle = nextMediaTitle,
             backgroundSpeechRecognizerWarning = local.backgroundSpeechRecognizerWarning,
             isLanguageFilterFallbackHighlighted = local.isLanguageFilterFallbackHighlighted,
             isTranscriptionBadgeTooltipVisible = local.isTranscriptionBadgeTooltipVisible,

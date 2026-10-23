@@ -44,8 +44,10 @@ class PlayerFileOrderTest {
         val other = item("other", title = "Beta", course = "Other", localFilePath = "/storage/emulated/0/Music/Other/Track 3.mp3")
         val all = listOf(t10, other, t2, t1)
 
+        assertEquals(t2, nextMediaItemInSameFolder(t1, all))
         assertEquals(t2.id, nextMediaIdInSameFolder(t1, all))
         assertEquals(t10.id, nextMediaIdInSameFolder(t2, all))
+        assertNull(nextMediaItemInSameFolder(t10, all))
         assertNull(nextMediaIdInSameFolder(t10, all))
         // ほかのフォルダのファイルには進まない
         assertNull(nextMediaIdInSameFolder(other, all))

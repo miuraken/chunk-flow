@@ -106,6 +106,7 @@ fun PlayerRoute(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     initialChunkId: ChunkId? = null,
+    onOpenMediaItem: (MediaId) -> Unit = {},
     onOpenPlaybackSettings: () -> Unit = {},
     onOpenLanguageSettings: () -> Unit = onOpenPlaybackSettings,
     onOpenTranscriptExport: (MediaId) -> Unit = {},
@@ -115,9 +116,9 @@ fun PlayerRoute(
     LaunchedEffect(mediaId, initialChunkId) {
         viewModel.open(mediaId, initialChunkId)
     }
-    DisposableEffect(Unit) {
+    DisposableEffect(mediaId) {
         onDispose {
-            viewModel.close()
+            viewModel.close(mediaId)
         }
     }
     val context = LocalContext.current
@@ -175,6 +176,14 @@ fun PlayerRoute(
                     event is PlayerEvent.Back -> {
                         viewModel.onEvent(event)
                         onBack()
+                    }
+
+                    event is PlayerEvent.OpenNextMediaItem -> {
+                        val nextId = state.nextMediaId
+                        viewModel.onEvent(event)
+                        if (nextId != null) {
+                            onOpenMediaItem(nextId)
+                        }
                     }
 
                     event is PlayerEvent.SetLookaheadEnabled && event.enabled && !state.lookaheadStatus.enabled -> {
@@ -434,6 +443,7 @@ fun PlayerScreen(
                             hasPreviousBookmarkedChunk = state.hasPreviousBookmarkedChunk,
                             hasNextBookmarkedChunk = state.hasNextBookmarkedChunk,
                             hasNextMediaItem = state.nextMediaId != null,
+                            nextMediaTitle = state.nextMediaTitle,
                             onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
                             onSeekBack = { onEvent(PlayerEvent.SeekBack) },
                             onSeekForward = { onEvent(PlayerEvent.SeekForward) },
@@ -579,6 +589,7 @@ fun PlayerScreen(
                                 hasPreviousBookmarkedChunk = state.hasPreviousBookmarkedChunk,
                                 hasNextBookmarkedChunk = state.hasNextBookmarkedChunk,
                                 hasNextMediaItem = state.nextMediaId != null,
+                                nextMediaTitle = state.nextMediaTitle,
                                 onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
                                 onSeekBack = { onEvent(PlayerEvent.SeekBack) },
                                 onSeekForward = { onEvent(PlayerEvent.SeekForward) },
@@ -813,6 +824,7 @@ private fun FloatingTransportContent(
         hasPreviousBookmarkedChunk = state.hasPreviousBookmarkedChunk,
         hasNextBookmarkedChunk = state.hasNextBookmarkedChunk,
         hasNextMediaItem = state.nextMediaId != null,
+        nextMediaTitle = state.nextMediaTitle,
         onTogglePlayPause = { onEvent(PlayerEvent.TogglePlayPause) },
         onSeekBack = { onEvent(PlayerEvent.SeekBack) },
         onSeekForward = { onEvent(PlayerEvent.SeekForward) },

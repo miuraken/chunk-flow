@@ -10,6 +10,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TooltipAnchorPosition
@@ -24,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowPlayPauseButton
 import com.miuraken.chunkflow.core.designsystem.component.expressive.ChunkFlowTransportButton
@@ -69,6 +71,7 @@ internal fun PlayerTransportControls(
     onSeekToNextCheckedChunk: () -> Unit,
     onOpenNextMediaItem: () -> Unit,
     modifier: Modifier = Modifier,
+    nextMediaTitle: String? = null,
     hasPreviousBookmarkedChunk: Boolean = false,
     hasNextBookmarkedChunk: Boolean = false,
     onSeekToPreviousBookmarkedChunk: () -> Unit = {},
@@ -232,10 +235,22 @@ internal fun PlayerTransportControls(
                         enabled = hasNextMediaItem,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(
-                            text = stringResource(R.string.player_long_press_next_file),
-                            maxLines = 1,
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.player_long_press_next_file),
+                                maxLines = 1,
+                            )
+                            if (!nextMediaTitle.isNullOrBlank()) {
+                                Text(
+                                    text = nextMediaTitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
                     }
                 }
             }

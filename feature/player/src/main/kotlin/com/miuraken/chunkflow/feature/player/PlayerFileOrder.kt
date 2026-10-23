@@ -13,16 +13,24 @@ import com.miuraken.chunkflow.core.model.fileOrderKey
 
 /**
  * [current] と同じフォルダにあるファイルを、ライブラリと同じ順番（[sortedInLibraryFileOrder]）に並べたときの、
+ * 次のファイル。最後のファイルなら `null`。
+ *
+ * フォルダは [AudioItem.course]（前後の `/` を除いたもの）で比べる。
+ */
+internal fun nextMediaItemInSameFolder(current: AudioItem, allItems: List<AudioItem>): AudioItem? {
+    val folder = normalizedFolderPath(current.course)
+    val sameFolder = sortedInLibraryFileOrder(allItems.filter { normalizedFolderPath(it.course) == folder })
+    val index = sameFolder.indexOfFirst { it.id == current.id }
+    return if (index >= 0) sameFolder.getOrNull(index + 1) else null
+}
+
+/**
+ * [current] と同じフォルダにあるファイルを、ライブラリと同じ順番（[sortedInLibraryFileOrder]）に並べたときの、
  * 次のファイルの ID。最後のファイルなら `null`。
  *
  * フォルダは [AudioItem.course]（前後の `/` を除いたもの）で比べる。
  */
-internal fun nextMediaIdInSameFolder(current: AudioItem, allItems: List<AudioItem>): MediaId? {
-    val folder = normalizedFolderPath(current.course)
-    val sameFolder = sortedInLibraryFileOrder(allItems.filter { normalizedFolderPath(it.course) == folder })
-    val index = sameFolder.indexOfFirst { it.id == current.id }
-    return if (index >= 0) sameFolder.getOrNull(index + 1)?.id else null
-}
+internal fun nextMediaIdInSameFolder(current: AudioItem, allItems: List<AudioItem>): MediaId? = nextMediaItemInSameFolder(current, allItems)?.id
 
 /**
  * [items] を、ライブラリにファイルを並べる順番（core:model の `AudioItemFileOrder` と同じ）に並べる。
