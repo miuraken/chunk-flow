@@ -162,14 +162,6 @@
     <string name="library_playlist_delete_cd">Delete %1$s</string>
     <string name="library_playlist_remove_item_cd">Remove from playlist</string>
     <string name="library_drag_handle_cd">Drag to reorder</string>
-    <string name="library_files_sort_label">Sort</string>
-    <string name="library_files_sort_name">Name</string>
-    <string name="library_files_sort_access_time">Access time</string>
-    <string name="library_files_sort_added_time">Added time</string>
-    <string name="library_files_sort_completion">Completion</string>
-    <string name="library_files_sort_asc">Asc</string>
-    <string name="library_files_sort_desc">Desc</string>
-    <string name="library_files_sort_option_format">%1$s (%2$s)</string>
     <string name="library_folder_kind_real">Real folder</string>
     <string name="library_folder_kind_virtual">Virtual</string>
     <string name="library_folder_color_swatch_cd">Color %1$d</string>

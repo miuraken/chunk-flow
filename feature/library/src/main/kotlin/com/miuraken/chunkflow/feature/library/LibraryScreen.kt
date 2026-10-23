@@ -22,7 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -55,7 +55,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import com.miuraken.chunkflow.core.designsystem.component.LanguageSettingsModalDialog
 import com.miuraken.chunkflow.core.designsystem.component.feedback.ChunkFlowSnackbarHost
 import com.miuraken.chunkflow.core.designsystem.icon.ChunkFlowIcons
@@ -229,7 +232,11 @@ fun LibraryScreen(
     modifier: Modifier = Modifier,
     onOpenTranscriptExport: (List<MediaId>) -> Unit = {},
 ) {
-    val listState = rememberLazyListState()
+    // フォルダの一覧の状態は、開いているフォルダ（ディレクトリ）ごとに作り直す。同じ状態のまま中身を別のフォルダの行に
+    // 入れ替えると、animateItem() が前のフォルダの行を「消えていく行」として残し、一覧の外（見出しや絞り込みの欄）や
+    // 新しい行に重ねて描いてしまう（ホームに戻ったときに前の一覧が残って見える不具合）。フォルダを開いたときの位置は
+    // 下の LaunchedEffect で決める。
+    val listState = rememberSaveable(state.currentDirectoryPath, saver = LazyListState.Saver) { LazyListState() }
     val snackbarHostState = remember { SnackbarHostState() }
     val topAppBarScrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     var lastScrolledDirectoryPath by remember { mutableStateOf<String?>("__uninitialized__") }
@@ -251,7 +258,12 @@ fun LibraryScreen(
         (isOnFoldersOrFilesTab && state.currentDirectoryPath != null) ||
         (state.selectedTab == LibraryViewTab.PLAYLISTS && state.activePlaylist != null)
 
-    BackHandler(enabled = canNavigateBack) {
+    // 画面の遷移のアニメーション中は「戻る」を受け取らない（NavDisplay は遷移中のエントリーを STARTED までに抑えるので、
+    // RESUMED のときだけ有効にする）。プレイヤーへのプッシュの途中でシステムの「戻る」を押すと、消えていくライブラリが
+    // 先に受け取ってフォルダだけが 1 つ上に戻り、プレイヤーが残ってしまうため。
+    // ポップでライブラリに戻るアニメーションの間はフォルダを上がれないが、それは許容する。
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    BackHandler(enabled = canNavigateBack && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
         if (!state.isSelectionMode && isSearchOpen) {
             if (state.fileSearchQuery.isNotEmpty()) {
                 onEvent(LibraryEvent.UpdateFileSearchQuery(""))

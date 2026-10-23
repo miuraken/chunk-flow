@@ -50,7 +50,6 @@ import com.miuraken.chunkflow.core.testing.fake.FakeAnalysisRepository
 import com.miuraken.chunkflow.core.testing.fake.FakePlaybackController
 import com.miuraken.chunkflow.core.transcript.TranscriptError
 import dagger.hilt.android.lifecycle.HiltViewModel
-import java.math.BigInteger
 import java.util.Locale
 import javax.inject.Inject
 import kotlin.math.roundToInt
@@ -1549,18 +1548,8 @@ class PlayerViewModel @Inject constructor(
                 libraryRepository.observeItems(),
                 libraryRepository.observeCourseFolders(),
             ) { item, allItems, courseFolders ->
-                val nextId = if (item == null) {
-                    null
-                } else {
-                    val sameCourse = allItems
-                        .filter { it.course == item.course }
-                        .sortedWith { a, b ->
-                            val cmp = compareFileNamesNatural(a.title, b.title)
-                            if (cmp != 0) cmp else a.id.value.compareTo(b.id.value)
-                        }
-                    val idx = sameCourse.indexOfFirst { it.id == item.id }
-                    if (idx >= 0) sameCourse.getOrNull(idx + 1)?.id else null
-                }
+                // 同じフォルダの、ライブラリと同じ並び（ファイル名の昇順）で次のファイル
+                val nextId = item?.let { nextMediaIdInSameFolder(it, allItems) }
                 // 内包するフォルダの音声認識エンジンの上書き（近いフォルダを言語ごとに優先。ファイル個別設定は含まない）
                 val folderOverride = if (item == null) {
                     com.miuraken.chunkflow.core.model.ItemSttOverride.NONE
@@ -4929,34 +4918,6 @@ class PlayerViewModel @Inject constructor(
     private fun isValidLanguageTag(tag: LanguageTag): Boolean {
         val cleaned = tag.value.trim()
         return cleaned.isNotEmpty() && !cleaned.equals("und", ignoreCase = true)
-    }
-
-    private fun compareFileNamesNatural(a: String, b: String): Int {
-        var ia = 0
-        var ib = 0
-        while (ia < a.length && ib < b.length) {
-            val ca = a[ia]
-            val cb = b[ib]
-            if (ca.isDigit() && cb.isDigit()) {
-                val startA = ia
-                while (ia < a.length && a[ia].isDigit()) ia++
-                val startB = ib
-                while (ib < b.length && b[ib].isDigit()) ib++
-                val numA = BigInteger(a.substring(startA, ia))
-                val numB = BigInteger(b.substring(startB, ib))
-                val numCmp = numA.compareTo(numB)
-                if (numCmp != 0) return numCmp
-                val lenCmp = (ia - startA).compareTo(ib - startB)
-                if (lenCmp != 0) return lenCmp
-            } else {
-                val lowerA = ca.lowercaseChar()
-                val lowerB = cb.lowercaseChar()
-                if (lowerA != lowerB) return lowerA.compareTo(lowerB)
-                ia++
-                ib++
-            }
-        }
-        return (a.length - ia).compareTo(b.length - ib)
     }
 
     private data class Quad<A, B, C, D>(

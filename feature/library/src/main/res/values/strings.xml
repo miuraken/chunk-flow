@@ -162,14 +162,6 @@
     <string name="library_playlist_delete_cd">%1$s を削除</string>
     <string name="library_playlist_remove_item_cd">プレイリストから外す</string>
     <string name="library_drag_handle_cd">ドラッグして並び替え</string>
-    <string name="library_files_sort_label">並び順</string>
-    <string name="library_files_sort_name">名称順</string>
-    <string name="library_files_sort_access_time">アクセス日時</string>
-    <string name="library_files_sort_added_time">追加日時</string>
-    <string name="library_files_sort_completion">完了度</string>
-    <string name="library_files_sort_asc">昇順</string>
-    <string name="library_files_sort_desc">降順</string>
-    <string name="library_files_sort_option_format">%1$s（%2$s）</string>
     <string name="library_folder_kind_real">実フォルダ</string>
     <string name="library_folder_kind_virtual">仮想</string>
     <string name="library_folder_color_swatch_cd">色 %1$d</string>

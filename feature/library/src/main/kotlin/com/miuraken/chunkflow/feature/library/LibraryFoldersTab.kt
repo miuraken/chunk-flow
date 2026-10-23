@@ -23,13 +23,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +48,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -81,35 +81,12 @@ internal fun LibraryFoldersTabContent(
     val currentFolderPath = state.currentDirectoryPath?.trim('/')?.takeIf { it.isNotBlank() }
     val isSearchActive = state.fileSearchQuery.trim().isNotEmpty()
     val showSearchBox = isSearchExpanded || state.fileSearchQuery.isNotEmpty()
-    val showSortControl = currentFolderPath != null || isSearchActive || currentFiles.isNotEmpty()
-    val displayTags = state.tagsSortedByItemCount
-    var languageMenuExpanded by remember { mutableStateOf(false) }
-    var sortMenuExpanded by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
-    val activeFilterCode = state.fileTargetLanguageFilter?.value?.lowercase(Locale.ROOT)
-    val allLanguagesLabel = stringResource(R.string.library_files_filter_all_languages)
-    val currentLanguageFilterLabel = activeFilterCode ?: allLanguagesLabel
 
     LaunchedEffect(isSearchExpanded) {
         if (isSearchExpanded) {
             runCatching { searchFocusRequester.requestFocus() }
         }
-    }
-
-    @Composable
-    fun sortOptionLabel(option: LibraryFileSortOption, ascending: Boolean): String {
-        val optionName = stringResource(
-            when (option) {
-                LibraryFileSortOption.NAME -> R.string.library_files_sort_name
-                LibraryFileSortOption.ACCESS_TIME -> R.string.library_files_sort_access_time
-                LibraryFileSortOption.ADDED_TIME -> R.string.library_files_sort_added_time
-                LibraryFileSortOption.COMPLETION -> R.string.library_files_sort_completion
-            },
-        )
-        val orderName = stringResource(
-            if (ascending) R.string.library_files_sort_asc else R.string.library_files_sort_desc,
-        )
-        return stringResource(R.string.library_files_sort_option_format, optionName, orderName)
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -155,152 +132,17 @@ internal fun LibraryFoldersTabContent(
             )
         }
 
-        // 言語絞り込み ＆ 並び替え行（ルートのフォルダだけのビューでは並び替えは非表示）
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box {
-                Surface(
-                    onClick = { languageMenuExpanded = true },
-                    modifier = Modifier.height(38.dp),
-                    shape = MaterialTheme.shapes.small,
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = stringResource(
-                                R.string.library_files_language_filter_button_format,
-                                currentLanguageFilterLabel,
-                            ),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                DropdownMenu(
-                    expanded = languageMenuExpanded,
-                    onDismissRequest = { languageMenuExpanded = false },
-                    shape = MaterialTheme.shapes.medium,
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .widthIn(min = 180.dp, max = 260.dp)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        LanguageFilterPillChip(
-                            label = allLanguagesLabel,
-                            selected = activeFilterCode == null,
-                            onClick = {
-                                languageMenuExpanded = false
-                                onEvent(LibraryEvent.SelectFileTargetLanguageFilter(null))
-                            },
-                        )
-                        if (state.availableTargetLanguages.isNotEmpty()) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                state.availableTargetLanguages.forEach { lang ->
-                                    val code = lang.value.lowercase(Locale.ROOT)
-                                    val isSelected = activeFilterCode == code
-                                    LanguageFilterPillChip(
-                                        label = code,
-                                        selected = isSelected,
-                                        onClick = {
-                                            languageMenuExpanded = false
-                                            onEvent(
-                                                LibraryEvent.SelectFileTargetLanguageFilter(
-                                                    if (isSelected) null else LanguageTag(code),
-                                                ),
-                                            )
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            if (showSortControl) {
-                Box {
-                    Surface(
-                        onClick = { sortMenuExpanded = true },
-                        modifier = Modifier.height(38.dp),
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(start = 12.dp, end = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                text = sortOptionLabel(state.fileSortOption, state.fileSortAscending),
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = sortMenuExpanded)
-                        }
-                    }
-                    DropdownMenu(
-                        expanded = sortMenuExpanded,
-                        onDismissRequest = { sortMenuExpanded = false },
-                        shape = MaterialTheme.shapes.medium,
-                    ) {
-                        LibraryFileSortOption.entries.forEach { option ->
-                            listOf(true, false).forEach { ascending ->
-                                val itemLabel = sortOptionLabel(option, ascending)
-                                val isSelected = state.fileSortOption == option &&
-                                    state.fileSortAscending == ascending
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = itemLabel,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        )
-                                    },
-                                    onClick = {
-                                        sortMenuExpanded = false
-                                        onEvent(LibraryEvent.SelectFileSortOption(option, ascending))
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // タグでの絞り込み（タグがまだ付けられていない場合は非表示、アイテム数が多い順で1行横スクロール）
-        if (displayTags.isNotEmpty()) {
-            FileTagFilterRow(
-                tags = displayTags,
-                selectedTags = state.fileTagFilter,
-                onToggleTag = { tag -> onEvent(LibraryEvent.ToggleFileTagFilter(tag)) },
-                onClear = { onEvent(LibraryEvent.ClearFileTagFilter) },
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
-        }
+        // 言語の絞り込みとタグの絞り込みを 1 行に並べる（並びは常にファイル名の昇順なので、並び替えのメニューはない）
+        LibraryFilterBar(
+            state = state,
+            onEvent = onEvent,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
 
         if (isSearchActive) {
+            // 検索結果はフォルダの一覧（listState）と別の状態にする。同じ状態で行を入れ替えると、
+            // 消えていく行が新しい行に重なって残るため（フォルダごとに状態を分けているのと同じ理由）
+            val searchListState = rememberLazyListState()
             val filteredFiles = state.filteredAllFiles
             if (!state.isLoading && filteredFiles.isEmpty()) {
                 Column(
@@ -329,8 +171,11 @@ internal fun LibraryFoldersTabContent(
                 }
             } else {
                 LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f),
+                    state = searchListState,
+                    // 消えていく行（animateItem）を一覧の外（検索ボックスや絞り込みの欄）に描かない
+                    modifier = Modifier
+                        .weight(1f)
+                        .clipToBounds(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
                     itemsIndexed(
@@ -455,7 +300,10 @@ internal fun LibraryFoldersTabContent(
             } else {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.weight(1f),
+                    // 消えていく行（animateItem。絞り込みを変えたときなど）を一覧の外（フォルダの見出しや絞り込みの欄）に描かない
+                    modifier = Modifier
+                        .weight(1f)
+                        .clipToBounds(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                 ) {
                     itemsIndexed(
@@ -575,6 +423,167 @@ internal fun LibraryFoldersTabContent(
                 }
             }
         }
+    }
+}
+
+/**
+ * 言語の絞り込みのボタンと、タグの絞り込み（横にスクロールするタグのチップ）を 1 行に並べる（library_v2.2.png）。
+ *
+ * 左から「言語: …」のボタン → 🏷 とタグのチップ（残りの幅を使う）。タグがないときはタグの欄を出さない。
+ * タグはファイルが多い順に左から並べる（[LibraryUiState.tagsSortedByItemCount]）。
+ */
+@Composable
+private fun LibraryFilterBar(
+    state: LibraryUiState,
+    onEvent: (LibraryEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val displayTags = state.tagsSortedByItemCount
+    Row(
+        // タグの欄は画面の右端までスクロールできるように、右の余白はタグの欄の中（LazyRow の contentPadding）で取る
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = if (displayTags.isEmpty()) 12.dp else 0.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LanguageFilterButton(
+            activeLanguage = state.fileTargetLanguageFilter,
+            availableLanguages = state.availableTargetLanguages,
+            onSelectLanguage = { language -> onEvent(LibraryEvent.SelectFileTargetLanguageFilter(language)) },
+        )
+        if (displayTags.isNotEmpty()) {
+            FileTagFilterRow(
+                tags = displayTags,
+                selectedTags = state.fileTagFilter,
+                onToggleTag = { tag -> onEvent(LibraryEvent.ToggleFileTagFilter(tag)) },
+                onClear = { onEvent(LibraryEvent.ClearFileTagFilter) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/**
+ * 「言語: すべて」のボタン。押すと、ファイルの対象言語で絞り込むメニューを開く。
+ *
+ * @param activeLanguage 絞り込んでいる対象言語（`null` ならすべて）。
+ * @param availableLanguages ライブラリのファイルにある対象言語。
+ * @param onSelectLanguage 言語を選んだとき（`null` はすべて）。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LanguageFilterButton(
+    activeLanguage: LanguageTag?,
+    availableLanguages: List<LanguageTag>,
+    onSelectLanguage: (LanguageTag?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val activeFilterCode = activeLanguage?.value?.lowercase(Locale.ROOT)
+    val allLanguagesLabel = stringResource(R.string.library_files_filter_all_languages)
+    Box(modifier = modifier) {
+        Surface(
+            onClick = { menuExpanded = true },
+            // 文字を大きくしても切れないように、高さは最小だけを決める
+            modifier = Modifier.heightIn(min = 38.dp),
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(
+                        R.string.library_files_language_filter_button_format,
+                        activeFilterCode ?: allLanguagesLabel,
+                    ),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+            shape = MaterialTheme.shapes.medium,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 180.dp, max = 260.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LanguageFilterPillChip(
+                    label = allLanguagesLabel,
+                    selected = activeFilterCode == null,
+                    onClick = {
+                        menuExpanded = false
+                        onSelectLanguage(null)
+                    },
+                )
+                if (availableLanguages.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        availableLanguages.forEach { lang ->
+                            val code = lang.value.lowercase(Locale.ROOT)
+                            val isSelected = activeFilterCode == code
+                            LanguageFilterPillChip(
+                                label = code,
+                                selected = isSelected,
+                                onClick = {
+                                    menuExpanded = false
+                                    onSelectLanguage(if (isSelected) null else LanguageTag(code))
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 言語の絞り込みのメニューの中の、言語を 1 つ選ぶチップ。 */
+@Composable
+private fun LanguageFilterPillChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = CircleShape,
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        border = if (selected) {
+            null
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        },
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+        )
     }
 }
 

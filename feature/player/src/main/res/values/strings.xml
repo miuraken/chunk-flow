@@ -275,7 +275,8 @@
     <string name="player_next_chunk_long_press_tooltip">長押しで次のチェック済みチャンク / 次のファイルへ</string>
     <string name="player_play_pause_long_press_tooltip">長押しでフローティング操作バーを表示 / 非表示</string>
     <string name="player_transcription_progress_close_cd">文字起こし進捗を閉じる</string>
-    <string name="player_missing_language_hint">設定したい言語が見つからないときは、全体設定 &gt; 言語 から追加してください。</string>
+    <!-- %1$s には「⚙ 全体設定（言語）」のリンク（player_open_global_settings）が入る（歯車は部品が付けるので書かない） -->
+    <string name="player_missing_language_hint_with_link">設定したい言語が見つからないときは、%1$sから追加してください。</string>
     <string name="player_resegment_reset_button">チャンク分割・文字起こしをリセット</string>
     <string name="player_resegment_reset_caption">文字起こしもクリアされます</string>
     <string name="player_target_lang_change_confirm_title">学習対象言語を変更しますか？</string>

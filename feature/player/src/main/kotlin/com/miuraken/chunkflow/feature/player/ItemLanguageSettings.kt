@@ -28,7 +28,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.miuraken.chunkflow.core.designsystem.component.ALPHABETICAL_SELECTABLE_LANGUAGE_OPTIONS
-import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintText
+import com.miuraken.chunkflow.core.designsystem.component.MISSING_LANGUAGE_HINT_LINK_SLOT
+import com.miuraken.chunkflow.core.designsystem.component.MissingLanguageHintWithSettingsLink
 import com.miuraken.chunkflow.core.designsystem.component.SelectableLanguageOption
 import com.miuraken.chunkflow.core.designsystem.component.buildSelectableLanguageOptions
 import com.miuraken.chunkflow.core.designsystem.component.normalizeSelectableLanguageCode
@@ -112,12 +113,15 @@ internal fun languagePairWithBase(
  * プレイヤーの設定シートの「言語」セクション。開いている教材の学習対象言語とベース言語をプルダウンで選び直す。
  *
  * 学習対象言語が変わる場合は確認ダイアログを出してから [onChangeLanguages] を呼ぶ。
+ * プルダウンの下には、言語が選択肢にないときの案内文を出し、文中の「⚙ 全体設定（言語）」のリンクで
+ * [onOpenLanguageSettings]（全体設定の言語を開く）を呼ぶ（ライブラリのシートと同じ部品）。
  */
 @Composable
 internal fun ItemLanguageSettingsSection(
     languagePair: LanguagePair?,
     itemSttOverride: ItemSttOverride,
     onChangeLanguages: (LanguagePair) -> Unit,
+    onOpenLanguageSettings: () -> Unit,
     modifier: Modifier = Modifier,
     onChangeTargetEngine: (SttEngine?) -> Unit = {},
     onChangeBaseEngine: (SttEngine?) -> Unit = {},
@@ -230,8 +234,10 @@ internal fun ItemLanguageSettingsSection(
                 )
             }
         }
-        MissingLanguageHintText(
-            text = stringResource(R.string.player_missing_language_hint),
+        MissingLanguageHintWithSettingsLink(
+            sentence = stringResource(R.string.player_missing_language_hint_with_link, MISSING_LANGUAGE_HINT_LINK_SLOT),
+            linkLabel = stringResource(R.string.player_open_global_settings),
+            onOpenLanguageSettings = onOpenLanguageSettings,
         )
     }
 }

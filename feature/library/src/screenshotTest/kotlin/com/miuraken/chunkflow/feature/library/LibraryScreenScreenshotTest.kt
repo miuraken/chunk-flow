@@ -204,7 +204,6 @@ fun LibraryScreenFilesTabScreenshot() {
             state = LibraryUiState(
                 items = items,
                 selectedTab = LibraryViewTab.FILES,
-                fileSortOption = LibraryFileSortOption.ACCESS_TIME,
             ),
             onEvent = {},
         )
@@ -333,6 +332,53 @@ fun LibraryScreenFolderColorsScreenshot() {
                     LanguageTag("zh-cn") to 2,
                     LanguageTag("es") to 3,
                 ),
+            ),
+            onEvent = {},
+        )
+    }
+}
+
+/**
+ * ファイルタブのルート（library_v2.2.png）: 「言語: すべて」のボタンの右隣に、🏷 とタグのチップ（ファイルが多い順。
+ * 横にスクロールする）を 1 行に並べ、その下に色分けしたフォルダの一覧。並び替えのメニューはない。
+ */
+@PreviewTest
+@ChunkFlowPreviews
+@Composable
+fun LibraryScreenRootFoldersWithTagsScreenshot() {
+    val folders = listOf(
+        sampleFolder("Hindi 1", target = "hi", kind = LibraryFolderKind.LOCAL_DIRECTORY),
+        sampleFolder("韓国語 初級", target = "ko", kind = LibraryFolderKind.LOCAL_DIRECTORY),
+        sampleFolder("Cantonese 1", target = "yue", kind = LibraryFolderKind.LOCAL_DIRECTORY),
+        sampleFolder("default", target = "en", kind = LibraryFolderKind.VIRTUAL_DIRECTORY),
+        sampleFolder("French 1", target = "fr", kind = LibraryFolderKind.LOCAL_DIRECTORY),
+        sampleFolder("中国語ニュース", target = "zh", kind = LibraryFolderKind.LOCAL_DIRECTORY),
+    )
+    val items = folders.flatMapIndexed { folderIndex, folder ->
+        (1..(folderIndex + 2)).map { number ->
+            val item = taggedSampleItem(
+                id = "${folder.coursePath}-$number",
+                title = "Lesson $number",
+                course = folder.coursePath,
+                target = folder.languagePair.target.value,
+            )
+            val tags = buildList {
+                if (folder.languagePair.target.value == "zh") add("中国語")
+                if (number == 1) add("復習")
+                if (folderIndex % 2 == 0) add("シャドーイング")
+            }
+            LibraryItemUiModel(item = item, tags = tags)
+        }
+    }
+    ChunkFlowTheme {
+        LibraryScreen(
+            state = LibraryUiState(
+                items = items,
+                courseFolders = folders,
+                allTags = listOf("中国語", "復習", "シャドーイング", "旅行"),
+                folderLanguageColorOrdinals = folders.mapIndexed { index, folder ->
+                    folder.languagePair.target to index
+                }.toMap(),
             ),
             onEvent = {},
         )
