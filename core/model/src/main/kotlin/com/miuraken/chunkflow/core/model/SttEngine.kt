@@ -34,7 +34,7 @@ enum class SttEngine {
     /** Groq Audio Transcriptions API（OpenAI 互換・`whisper-large-v3-turbo`、要 API キー設定）。 */
     GROQ_API,
 
-    /** Google Gemini API 音声文字起こし（`gemini-2.5-flash`、要 API キー設定）。 */
+    /** Google Gemini API 音声文字起こし（`gemini-3.8-flash`。提供終了などで 404 のときは `gemini-flash-latest`。要 API キー設定）。 */
     GEMINI_API,
     ;
 

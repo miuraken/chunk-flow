@@ -21,4 +21,5 @@
 | [0012](0012-material3-expressive-migration.md) | Material Design 3（Expressive）への UI 移行の方針（下部ナビ、色の調和、評価用ブランチ、designsystem 担当の新設） | 承認済み |
 | [0013](0013-library-tags-and-folder-colors.md) | ライブラリのタグ（付け外し・AND の絞り込み）とフォルダの色分け（対象言語ごとの決め打ちの色・フォルダごとの指定） | 承認済み（パレットの色数と色見本の並べ方は 0014 で置き換え） |
 | [0014](0014-folder-stt-override-and-folder-settings-panel.md) | フォルダ単位の音声認識エンジンの上書き（ファイル ＞ フォルダ ＞ 全体設定、スキーマ 9）と、フォルダの設定パネルの構成（18 色・▼・リンク） | 承認済み |
+| [0015](0015-library-file-name-order-and-display-name.md) | ライブラリのファイルの並びをファイル名の昇順に固定（並べ替えのメニューと手動の並べ替えをやめる）し、元のファイル名を保存する（スキーマ 10） | 承認済み |
 

@@ -27,6 +27,9 @@ enum class AudioStorageState {
  * @property sourceUri ローカルの元ファイルを参照する SAF / ファイル URI 文字列（コピーを作らない場合）。
  * @property localFilePath ローカルファイルシステム上の実ファイルパス（解決できた場合）。
  * @property storageState 音声実体の保持状態（ローカル参照 / アプリ管理）。
+ * @property displayName 元のファイル名（拡張子を含む。SAF の `DISPLAY_NAME`）。ライブラリとプレイヤーの並び
+ *   （ファイル名の昇順。[AudioItemFileOrder]）に使う。わからないとき（古い版で取り込んで、まだ補っていないときなど）は `null`。
+ *   表示と並びのためだけに使い、ファイルパスには使わない（§8.1）。
  */
 data class AudioItem(
     val id: MediaId,
@@ -42,4 +45,5 @@ data class AudioItem(
     val sourceUri: String? = null,
     val localFilePath: String? = null,
     val storageState: AudioStorageState = AudioStorageState.APP_MANAGED,
+    val displayName: String? = null,
 )

@@ -50,7 +50,7 @@ import com.miuraken.chunkflow.core.model.LibraryFolderColors
         TagEntity::class,
         MediaItemTagEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 abstract class ChunkFlowDatabase : RoomDatabase() {
@@ -228,6 +228,17 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * バージョン 9 から 10 へのマイグレーション（`media_item` に元のファイル名 `display_name` を追加。ADR 0015）。
+         *
+         * 既存の行は `NULL` のまま移行する。元のファイル名は取り込み・再スキャンの処理が後から補う。
+         */
+        val MIGRATION_9_10: Migration = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `media_item` ADD COLUMN `display_name` TEXT")
+            }
+        }
+
         /** アプリで使うすべてのマイグレーション（古い順）。データベースを開くときに渡す。 */
         val ALL_MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2,
@@ -238,6 +249,7 @@ abstract class ChunkFlowDatabase : RoomDatabase() {
             MIGRATION_6_7,
             MIGRATION_7_8,
             MIGRATION_8_9,
+            MIGRATION_9_10,
         )
 
         /**
