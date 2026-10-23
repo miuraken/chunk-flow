@@ -278,6 +278,8 @@ const val DEFAULT_MISSING_LANGUAGE_HINT_TEXT: String =
 /**
  * 設定したい言語が選択肢にない場合の案内テキストを表示する。
  *
+ * 文中の「全体設定（言語）」を押せるリンクにするときは [MissingLanguageHintWithSettingsLink] を使う。
+ *
  * @param text 表示する案内文言
  * @param modifier レイアウト修飾子
  */
@@ -292,20 +294,6 @@ fun MissingLanguageHintText(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier,
     )
-}
-
-/**
- * 対象となる言語が選択肢にない場合に「全体設定>言語」を案内するテキスト。
- *
- * @param modifier レイアウト修飾子
- * @param onOpenLanguageSettingsModal 互換用のコールバック（リンクなし表示のため未使用）
- */
-@Composable
-fun MissingLanguageHintWithModalLink(
-    modifier: Modifier = Modifier,
-    onOpenLanguageSettingsModal: () -> Unit = {},
-) {
-    MissingLanguageHintText(modifier = modifier)
 }
 
 /**
