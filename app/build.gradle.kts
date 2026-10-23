@@ -24,6 +24,10 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            ndk {
+                // Play Console のクラッシュレポート解析用にネイティブシンボル（.so の関数名）を AAB に同梱する
+                debugSymbolLevel = "SYMBOL_TABLE"
+            }
         }
     }
 }
